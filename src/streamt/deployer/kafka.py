@@ -164,7 +164,9 @@ class KafkaDeployer:
         # Handle partition increase
         if "partitions" in changes:
             new_partitions = changes["partitions"]["to"]
-            futures = self.admin.create_partitions({artifact.name: NewPartitions(new_partitions)})
+            futures = self.admin.create_partitions(
+                [NewPartitions(artifact.name, new_partitions)]
+            )
             for topic, future in futures.items():
                 try:
                     future.result()
@@ -213,3 +215,21 @@ class KafkaDeployer:
             return "updated"
         else:
             return "unchanged"
+
+    def apply(self, artifact: TopicArtifact) -> str:
+        """Alias for apply_topic."""
+        return self.apply_topic(artifact)
+
+    def list_topics(self) -> list[str]:
+        """List all topics in the cluster."""
+        metadata = self.admin.list_topics(timeout=10)
+        return [
+            topic
+            for topic in metadata.topics.keys()
+            if not topic.startswith("_")  # Exclude internal topics
+        ]
+
+    def compute_diff(self, artifact: TopicArtifact) -> dict:
+        """Compute diff between current and desired state."""
+        change = self.plan_topic(artifact)
+        return change.changes
