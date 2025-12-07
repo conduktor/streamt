@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from confluent_kafka.admin import AdminClient, ConfigResource, NewPartitions, NewTopic, ResourceType
 
 from streamt.compiler.manifest import TopicArtifact
+
+logger = logging.getLogger(__name__)
+
+# Default timeouts (in seconds)
+DEFAULT_TIMEOUT = 10
 
 
 @dataclass
@@ -41,17 +47,42 @@ class TopicChange:
 
 
 class KafkaDeployer:
-    """Deployer for Kafka topics."""
+    """Deployer for Kafka topics.
+
+    Supports context manager protocol for proper resource cleanup:
+
+        with KafkaDeployer(bootstrap_servers) as deployer:
+            deployer.list_topics()
+    """
 
     def __init__(self, bootstrap_servers: str, **kafka_config: dict) -> None:
         """Initialize Kafka deployer."""
         config = {"bootstrap.servers": bootstrap_servers}
         config.update(kafka_config)
         self.admin = AdminClient(config)
+        self._closed = False
+
+    def __enter__(self) -> "KafkaDeployer":
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context manager, cleaning up resources."""
+        self.close()
+
+    def close(self) -> None:
+        """Close the deployer and clean up resources.
+
+        Note: confluent_kafka AdminClient doesn't have an explicit close method,
+        but we mark the deployer as closed to prevent further operations.
+        """
+        self._closed = True
+        # AdminClient doesn't have close(), but setting to None helps GC
+        self.admin = None
 
     def get_topic_state(self, topic_name: str) -> TopicState:
         """Get current state of a topic."""
-        metadata = self.admin.list_topics(timeout=10)
+        metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
 
         if topic_name not in metadata.topics:
             return TopicState(name=topic_name, exists=False)
@@ -72,14 +103,14 @@ class KafkaDeployer:
 
         for resource, future in configs.items():
             try:
-                config_entries = future.result()
+                config_entries = future.result(timeout=DEFAULT_TIMEOUT)
                 topic_config = {
                     entry.name: entry.value
                     for entry in config_entries.values()
                     if not entry.is_default
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to get config for topic '{topic_name}': {e}")
 
         return TopicState(
             name=topic_name,
@@ -155,7 +186,7 @@ class KafkaDeployer:
 
         for topic, future in futures.items():
             try:
-                future.result()
+                future.result(timeout=DEFAULT_TIMEOUT)
             except Exception as e:
                 raise RuntimeError(f"Failed to create topic '{topic}': {e}")
 
@@ -169,7 +200,7 @@ class KafkaDeployer:
             )
             for topic, future in futures.items():
                 try:
-                    future.result()
+                    future.result(timeout=DEFAULT_TIMEOUT)
                 except Exception as e:
                     raise RuntimeError(f"Failed to increase partitions for '{topic}': {e}")
 
@@ -187,7 +218,7 @@ class KafkaDeployer:
             futures = self.admin.alter_configs([config_resource])
             for resource, future in futures.items():
                 try:
-                    future.result()
+                    future.result(timeout=DEFAULT_TIMEOUT)
                 except Exception as e:
                     raise RuntimeError(f"Failed to update config for '{artifact.name}': {e}")
 
@@ -197,7 +228,7 @@ class KafkaDeployer:
 
         for topic, future in futures.items():
             try:
-                future.result()
+                future.result(timeout=DEFAULT_TIMEOUT)
             except Exception as e:
                 raise RuntimeError(f"Failed to delete topic '{topic}': {e}")
 
@@ -222,7 +253,7 @@ class KafkaDeployer:
 
     def list_topics(self) -> list[str]:
         """List all topics in the cluster."""
-        metadata = self.admin.list_topics(timeout=10)
+        metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         return [
             topic
             for topic in metadata.topics.keys()

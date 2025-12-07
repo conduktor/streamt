@@ -258,7 +258,10 @@ def plan(project_dir: Optional[str]) -> None:
                 if default_cluster and default_cluster in project.runtime.flink.clusters:
                     cluster_config = project.runtime.flink.clusters[default_cluster]
                     if cluster_config.rest_url:
-                        flink_deployer = FlinkDeployer(cluster_config.rest_url)
+                        flink_deployer = FlinkDeployer(
+                            rest_url=cluster_config.rest_url,
+                            sql_gateway_url=cluster_config.sql_gateway_url,
+                        )
             except Exception as e:
                 console.print(f"[yellow]Warning: Cannot connect to Flink: {e}[/yellow]")
 
@@ -353,7 +356,10 @@ def apply(project_dir: Optional[str], target: Optional[str], select: Optional[st
             if default_cluster and default_cluster in project.runtime.flink.clusters:
                 cluster_config = project.runtime.flink.clusters[default_cluster]
                 if cluster_config.rest_url:
-                    flink_deployer = FlinkDeployer(cluster_config.rest_url)
+                    flink_deployer = FlinkDeployer(
+                        rest_url=cluster_config.rest_url,
+                        sql_gateway_url=cluster_config.sql_gateway_url,
+                    )
 
         if project.runtime.connect and project.runtime.connect.clusters:
             default_cluster = project.runtime.connect.default
@@ -629,6 +635,7 @@ def status(project_dir: Optional[str]) -> None:
                     default_cluster = project.runtime.flink.default
                     if default_cluster and default_cluster in project.runtime.flink.clusters:
                         cluster_config = project.runtime.flink.clusters[default_cluster]
+                        # Use rest_url for job status (REST API), not sql_gateway_url
                         if cluster_config.rest_url:
                             flink_deployer = FlinkDeployer(cluster_config.rest_url)
                             for job_data in manifest.artifacts["flink_jobs"]:

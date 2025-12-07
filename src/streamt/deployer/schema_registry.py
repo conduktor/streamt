@@ -3,28 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
 
+from streamt.compiler.manifest import SchemaArtifact
 
-@dataclass
-class SchemaArtifact:
-    """Compiled schema artifact."""
+logger = logging.getLogger(__name__)
 
-    subject: str
-    schema: dict[str, Any]
-    schema_type: str = "AVRO"  # AVRO, JSON, PROTOBUF
-    compatibility: Optional[str] = None  # BACKWARD, FORWARD, FULL, NONE
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "subject": self.subject,
-            "schema": self.schema,
-            "schema_type": self.schema_type,
-            "compatibility": self.compatibility,
-        }
+# Default timeouts (in seconds)
+DEFAULT_TIMEOUT = 30
+HEALTH_CHECK_TIMEOUT = 10
 
 
 @dataclass
@@ -56,7 +47,13 @@ class SchemaChange:
 
 
 class SchemaRegistryDeployer:
-    """Deployer for Schema Registry schemas."""
+    """Deployer for Schema Registry schemas.
+
+    Supports context manager protocol for proper resource cleanup:
+
+        with SchemaRegistryDeployer(url) as deployer:
+            deployer.list_subjects()
+    """
 
     def __init__(
         self,
@@ -68,27 +65,48 @@ class SchemaRegistryDeployer:
         self.url = url.rstrip("/")
         self.auth = (username, password) if username and password else None
         self.headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+        self._http_session = requests.Session()
+        self._http_session.headers.update(self.headers)
+        if self.auth:
+            self._http_session.auth = self.auth
+
+    def __enter__(self) -> "SchemaRegistryDeployer":
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context manager, cleaning up resources."""
+        self.close()
+
+    def close(self) -> None:
+        """Close the deployer and clean up resources."""
+        self._http_session.close()
 
     def _request(
         self,
         method: str,
         path: str,
+        timeout: int = DEFAULT_TIMEOUT,
         **kwargs: Any,
     ) -> requests.Response:
-        """Make a request to Schema Registry."""
+        """Make a request to Schema Registry.
+
+        Args:
+            method: HTTP method
+            path: API path
+            timeout: Request timeout in seconds
+            **kwargs: Additional arguments passed to requests
+        """
         url = f"{self.url}{path}"
-        kwargs.setdefault("headers", self.headers)
-        if self.auth:
-            kwargs["auth"] = self.auth
-        kwargs.setdefault("timeout", 30)
-        return requests.request(method, url, **kwargs)
+        return self._http_session.request(method, url, timeout=timeout, **kwargs)
 
     def check_connection(self) -> bool:
         """Check if Schema Registry is available."""
         try:
-            response = self._request("GET", "/subjects")
+            response = self._request("GET", "/subjects", timeout=HEALTH_CHECK_TIMEOUT)
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Schema Registry connection check failed: {e}")
             return False
 
     def list_subjects(self) -> list[str]:

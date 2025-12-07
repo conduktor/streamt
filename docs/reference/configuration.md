@@ -214,13 +214,19 @@ runtime:
 
 ## Defaults
 
-Set default values for models and tests:
+Set default values for topics, models, and tests:
 
 ```yaml
 defaults:
+  # Project-wide topic defaults (simplest)
+  topic:
+    partitions: 1              # Default: 1 (works for local dev)
+    replication_factor: 1      # Default: 1 (works for local dev)
+
   models:
-    cluster: production          # Default Kafka cluster
-    flink_cluster: production   # Default Flink cluster
+    cluster: production
+    flink_cluster: production
+    # Model-specific topic defaults (overrides project-wide)
     topic:
       partitions: 6
       replication_factor: 3
@@ -231,6 +237,16 @@ defaults:
     flink_cluster: production
     sample_size: 1000
 ```
+
+!!! tip "Local Development vs Production"
+    The built-in defaults (`partitions: 1`, `replication_factor: 1`) work out of the box with a single-broker local Kafka. For production, override in your project:
+
+    ```yaml
+    defaults:
+      topic:
+        partitions: 6
+        replication_factor: 3
+    ```
 
 ## Governance Rules
 

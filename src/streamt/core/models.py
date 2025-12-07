@@ -92,6 +92,8 @@ class KafkaConfig(BaseModel):
     """Kafka cluster configuration."""
 
     bootstrap_servers: str
+    # Internal bootstrap servers for Flink/Connect running in Docker
+    bootstrap_servers_internal: Optional[str] = None
     security_protocol: Optional[str] = None
     sasl_mechanism: Optional[str] = None
     sasl_username: Optional[str] = None
@@ -111,6 +113,7 @@ class FlinkClusterConfig(BaseModel):
 
     type: str = "rest"  # rest, docker, confluent, kubernetes
     rest_url: Optional[str] = None
+    sql_gateway_url: Optional[str] = None  # Flink SQL Gateway URL for SQL submission
     version: Optional[str] = None
     environment: Optional[str] = None
     api_key: Optional[str] = None
@@ -219,10 +222,18 @@ class Rules(BaseModel):
 # ============================================================================
 
 
+class TopicDefaults(BaseModel):
+    """Default values for topics."""
+
+    partitions: int = 1
+    replication_factor: int = 1
+
+
 class ModelDefaults(BaseModel):
     """Default values for models."""
 
     cluster: Optional[str] = None
+    topic: Optional[TopicDefaults] = None
 
 
 class TestDefaults(BaseModel):
@@ -236,6 +247,7 @@ class Defaults(BaseModel):
 
     models: Optional[ModelDefaults] = None
     tests: Optional[TestDefaults] = None
+    topic: Optional[TopicDefaults] = None
 
 
 # ============================================================================

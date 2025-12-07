@@ -275,6 +275,15 @@ class ProjectValidator:
                         f"Continuous test '{test.name}' requires Flink. Configure runtime.flink",
                     )
 
+            # Warn if sample_size is set on non-sample tests
+            if test.sample_size is not None and test.type.value != "sample":
+                self.result.add_warning(
+                    "SAMPLE_SIZE_IGNORED",
+                    f"Test '{test.name}' has sample_size but is type '{test.type.value}'. "
+                    f"sample_size only applies to 'sample' tests.",
+                    f"test '{test.name}'",
+                )
+
             # Validate DLQ references
             if test.on_failure:
                 for action in test.on_failure.actions:
@@ -541,9 +550,14 @@ class ProjectValidator:
         # Check require_classification (sources must have all columns classified)
         if rules.require_classification:
             for source in self.project.sources:
-                # This rule means all columns in sources should have classification
-                # For simplicity, we skip this for now as it requires full schema info
-                pass
+                if source.columns:
+                    for col in source.columns:
+                        if col.classification is None:
+                            self.result.add_error(
+                                "RULE_REQUIRE_CLASSIFICATION",
+                                f"Column '{col.name}' in source '{source.name}' "
+                                f"missing required classification",
+                            )
 
         # Check sensitive_columns_require_masking
         if rules.sensitive_columns_require_masking:

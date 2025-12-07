@@ -175,6 +175,8 @@ class TestRunner:
 
     def _run_continuous_test(self, test: Test) -> dict[str, Any]:
         """Check status of a continuous test (deployed as Flink job)."""
+        from streamt.deployer.flink import FlinkDeployer
+
         if not self.project.runtime.flink:
             return {
                 "name": test.name,
@@ -188,16 +190,19 @@ class TestRunner:
         if default_cluster and default_cluster in flink_config.clusters:
             cluster = flink_config.clusters[default_cluster]
             if cluster.rest_url:
-                job_status = self._check_flink_job_status(
-                    cluster.rest_url, f"test_{test.name}"
-                )
-                if job_status:
-                    return {
-                        "name": test.name,
-                        "status": "passed" if job_status == "RUNNING" else "failed",
-                        "job_status": job_status,
-                        "message": f"Continuous test job is {job_status}",
-                    }
+                try:
+                    deployer = FlinkDeployer(cluster.rest_url)
+                    job_state = deployer.get_job_state(f"test_{test.name}")
+
+                    if job_state.exists:
+                        return {
+                            "name": test.name,
+                            "status": "passed" if job_state.status == "RUNNING" else "failed",
+                            "job_status": job_state.status,
+                            "message": f"Continuous test job is {job_state.status}",
+                        }
+                except Exception as e:
+                    logger.warning(f"Failed to check Flink job status for test '{test.name}': {e}")
 
         return {
             "name": test.name,
@@ -381,33 +386,3 @@ class TestRunner:
             )
 
         return {"passed": len(errors) == 0, "errors": errors}
-
-    def _check_flink_job_status(
-        self, rest_url: str, job_name: str
-    ) -> Optional[str]:
-        """Check the status of a Flink job by name."""
-        try:
-            import requests
-
-            # Get list of jobs
-            resp = requests.get(f"{rest_url}/jobs", timeout=5)
-            if resp.status_code != 200:
-                return None
-
-            jobs = resp.json().get("jobs", [])
-
-            # Find job by name (would need job details for name matching)
-            for job in jobs:
-                job_id = job.get("id")
-                if job_id:
-                    detail_resp = requests.get(
-                        f"{rest_url}/jobs/{job_id}", timeout=5
-                    )
-                    if detail_resp.status_code == 200:
-                        detail = detail_resp.json()
-                        if detail.get("name") == job_name:
-                            return job.get("status")
-
-            return None
-        except Exception:
-            return None

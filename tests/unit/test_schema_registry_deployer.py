@@ -1,14 +1,15 @@
 """Unit tests for Schema Registry deployer."""
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 import json
+from unittest.mock import Mock, patch
 
+import pytest
+
+from streamt.compiler.manifest import SchemaArtifact
 from streamt.deployer.schema_registry import (
-    SchemaRegistryDeployer,
-    SchemaArtifact,
-    SchemaState,
     SchemaChange,
+    SchemaRegistryDeployer,
+    SchemaState,
 )
 
 
@@ -109,11 +110,13 @@ class TestSchemaRegistryDeployerInit:
         deployer = SchemaRegistryDeployer("http://localhost:8081")
         assert deployer.url == "http://localhost:8081"
         assert deployer.auth is None
+        deployer.close()
 
     def test_init_with_trailing_slash(self):
         """Test URL normalization."""
         deployer = SchemaRegistryDeployer("http://localhost:8081/")
         assert deployer.url == "http://localhost:8081"
+        deployer.close()
 
     def test_init_with_auth(self):
         """Test initialization with authentication."""
@@ -123,6 +126,12 @@ class TestSchemaRegistryDeployerInit:
             password="pass",
         )
         assert deployer.auth == ("user", "pass")
+        deployer.close()
+
+    def test_context_manager(self):
+        """Test context manager protocol."""
+        with SchemaRegistryDeployer("http://localhost:8081") as deployer:
+            assert deployer.url == "http://localhost:8081"
 
 
 class TestSchemaRegistryDeployerMocked:
@@ -131,7 +140,9 @@ class TestSchemaRegistryDeployerMocked:
     @pytest.fixture
     def deployer(self):
         """Create deployer instance."""
-        return SchemaRegistryDeployer("http://localhost:8081")
+        d = SchemaRegistryDeployer("http://localhost:8081")
+        yield d
+        d.close()
 
     @pytest.fixture
     def sample_schema(self):
@@ -146,48 +157,43 @@ class TestSchemaRegistryDeployerMocked:
             ],
         }
 
-    @patch("requests.request")
-    def test_check_connection_success(self, mock_request, deployer):
+    def test_check_connection_success(self, deployer):
         """Test successful connection check."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = []
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         assert deployer.check_connection() is True
-        mock_request.assert_called_once()
+        deployer._http_session.request.assert_called_once()
 
-    @patch("requests.request")
-    def test_check_connection_failure(self, mock_request, deployer):
+    def test_check_connection_failure(self, deployer):
         """Test failed connection check."""
-        mock_request.side_effect = Exception("Connection refused")
+        deployer._http_session.request = Mock(side_effect=Exception("Connection refused"))
         assert deployer.check_connection() is False
 
-    @patch("requests.request")
-    def test_list_subjects(self, mock_request, deployer):
+    def test_list_subjects(self, deployer):
         """Test listing subjects."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = ["topic1-value", "topic2-value"]
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         subjects = deployer.list_subjects()
         assert subjects == ["topic1-value", "topic2-value"]
 
-    @patch("requests.request")
-    def test_get_schema_state_not_found(self, mock_request, deployer):
+    def test_get_schema_state_not_found(self, deployer):
         """Test getting state for non-existent subject."""
         mock_response = Mock()
         mock_response.status_code = 404
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         state = deployer.get_schema_state("new-topic-value")
         assert state.exists is False
         assert state.subject == "new-topic-value"
 
-    @patch("requests.request")
-    def test_get_schema_state_exists(self, mock_request, deployer, sample_schema):
+    def test_get_schema_state_exists(self, deployer, sample_schema):
         """Test getting state for existing subject."""
         # First call for schema version
         schema_response = Mock()
@@ -206,7 +212,7 @@ class TestSchemaRegistryDeployerMocked:
         compat_response.status_code = 200
         compat_response.json.return_value = {"compatibilityLevel": "BACKWARD"}
 
-        mock_request.side_effect = [schema_response, compat_response]
+        deployer._http_session.request = Mock(side_effect=[schema_response, compat_response])
 
         state = deployer.get_schema_state("orders-value")
         assert state.exists is True
@@ -214,81 +220,74 @@ class TestSchemaRegistryDeployerMocked:
         assert state.schema_id == 42
         assert state.compatibility == "BACKWARD"
 
-    @patch("requests.request")
-    def test_register_schema(self, mock_request, deployer, sample_schema):
+    def test_register_schema(self, deployer, sample_schema):
         """Test registering a new schema."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id": 1}
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         schema_id = deployer.register_schema("orders-value", sample_schema)
         assert schema_id == 1
 
-    @patch("requests.request")
-    def test_check_compatibility_compatible(self, mock_request, deployer, sample_schema):
+    def test_check_compatibility_compatible(self, deployer, sample_schema):
         """Test compatibility check for compatible schema."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"is_compatible": True}
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         result = deployer.check_compatibility("orders-value", sample_schema)
         assert result is True
 
-    @patch("requests.request")
-    def test_check_compatibility_incompatible(self, mock_request, deployer, sample_schema):
+    def test_check_compatibility_incompatible(self, deployer, sample_schema):
         """Test compatibility check for incompatible schema."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"is_compatible": False}
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         result = deployer.check_compatibility("orders-value", sample_schema)
         assert result is False
 
-    @patch("requests.request")
-    def test_check_compatibility_no_existing_schema(self, mock_request, deployer, sample_schema):
+    def test_check_compatibility_no_existing_schema(self, deployer, sample_schema):
         """Test compatibility check when no existing schema."""
         mock_response = Mock()
         mock_response.status_code = 404
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         result = deployer.check_compatibility("new-topic-value", sample_schema)
         assert result is True  # No existing schema means anything is compatible
 
-    @patch("requests.request")
-    def test_set_compatibility(self, mock_request, deployer):
+    def test_set_compatibility(self, deployer):
         """Test setting compatibility level."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         deployer.set_compatibility("orders-value", "FULL")
-        mock_request.assert_called_once()
+        deployer._http_session.request.assert_called_once()
 
-    @patch("requests.request")
-    def test_delete_subject(self, mock_request, deployer):
+    def test_delete_subject(self, deployer):
         """Test deleting a subject."""
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = [1, 2, 3]
         mock_response.raise_for_status = Mock()
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         versions = deployer.delete_subject("orders-value")
         assert versions == [1, 2, 3]
 
-    @patch("requests.request")
-    def test_delete_nonexistent_subject(self, mock_request, deployer):
+    def test_delete_nonexistent_subject(self, deployer):
         """Test deleting a non-existent subject."""
         mock_response = Mock()
         mock_response.status_code = 404
-        mock_request.return_value = mock_response
+        deployer._http_session.request = Mock(return_value=mock_response)
 
         versions = deployer.delete_subject("nonexistent-value")
         assert versions == []
@@ -300,7 +299,9 @@ class TestSchemaRegistryDeployerPlanning:
     @pytest.fixture
     def deployer(self):
         """Create deployer instance."""
-        return SchemaRegistryDeployer("http://localhost:8081")
+        d = SchemaRegistryDeployer("http://localhost:8081")
+        yield d
+        d.close()
 
     @pytest.fixture
     def sample_schema(self):
@@ -402,7 +403,9 @@ class TestSchemaRegistryDeployerApply:
     @pytest.fixture
     def deployer(self):
         """Create deployer instance."""
-        return SchemaRegistryDeployer("http://localhost:8081")
+        d = SchemaRegistryDeployer("http://localhost:8081")
+        yield d
+        d.close()
 
     @pytest.fixture
     def sample_schema(self):

@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
 
 from streamt.compiler.manifest import ConnectorArtifact
+
+logger = logging.getLogger(__name__)
+
+# Default timeouts (in seconds)
+DEFAULT_TIMEOUT = 30
+HEALTH_CHECK_TIMEOUT = 10
 
 
 @dataclass
@@ -41,30 +48,58 @@ class ConnectorChange:
 
 
 class ConnectDeployer:
-    """Deployer for Kafka Connect connectors."""
+    """Deployer for Kafka Connect connectors.
+
+    Supports context manager protocol for proper resource cleanup:
+
+        with ConnectDeployer(rest_url) as deployer:
+            deployer.list_connectors()
+    """
 
     def __init__(self, rest_url: str) -> None:
         """Initialize Connect deployer."""
         self.rest_url = rest_url.rstrip("/")
+        self._http_session = requests.Session()
+
+    def __enter__(self) -> "ConnectDeployer":
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit context manager, cleaning up resources."""
+        self.close()
+
+    def close(self) -> None:
+        """Close the deployer and clean up resources."""
+        self._http_session.close()
 
     def _request(
         self,
         method: str,
         endpoint: str,
+        timeout: int = DEFAULT_TIMEOUT,
         **kwargs: Any,
     ) -> dict | list:
-        """Make a request to Connect REST API."""
+        """Make a request to Connect REST API.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            timeout: Request timeout in seconds
+            **kwargs: Additional arguments passed to requests
+        """
         url = f"{self.rest_url}{endpoint}"
-        response = requests.request(method, url, **kwargs)
+        response = self._http_session.request(method, url, timeout=timeout, **kwargs)
         response.raise_for_status()
         return response.json() if response.content else {}
 
     def check_connection(self) -> bool:
         """Check if Connect cluster is accessible."""
         try:
-            self._request("GET", "/")
+            self._request("GET", "/", timeout=HEALTH_CHECK_TIMEOUT)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Connect connection check failed: {e}")
             return False
 
     def list_connectors(self) -> list[str]:
@@ -152,9 +187,13 @@ class ConnectDeployer:
                     "to": value,
                 }
 
-        # Check for removed keys
-        for key in current_config:
-            if key not in desired_config_cmp:
+        # Check for removed keys and warn
+        removed_keys = set(current_config.keys()) - set(desired_config_cmp.keys())
+        if removed_keys:
+            logger.warning(
+                f"Connector '{artifact.name}' will have config keys removed: {sorted(removed_keys)}"
+            )
+            for key in removed_keys:
                 changes[key] = {
                     "from": current_config[key],
                     "to": None,

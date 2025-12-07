@@ -15,7 +15,7 @@ import pytest
 import requests
 
 from streamt.compiler.manifest import FlinkJobArtifact
-from streamt.deployer.flink import FlinkDeployer, FlinkSqlGatewayDeployer
+from streamt.deployer.flink import FlinkDeployer
 
 from .conftest import INFRA_CONFIG, FlinkHelper, KafkaHelper, poll_until_messages
 
@@ -30,46 +30,52 @@ class TestFlinkSqlGatewaySession:
         docker_services,
     ):
         """Test opening a SQL Gateway session."""
-        deployer = FlinkSqlGatewayDeployer(INFRA_CONFIG.flink_sql_gateway_url)
+        deployer = FlinkDeployer(
+            rest_url=INFRA_CONFIG.flink_rest_url,
+            sql_gateway_url=INFRA_CONFIG.flink_sql_gateway_url,
+        )
 
-        try:
-            session_handle = deployer.open_session()
-            assert session_handle is not None
-            assert len(session_handle) > 0
-        finally:
-            deployer.close_session()
+        session_handle = deployer.get_session()
+        assert session_handle is not None
+        assert len(session_handle) > 0
 
     def test_close_session(
         self,
         docker_services,
     ):
-        """Test closing a SQL Gateway session."""
-        deployer = FlinkSqlGatewayDeployer(INFRA_CONFIG.flink_sql_gateway_url)
+        """Test session caching behavior."""
+        deployer = FlinkDeployer(
+            rest_url=INFRA_CONFIG.flink_rest_url,
+            sql_gateway_url=INFRA_CONFIG.flink_sql_gateway_url,
+        )
 
-        # Open then close
-        deployer.open_session()
-        deployer.close_session()
+        # Get session (creates new one)
+        session1 = deployer.get_session()
+        # Get session again (returns cached)
+        session2 = deployer.get_session()
 
-        # Session handle should be cleared
-        assert deployer.session_handle is None
+        # Should return the same cached session
+        assert session1 == session2
 
     def test_multiple_sessions(
         self,
         docker_services,
     ):
-        """Test creating multiple independent sessions."""
-        deployer1 = FlinkSqlGatewayDeployer(INFRA_CONFIG.flink_sql_gateway_url)
-        deployer2 = FlinkSqlGatewayDeployer(INFRA_CONFIG.flink_sql_gateway_url)
+        """Test creating multiple independent sessions with different deployers."""
+        deployer1 = FlinkDeployer(
+            rest_url=INFRA_CONFIG.flink_rest_url,
+            sql_gateway_url=INFRA_CONFIG.flink_sql_gateway_url,
+        )
+        deployer2 = FlinkDeployer(
+            rest_url=INFRA_CONFIG.flink_rest_url,
+            sql_gateway_url=INFRA_CONFIG.flink_sql_gateway_url,
+        )
 
-        try:
-            session1 = deployer1.open_session()
-            session2 = deployer2.open_session()
+        session1 = deployer1.get_session()
+        session2 = deployer2.get_session()
 
-            # Sessions should be different
-            assert session1 != session2
-        finally:
-            deployer1.close_session()
-            deployer2.close_session()
+        # Sessions should be different (each deployer creates its own)
+        assert session1 != session2
 
 
 @pytest.mark.integration
@@ -421,7 +427,10 @@ class TestFlinkJobArtifact:
         kafka_helper: KafkaHelper,
     ):
         """Test applying a FlinkJobArtifact via deployer."""
-        deployer = FlinkSqlGatewayDeployer(INFRA_CONFIG.flink_sql_gateway_url)
+        deployer = FlinkDeployer(
+            rest_url=INFRA_CONFIG.flink_rest_url,
+            sql_gateway_url=INFRA_CONFIG.flink_sql_gateway_url,
+        )
         topic_name = f"artifact_test_{uuid.uuid4().hex[:8]}"
 
         try:
@@ -449,10 +458,9 @@ class TestFlinkJobArtifact:
 
             # Submit SQL
             results = deployer.submit_sql(artifact.sql)
-            assert len(results) > 0
+            assert len(results["results"]) > 0
 
         finally:
-            deployer.close_session()
             kafka_helper.delete_topic(topic_name)
 
 
