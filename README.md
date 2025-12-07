@@ -44,14 +44,51 @@ models:
 | 🔄 **Plan/Apply** | Review changes before deployment |
 | 📖 **Documentation** | Auto-generated docs with lineage diagrams |
 
+## How It Works
+
+streamt compiles your YAML definitions into deployable artifacts:
+
+1. **Sources** → Metadata only (external topics you consume)
+2. **Models with SQL** → Flink SQL jobs that read from sources/models and write to output topics
+3. **Sinks** → Kafka Connect connector configurations
+
+**All SQL transformations run on Flink.** streamt generates Flink SQL with CREATE TABLE statements for your sources, your transformation query, and INSERT INTO for the output topic.
+
 ## Materializations
 
 | Type | Use Case | Creates |
 |------|----------|---------|
-| `topic` | Stateless transformations | Kafka topic |
-| `virtual_topic` | Read-time filtering | Gateway rule |
-| `flink` | Stateful processing | Flink SQL job |
-| `sink` | External exports | Connect connector |
+| `topic` | Simple transforms, filtering | Kafka topic + Flink job |
+| `virtual_topic` | Read-time filtering (no storage) | Conduktor Gateway rule* |
+| `flink` | Stateful: windows, joins, aggregations | Kafka topic + Flink job |
+| `sink` | Export to external systems | Kafka Connect connector |
+
+> *`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/) (commercial)
+
+### When to use `topic` vs `flink`?
+
+Both create Flink jobs when SQL is present. The difference is semantic:
+
+- **`topic`**: Focus is on the output topic. Simple transforms, filtering, field selection.
+- **`flink`**: Focus is on the processing. Use for windows, joins, aggregations, or when you need Flink-specific config (parallelism, checkpoints, state backend).
+
+```yaml
+# Use topic: simple filter, output is what matters
+- name: valid_orders
+  materialized: topic
+  sql: SELECT * FROM {{ source("orders") }} WHERE status = 'valid'
+
+# Use flink: windowed aggregation, processing is complex
+- name: hourly_stats
+  materialized: flink
+  flink:
+    parallelism: 4
+    checkpoint_interval_ms: 60000
+  sql: |
+    SELECT TUMBLE_START(ts, INTERVAL '1' HOUR), COUNT(*)
+    FROM {{ ref("valid_orders") }}
+    GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
+```
 
 ## Quick Start
 
@@ -115,13 +152,38 @@ streamt lineage
 
 ## Examples
 
-### Stateless Filtering (Topic)
+### Source with Schema
+
+```yaml
+sources:
+  - name: orders_raw
+    topic: orders.raw.v1
+    schema:
+      format: avro
+      definition: |
+        {
+          "type": "record",
+          "name": "Order",
+          "fields": [
+            {"name": "order_id", "type": "string"},
+            {"name": "amount", "type": "double"},
+            {"name": "customer_id", "type": "string"}
+          ]
+        }
+    columns:
+      - name: order_id
+        description: Unique order identifier
+      - name: customer_id
+        classification: internal
+```
+
+### Simple Transform (Topic)
 
 ```yaml
 - name: high_value_orders
   materialized: topic
   sql: |
-    SELECT * FROM {{ source("orders") }}
+    SELECT * FROM {{ source("orders_raw") }}
     WHERE amount > 10000
 ```
 
@@ -228,12 +290,37 @@ streamt/
 └── examples/               # Example projects
 ```
 
+## Current Status
+
+**Alpha** — Core functionality works, but not production-tested yet.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| YAML parsing & validation | ✅ Stable | Pydantic models, governance rules |
+| DAG & lineage | ✅ Stable | Automatic from SQL refs |
+| Kafka topic deployment | ✅ Stable | Create, update partitions, config |
+| Schema Registry | ✅ Stable | Avro/JSON/Protobuf, compatibility checks |
+| Flink job generation | ✅ Works | SQL generation, REST API deployment |
+| Flink job upgrades | ⚠️ Basic | No savepoint handling yet |
+| Connect deployment | ✅ Works | Connector CRUD via REST |
+| Testing framework | ✅ Works | Schema, sample tests |
+| Continuous tests | 🚧 Planned | Flink-based monitoring |
+| Multi-environment | 🚧 Planned | Dev/staging/prod profiles |
+
+### What's Missing for Production
+
+- **Flink savepoint management** — Job upgrades don't preserve state yet
+- **Kubernetes Flink operator** — Currently REST API only
+- **CI/CD templates** — GitHub Actions, etc.
+- **Observability** — Metrics, alerting integration
+
 ## Roadmap
 
 - [x] Schema Registry integration
 - [ ] Conduktor Gateway virtual topics
 - [ ] Kubernetes Flink operator support
-- [ ] CI/CD GitHub Actions
+- [ ] Flink savepoint handling for upgrades
+- [ ] CI/CD GitHub Actions templates
 - [ ] VS Code extension
 
 ## License
