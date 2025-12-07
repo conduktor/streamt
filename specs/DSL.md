@@ -36,11 +36,19 @@ runtime:
     sasl_username: ${KAFKA_USER}
     sasl_password: ${KAFKA_PASSWORD}
 
-  schema_registry:              # optional
+  schema_registry:              # optional - enables schema management
     url: ${SCHEMA_REGISTRY_URL}
-    credentials:
-      username: ${SR_USER}
-      password: ${SR_PASSWORD}
+    username: ${SR_USER}        # Basic auth username
+    password: ${SR_PASSWORD}    # Basic auth password
+    # Deployment behavior:
+    # 1. Schemas are registered BEFORE topics are created
+    # 2. Compatibility is checked against existing versions
+    # 3. Incompatible changes fail deployment with error
+    # 4. Schema artifacts written to generated/schemas/
+    #
+    # Supported schema types: AVRO, JSON, PROTOBUF
+    # Compatibility modes: NONE, BACKWARD, FORWARD, FULL,
+    #                      BACKWARD_TRANSITIVE, FORWARD_TRANSITIVE, FULL_TRANSITIVE
 
   flink:                        # optional, for stateful models & tests
     default: prod-flink         # default cluster to use
@@ -124,13 +132,24 @@ sources:
     topic: payments.raw.v1
 
     # Schema (optional but recommended)
+    # Option 1: Reference existing schema from registry
     schema:
       registry: schema_registry   # reference to runtime config
       subject: payments.raw.v1-value
-      # OR inline:
-      # format: avro | json | protobuf
-      # definition: |
-      #   { "type": "record", ... }
+      version: latest             # or specific version (1, 2, etc.)
+
+    # Option 2: Provide inline schema definition
+    # schema:
+    #   format: avro | json | protobuf
+    #   subject: payments.raw.v1-value  # optional, defaults to {topic}-value
+    #   compatibility: BACKWARD         # optional, default varies by registry
+    #   definition: |
+    #     { "type": "record", "name": "Payment", ... }
+
+    # Option 3: Auto-generate from columns (format required)
+    # schema:
+    #   format: avro
+    #   # Schema auto-generated from columns below
 
     # Metadata
     owner: team-payments

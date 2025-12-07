@@ -116,7 +116,32 @@ Freshness is checked during `streamt test` when configured.
 
 ## Schema Integration
 
-Reference schemas in Schema Registry:
+Define schemas for your sources to enable Schema Registry integration:
+
+### Explicit Schema Definition
+
+Provide a complete schema definition:
+
+```yaml
+schema:
+  format: avro                 # avro | json | protobuf
+  subject: orders-raw-value    # Subject name (defaults to {topic}-value)
+  definition: |
+    {
+      "type": "record",
+      "name": "Order",
+      "namespace": "com.example",
+      "fields": [
+        {"name": "order_id", "type": "string"},
+        {"name": "amount", "type": "double"},
+        {"name": "customer_id", "type": "string"}
+      ]
+    }
+```
+
+### Schema Registry Reference
+
+Reference an existing schema in Schema Registry:
 
 ```yaml
 schema:
@@ -124,6 +149,57 @@ schema:
   subject: orders-raw-value     # Subject name
   version: latest               # or specific version (1, 2, etc.)
 ```
+
+### Auto-Generated Schema
+
+When you define columns but no explicit schema, streamt auto-generates an Avro schema:
+
+```yaml
+sources:
+  - name: orders
+    topic: orders.v1
+    schema:
+      format: avro              # Just specify format
+    columns:
+      - name: order_id
+        description: Unique order identifier
+      - name: amount
+        description: Order total
+      - name: status
+        description: Order status
+```
+
+This generates:
+
+```json
+{
+  "type": "record",
+  "name": "orders",
+  "namespace": "com.streamt",
+  "fields": [
+    {"name": "order_id", "type": ["null", "string"], "default": null},
+    {"name": "amount", "type": ["null", "string"], "default": null},
+    {"name": "status", "type": ["null", "string"], "default": null}
+  ]
+}
+```
+
+### Schema Types
+
+| Format | Use Case | Schema Registry Type |
+|--------|----------|---------------------|
+| `avro` | Structured data, evolution support | AVRO |
+| `json` | Flexible schemas, web APIs | JSON |
+| `protobuf` | High performance, gRPC | PROTOBUF |
+
+### Deployment Behavior
+
+When you run `streamt apply`:
+
+1. Schemas are registered **before** topics are created
+2. Compatibility is checked against existing versions
+3. If incompatible, deployment fails with an error
+4. Schema artifacts are written to `generated/schemas/`
 
 When `--check-schemas` is passed to `streamt validate`, the schema is fetched and column definitions are validated.
 
