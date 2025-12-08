@@ -10,6 +10,7 @@ from typing import Any, Optional
 import requests
 
 from streamt.compiler.manifest import SchemaArtifact
+from streamt.core import errors
 
 logger = logging.getLogger(__name__)
 
@@ -237,8 +238,14 @@ class SchemaRegistryDeployer:
                     "compatible": True,
                 }
             else:
+                # Get compatibility mode for better error message
+                compat_mode = current.compatibility or artifact.compatibility or "BACKWARD"
                 changes["schema_incompatible"] = {
-                    "message": "Schema change is not compatible with existing versions",
+                    "message": errors.schema_incompatible(
+                        artifact.subject,
+                        compat_mode,
+                        breaking_changes=None,  # Would need schema diff analysis
+                    ),
                     "current_version": current.version,
                 }
 

@@ -168,7 +168,7 @@ class TestFlinkDeployerSubmitSql:
             with patch("time.sleep"):
                 deployer.submit_sql("SELECT foo FROM bar")
 
-        assert "Flink SQL error" in str(exc_info.value)
+        assert "Flink SQL execution error" in str(exc_info.value)
         deployer.close()
 
     def test_submit_sql_raises_on_missing_operation_handle(self):

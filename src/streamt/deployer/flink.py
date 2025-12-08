@@ -11,6 +11,7 @@ from typing import Any, Optional
 import requests
 
 from streamt.compiler.manifest import FlinkJobArtifact
+from streamt.core import errors
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ class FlinkDeployer:
         """
         if use_sql_gateway:
             if not self.sql_gateway_url:
-                raise ValueError("SQL Gateway URL not configured. Set 'sql_gateway_url' in flink cluster config.")
+                raise ValueError(errors.sql_gateway_not_configured())
             base_url = self.sql_gateway_url
         else:
             base_url = self.rest_url
@@ -326,11 +327,12 @@ class FlinkDeployer:
                             result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
                             result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
                             result_data = result_resp.json()
-                            errors = result_data.get("errors", [])
-                            error_msg = " ".join(errors) if errors else "Unknown error"
+                            error_list = result_data.get("errors", [])
+                            error_msg = " ".join(error_list) if error_list else "Unknown error"
                         except Exception as e:
                             error_msg = f"Unknown error (failed to fetch details: {e})"
-                    raise RuntimeError(f"Flink SQL error: {error_msg}\nStatement: {statement}")
+                    # Use rich error message with suggestions
+                    raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
                 elif status in ("RUNNING", "PENDING"):
                     time.sleep(poll_interval)
                     elapsed += poll_interval

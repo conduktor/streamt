@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from streamt.core import errors
 from streamt.core.models import (
     Classification,
     MaterializedType,
@@ -102,7 +103,7 @@ class ProjectValidator:
             if source.name in seen_sources:
                 self.result.add_error(
                     "DUPLICATE_SOURCE",
-                    f"Duplicate source name '{source.name}'",
+                    errors.duplicate_name("source", source.name),
                 )
             seen_sources.add(source.name)
 
@@ -112,7 +113,7 @@ class ProjectValidator:
             if model.name in seen_models:
                 self.result.add_error(
                     "DUPLICATE_MODEL",
-                    f"Duplicate model name '{model.name}'",
+                    errors.duplicate_name("model", model.name),
                 )
             seen_models.add(model.name)
 
@@ -122,7 +123,7 @@ class ProjectValidator:
             if test.name in seen_tests:
                 self.result.add_error(
                     "DUPLICATE_TEST",
-                    f"Duplicate test name '{test.name}'",
+                    errors.duplicate_name("test", test.name),
                 )
             seen_tests.add(test.name)
 
@@ -132,7 +133,7 @@ class ProjectValidator:
             if exposure.name in seen_exposures:
                 self.result.add_error(
                     "DUPLICATE_EXPOSURE",
-                    f"Duplicate exposure name '{exposure.name}'",
+                    errors.duplicate_name("exposure", exposure.name),
                 )
             seen_exposures.add(exposure.name)
 
@@ -158,7 +159,7 @@ class ProjectValidator:
             if not (self.project.runtime.conduktor and self.project.runtime.conduktor.gateway):
                 self.result.add_error(
                     "GATEWAY_REQUIRED",
-                    f"Model '{model.name}' uses 'virtual_topic' but no Gateway configured",
+                    errors.gateway_required(model.name),
                 )
 
         # Check sink requires sink config
@@ -166,7 +167,7 @@ class ProjectValidator:
             if not model.sink:
                 self.result.add_error(
                     "MISSING_SINK_CONFIG",
-                    f"Model '{model.name}' uses 'sink' but no sink configuration",
+                    errors.missing_sink_config(model.name),
                 )
 
         # Check flink requires flink runtime
@@ -174,7 +175,7 @@ class ProjectValidator:
             if not self.project.runtime.flink:
                 self.result.add_error(
                     "FLINK_REQUIRED",
-                    f"Model '{model.name}' uses 'flink' but no Flink configured",
+                    errors.flink_required(model.name),
                 )
 
         # Validate SQL and extract dependencies
@@ -184,7 +185,7 @@ class ProjectValidator:
             if not is_valid:
                 self.result.add_error(
                     "JINJA_SYNTAX_ERROR",
-                    f"Jinja syntax error in model '{model.name}': {error}",
+                    errors.jinja_syntax_error(model.name, error, model.sql),
                 )
                 return
 
@@ -195,14 +196,14 @@ class ProjectValidator:
                 if source_name not in self.source_names:
                     self.result.add_error(
                         "SOURCE_NOT_FOUND",
-                        f"Source '{source_name}' not found. Referenced in model '{model.name}'",
+                        errors.source_not_found(source_name, model.name, list(self.source_names)),
                     )
 
             for ref_name in refs:
                 if ref_name not in self.model_names:
                     self.result.add_error(
                         "MODEL_NOT_FOUND",
-                        f"Model '{ref_name}' not found. Referenced in model '{model.name}'",
+                        errors.model_not_found(ref_name, model.name, list(self.model_names)),
                     )
 
             # Check from vs SQL consistency
@@ -253,8 +254,7 @@ class ProjectValidator:
                         if other_model.group != model.group:
                             self.result.add_error(
                                 "ACCESS_DENIED",
-                                f"Model '{other_model.name}' cannot reference "
-                                f"'{model.name}' (restricted to group '{model.group}')",
+                                errors.access_denied(other_model.name, model.name, model.group),
                             )
 
     def _validate_tests(self) -> None:
@@ -262,9 +262,10 @@ class ProjectValidator:
         for test in self.project.tests:
             # Check model exists
             if test.model not in self.model_names and test.model not in self.source_names:
+                available = list(self.model_names | self.source_names)
                 self.result.add_error(
                     "TEST_MODEL_NOT_FOUND",
-                    f"Test '{test.name}' references unknown model/source '{test.model}'",
+                    errors.test_model_not_found(test.name, test.model, available),
                 )
 
             # Check continuous tests require Flink
@@ -272,7 +273,7 @@ class ProjectValidator:
                 if not self.project.runtime.flink:
                     self.result.add_error(
                         "CONTINUOUS_TEST_REQUIRES_FLINK",
-                        f"Continuous test '{test.name}' requires Flink. Configure runtime.flink",
+                        errors.continuous_test_without_flink(test.name),
                     )
 
             # Warn if sample_size is set on non-sample tests
@@ -312,7 +313,9 @@ class ProjectValidator:
                 if ref.source and ref.source not in self.source_names:
                     self.result.add_error(
                         "EXPOSURE_SOURCE_NOT_FOUND",
-                        f"Exposure '{exposure.name}' produces unknown source '{ref.source}'",
+                        errors.exposure_source_not_found(
+                            exposure.name, ref.source, list(self.source_names)
+                        ),
                     )
 
             # Validate consumes references
@@ -320,7 +323,7 @@ class ProjectValidator:
                 if ref.ref and ref.ref not in self.model_names:
                     self.result.add_error(
                         "EXPOSURE_MODEL_NOT_FOUND",
-                        f"Exposure '{exposure.name}' consumes unknown model '{ref.ref}'",
+                        errors.exposure_model_not_found(exposure.name, ref.ref, list(self.model_names)),
                     )
 
             # Validate depends_on references
@@ -328,12 +331,16 @@ class ProjectValidator:
                 if ref.ref and ref.ref not in self.model_names:
                     self.result.add_error(
                         "EXPOSURE_DEPENDENCY_NOT_FOUND",
-                        f"Exposure '{exposure.name}' depends on unknown model '{ref.ref}'",
+                        errors.exposure_dependency_not_found(
+                            exposure.name, ref.ref, "model", list(self.model_names)
+                        ),
                     )
                 if ref.source and ref.source not in self.source_names:
                     self.result.add_error(
                         "EXPOSURE_DEPENDENCY_NOT_FOUND",
-                        f"Exposure '{exposure.name}' depends on unknown source '{ref.source}'",
+                        errors.exposure_dependency_not_found(
+                            exposure.name, ref.source, "source", list(self.source_names)
+                        ),
                     )
 
     def _validate_dag(self) -> None:
@@ -377,7 +384,7 @@ class ProjectValidator:
                 if cycle:
                     self.result.add_error(
                         "CYCLE_DETECTED",
-                        f"Cycle detected in DAG: {' -> '.join(cycle)}",
+                        errors.cycle_detected(cycle),
                     )
                     return
 

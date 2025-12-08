@@ -19,6 +19,7 @@ from confluent_kafka.admin import (
 )
 
 from streamt.compiler.manifest import TopicArtifact
+from streamt.core import errors
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,9 @@ class KafkaDeployer:
             elif artifact.partitions < current.partitions:
                 # Cannot reduce partitions
                 changes["partitions_error"] = {
-                    "message": f"Cannot reduce partitions from {current.partitions} to {artifact.partitions}",
+                    "message": errors.cannot_reduce_partitions(
+                        artifact.name, current.partitions, artifact.partitions
+                    ),
                 }
 
         # Check config changes
