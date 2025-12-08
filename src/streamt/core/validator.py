@@ -178,6 +178,22 @@ class ProjectValidator:
                     errors.flink_required(model.name),
                 )
 
+        # Validate state_ttl_ms
+        if model.flink and model.flink.state_ttl_ms is not None:
+            ttl = model.flink.state_ttl_ms
+            if ttl <= 0:
+                self.result.add_error(
+                    "INVALID_STATE_TTL",
+                    errors.invalid_state_ttl(model.name, ttl, "must be a positive number"),
+                )
+            elif ttl < 1000:
+                self.result.add_warning(
+                    "STATE_TTL_TOO_SHORT",
+                    f"State TTL of {ttl}ms for model '{model.name}' is very short. "
+                    "This may cause premature state expiration and incorrect results.",
+                    f"model '{model.name}'",
+                )
+
         # Validate SQL and extract dependencies
         if model.sql and self.parser:
             # Validate Jinja syntax

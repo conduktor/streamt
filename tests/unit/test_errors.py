@@ -412,6 +412,61 @@ class TestExposureDependencyNotFound:
         assert "depends on source 'events_raw'" in result
 
 
+class TestInvalidStateTtl:
+    """Tests for invalid_state_ttl error."""
+
+    def test_invalid_state_ttl_negative(self):
+        """Test invalid state TTL with negative value."""
+        result = errors.invalid_state_ttl(
+            model_name="my_aggregation",
+            ttl_value=-1000,
+            reason="must be a positive number",
+        )
+
+        assert "Invalid state TTL for model 'my_aggregation'" in result
+        assert "-1000" in result
+        assert "must be a positive number" in result
+        assert "reference/flink-options#state-ttl" in result
+
+    def test_invalid_state_ttl_includes_examples(self):
+        """Test invalid state TTL error includes common configurations."""
+        result = errors.invalid_state_ttl(
+            model_name="test_model",
+            ttl_value=0,
+            reason="cannot be zero",
+        )
+
+        assert "86400000" in result  # 24 hours example
+        assert "604800000" in result  # 7 days example
+        assert "state_ttl_ms:" in result
+
+
+class TestStateTtlRecommended:
+    """Tests for state_ttl_recommended warning."""
+
+    def test_state_ttl_recommended_for_groupby(self):
+        """Test recommendation for GROUP BY operation."""
+        result = errors.state_ttl_recommended(
+            model_name="customer_counts",
+            operation="GROUP BY",
+        )
+
+        assert "Consider adding state TTL for model 'customer_counts'" in result
+        assert "GROUP BY" in result
+        assert "unbounded" in result.lower()
+        assert "state_ttl_ms:" in result
+
+    def test_state_ttl_recommended_for_join(self):
+        """Test recommendation for JOIN operation."""
+        result = errors.state_ttl_recommended(
+            model_name="order_enriched",
+            operation="JOIN",
+        )
+
+        assert "JOIN" in result
+        assert "concepts/streaming-fundamentals#state-management" in result
+
+
 class TestAccessDenied:
     """Tests for access_denied error."""
 

@@ -37,6 +37,7 @@ class FlinkJobArtifact:
     parallelism: Optional[int] = None
     checkpoint_interval_ms: Optional[int] = None
     state_backend: Optional[str] = None
+    state_ttl_ms: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +47,7 @@ class FlinkJobArtifact:
             "parallelism": self.parallelism,
             "checkpoint_interval_ms": self.checkpoint_interval_ms,
             "state_backend": self.state_backend,
+            "state_ttl_ms": self.state_ttl_ms,
         }
 
 

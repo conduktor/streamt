@@ -1073,6 +1073,194 @@ class TestEventTimeConfiguration:
             assert "`metadata` STRING" in sql_content
 
 
+class TestStateTtlConfiguration:
+    """Tests for state TTL configuration in Flink SQL generation."""
+
+    def _create_project(self, tmpdir: str, config: dict) -> "StreamtProject":
+        """Helper to create and parse a project."""
+        project_path = Path(tmpdir)
+        with open(project_path / "stream_project.yml", "w") as f:
+            yaml.dump(config, f)
+        parser = ProjectParser(project_path)
+        return parser.parse()
+
+    def test_state_ttl_generates_set_statement(self):
+        """TC-TTL-001: state_ttl_ms should generate SET 'table.exec.state.ttl' statement."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test", "version": "1.0.0"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {"type": "rest", "rest_url": "http://localhost:8082"}
+                        },
+                    },
+                },
+                "sources": [{"name": "orders", "topic": "orders.v1"}],
+                "models": [
+                    {
+                        "name": "customer_counts",
+                        "materialized": "flink",
+                        "flink": {
+                            "state_ttl_ms": 86400000,  # 24 hours
+                        },
+                        "sql": 'SELECT customer_id, COUNT(*) FROM {{ source("orders") }} GROUP BY customer_id',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            output_dir = Path(tmpdir) / "generated"
+            compiler = Compiler(project, output_dir)
+            compiler.compile(dry_run=False)
+
+            sql_content = (output_dir / "flink" / "customer_counts.sql").read_text()
+
+            # Should have SET statement for state TTL
+            assert "SET 'table.exec.state.ttl' = '24 h'" in sql_content
+
+    def test_state_ttl_with_minutes(self):
+        """TC-TTL-002: state_ttl_ms in minutes should format correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test", "version": "1.0.0"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {"type": "rest", "rest_url": "http://localhost:8082"}
+                        },
+                    },
+                },
+                "sources": [{"name": "events", "topic": "events.v1"}],
+                "models": [
+                    {
+                        "name": "event_counts",
+                        "materialized": "flink",
+                        "flink": {
+                            "state_ttl_ms": 1800000,  # 30 minutes
+                        },
+                        "sql": 'SELECT type, COUNT(*) FROM {{ source("events") }} GROUP BY type',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            output_dir = Path(tmpdir) / "generated"
+            compiler = Compiler(project, output_dir)
+            compiler.compile(dry_run=False)
+
+            sql_content = (output_dir / "flink" / "event_counts.sql").read_text()
+
+            # Should have SET statement for state TTL in minutes
+            assert "SET 'table.exec.state.ttl' = '30 min'" in sql_content
+
+    def test_state_ttl_with_seconds(self):
+        """TC-TTL-003: state_ttl_ms in seconds should format correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test", "version": "1.0.0"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {"type": "rest", "rest_url": "http://localhost:8082"}
+                        },
+                    },
+                },
+                "sources": [{"name": "clicks", "topic": "clicks.v1"}],
+                "models": [
+                    {
+                        "name": "click_counts",
+                        "materialized": "flink",
+                        "flink": {
+                            "state_ttl_ms": 60000,  # 60 seconds
+                        },
+                        "sql": 'SELECT url, COUNT(*) FROM {{ source("clicks") }} GROUP BY url',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            output_dir = Path(tmpdir) / "generated"
+            compiler = Compiler(project, output_dir)
+            compiler.compile(dry_run=False)
+
+            sql_content = (output_dir / "flink" / "click_counts.sql").read_text()
+
+            # Should have SET statement for state TTL in seconds (1 minute = 60 seconds)
+            assert "SET 'table.exec.state.ttl' = '1 min'" in sql_content
+
+    def test_state_ttl_artifact_includes_value(self):
+        """TC-TTL-004: FlinkJobArtifact should include state_ttl_ms."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test", "version": "1.0.0"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {"type": "rest", "rest_url": "http://localhost:8082"}
+                        },
+                    },
+                },
+                "sources": [{"name": "data", "topic": "data.v1"}],
+                "models": [
+                    {
+                        "name": "aggregates",
+                        "materialized": "flink",
+                        "flink": {
+                            "state_ttl_ms": 604800000,  # 7 days
+                        },
+                        "sql": 'SELECT id, SUM(value) FROM {{ source("data") }} GROUP BY id',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            compiler = Compiler(project)
+            manifest = compiler.compile(dry_run=True)
+
+            flink_jobs = manifest.artifacts.get("flink_jobs", [])
+            job = next((j for j in flink_jobs if j["name"] == "aggregates"), None)
+            assert job is not None
+            assert job["state_ttl_ms"] == 604800000
+
+    def test_no_state_ttl_no_set_statement(self):
+        """TC-TTL-005: Without state_ttl_ms, no SET statement should be generated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test", "version": "1.0.0"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {"type": "rest", "rest_url": "http://localhost:8082"}
+                        },
+                    },
+                },
+                "sources": [{"name": "raw", "topic": "raw.v1"}],
+                "models": [
+                    {
+                        "name": "simple_transform",
+                        "materialized": "flink",
+                        "sql": 'SELECT * FROM {{ source("raw") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            output_dir = Path(tmpdir) / "generated"
+            compiler = Compiler(project, output_dir)
+            compiler.compile(dry_run=False)
+
+            sql_content = (output_dir / "flink" / "simple_transform.sql").read_text()
+
+            # Should NOT have SET statement for state TTL
+            assert "table.exec.state.ttl" not in sql_content
+
+
 class TestComplexSelectParsing:
     """Tests for complex SQL SELECT clause parsing."""
 

@@ -1,8 +1,8 @@
 site_name: streamt
 site_description: dbt for streaming - Declarative streaming pipelines with Kafka, Flink, and Connect
-site_url: https://streamt.dev
-repo_url: https://github.com/streamt/streamt
-repo_name: streamt/streamt
+site_url: https://sderosiaux.github.io/streamt
+repo_url: https://github.com/sderosiaux/streamt
+repo_name: sderosiaux/streamt
 
 theme:
   name: material
@@ -94,9 +94,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/streamt/streamt
-    - icon: fontawesome/brands/twitter
-      link: https://twitter.com/streamtdev
+      link: https://github.com/sderosiaux/streamt
   generator: false
   analytics:
     provider: google
@@ -126,6 +124,10 @@ nav:
     - Flink Options: reference/flink-options.md
     - Materializations: reference/materializations.md
     - Governance Rules: reference/governance.md
+  - Guides:
+    - Windowed Aggregations: guides/windowed-aggregations.md
+    - Stream Joins: guides/stream-joins.md
+    - CDC Pipelines: guides/cdc-pipelines.md
   - Examples:
     - Payments Pipeline: examples/payments.md
     - E-commerce Events: examples/ecommerce.md

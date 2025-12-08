@@ -378,6 +378,50 @@ models:
     )
 
 
+def invalid_state_ttl(
+    model_name: str,
+    ttl_value: int,
+    reason: str,
+) -> str:
+    """Error when state TTL has an invalid value."""
+    return format_error(
+        title=f"Invalid state TTL for model '{model_name}'",
+        explanation=f"The state_ttl_ms value of {ttl_value} is invalid: {reason}\n\n"
+        "State TTL controls how long Flink keeps state entries before expiring them. "
+        "This is critical for preventing unbounded state growth in streaming jobs.",
+        suggestion="Common configurations:\n"
+        "  - 86400000 (24 hours) — Good for daily aggregations\n"
+        "  - 604800000 (7 days) — Good for weekly patterns\n"
+        "  - 3600000 (1 hour) — Good for short-lived joins",
+        example="""models:
+  - name: my_aggregation
+    materialized: flink
+    flink:
+      state_ttl_ms: 86400000  # 24 hours""",
+        docs_path="reference/flink-options#state-ttl",
+    )
+
+
+def state_ttl_recommended(
+    model_name: str,
+    operation: str,
+) -> str:
+    """Warning when stateful operation lacks TTL configuration."""
+    return format_error(
+        title=f"Consider adding state TTL for model '{model_name}'",
+        explanation=f"Model '{model_name}' uses a {operation} operation which maintains state. "
+        "Without state TTL, this state will grow unbounded and may eventually "
+        "cause the job to run out of memory.",
+        suggestion="Add state_ttl_ms to limit state growth:",
+        example=f"""models:
+  - name: {model_name}
+    materialized: flink
+    flink:
+      state_ttl_ms: 86400000  # Expire state after 24 hours""",
+        docs_path="concepts/streaming-fundamentals#state-management",
+    )
+
+
 # =============================================================================
 # Deployment Errors
 # =============================================================================

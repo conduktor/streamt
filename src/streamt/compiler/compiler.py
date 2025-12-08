@@ -279,6 +279,7 @@ class Compiler:
                 parallelism=model.flink.parallelism if model.flink else None,
                 checkpoint_interval_ms=model.flink.checkpoint_interval_ms if model.flink else None,
                 state_backend=model.flink.state_backend if model.flink else None,
+                state_ttl_ms=model.flink.state_ttl_ms if model.flink else None,
             )
         )
 
@@ -471,6 +472,11 @@ WHERE {condition}""")
         """Generate Flink SQL for a model."""
         sql_parts = []
 
+        # Generate SET statements for Flink configuration
+        set_statements = self._generate_flink_set_statements(model)
+        if set_statements:
+            sql_parts.append(set_statements)
+
         # Generate CREATE TABLE statements for sources
         dependencies = self._get_model_dependencies(model)
 
@@ -557,6 +563,36 @@ WHERE {condition}""")
     'scan.startup.mode' = 'earliest-offset',
     'format' = 'json'
 );"""
+
+    def _generate_flink_set_statements(self, model: Model) -> str:
+        """Generate SET statements for Flink job configuration."""
+        statements = []
+
+        if model.flink:
+            # Parallelism
+            if model.flink.parallelism:
+                statements.append(f"SET 'parallelism.default' = '{model.flink.parallelism}';")
+
+            # State TTL (table.exec.state.ttl)
+            if model.flink.state_ttl_ms:
+                # Convert milliseconds to Flink duration format (e.g., "24 h", "30 min", "5 s")
+                ttl_ms = model.flink.state_ttl_ms
+                if ttl_ms >= 3600000 and ttl_ms % 3600000 == 0:
+                    ttl_str = f"{ttl_ms // 3600000} h"
+                elif ttl_ms >= 60000 and ttl_ms % 60000 == 0:
+                    ttl_str = f"{ttl_ms // 60000} min"
+                elif ttl_ms >= 1000 and ttl_ms % 1000 == 0:
+                    ttl_str = f"{ttl_ms // 1000} s"
+                else:
+                    ttl_str = f"{ttl_ms} ms"
+                statements.append(f"SET 'table.exec.state.ttl' = '{ttl_str}';")
+
+            # Checkpoint interval
+            if model.flink.checkpoint_interval_ms:
+                interval_ms = model.flink.checkpoint_interval_ms
+                statements.append(f"SET 'execution.checkpointing.interval' = '{interval_ms}ms';")
+
+        return "\n".join(statements)
 
     def _generate_watermark_ddl(self, event_time: EventTimeConfig) -> str:
         """Generate watermark DDL clause for event time configuration."""

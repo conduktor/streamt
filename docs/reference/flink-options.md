@@ -43,6 +43,48 @@ models:
 |--------|------|---------|-------------|
 | `parallelism` | int | 1 | Job parallelism (number of parallel tasks) |
 | `checkpoint_interval_ms` | int | 60000 | Checkpoint interval in milliseconds |
+| `state_ttl_ms` | int | none | State TTL in milliseconds (see [State TTL](#state-ttl)) |
+
+### State TTL
+
+State TTL (Time-To-Live) controls how long Flink keeps state entries before expiring them. This is **critical** for preventing unbounded state growth in streaming jobs.
+
+```yaml
+models:
+  - name: customer_counts
+    materialized: flink
+    flink:
+      state_ttl_ms: 86400000  # 24 hours
+    sql: |
+      SELECT customer_id, COUNT(*)
+      FROM {{ ref("orders") }}
+      GROUP BY customer_id
+```
+
+**When to use State TTL:**
+
+| Operation | State Growth | Recommendation |
+|-----------|--------------|----------------|
+| `GROUP BY` without window | Unbounded | Add TTL |
+| `JOIN` without time bounds | Unbounded | Add TTL |
+| `DISTINCT` | Unbounded | Add TTL |
+| Windowed aggregations | Bounded by window | TTL optional |
+| Stateless transforms | No state | TTL not needed |
+
+**Common configurations:**
+
+| Use Case | TTL Value | Duration |
+|----------|-----------|----------|
+| Short-lived joins | 3600000 | 1 hour |
+| Daily aggregations | 86400000 | 24 hours |
+| Weekly patterns | 604800000 | 7 days |
+| Monthly analytics | 2592000000 | 30 days |
+
+**Trade-offs:**
+
+- **TTL too short**: State expires before it's needed → incorrect results for returning entities
+- **TTL too long**: State grows too large → memory pressure, longer recovery times
+- **No TTL**: State grows forever → eventual job failure
 
 ### Parsed But Not Yet Applied
 
@@ -491,16 +533,17 @@ GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR);
 
 ## Roadmap
 
-### Now (Active Development)
+### Completed
 
-- [ ] **Event time configuration** — `event_time.column`, `event_time.watermark` in source/model YAML
-- [ ] **`streamt status` command** — Show running jobs with health, lag, checkpoint status
+- [x] **Event time configuration** — `event_time.column`, `event_time.watermark` in source/model YAML
+- [x] **`streamt status` command** — Show running jobs with health, lag, checkpoint status
+- [x] **State TTL configuration** — `state_ttl_ms` to prevent unbounded state growth
+- [x] **Watermark strategies** — bounded out-of-orderness, monotonous
 
 ### Soon
 
-- [ ] **State TTL configuration** — `state.ttl_ms` to prevent unbounded state growth
 - [ ] **Advanced checkpoint options** — timeout, min pause, externalized checkpoints
-- [ ] **Watermark strategies** — bounded out-of-orderness, monotonous, custom expressions
+- [ ] **Custom watermark expressions** — User-defined watermark SQL
 
 ### Later
 
