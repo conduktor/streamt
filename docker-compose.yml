@@ -226,6 +226,38 @@ services:
         rest.port: 8081
         sql-gateway.endpoint.rest.address: 0.0.0.0
 
+  # Conduktor Gateway - Kafka Proxy with Interceptors
+  conduktor-gateway:
+    image: conduktor/conduktor-gateway:3.15.0
+    hostname: conduktor-gateway
+    container_name: streamt-conduktor-gateway
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "6969:6969"   # Gateway proxy port (clients connect here)
+      - "6970:6970"   # Gateway proxy port for broker 1
+      - "6971:6971"   # Gateway proxy port for broker 2
+      - "6972:6972"   # Gateway proxy port for broker 3
+      - "8888:8888"   # Gateway Admin API
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      GATEWAY_ADVERTISED_HOST: localhost
+      # Disable ACL enforcement for transparent passthrough (like quick-start)
+      GATEWAY_ACL_ENABLED: "false"
+      GATEWAY_FEATURE_FLAGS_ANALYTICS: "false"
+      # Kafka cluster has broker ID 1 (KRaft mode), not 0
+      GATEWAY_MIN_BROKERID: 1
+      GATEWAY_PORT_COUNT: 3
+      # Admin API credentials - JSON format for Gateway 3.x
+      HTTP_SUPER_USERS: '[{"username": "admin", "password": "conduktor"}]'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   conduktor-db-data:
 

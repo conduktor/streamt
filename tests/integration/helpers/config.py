@@ -20,6 +20,15 @@ class FlinkConfig:
 
 
 @dataclass
+class GatewayConfig:
+    """Gateway connection configuration."""
+    admin_url: str
+    proxy_bootstrap: str
+    username: str = "admin"
+    password: str = "conduktor"
+
+
+@dataclass
 class InfrastructureConfig:
     """Configuration for test infrastructure.
 
@@ -30,6 +39,8 @@ class InfrastructureConfig:
         CONNECT_URL - Kafka Connect REST URL (default: http://localhost:8083)
         FLINK_REST_URL - Flink REST API URL (default: http://localhost:8082)
         FLINK_SQL_GATEWAY_URL - Flink SQL Gateway URL (default: http://localhost:8084)
+        GATEWAY_ADMIN_URL - Conduktor Gateway Admin API URL (default: http://localhost:8888)
+        GATEWAY_PROXY_BOOTSTRAP - Gateway proxy bootstrap servers (default: localhost:6969)
 
     Note: KAFKA_INTERNAL_SERVERS is used for Flink SQL tables since Flink runs inside Docker
     and needs to connect to Kafka via the internal Docker network.
@@ -41,6 +52,8 @@ class InfrastructureConfig:
     connect_url: str = ""
     flink_rest_url: str = ""
     flink_sql_gateway_url: str = ""
+    gateway_admin_url: str = ""
+    gateway_proxy_bootstrap: str = ""
 
     def __post_init__(self):
         """Load configuration from environment variables with defaults."""
@@ -50,6 +63,8 @@ class InfrastructureConfig:
         self.connect_url = os.getenv("CONNECT_URL", "http://localhost:8083")
         self.flink_rest_url = os.getenv("FLINK_REST_URL", "http://localhost:8082")
         self.flink_sql_gateway_url = os.getenv("FLINK_SQL_GATEWAY_URL", "http://localhost:8084")
+        self.gateway_admin_url = os.getenv("GATEWAY_ADMIN_URL", "http://localhost:8888")
+        self.gateway_proxy_bootstrap = os.getenv("GATEWAY_PROXY_BOOTSTRAP", "localhost:6969")
 
     @property
     def flink(self) -> FlinkConfig:
@@ -57,6 +72,14 @@ class InfrastructureConfig:
         return FlinkConfig(
             rest_url=self.flink_rest_url,
             sql_gateway_url=self.flink_sql_gateway_url,
+        )
+
+    @property
+    def gateway(self) -> GatewayConfig:
+        """Get Gateway configuration as a parameter object."""
+        return GatewayConfig(
+            admin_url=self.gateway_admin_url,
+            proxy_bootstrap=self.gateway_proxy_bootstrap,
         )
 
 

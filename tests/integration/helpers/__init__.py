@@ -1,10 +1,10 @@
 """Integration test helpers.
 
 This package provides helper classes and utilities for integration testing
-with Kafka, Flink, Connect, and Schema Registry.
+with Kafka, Flink, Connect, Schema Registry, and Conduktor Gateway.
 """
 
-from .config import INFRA_CONFIG, FlinkConfig, InfrastructureConfig, PROJECT_ROOT
+from .config import INFRA_CONFIG, FlinkConfig, GatewayConfig, InfrastructureConfig, PROJECT_ROOT
 from .connect import ConnectHelper
 from .docker import (
     DockerComposeManager,
@@ -16,6 +16,7 @@ from .docker import (
 )
 from .factories import FlinkJobFactory, TopicFactory, unique_name
 from .flink import FlinkHelper
+from .gateway import GatewayHelper
 from .kafka import KafkaHelper
 from .polling import poll_for_result, poll_until, poll_until_messages
 from .retry import retry_on_transient_error
@@ -24,6 +25,7 @@ from .schema_registry import SchemaRegistryHelper
 __all__ = [
     # Config
     "FlinkConfig",
+    "GatewayConfig",
     "INFRA_CONFIG",
     "InfrastructureConfig",
     "PROJECT_ROOT",
@@ -41,6 +43,7 @@ __all__ = [
     # Helpers
     "ConnectHelper",
     "FlinkHelper",
+    "GatewayHelper",
     "KafkaHelper",
     "SchemaRegistryHelper",
     # Polling

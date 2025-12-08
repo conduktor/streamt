@@ -29,6 +29,7 @@ from tests.integration.helpers import (
     ConnectHelper,
     DockerComposeManager,
     FlinkHelper,
+    GatewayHelper,
     KafkaHelper,
     SchemaRegistryHelper,
     get_docker_manager,
@@ -44,6 +45,7 @@ __all__ = [
     "ConnectHelper",
     "DockerComposeManager",
     "FlinkHelper",
+    "GatewayHelper",
     "KafkaHelper",
     "SchemaRegistryHelper",
     "poll_until",
@@ -162,6 +164,23 @@ def schema_registry_helper(docker_services: DockerComposeManager) -> SchemaRegis
     return SchemaRegistryHelper(INFRA_CONFIG.schema_registry_url)
 
 
+@pytest.fixture(scope="function")
+def gateway_helper(docker_services: DockerComposeManager) -> Generator[GatewayHelper, None, None]:
+    """Fixture providing Conduktor Gateway helper for tests.
+
+    Cleans up test resources after each test.
+    """
+    gateway_config = INFRA_CONFIG.gateway
+    helper = GatewayHelper(
+        admin_url=gateway_config.admin_url,
+        username=gateway_config.username,
+        password=gateway_config.password,
+    )
+    yield helper
+    # Cleanup test resources
+    helper.cleanup_test_resources()
+
+
 # =============================================================================
 # Markers for test categorization
 # =============================================================================
@@ -192,4 +211,8 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "schema_registry: mark test as requiring Schema Registry",
+    )
+    config.addinivalue_line(
+        "markers",
+        "gateway: mark test as requiring Conduktor Gateway",
     )

@@ -199,18 +199,33 @@ runtime:
 
 ### Conduktor (Optional)
 
+Conduktor Gateway enables [virtual topics](../guides/gateway.md) and data masking.
+
 ```yaml
 runtime:
   conduktor:
     gateway:
-      url: http://conduktor-gateway:8888
-      username: ${GATEWAY_USER}
-      password: ${GATEWAY_PASSWORD}
+      admin_url: http://localhost:8888       # Gateway Admin API
+      proxy_bootstrap: localhost:6969         # Gateway proxy for Kafka clients
+      username: ${GATEWAY_USER}               # Admin API username (default: admin)
+      password: ${GATEWAY_PASSWORD}           # Admin API password (default: conduktor)
+      virtual_cluster: default                # Optional: for multi-tenant setups
 
     console:
       url: http://conduktor-console:8080
       api_key: ${CONDUKTOR_API_KEY}
 ```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `admin_url` | string | Required | Gateway Admin API URL |
+| `proxy_bootstrap` | string | - | Gateway proxy for Kafka clients |
+| `username` | string | `admin` | Admin API username |
+| `password` | string | `conduktor` | Admin API password |
+| `virtual_cluster` | string | - | Virtual cluster for multi-tenancy |
+
+!!! note "When to configure Gateway"
+    Gateway is required for `materialized: virtual_topic`. If you only use `topic`, `flink`, or `sink` materializations, Gateway is optional.
 
 ## Defaults
 

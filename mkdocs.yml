@@ -125,6 +125,7 @@ nav:
     - Materializations: reference/materializations.md
     - Governance Rules: reference/governance.md
   - Guides:
+    - Conduktor Gateway: guides/gateway.md
     - Windowed Aggregations: guides/windowed-aggregations.md
     - Stream Joins: guides/stream-joins.md
     - CDC Pipelines: guides/cdc-pipelines.md

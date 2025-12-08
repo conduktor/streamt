@@ -140,9 +140,21 @@ class ConnectConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    """Conduktor Gateway configuration."""
+    """Conduktor Gateway configuration.
 
-    url: str
+    Attributes:
+        admin_url: Gateway Admin API URL (e.g., http://localhost:8888)
+        proxy_bootstrap: Gateway proxy bootstrap servers for Kafka clients (e.g., localhost:6969)
+        username: Admin API username (default: admin)
+        password: Admin API password (default: conduktor)
+        virtual_cluster: Optional virtual cluster for multi-tenant setups
+    """
+
+    admin_url: Optional[str] = Field(None, alias="url")  # alias for backward compatibility
+    proxy_bootstrap: Optional[str] = None
+    username: str = "admin"
+    password: str = "conduktor"
+    virtual_cluster: Optional[str] = None
 
 
 class ConsoleConfig(BaseModel):

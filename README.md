@@ -309,7 +309,7 @@ streamt/
 
 ### What's Missing for Production
 
-- **State management** — State TTL, savepoint handling for job upgrades
+- **State management** — ~~State TTL~~, savepoint handling for job upgrades
 - **Kubernetes Flink operator** — Currently REST API only
 - **CI/CD templates** — GitHub Actions, etc.
 - **Metrics integration** — Prometheus/OpenTelemetry for alerting
@@ -325,10 +325,10 @@ streamt/
 
 ### Soon
 
-- [ ] State TTL configuration — Prevent unbounded state growth
+- [x] State TTL configuration — Prevent unbounded state growth
 - [ ] Conduktor Gateway virtual topics
 - [ ] Multi-environment support — dev/staging/prod profiles
-- [ ] End-to-end tutorials — Windowed aggregations, stream joins, CDC pipelines
+- [x] End-to-end tutorials — Windowed aggregations, stream joins, CDC pipelines
 - [ ] Prometheus/OpenTelemetry integration
 
 ### Later
