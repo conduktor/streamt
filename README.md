@@ -309,11 +309,10 @@ streamt/
 
 ### What's Missing for Production
 
-- **Observability** — No `streamt status` command, metrics, or alerting integration yet
-- **Temporal semantics** — Watermarks, event time, allowed lateness not yet configurable in YAML
 - **State management** — State TTL, savepoint handling for job upgrades
 - **Kubernetes Flink operator** — Currently REST API only
 - **CI/CD templates** — GitHub Actions, etc.
+- **Metrics integration** — Prometheus/OpenTelemetry for alerting
 
 ## Roadmap
 
@@ -321,7 +320,7 @@ streamt/
 
 - [x] `streamt status` command — Show deployed jobs, topics, connectors with health (includes `--lag`, `--format json`, `--filter`)
 - [x] Event time configuration — `event_time`, `watermark`, `allowed_lateness` in YAML
-- [ ] Improved error messages — Actionable errors with links to docs
+- [x] Improved error messages — Actionable errors with links to docs, "Did you mean?" suggestions
 - [x] Streaming fundamentals docs — Teach watermarks, windows, exactly-once
 
 ### Soon
