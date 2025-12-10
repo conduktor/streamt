@@ -337,6 +337,15 @@ streamt/
 - [ ] Kubernetes Flink operator support
 - [ ] Curated connector library — Tested configs for Postgres, Snowflake, S3
 - [ ] CI/CD GitHub Actions templates
+- [ ] DLQ support — Dead Letter Queue for failed messages
+- [ ] Global credentials/connections — Define Snowflake, S3, etc. once and reference everywhere
+
+### Future Vision
+
+- [ ] Hide implementation details — Keep YAML surface simple and opinionated; `advanced:` section for framework control when needed
+- [ ] External app support — Register "blackbox" applications (Java, Go, etc.) with input/output models for lineage tracking
+- [ ] High-level intent mode — "I want X" and streamt builds the entire pipeline automatically
+- [ ] KStreams runtime — Built-in `materialized: kstreams` for users without Flink/Gateway; SQL→KStreams topology conversion (ksqlDB-style); single app handles multiple transforms; K8s integration for auto-scaling and load distribution
 
 ### Deferred
 
