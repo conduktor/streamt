@@ -144,15 +144,7 @@ models:
       Important: This join uses the customer's state at order_timestamp,
       not their current state. If a customer upgrades from Silver to Gold
       after placing an order, that order still shows Silver.
-    materialized: flink
-
-    topic:
-      name: orders.enriched.v1
-      partitions: 6
-
-    flink:
-      parallelism: 4
-      state_ttl_ms: 86400000  # 24 hours - keep customer versions for a day
+    # Auto-inferred as flink due to temporal JOIN (FOR SYSTEM_TIME AS OF)
 
     sql: |
       SELECT
@@ -173,6 +165,14 @@ models:
       FROM {{ source("orders_raw") }} AS o
       LEFT JOIN {{ source("customers_cdc") }} FOR SYSTEM_TIME AS OF o.order_timestamp AS c
         ON o.customer_id = c.id
+
+    advanced:  # Optional: tune state management
+      topic:
+        name: orders.enriched.v1
+        partitions: 6
+      flink:
+        parallelism: 4
+        state_ttl_ms: 86400000  # 24 hours - keep customer versions for a day
 ```
 
 **How temporal joins work:**
@@ -213,14 +213,7 @@ models:
 
       Orders without payment within 24h are emitted as unmatched (LEFT JOIN).
       This helps identify abandoned orders.
-    materialized: flink
-
-    topic:
-      name: orders.payment.matched.v1
-      partitions: 6
-
-    flink:
-      parallelism: 4
+    # Auto-inferred as flink due to interval JOIN with BETWEEN time bounds
 
     sql: |
       SELECT
@@ -241,6 +234,13 @@ models:
         ON o.order_id = p.order_id
         AND p.payment_timestamp BETWEEN o.order_timestamp
                                     AND o.order_timestamp + INTERVAL '24' HOUR
+
+    advanced:  # Optional: tune parallelism
+      topic:
+        name: orders.payment.matched.v1
+        partitions: 6
+      flink:
+        parallelism: 4
 ```
 
 **How interval joins work:**
@@ -275,11 +275,7 @@ models:
     description: |
       Orders that haven't been paid within 1 hour.
       These are candidates for reminder emails or cart recovery.
-    materialized: flink
-
-    topic:
-      name: orders.abandoned.v1
-      partitions: 3
+    # Auto-inferred as topic (simple SELECT with WHERE, no aggregation/window/join)
 
     sql: |
       SELECT
@@ -299,6 +295,11 @@ models:
       WHERE is_paid = FALSE
         -- Only alert for orders older than 1 hour
         AND order_timestamp < CURRENT_TIMESTAMP - INTERVAL '1' HOUR
+
+    advanced:  # Optional: configure output topic
+      topic:
+        name: orders.abandoned.v1
+        partitions: 3
 ```
 
 ---
@@ -397,8 +398,9 @@ Joins are the most state-intensive operations in streaming:
 ### Configuring State TTL
 
 ```yaml
-flink:
-  state_ttl_ms: 86400000  # 24 hours
+advanced:
+  flink:
+    state_ttl_ms: 86400000  # 24 hours
 ```
 
 For temporal joins, TTL controls how far back you can look up historical versions. For interval joins, the join condition itself bounds the state.

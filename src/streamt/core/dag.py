@@ -196,7 +196,7 @@ class DAGBuilder:
                 DAGNode(
                     name=model.name,
                     type=NodeType.MODEL,
-                    materialized=model.materialized.value,
+                    materialized=model.get_materialized().value,
                 )
             )
 

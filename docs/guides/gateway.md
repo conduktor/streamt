@@ -42,10 +42,13 @@ Virtual topics are logical topics that map to physical topics with transformatio
 ```yaml
 models:
   - name: orders_europe
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE region = 'EU'
+
+    advanced:
+      # Explicit configuration for virtual topics via Gateway
+      virtual_topic: true
 ```
 
 What happens:
@@ -57,8 +60,8 @@ What happens:
 
 ### Virtual Topic vs Topic
 
-| Aspect | `topic` | `virtual_topic` |
-|--------|---------|-----------------|
+| Aspect | Physical topic | Virtual topic (Gateway) |
+|--------|----------------|-------------------------|
 | Storage | Creates real Kafka topic | No storage (alias only) |
 | Latency | Pre-computed | Computed on read |
 | CPU | At write time (Flink) | At read time (Gateway) |
@@ -73,7 +76,7 @@ What happens:
 - Data must always be current
 - You need role-based masking
 
-**Use topic when:**
+**Use physical topic when:**
 
 - High read volume (pre-compute is cheaper)
 - Low latency is critical
@@ -86,28 +89,29 @@ Apply column-level masking based on consumer roles:
 ```yaml
 models:
   - name: customers_view
-    materialized: virtual_topic
     from:
       - source: customers_raw
 
-    security:
-      policies:
-        # Hash email for analytics team
-        - mask:
-            column: email
-            method: hash
-            for_roles: [analytics]
+    advanced:
+      virtual_topic: true
+      security:
+        policies:
+          # Hash email for analytics team
+          - mask:
+              column: email
+              method: hash
+              for_roles: [analytics]
 
-        # Redact SSN for support team
-        - mask:
-            column: ssn
-            method: redact
-            for_roles: [support]
+          # Redact SSN for support team
+          - mask:
+              column: ssn
+              method: redact
+              for_roles: [support]
 
-        # Partial mask phone for everyone else
-        - mask:
-            column: phone
-            method: partial
+          # Partial mask phone for everyone else
+          - mask:
+              column: phone
+              method: partial
 ```
 
 ### Masking Methods
@@ -127,9 +131,11 @@ Alias topics enable transparent migrations:
 # Old topic name -> new topic name
 models:
   - name: orders_v1
-    materialized: virtual_topic
     from:
       - source: orders_v2
+
+    advanced:
+      virtual_topic: true
 ```
 
 Consumers using `orders_v1` through Gateway will read from `orders_v2`.
@@ -141,10 +147,12 @@ Apply SQL WHERE clauses at read time:
 ```yaml
 models:
   - name: high_value_orders
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE amount > 10000 AND status = 'completed'
+
+    advanced:
+      virtual_topic: true
 ```
 
 The WHERE clause becomes a Gateway filter interceptor.
@@ -172,16 +180,20 @@ Create tenant-specific views of shared data:
 ```yaml
 models:
   - name: orders_tenant_a
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_a'
 
+    advanced:
+      virtual_topic: true
+
   - name: orders_tenant_b
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_b'
+
+    advanced:
+      virtual_topic: true
 ```
 
 ## Configuration Reference
@@ -253,7 +265,7 @@ This creates:
 
 ```
 Error: virtual_topic requires Conduktor Gateway.
-Configure runtime.conduktor.gateway or use materialized: topic
+Configure runtime.conduktor.gateway or remove advanced.virtual_topic
 ```
 
 Add Gateway configuration to your project.
@@ -291,37 +303,43 @@ sources:
 models:
   # Full access for data engineers
   - name: orders_full
-    materialized: virtual_topic
     from:
       - source: orders_raw
-    access:
-      allowed_groups: [data-engineering]
+
+    advanced:
+      virtual_topic: true
+      access:
+        allowed_groups: [data-engineering]
 
   # Masked view for analytics (US region only)
   - name: orders_analytics
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders_raw") }}
       WHERE region REGEXP 'US.*'
-    security:
-      policies:
-        - mask:
-            column: customer_email
-            method: hash
-        - mask:
-            column: customer_id
-            method: hash
-    access:
-      allowed_groups: [analytics]
+
+    advanced:
+      virtual_topic: true
+      security:
+        policies:
+          - mask:
+              column: customer_email
+              method: hash
+          - mask:
+              column: customer_id
+              method: hash
+      access:
+        allowed_groups: [analytics]
 
   # Regional view for EU team
   - name: orders_eu
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("orders_raw") }}
       WHERE region = 'EU'
-    access:
-      allowed_groups: [eu-team]
+
+    advanced:
+      virtual_topic: true
+      access:
+        allowed_groups: [eu-team]
 ```
 
 This creates three virtual topics from one physical topic, each with different filtering and masking rules.

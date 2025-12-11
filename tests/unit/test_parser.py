@@ -64,7 +64,6 @@ class TestProjectParser:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
                     }
                 ],
@@ -138,7 +137,6 @@ class TestProjectParser:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
                     }
                 ],

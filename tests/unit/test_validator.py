@@ -46,8 +46,8 @@ class TestProjectValidator:
                 "project": {"name": "test"},
                 "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
                 "models": [
-                    {"name": "payments_clean", "materialized": "topic"},
-                    {"name": "payments_clean", "materialized": "topic"},  # Duplicate
+                    {"name": "payments_clean", "sql": "SELECT 1"},
+                    {"name": "payments_clean", "sql": "SELECT 2"},  # Duplicate
                 ],
             }
             project = self._create_project(tmpdir, config)
@@ -66,7 +66,6 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("nonexistent") }}',
                     }
                 ],
@@ -87,7 +86,6 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "enriched",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("payments_clean") }}',
                     }
                 ],
@@ -108,12 +106,10 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "model_a",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("model_b") }}',
                     },
                     {
                         "name": "model_b",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("model_a") }}',
                     },
                 ],
@@ -135,8 +131,13 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_filtered",
-                        "materialized": "virtual_topic",
-                        "sql": 'SELECT * FROM {{ source("payments_raw") }}',
+                        "sql": 'SELECT * FROM {{ source("payments_raw") }} WHERE amount > 100',
+                        "gateway": {
+                            "virtual_topic": {
+                                "name": "payments.filtered",
+                                "compression": "snappy"
+                            }
+                        },
                     }
                 ],
             }
@@ -157,7 +158,6 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
                     }
                 ],
@@ -187,7 +187,6 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "broken",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw" }}',  # Missing )
                     }
                 ],
@@ -212,7 +211,6 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "from": [
                             {"source": "payments_raw"},
                             {"source": "customers_raw"},  # Declared but not used
@@ -239,8 +237,10 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
-                        "topic": {"partitions": 3},  # Less than 6
+                        "sql": "SELECT 1",
+                        "advanced": {
+                            "topic": {"partitions": 3}  # Less than 6
+                        }
                     }
                 ],
             }
@@ -261,7 +261,7 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
+                        "sql": "SELECT 1",
                         # No description
                     }
                 ],
@@ -283,7 +283,7 @@ class TestProjectValidator:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
+                        "sql": "SELECT 1",
                     }
                 ],
                 # No tests defined
@@ -310,9 +310,10 @@ class TestProjectValidator:
                     {
                         "name": "payments_clean",
                         "description": "Cleaned payments",
-                        "materialized": "topic",
-                        "topic": {"partitions": 6},
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
+                        "advanced": {
+                            "topic": {"partitions": 6}
+                        }
                     }
                 ],
             }

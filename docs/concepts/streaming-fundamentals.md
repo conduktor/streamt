@@ -261,13 +261,13 @@ State TTL automatically expires old state. Coming soon in streamt:
 ```yaml
 models:
   - name: customer_order_counts
-    materialized: flink
-    flink:
-      state_ttl_ms: 86400000  # Expire state after 24 hours
     sql: |
       SELECT customer_id, COUNT(*)
       FROM {{ ref("orders") }}
       GROUP BY customer_id
+    advanced:
+      flink:
+        state_ttl_ms: 86400000  # Expire state after 24 hours
 ```
 
 **Trade-off**: TTL too short = incorrect results for returning users. TTL too long = memory pressure.
@@ -321,9 +321,11 @@ Checkpointing is configured per job:
 ```yaml
 models:
   - name: revenue_aggregation
-    materialized: flink
-    flink:
-      checkpoint_interval_ms: 60000  # Checkpoint every minute
+    sql: |
+      SELECT ...
+    advanced:
+      flink:
+        checkpoint_interval_ms: 60000  # Checkpoint every minute
 ```
 
 ---
@@ -413,9 +415,11 @@ Source → Transform → Aggregate → Sink
 ```yaml
 models:
   - name: heavy_aggregation
-    materialized: flink
-    flink:
-      parallelism: 8  # Increase parallel tasks
+    sql: |
+      SELECT ...
+    advanced:
+      flink:
+        parallelism: 8  # Increase parallel tasks
 ```
 
 ---

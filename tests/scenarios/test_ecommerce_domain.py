@@ -18,7 +18,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestEcommerceOrderPipeline:
     """Test complete order processing pipeline."""
 
@@ -88,8 +87,6 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_validated",
                         "description": "Orders with validation status",
-                        "materialized": "flink",
-                        "topic": {"partitions": 12},
                         "sql": """
                             SELECT
                                 order_id,
@@ -105,12 +102,15 @@ class TestEcommerceOrderPipeline:
                                 event_time
                             FROM {{ source("orders_raw") }}
                         """,
+                        "advanced": {"topic": {"partitions": 12}},
                     },
                     {
                         "name": "orders_enriched",
                         "description": "Orders enriched with customer and product data",
-                        "materialized": "flink",
-                        "topic": {"partitions": 12},
+
+                        "advanced": {
+                            "topic": {"partitions": 12},
+                        },
                         "sql": """
                             SELECT
                                 o.order_id,
@@ -130,8 +130,10 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_for_fulfillment",
                         "description": "Orders ready for warehouse fulfillment",
-                        "materialized": "topic",
-                        "topic": {"partitions": 6},
+
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 order_id,
@@ -144,8 +146,10 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_for_analytics",
                         "description": "Orders for real-time analytics dashboard",
-                        "materialized": "flink",
-                        "topic": {"partitions": 6},
+
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 TUMBLE_END(event_time, INTERVAL '5' MINUTE) as window_end,
@@ -163,8 +167,10 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "high_value_orders",
                         "description": "High value orders for priority processing",
-                        "materialized": "topic",
-                        "topic": {"partitions": 3},
+
+                        "advanced": {
+                            "topic": {"partitions": 3},
+                        },
                         "sql": """
                             SELECT * FROM {{ ref("orders_enriched") }}
                             WHERE total_amount > 1000
@@ -293,7 +299,7 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_validated",
                         "description": "Successfully validated orders",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT * FROM {{ source("orders_raw") }}
                             WHERE total_amount > 0
@@ -303,7 +309,7 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_dlq",
                         "description": "Dead letter queue for failed order validations",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 3, "config": {"retention.ms": "604800000"}},
                         "sql": """
                             SELECT
@@ -318,7 +324,7 @@ class TestEcommerceOrderPipeline:
                     {
                         "name": "orders_processed",
                         "description": "Final processed orders",
-                        "materialized": "topic",
+
                         "sql": """SELECT * FROM {{ ref("orders_validated") }}""",
                     },
                 ],
@@ -354,7 +360,6 @@ class TestEcommerceOrderPipeline:
             dag_builder = DAGBuilder(project)
             dag = dag_builder.build()
             assert "orders_dlq" in dag.nodes
-
 
 class TestEcommerceInventoryManagement:
     """Test inventory management scenarios."""
@@ -400,7 +405,7 @@ class TestEcommerceInventoryManagement:
                     {
                         "name": "stock_levels",
                         "description": "Current stock level per product/warehouse",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -415,7 +420,7 @@ class TestEcommerceInventoryManagement:
                     {
                         "name": "low_stock_alerts",
                         "description": "Products below reorder threshold",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 3},
                         "sql": """
                             SELECT
@@ -434,7 +439,7 @@ class TestEcommerceInventoryManagement:
                     {
                         "name": "warehouse_summary",
                         "description": "Aggregated warehouse metrics per hour",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 warehouse_id,
@@ -483,7 +488,6 @@ class TestEcommerceInventoryManagement:
             upstream = dag.get_upstream("low_stock_alerts")
             assert "stock_levels" in upstream
             assert "products_master" in upstream
-
 
 class TestEcommercePaymentProcessing:
     """Test payment processing scenarios."""
@@ -543,7 +547,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "payments_tokenized",
                         "description": "Payments with tokenized card data",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "security": {
                             "classification": {
@@ -569,7 +573,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "payments_with_risk",
                         "description": "Payments enriched with risk scores",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -588,7 +592,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "payments_fraud_check",
                         "description": "Payments with fraud detection results",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -606,7 +610,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "payments_approved",
                         "description": "Approved payments for settlement",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT * FROM {{ ref("payments_fraud_check") }}
@@ -616,7 +620,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "payments_flagged",
                         "description": "Flagged payments for manual review",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 6},  # Must meet min_partitions rule
                         "sql": """
                             SELECT * FROM {{ ref("payments_fraud_check") }}
@@ -626,7 +630,7 @@ class TestEcommercePaymentProcessing:
                     {
                         "name": "fraud_metrics",
                         "description": "Real-time fraud detection metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 TUMBLE_END(event_time, INTERVAL '5' MINUTE) as window_end,

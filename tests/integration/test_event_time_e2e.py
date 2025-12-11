@@ -87,7 +87,6 @@ class TestEventTimeFlinkSQL:
                     "models": [
                         {
                             "name": output_topic,
-                            "materialized": "flink",
                             "sql": f"""
                                 SELECT event_id, event_timestamp, value
                                 FROM {{{{ source("events") }}}}
@@ -179,7 +178,6 @@ class TestEventTimeFlinkSQL:
                     "models": [
                         {
                             "name": output_topic,
-                            "materialized": "flink",
                             "sql": f"""
                                 SELECT id, ts
                                 FROM {{{{ source("ordered_events") }}}}
@@ -265,7 +263,6 @@ class TestEventTimeFlinkSQL:
                         "models": [
                             {
                                 "name": output_topic,
-                                "materialized": "flink",
                                 "sql": """
                                     SELECT id, event_time
                                     FROM {{ source("events") }}

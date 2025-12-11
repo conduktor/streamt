@@ -172,21 +172,21 @@ class Compiler:
 
     def _compile_model(self, model: Model) -> None:
         """Compile a single model."""
-        if model.materialized == MaterializedType.TOPIC:
+        if model.get_materialized() == MaterializedType.TOPIC:
             self._compile_topic_model(model)
-        elif model.materialized == MaterializedType.VIRTUAL_TOPIC:
+        elif model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
             self._compile_virtual_topic_model(model)
-        elif model.materialized == MaterializedType.FLINK:
+        elif model.get_materialized() == MaterializedType.FLINK:
             self._compile_flink_model(model)
-        elif model.materialized == MaterializedType.SINK:
+        elif model.get_materialized() == MaterializedType.SINK:
             self._compile_sink_model(model)
 
     def _compile_topic_model(self, model: Model) -> None:
         """Compile a topic model (creates real Kafka topic)."""
-        topic_name = model.topic.name if model.topic and model.topic.name else model.name
-        partitions = (model.topic.partitions if model.topic and model.topic.partitions else None) or self._topic_defaults.partitions
-        replication_factor = (model.topic.replication_factor if model.topic and model.topic.replication_factor else None) or self._topic_defaults.replication_factor
-        config = model.topic.config if model.topic else {}
+        topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
+        partitions = (model.get_topic_config().partitions if model.get_topic_config() and model.get_topic_config().partitions else None) or self._topic_defaults.partitions
+        replication_factor = (model.get_topic_config().replication_factor if model.get_topic_config() and model.get_topic_config().replication_factor else None) or self._topic_defaults.replication_factor
+        config = model.get_topic_config().config if model.get_topic_config() else {}
 
         self.topics.append(
             TopicArtifact(
@@ -203,7 +203,7 @@ class Compiler:
 
     def _compile_virtual_topic_model(self, model: Model) -> None:
         """Compile a virtual topic model (Gateway rule)."""
-        virtual_topic_name = model.topic.name if model.topic and model.topic.name else model.name
+        virtual_topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
 
         # Get the source topic
         source_topic = self._get_source_topic(model)
@@ -254,10 +254,10 @@ class Compiler:
     def _compile_flink_model(self, model: Model) -> None:
         """Compile a Flink model."""
         # Create output topic
-        topic_name = model.topic.name if model.topic and model.topic.name else model.name
-        partitions = (model.topic.partitions if model.topic and model.topic.partitions else None) or self._topic_defaults.partitions
-        replication_factor = (model.topic.replication_factor if model.topic and model.topic.replication_factor else None) or self._topic_defaults.replication_factor
-        config = model.topic.config if model.topic else {}
+        topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
+        partitions = (model.get_topic_config().partitions if model.get_topic_config() and model.get_topic_config().partitions else None) or self._topic_defaults.partitions
+        replication_factor = (model.get_topic_config().replication_factor if model.get_topic_config() and model.get_topic_config().replication_factor else None) or self._topic_defaults.replication_factor
+        config = model.get_topic_config().config if model.get_topic_config() else {}
 
         self.topics.append(
             TopicArtifact(
@@ -275,17 +275,18 @@ class Compiler:
             FlinkJobArtifact(
                 name=model.name,
                 sql=flink_sql,
-                cluster=model.flink_cluster,
-                parallelism=model.flink.parallelism if model.flink else None,
-                checkpoint_interval_ms=model.flink.checkpoint_interval_ms if model.flink else None,
-                state_backend=model.flink.state_backend if model.flink else None,
-                state_ttl_ms=model.flink.state_ttl_ms if model.flink else None,
+                cluster=model.get_flink_cluster(),
+                parallelism=model.get_flink_config().parallelism if model.get_flink_config() else None,
+                checkpoint_interval_ms=model.get_flink_config().checkpoint_interval_ms if model.get_flink_config() else None,
+                state_backend=model.get_flink_config().state_backend if model.get_flink_config() else None,
+                state_ttl_ms=model.get_flink_config().state_ttl_ms if model.get_flink_config() else None,
             )
         )
 
     def _compile_sink_model(self, model: Model) -> None:
         """Compile a sink model (Kafka Connect)."""
-        if not model.sink:
+        sink_config = model.get_sink_config()
+        if not sink_config:
             raise CompileError(f"Sink model '{model.name}' has no sink configuration")
 
         # Get source topic(s)
@@ -294,10 +295,10 @@ class Compiler:
             raise CompileError(f"Cannot determine source topics for sink model '{model.name}'")
 
         # Get connector class
-        connector_class = CONNECTOR_CLASSES.get(model.sink.connector, model.sink.connector)
+        connector_class = CONNECTOR_CLASSES.get(sink_config.connector, sink_config.connector)
 
         # Build connector config
-        config = dict(model.sink.config)
+        config = dict(sink_config.config)
 
         # Add masking transforms if needed
         if model.security and model.security.policies:
@@ -324,7 +325,7 @@ class Compiler:
                 connector_class=connector_class,
                 topics=source_topics,
                 config=config,
-                cluster=model.connect_cluster,
+                cluster=model.get_connect_cluster(),
             )
         )
 
@@ -336,7 +337,7 @@ class Compiler:
             FlinkJobArtifact(
                 name=f"{model.name}_processor",
                 sql=flink_sql,
-                cluster=model.flink_cluster,
+                cluster=model.get_flink_cluster(),
             )
         )
 
@@ -358,7 +359,7 @@ class Compiler:
             topic_name = source.topic
             columns = [col.name for col in source.columns] if source.columns else []
         else:
-            topic_name = model.topic.name if model.topic and model.topic.name else model.name
+            topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
             # Extract columns from model's SQL
             columns = self._extract_select_columns(model.sql or "")
 
@@ -489,8 +490,8 @@ WHERE {condition}""")
                 dep_model = self.project.get_model(dep_name)
                 if dep_model:
                     topic_name = (
-                        dep_model.topic.name
-                        if dep_model.topic and dep_model.topic.name
+                        dep_model.get_topic_config().name
+                        if dep_model.get_topic_config() and dep_model.get_topic_config().name
                         else dep_model.name
                     )
                     sql_parts.append(
@@ -568,15 +569,15 @@ WHERE {condition}""")
         """Generate SET statements for Flink job configuration."""
         statements = []
 
-        if model.flink:
+        if model.get_flink_config():
             # Parallelism
-            if model.flink.parallelism:
-                statements.append(f"SET 'parallelism.default' = '{model.flink.parallelism}';")
+            if model.get_flink_config().parallelism:
+                statements.append(f"SET 'parallelism.default' = '{model.get_flink_config().parallelism}';")
 
             # State TTL (table.exec.state.ttl)
-            if model.flink.state_ttl_ms:
+            if model.get_flink_config().state_ttl_ms:
                 # Convert milliseconds to Flink duration format (e.g., "24 h", "30 min", "5 s")
-                ttl_ms = model.flink.state_ttl_ms
+                ttl_ms = model.get_flink_config().state_ttl_ms
                 if ttl_ms >= 3600000 and ttl_ms % 3600000 == 0:
                     ttl_str = f"{ttl_ms // 3600000} h"
                 elif ttl_ms >= 60000 and ttl_ms % 60000 == 0:
@@ -588,8 +589,8 @@ WHERE {condition}""")
                 statements.append(f"SET 'table.exec.state.ttl' = '{ttl_str}';")
 
             # Checkpoint interval
-            if model.flink.checkpoint_interval_ms:
-                interval_ms = model.flink.checkpoint_interval_ms
+            if model.get_flink_config().checkpoint_interval_ms:
+                interval_ms = model.get_flink_config().checkpoint_interval_ms
                 statements.append(f"SET 'execution.checkpointing.interval' = '{interval_ms}ms';")
 
         return "\n".join(statements)
@@ -731,8 +732,8 @@ WHERE {condition}""")
                 ref_model = self.project.get_model(refs[0])
                 if ref_model:
                     return (
-                        ref_model.topic.name
-                        if ref_model.topic and ref_model.topic.name
+                        ref_model.get_topic_config().name
+                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
                         else ref_model.name
                     )
         elif model.from_:
@@ -745,8 +746,8 @@ WHERE {condition}""")
                     ref_model = self.project.get_model(from_ref.ref)
                     if ref_model:
                         return (
-                            ref_model.topic.name
-                            if ref_model.topic and ref_model.topic.name
+                            ref_model.get_topic_config().name
+                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
                             else ref_model.name
                         )
         return None
@@ -765,8 +766,8 @@ WHERE {condition}""")
                 ref_model = self.project.get_model(ref_name)
                 if ref_model:
                     topics.append(
-                        ref_model.topic.name
-                        if ref_model.topic and ref_model.topic.name
+                        ref_model.get_topic_config().name
+                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
                         else ref_model.name
                     )
         elif model.from_:
@@ -779,8 +780,8 @@ WHERE {condition}""")
                     ref_model = self.project.get_model(from_ref.ref)
                     if ref_model:
                         topics.append(
-                            ref_model.topic.name
-                            if ref_model.topic and ref_model.topic.name
+                            ref_model.get_topic_config().name
+                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
                             else ref_model.name
                         )
 

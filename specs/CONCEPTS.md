@@ -136,35 +136,51 @@ Un **Model** représente une transformation qui produit un nouveau flux de donn�
 - **Transforme**: Prend des sources/modèles en entrée, produit un output
 - **Matérialisé**: Différentes stratégies selon le runtime
 
-### Types de matérialisation
+### Types de matérialisation (auto-inférés)
 
-| Type | Runtime | Output | Use case |
-|------|---------|--------|----------|
-| `topic` | Kafka | Topic Kafka réel | Stateless, persistance requise |
-| `virtual_topic` | Gateway | Pas de stockage | Stateless, lecture seule |
-| `flink` | Flink | Topic Kafka + job | Stateful, windowing, joins |
-| `sink` | Connect | Système externe | Export warehouse, search, etc. |
+Le type de matérialisation est **automatiquement inféré** à partir des patterns SQL :
 
-### Propriétés communes
+| Pattern SQL | Type inféré | Runtime | Output |
+|-------------|-------------|---------|--------|
+| Simple SELECT/WHERE | `topic` | Kafka | Topic Kafka réel |
+| TUMBLE/HOP/SESSION | `flink` | Flink | Topic Kafka + job |
+| GROUP BY (non-windowed) | `flink` | Flink | Topic Kafka + job |
+| JOIN | `flink` | Flink | Topic Kafka + job |
+| `from:` sans `sql:` | `sink` | Connect | Système externe |
+| `gateway:` rules | `virtual_topic` | Gateway | Pas de stockage |
+
+**Note:** Peut être surchargé via `advanced.materialized:`
+
+### Propriétés communes (top-level)
 
 | Propriété | Type | Requis | Description |
 |-----------|------|--------|-------------|
 | `name` | string | Oui | Identifiant unique |
 | `description` | string | Non | Description |
-| `materialized` | enum | Oui | Type de matérialisation |
+| `owner` | string | Non | Équipe responsable |
+| `tags` | list[string] | Non | Tags |
 | `from` | list | Non | Dépendances (inféré du SQL si absent) |
 | `sql` | string | Cond. | Transformation SQL |
 | `key` | string | Non | Clé de partitionnement |
-| `owner` | string | Non | Équipe responsable |
-| `tags` | list[string] | Non | Tags |
+| `columns` | list[Column] | Non | Définition des colonnes |
 | `access` | enum | Non | private/protected/public |
 | `group` | string | Non | Groupe autorisé à référencer |
-| `version` | int | Non | Version du modèle |
 | `security` | object | Non | Politiques de sécurité |
 
-### Propriétés spécifiques par type
+**Note:** `materialized` n'est plus au top-level - il est auto-inféré ou défini dans `advanced:`
 
-**topic / virtual_topic:**
+### Propriétés avancées (dans `advanced:`)
+
+Toutes les configurations d'implémentation sont dans la section `advanced:`:
+
+**Générique:**
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `materialized` | enum | Override auto-inference |
+| `cluster` | string | Cluster Kafka à utiliser |
+
+**Topic (topic / virtual_topic):**
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
@@ -173,7 +189,7 @@ Un **Model** représente une transformation qui produit un nouveau flux de donn�
 | `topic.replication_factor` | int | Facteur de réplication |
 | `topic.config` | object | Config Kafka (retention, etc.) |
 
-**flink:**
+**Flink:**
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
@@ -182,7 +198,7 @@ Un **Model** représente une transformation qui produit un nouveau flux de donn�
 | `flink.checkpoint_interval_ms` | int | Intervalle checkpoints |
 | `flink.state_backend` | string | Backend de state |
 
-**sink:**
+**Sink (Connect):**
 
 | Propriété | Type | Description |
 |-----------|------|-------------|
@@ -190,38 +206,69 @@ Un **Model** représente une transformation qui produit un nouveau flux de donn�
 | `sink.connector` | string | Type de connector |
 | `sink.config` | object | Configuration du connector |
 
+**Gateway:**
+
+| Propriété | Type | Description |
+|-----------|------|-------------|
+| `gateway.virtual_topic` | bool | Force virtual topic mode |
+| `gateway.interceptors` | list | Interceptors Gateway |
+
 ### Exemples
 
 ```yaml
 models:
   # Stateless - topic réel
   - name: payments_clean
-    materialized: topic
-    topic:
-      partitions: 12
+    description: "Cleaned payment events"
+    owner: team-payments
+    key: payment_id
+
     sql: |
       SELECT payment_id, amount_cents, status
       FROM {{ source("card_payments_raw") }}
       WHERE status = 'CAPTURED'
 
+    # materialized: topic (auto-inféré depuis simple SELECT/WHERE)
+
+    advanced:
+      topic:
+        partitions: 12
+        replication_factor: 3
+
   # Stateful - Flink
   - name: customer_balance_5m
-    materialized: flink
+    description: "5-minute customer balance"
+    owner: team-analytics
     key: customer_id
+
     sql: |
       SELECT customer_id, SUM(amount) as total
       FROM {{ ref("payments_clean") }}
       GROUP BY customer_id, TUMBLE(event_time, INTERVAL '5' MINUTE)
 
+    # materialized: flink (auto-inféré depuis TUMBLE)
+
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval_ms: 30000
+
   # Sink - Connect
   - name: payments_to_warehouse
-    materialized: sink
+    description: "Export to data warehouse"
+    owner: team-data-platform
+
     from:
       - ref: payments_clean
-    sink:
-      connector: snowflake-sink
-      config:
-        snowflake.database.name: ANALYTICS
+
+    # Pas de sql: donc materialized: sink (auto-inféré)
+
+    advanced:
+      connect_cluster: prod-connect
+      sink:
+        connector: snowflake-sink
+        config:
+          snowflake.database.name: ANALYTICS
 ```
 
 ### Référence dans SQL
@@ -229,6 +276,40 @@ models:
 ```sql
 SELECT * FROM {{ ref("payments_clean") }}
 ```
+
+### Auto-inférence de la matérialisation
+
+Le système analyse le SQL pour déterminer automatiquement le type de matérialisation optimal :
+
+**Règles d'inférence:**
+
+| Pattern SQL détecté | Type inféré | Raison |
+|-------------------|-------------|---------|
+| `TUMBLE()`, `HOP()`, `SESSION()` | `flink` | Fonctions de fenêtrage → traitement stateful |
+| `JOIN` | `flink` | Jointures de streams → opérateurs Flink |
+| `GROUP BY` (non-fenêtré) | `flink` | Agrégation stateful → Flink requis |
+| Simple `SELECT`, `WHERE`, `CASE` | `topic` | Transformation stateless → topic-to-topic |
+| `from:` présent, `sql:` absent | `sink` | Modèle sink-only → pas de transformation |
+| `advanced.gateway.virtual_topic: true` | `virtual_topic` | Virtual topic Gateway explicite |
+
+**Surcharge de l'inférence:**
+
+```yaml
+models:
+  - name: ma_transformation
+    sql: SELECT * FROM {{ source("raw") }} WHERE valid = true
+    # Normalement inféré comme 'topic', mais on veut 'virtual_topic':
+
+    advanced:
+      materialized: virtual_topic  # Surcharge explicite
+      gateway:
+        virtual_topic: true
+```
+
+**Organisation du schéma:**
+
+- **Top-level**: Décrit **quoi** (logique métier, documentation, sécurité)
+- **`advanced:`**: Décrit **comment** (implémentation, runtime, configs techniques)
 
 ---
 

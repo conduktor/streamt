@@ -21,7 +21,6 @@ A **model** is a named transformation that:
 ```yaml title="models/orders_clean.yml"
 models:
   - name: orders_clean
-    materialized: topic
     description: Cleaned and validated orders
     sql: |
       SELECT order_id, customer_id, amount
@@ -29,9 +28,17 @@ models:
       WHERE amount > 0
 ```
 
+The `materialized` property is automatically inferred from your SQL. Simple transforms become topics; windowed aggregations become Flink jobs.
+
 ## Materializations
 
-The `materialized` property determines how the model is deployed:
+Materializations are **automatically inferred** from your SQL:
+
+- Simple `SELECT` → **topic** materialization
+- `TUMBLE`, `HOP`, `JOIN` → **flink** materialization
+- `from:` only (no SQL) → **sink** materialization
+
+You can override auto-inference by explicitly specifying `materialized:`.
 
 ### Topic Materialization
 
@@ -39,16 +46,18 @@ Creates a Kafka topic with stateless transformations:
 
 ```yaml
 - name: high_value_orders
-  materialized: topic
-  topic:
-    name: orders.high-value.v1
-    partitions: 12
-    config:
-      retention.ms: 604800000
   sql: |
     SELECT *
     FROM {{ source("orders") }}
     WHERE amount > 10000
+
+  # Advanced configuration (optional)
+  advanced:
+    topic:
+      name: orders.high-value.v1
+      partitions: 12
+      config:
+        retention.ms: 604800000
 ```
 
 **Best for:** Filtering, field selection, simple transformations
@@ -59,7 +68,7 @@ Creates a Gateway rule for read-time filtering (requires Conduktor):
 
 ```yaml
 - name: orders_europe
-  materialized: virtual_topic
+  materialized: virtual_topic  # Must be explicit
   from: orders_clean
   sql: |
     SELECT *
@@ -75,13 +84,6 @@ Deploys a Flink SQL job for stateful processing:
 
 ```yaml
 - name: hourly_revenue
-  materialized: flink
-  flink:
-    parallelism: 8
-    checkpoint_interval: 60000
-  topic:
-    name: analytics.revenue.v1
-    partitions: 6
   sql: |
     SELECT
       TUMBLE_START(event_time, INTERVAL '1' HOUR) as window_start,
@@ -89,7 +91,18 @@ Deploys a Flink SQL job for stateful processing:
       COUNT(*) as order_count
     FROM {{ ref("orders_clean") }}
     GROUP BY TUMBLE(event_time, INTERVAL '1' HOUR)
+
+  # Advanced configuration (optional)
+  advanced:
+    flink:
+      parallelism: 8
+      checkpoint_interval: 60000
+    topic:
+      name: analytics.revenue.v1
+      partitions: 6
 ```
+
+The `TUMBLE` window automatically triggers Flink materialization.
 
 **Best for:** Windowed aggregations, joins, complex state
 
@@ -99,15 +112,17 @@ Creates a Kafka Connect connector to export data:
 
 ```yaml
 - name: orders_snowflake
-  materialized: sink
-  from: orders_clean
-  connector:
-    type: snowflake-sink
-    config:
-      snowflake.url.name: ${SNOWFLAKE_URL}
-      snowflake.database.name: ANALYTICS
-      snowflake.schema.name: ORDERS
+  from: orders_clean  # No SQL = sink materialization
+  advanced:
+    connector:
+      type: snowflake-sink
+      config:
+        snowflake.url.name: ${SNOWFLAKE_URL}
+        snowflake.database.name: ANALYTICS
+        snowflake.schema.name: ORDERS
 ```
+
+Using `from:` without `sql:` automatically triggers sink materialization.
 
 **Best for:** Exporting to data warehouses, databases, S3
 
@@ -116,7 +131,6 @@ Creates a Kafka Connect connector to export data:
 ```yaml
 models:
   - name: customer_metrics
-    materialized: flink
     description: |
       Real-time customer metrics aggregated by hour.
       Used for the customer dashboard and recommendations.
@@ -126,34 +140,8 @@ models:
     tags: [analytics, customer, kpi]
     access: protected  # public, protected, private
 
-    # Output topic configuration
-    topic:
-      name: analytics.customer-metrics.v1
-      partitions: 12
-      replication_factor: 3
-      config:
-        retention.ms: 2592000000  # 30 days
-        cleanup.policy: delete
-
     # Partitioning key
     key: customer_id
-
-    # Flink job configuration
-    flink:
-      parallelism: 8
-      checkpoint_interval: 60000
-      state_backend: rocksdb
-      cluster: production
-
-    # Security policies
-    security:
-      masking:
-        - column: email
-          policy: hash
-        - column: phone
-          policy: partial
-          config:
-            visible_chars: 4
 
     # SQL transformation
     sql: |
@@ -170,6 +158,34 @@ models:
         email,
         phone,
         TUMBLE(event_time, INTERVAL '1' HOUR)
+
+    # Advanced configuration (optional)
+    advanced:
+      # Output topic configuration
+      topic:
+        name: analytics.customer-metrics.v1
+        partitions: 12
+        replication_factor: 3
+        config:
+          retention.ms: 2592000000  # 30 days
+          cleanup.policy: delete
+
+      # Flink job configuration
+      flink:
+        parallelism: 8
+        checkpoint_interval: 60000
+        state_backend: rocksdb
+        cluster: production
+
+      # Security policies
+      security:
+        masking:
+          - column: email
+            policy: hash
+          - column: phone
+            policy: partial
+            config:
+              visible_chars: 4
 ```
 
 ## SQL Syntax
@@ -222,46 +238,49 @@ FROM {{ source("events") }}
 
 ## Topic Configuration
 
-Configure the output Kafka topic:
+Configure the output Kafka topic using the `advanced:` section:
 
 ```yaml
-topic:
-  name: orders.clean.v1        # Topic name
-  partitions: 12               # Number of partitions
-  replication_factor: 3        # Replication factor
-  config:                      # Topic configs
-    retention.ms: 604800000    # 7 days
-    cleanup.policy: delete     # or compact
-    min.insync.replicas: 2
+advanced:
+  topic:
+    name: orders.clean.v1        # Topic name
+    partitions: 12               # Number of partitions
+    replication_factor: 3        # Replication factor
+    config:                      # Topic configs
+      retention.ms: 604800000    # 7 days
+      cleanup.policy: delete     # or compact
+      min.insync.replicas: 2
 ```
 
 ## Flink Configuration
 
-Configure Flink job settings:
+Configure Flink job settings using the `advanced:` section:
 
 ```yaml
-flink:
-  parallelism: 8                  # Job parallelism
-  checkpoint_interval: 60000      # Checkpoint interval (ms)
-  checkpoint_timeout: 300000      # Checkpoint timeout (ms)
-  state_backend: rocksdb          # hashmap or rocksdb
-  restart_strategy: fixed-delay   # Restart strategy
-  cluster: production             # Target Flink cluster
+advanced:
+  flink:
+    parallelism: 8                  # Job parallelism
+    checkpoint_interval: 60000      # Checkpoint interval (ms)
+    checkpoint_timeout: 300000      # Checkpoint timeout (ms)
+    state_backend: rocksdb          # hashmap or rocksdb
+    restart_strategy: fixed-delay   # Restart strategy
+    cluster: production             # Target Flink cluster
 ```
 
 ## Connector Configuration
 
-Configure Kafka Connect sinks:
+Configure Kafka Connect sinks using the `advanced:` section:
 
 ```yaml
-connector:
-  type: snowflake-sink           # Connector type
-  tasks_max: 4                   # Number of tasks
-  config:
-    # Connector-specific configuration
-    snowflake.url.name: ${SNOWFLAKE_URL}
-    snowflake.user.name: ${SNOWFLAKE_USER}
-    snowflake.database.name: ANALYTICS
+advanced:
+  connector:
+    type: snowflake-sink           # Connector type
+    tasks_max: 4                   # Number of tasks
+    config:
+      # Connector-specific configuration
+      snowflake.url.name: ${SNOWFLAKE_URL}
+      snowflake.user.name: ${SNOWFLAKE_USER}
+      snowflake.database.name: ANALYTICS
 ```
 
 Supported connector types:
@@ -386,12 +405,14 @@ This model depends on both `orders_clean` and the `customers` source. streamt bu
 
 ```yaml
 # High-volume: more partitions for parallelism
-topic:
-  partitions: 24
+advanced:
+  topic:
+    partitions: 24
 
 # Low-volume: fewer partitions
-topic:
-  partitions: 3
+advanced:
+  topic:
+    partitions: 3
 ```
 
 ### 5. Use Keys for Ordering
@@ -408,7 +429,6 @@ topic:
 models:
   # Stage 1: Clean raw data
   - name: events_clean
-    materialized: topic
     sql: |
       SELECT event_id, user_id, event_type, created_at
       FROM {{ source("events_raw") }}
@@ -416,15 +436,13 @@ models:
 
   # Stage 2: Enrich with user data
   - name: events_enriched
-    materialized: topic
     sql: |
       SELECT e.*, u.tier, u.country
       FROM {{ ref("events_clean") }} e
       JOIN {{ source("users") }} u ON e.user_id = u.id
 
-  # Stage 3: Aggregate metrics
+  # Stage 3: Aggregate metrics (auto-inferred as Flink due to TUMBLE)
   - name: hourly_metrics
-    materialized: flink
     sql: |
       SELECT
         country,
@@ -433,12 +451,12 @@ models:
       FROM {{ ref("events_enriched") }}
       GROUP BY country, TUMBLE(created_at, INTERVAL '1' HOUR)
 
-  # Stage 4: Export to warehouse
+  # Stage 4: Export to warehouse (auto-inferred as sink)
   - name: metrics_warehouse
-    materialized: sink
     from: hourly_metrics
-    connector:
-      type: snowflake-sink
+    advanced:
+      connector:
+        type: snowflake-sink
 ```
 
 ## Next Steps

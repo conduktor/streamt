@@ -19,7 +19,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestWindowedAggregationScenarios:
     """Tests for windowed aggregation patterns from the tutorial."""
 
@@ -80,10 +79,12 @@ class TestWindowedAggregationScenarios:
                     {
                         "name": "order_metrics_5min",
                         "description": "Order metrics in 5-minute windows",
-                        "materialized": "flink",
-                        "flink": {
-                            "parallelism": 4,
-                            "state_ttl_ms": 3600000,  # 1 hour
+
+                        "advanced": {
+                            "flink": {
+                                "parallelism": 4,
+                                "state_ttl_ms": 3600000,  # 1 hour
+                            },
                         },
                         "sql": """
                             SELECT
@@ -172,7 +173,7 @@ class TestWindowedAggregationScenarios:
                     {
                         "name": "page_metrics_sliding",
                         "description": "Page metrics with sliding 5-minute window",
-                        "materialized": "flink",
+
                         "flink": {"parallelism": 2},
                         "sql": """
                             SELECT
@@ -249,7 +250,7 @@ class TestWindowedAggregationScenarios:
                     {
                         "name": "user_sessions",
                         "description": "User sessions with 30-minute gap",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 7200000},  # 2 hours
                         "sql": """
                             SELECT
@@ -282,7 +283,6 @@ class TestWindowedAggregationScenarios:
             assert "SESSION(" in job["sql"]
             assert "SESSION_START" in job["sql"]
             assert job["state_ttl_ms"] == 7200000
-
 
 class TestStreamJoinScenarios:
     """Tests for stream join patterns from the tutorial."""
@@ -354,7 +354,7 @@ class TestStreamJoinScenarios:
                     {
                         "name": "orders_enriched",
                         "description": "Orders enriched with customer data",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 86400000},  # 24 hours
                         "sql": """
                             SELECT
@@ -451,7 +451,7 @@ class TestStreamJoinScenarios:
                     {
                         "name": "order_payment_matched",
                         "description": "Orders matched with payments within 1 hour",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 7200000},  # 2 hours
                         "sql": """
                             SELECT
@@ -549,7 +549,7 @@ class TestStreamJoinScenarios:
                     {
                         "name": "order_360",
                         "description": "Complete order view with all dimensions",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 86400000},
                         "sql": """
                             SELECT
@@ -587,7 +587,6 @@ class TestStreamJoinScenarios:
             assert "orders" in upstream
             assert "customers" in upstream
             assert "products" in upstream
-
 
 class TestCDCPipelineScenarios:
     """Tests for CDC pipeline patterns from the tutorial."""
@@ -659,7 +658,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "customer_orders_cdc",
                         "description": "Customer orders from CDC streams",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 604800000},  # 7 days
                         "sql": """
                             SELECT
@@ -753,7 +752,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "customer_metrics",
                         "description": "Customer lifetime metrics",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 2592000000},  # 30 days
                         "sql": """
                             SELECT
@@ -768,7 +767,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "customer_360",
                         "description": "Complete customer 360 view",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 86400000},
                         "sql": """
                             SELECT
@@ -859,7 +858,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "hourly_revenue",
                         "description": "Hourly revenue by region",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 172800000},  # 48 hours
                         "sql": """
                             SELECT
@@ -877,7 +876,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "daily_revenue_summary",
                         "description": "Daily revenue summary",
-                        "materialized": "flink",
+
                         "flink": {"state_ttl_ms": 604800000},  # 7 days
                         "sql": """
                             SELECT

@@ -16,7 +16,6 @@ from streamt.compiler import Compiler
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestSchemaRegistryBasics:
     """Test basic Schema Registry scenarios."""
 
@@ -70,8 +69,7 @@ class TestSchemaRegistryBasics:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
-                        "sql": "SELECT * FROM {{ source('payments') }} WHERE amount > 0",
+                        "sql": "SELECT * FROM {{ source('payments') }}",
                     }
                 ],
             }
@@ -135,7 +133,7 @@ class TestSchemaRegistryBasics:
                 "models": [
                     {
                         "name": "sensor_readings_clean",
-                        "materialized": "topic",
+
                         "sql": "SELECT * FROM {{ source('sensor_readings') }}",
                     }
                 ],
@@ -190,7 +188,7 @@ class TestSchemaRegistryBasics:
                 "models": [
                     {
                         "name": "orders_clean",
-                        "materialized": "topic",
+
                         "sql": "SELECT * FROM {{ source('orders') }}",
                     }
                 ],
@@ -213,7 +211,6 @@ class TestSchemaRegistryBasics:
             assert "customer_id" in field_names
             assert "amount" in field_names
             assert "status" in field_names
-
 
 class TestSchemaRegistryMultiSource:
     """Test multi-source Schema Registry scenarios."""
@@ -285,7 +282,7 @@ class TestSchemaRegistryMultiSource:
                 "models": [
                     {
                         "name": "orders_enriched",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT o.order_id, c.customer_id
                             FROM {{ source('orders') }} o
@@ -354,7 +351,7 @@ class TestSchemaRegistryMultiSource:
                 "models": [
                     {
                         "name": "orders_clean",
-                        "materialized": "topic",
+
                         "sql": "SELECT * FROM {{ source('orders') }}",
                     }
                 ],
@@ -371,7 +368,6 @@ class TestSchemaRegistryMultiSource:
             schemas = manifest.artifacts.get("schemas", [])
             assert len(schemas) == 1
             assert "orders" in schemas[0]["subject"]
-
 
 class TestSchemaRegistryWithGovernance:
     """Test Schema Registry with governance rules."""
@@ -398,6 +394,16 @@ class TestSchemaRegistryWithGovernance:
                 "runtime": {
                     "kafka": {"bootstrap_servers": "localhost:9092"},
                     "schema_registry": {"url": "http://localhost:8081"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {
+                            "local": {
+                                "type": "rest",
+                                "rest_url": "http://localhost:8082",
+                                "sql_gateway_url": "http://localhost:8083",
+                            }
+                        },
+                    },
                 },
                 "sources": [
                     {
@@ -433,7 +439,6 @@ class TestSchemaRegistryWithGovernance:
                     {
                         "name": "transactions_masked",
                         "description": "Transactions with PII masked",
-                        "materialized": "topic",  # Using topic for schema test (not Flink)
                         "security": {
                             "policies": [
                                 {"mask": {"column": "ssn", "method": "redact"}},
@@ -471,7 +476,6 @@ class TestSchemaRegistryWithGovernance:
             source = manifest.sources[0]
             assert source["owner"] == "compliance-team"
             assert len(source["columns"]) == 4
-
 
 class TestSchemaRegistrySubjectNaming:
     """Test Schema Registry subject naming conventions."""
@@ -517,7 +521,7 @@ class TestSchemaRegistrySubjectNaming:
                 "models": [
                     {
                         "name": "orders_clean",
-                        "materialized": "topic",
+
                         "sql": "SELECT * FROM {{ source('orders') }}",
                     }
                 ],
@@ -570,7 +574,7 @@ class TestSchemaRegistrySubjectNaming:
                 "models": [
                     {
                         "name": "orders_clean",
-                        "materialized": "topic",
+
                         "sql": "SELECT * FROM {{ source('orders') }}",
                     }
                 ],

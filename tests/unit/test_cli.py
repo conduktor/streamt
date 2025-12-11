@@ -47,7 +47,6 @@ class TestCLI:
                 "models": [
                     {
                         "name": "broken",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("nonexistent") }}',
                     }
                 ],
@@ -71,9 +70,10 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
-                        "topic": {"partitions": 6},
                         "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "advanced": {
+                            "topic": {"partitions": 6}
+                        }
                     }
                 ],
             }
@@ -97,7 +97,6 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -125,12 +124,10 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "enriched",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("clean") }}',
                     },
                 ],
@@ -156,7 +153,6 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -181,7 +177,6 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -213,12 +208,10 @@ class TestCLI:
                 "models": [
                     {
                         "name": "model1",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "model2",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("model1") }}',
                     },
                 ],
@@ -257,7 +250,6 @@ class TestCLI:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -297,7 +289,6 @@ class TestCLI:
                     {
                         "name": "clean",
                         "description": "Cleaned data",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],

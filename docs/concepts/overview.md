@@ -71,7 +71,6 @@ Sources are **read-only** in streamt. You don't create or modify them; you decla
 ```yaml
 models:
   - name: active_users
-    materialized: flink
     sql: |
       SELECT user_id, COUNT(*) as event_count
       FROM {{ source("user_events") }}
@@ -96,21 +95,19 @@ Models can reference sources with `{{ source("name") }}` or other models with `{
 ```yaml
 # Stateless filtering → Kafka topic
 - name: high_value_orders
-  materialized: topic
   sql: SELECT * FROM {{ source("orders") }} WHERE amount > 1000
 
 # Stateful aggregation → Flink job
 - name: hourly_revenue
-  materialized: flink
   sql: SELECT SUM(amount) FROM {{ ref("high_value_orders") }}
        GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
 
 # Export to warehouse → Kafka Connect
 - name: orders_warehouse
-  materialized: sink
   from: high_value_orders
-  connector:
-    type: snowflake-sink
+  advanced:
+    connector:
+      type: snowflake-sink
 ```
 
 ## Tests

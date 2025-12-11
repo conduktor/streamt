@@ -186,14 +186,20 @@ sources:
 
 Models are transformations that produce new streams.
 
-### Materialization Types
+### Materialization Types (Auto-Inferred)
 
-| Type | Runtime | Creates | Use case |
-|------|---------|---------|----------|
-| `topic` | Kafka | Real topic | Stateless transform, persistent output |
-| `virtual_topic` | Gateway | Virtual topic (no storage) | Stateless transform, read-time only |
-| `flink` | Flink | Real topic + Flink job | Stateful, windowing, joins |
-| `sink` | Connect | External system | Export to warehouse, search, etc. |
+Materialization type is automatically inferred from SQL patterns:
+
+| SQL Pattern | Inferred Type | Runtime | Creates |
+|-------------|---------------|---------|---------|
+| Simple SELECT/WHERE | `topic` | Kafka | Real topic |
+| TUMBLE/HOP/SESSION | `flink` | Flink | Real topic + Flink job |
+| GROUP BY (non-windowed) | `flink` | Flink | Real topic + Flink job |
+| JOIN | `flink` | Flink | Real topic + Flink job |
+| `from:` without `sql:` | `sink` | Connect | External system |
+| `gateway:` rules | `virtual_topic` | Gateway | Virtual topic (no storage) |
+
+**Note:** You can override auto-inference by explicitly setting `materialized:` in the `advanced:` section.
 
 ### Model Examples
 
@@ -204,16 +210,10 @@ models:
   # --- Stateless transformation ---
   - name: card_payments_clean
     description: "Cleaned and filtered payment events"
-
-    materialized: topic           # or virtual_topic (requires Gateway)
-
-    # Output topic config
-    topic:
-      name: payments.clean.v1     # optional, defaults to model name
-      partitions: 12
-      replication_factor: 3
-      config:
-        retention.ms: 604800000   # 7 days
+    owner: team-payments
+    tags:
+      - payments
+      - pii
 
     key: payment_id
 
@@ -234,6 +234,8 @@ models:
       FROM {{ source("card_payments_raw") }}
       WHERE status IN ('AUTHORIZED', 'CAPTURED')
 
+    # Materialized auto-inferred as 'topic' from simple SELECT/WHERE
+
     # Access control
     access: private               # private | protected | public
     group: finance                # only finance group can reference this
@@ -253,15 +255,20 @@ models:
               - payments-core
             purpose: fraud_detection
 
+    # Advanced configuration (optional)
+    advanced:
+      # Output topic config
+      topic:
+        name: payments.clean.v1     # optional, defaults to model name
+        partitions: 12
+        replication_factor: 3
+        config:
+          retention.ms: 604800000   # 7 days
+
   # --- Stateful transformation (Flink) ---
   - name: customer_risk_profile
     description: "Aggregated risk profile per customer"
-
-    materialized: flink
-    flink_cluster: prod-flink     # optional, uses default
-
-    topic:
-      name: customers.risk.profile.v1
+    owner: team-risk
 
     key: customer_id
 
@@ -277,17 +284,29 @@ models:
       FROM {{ source("customers_cdc") }}
       WHERE kyc_status IN ('APPROVED', 'REVIEW')
 
-    # Flink-specific config
-    flink:
-      parallelism: 4
-      checkpoint_interval_ms: 60000
-      state_backend: rocksdb
+    # Materialized auto-inferred as 'flink' (could be inferred from downstream usage or explicit GROUP BY)
+    # In this case, it's a CDC stream that may need stateful processing
+
+    # Advanced configuration (optional)
+    advanced:
+      # Override auto-inference if needed
+      # materialized: flink
+
+      flink_cluster: prod-flink     # optional, uses default
+
+      topic:
+        name: customers.risk.profile.v1
+
+      # Flink-specific config
+      flink:
+        parallelism: 4
+        checkpoint_interval_ms: 60000
+        state_backend: rocksdb
 
   # --- Windowed aggregation (Flink) ---
   - name: customer_balance_5m
     description: "Customer balance over 5-minute tumbling windows"
-
-    materialized: flink
+    owner: team-analytics
 
     key: customer_id
 
@@ -306,11 +325,18 @@ models:
         customer_id,
         TUMBLE(event_time, INTERVAL '5' MINUTE)
 
+    # Materialized auto-inferred as 'flink' from TUMBLE windowing function
+
+    # Advanced configuration (optional)
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval_ms: 30000
+
   # --- Join (Flink) ---
   - name: card_payments_enriched
     description: "Payments enriched with customer risk profile"
-
-    materialized: flink
+    owner: team-fraud
 
     key: payment_id
 
@@ -336,28 +362,152 @@ models:
       LEFT JOIN {{ ref("customer_risk_profile") }} c
         ON p.customer_id = c.customer_id
 
+    # Materialized auto-inferred as 'flink' from JOIN operation
+
+    # Advanced configuration (optional)
+    advanced:
+      flink:
+        parallelism: 6
+      topic:
+        partitions: 24
+
   # --- Sink to external system ---
   - name: payments_to_snowflake
     description: "Export enriched payments to Snowflake"
-
-    materialized: sink
-    connect_cluster: prod-connect  # optional, uses default
+    owner: team-data-platform
 
     from:
       - ref: card_payments_enriched
 
-    sink:
-      connector: snowflake-sink    # connector type
-      config:
-        snowflake.url.name: ${SNOWFLAKE_URL}
-        snowflake.user.name: ${SNOWFLAKE_USER}
-        snowflake.private.key: ${SNOWFLAKE_KEY}
-        snowflake.database.name: FRAUD
-        snowflake.schema.name: PROD
-        snowflake.topic2table.map: "payments.enriched:PAYMENTS_ENRICHED"
-        key.converter: org.apache.kafka.connect.storage.StringConverter
-        value.converter: io.confluent.connect.avro.AvroConverter
+    # No sql: means sink-only model
+    # Materialized auto-inferred as 'sink' from absence of sql: with from: present
+
+    # Advanced configuration
+    advanced:
+      connect_cluster: prod-connect  # optional, uses default
+
+      sink:
+        connector: snowflake-sink    # connector type
+        config:
+          snowflake.url.name: ${SNOWFLAKE_URL}
+          snowflake.user.name: ${SNOWFLAKE_USER}
+          snowflake.private.key: ${SNOWFLAKE_KEY}
+          snowflake.database.name: FRAUD
+          snowflake.schema.name: PROD
+          snowflake.topic2table.map: "payments.enriched:PAYMENTS_ENRICHED"
+          key.converter: org.apache.kafka.connect.storage.StringConverter
+          value.converter: io.confluent.connect.avro.AvroConverter
 ```
+
+---
+
+## Auto-Inference Logic
+
+### How Materialization is Inferred
+
+The system analyzes your SQL to determine the optimal materialization strategy:
+
+```yaml
+# Example 1: Simple SELECT/WHERE → topic
+- name: filtered_payments
+  sql: SELECT * FROM {{ source("payments") }} WHERE amount > 100
+  # Inferred: materialized: topic
+
+# Example 2: Window function → flink
+- name: hourly_revenue
+  sql: |
+    SELECT TUMBLE_START(ts, INTERVAL '1' HOUR) as hour, SUM(amount)
+    FROM {{ ref("payments") }}
+    GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
+  # Inferred: materialized: flink
+
+# Example 3: JOIN → flink
+- name: enriched_events
+  sql: |
+    SELECT e.*, u.name
+    FROM {{ ref("events") }} e
+    JOIN {{ ref("users") }} u ON e.user_id = u.id
+  # Inferred: materialized: flink
+
+# Example 4: GROUP BY (non-windowed) → flink
+- name: customer_totals
+  sql: |
+    SELECT customer_id, COUNT(*) as total
+    FROM {{ ref("orders") }}
+    GROUP BY customer_id
+  # Inferred: materialized: flink
+
+# Example 5: No SQL, only from → sink
+- name: export_to_warehouse
+  from:
+    - ref: enriched_events
+  # Inferred: materialized: sink
+  advanced:
+    sink:
+      connector: snowflake-sink
+```
+
+### Auto-Inference Rules
+
+| Pattern Detected | Inferred Type | Reason |
+|-----------------|---------------|---------|
+| `TUMBLE()`, `HOP()`, `SESSION()` | `flink` | Window functions require stateful processing |
+| `JOIN` keyword | `flink` | Stream joins require Flink's join operators |
+| `GROUP BY` (non-window) | `flink` | Stateful aggregation requires Flink |
+| Simple `SELECT`, `WHERE`, `CASE` | `topic` | Stateless transformation, direct topic-to-topic |
+| `from:` present, `sql:` absent | `sink` | Sink-only model, no transformation |
+| `advanced.gateway.virtual_topic: true` | `virtual_topic` | Explicit Gateway virtual topic |
+
+### Overriding Auto-Inference
+
+You can override the inferred materialization:
+
+```yaml
+models:
+  - name: simple_transform
+    sql: SELECT * FROM {{ source("raw") }} WHERE valid = true
+    # Would normally infer 'topic', but we want virtual_topic:
+
+    advanced:
+      materialized: virtual_topic  # Explicit override
+      gateway:
+        virtual_topic: true
+```
+
+### Schema-Level Configuration
+
+Top-level fields focus on **what** the model does:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `name` | Identifier | `card_payments_clean` |
+| `description` | Documentation | "Cleaned payment events" |
+| `owner` | Ownership | `team-payments` |
+| `tags` | Organization | `[pii, payments]` |
+| `sql` | Transformation logic | `SELECT * FROM ...` |
+| `from` | Dependencies | `[ref: payments_raw]` |
+| `key` | Partitioning key | `payment_id` |
+| `columns` | Data structure | Column definitions |
+| `security` | Data policies | Masking, access control |
+
+`advanced:` section contains **how** it's implemented:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `materialized` | Override inference | `virtual_topic` |
+| `topic.*` | Kafka topic config | partitions, retention |
+| `flink.*` | Flink job config | parallelism, checkpointing |
+| `sink.*` | Connector config | Connector type, properties |
+| `gateway.*` | Gateway config | Virtual topic, interceptors |
+| `cluster` | Target cluster | `prod-kafka` |
+
+### Benefits of Auto-Inference
+
+1. **Cleaner YAML**: Focus on business logic, not implementation details
+2. **Less error-prone**: No need to remember which SQL patterns need Flink
+3. **Easier refactoring**: Change SQL, materialization adapts automatically
+4. **Better defaults**: System chooses the most efficient runtime
+5. **Flexibility**: Override when needed via `advanced:` section
 
 ---
 

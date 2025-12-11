@@ -133,14 +133,14 @@ sources:
 
 models:
   - name: clean_events
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT event_id, user_id, event_type
       FROM {{{{ source("raw_events") }}}}
       WHERE event_id IS NOT NULL
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -260,14 +260,14 @@ sources:
 
 models:
   - name: high_value_orders
-    materialized: flink
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT order_id, customer_id, amount
       FROM {{{{ source("orders_raw") }}}}
       WHERE amount > 100 AND status = 'confirmed'
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -376,13 +376,13 @@ sources:
 
 models:
   - name: events_model
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT event_id, user_id, event_type
       FROM {{{{ source("events_source") }}}}
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 
 tests:
   - name: test_events_quality
@@ -531,24 +531,24 @@ sources:
 
 models:
   - name: stage_a
-    materialized: topic
-    topic:
-      name: {model_a_topic}
-      partitions: 1
     sql: |
       SELECT id, amount, category
       FROM {{{{ source("raw_data") }}}}
       WHERE amount > 0
+    advanced:
+      topic:
+        name: {model_a_topic}
+        partitions: 1
 
   - name: stage_b
-    materialized: topic
-    topic:
-      name: {model_b_topic}
-      partitions: 1
     sql: |
       SELECT id, amount, category
       FROM {{{{ ref("stage_a") }}}}
       WHERE category = 'important'
+    advanced:
+      topic:
+        name: {model_b_topic}
+        partitions: 1
 """
 
         try:
@@ -688,34 +688,34 @@ sources:
 
 models:
   - name: events_filtered
-    materialized: topic
-    topic:
-      name: {stage_a_topic}
-      partitions: 1
     sql: |
       SELECT id, amount, region
       FROM {{{{ source("events_raw") }}}}
       WHERE amount > 0
+    advanced:
+      topic:
+        name: {stage_a_topic}
+        partitions: 1
 
   - name: events_enriched
-    materialized: topic
-    topic:
-      name: {stage_b_topic}
-      partitions: 1
     sql: |
       SELECT id, amount, region
       FROM {{{{ ref("events_filtered") }}}}
       WHERE region IN ('US', 'EU')
+    advanced:
+      topic:
+        name: {stage_b_topic}
+        partitions: 1
 
   - name: events_final
-    materialized: topic
-    topic:
-      name: {stage_c_topic}
-      partitions: 1
     sql: |
       SELECT id, amount, region
       FROM {{{{ ref("events_enriched") }}}}
       WHERE amount > 100
+    advanced:
+      topic:
+        name: {stage_c_topic}
+        partitions: 1
 """
 
         try:
@@ -848,24 +848,24 @@ sources:
 
 models:
   - name: type_a_events
-    materialized: topic
-    topic:
-      name: {branch_a_topic}
-      partitions: 1
     sql: |
       SELECT id, event_type, payload
       FROM {{{{ source("mixed_events") }}}}
       WHERE event_type = 'A'
+    advanced:
+      topic:
+        name: {branch_a_topic}
+        partitions: 1
 
   - name: type_b_events
-    materialized: topic
-    topic:
-      name: {branch_b_topic}
-      partitions: 1
     sql: |
       SELECT id, event_type, payload
       FROM {{{{ source("mixed_events") }}}}
       WHERE event_type = 'B'
+    advanced:
+      topic:
+        name: {branch_b_topic}
+        partitions: 1
 """
 
         try:
@@ -1267,14 +1267,14 @@ sources:
 
 models:
   - name: validated_orders
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT order_id, customer_id, amount
       FROM {{{{ source("orders_source") }}}}
       WHERE amount > 0
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -1423,14 +1423,14 @@ sources:
 
 models:
   - name: from_source_a
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT id, amount
       FROM {{{{ source("source_a") }}}}
       WHERE amount > 0
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -1532,10 +1532,6 @@ sources:
 
 models:
   - name: enriched_events
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT
         id,
@@ -1548,6 +1544,10 @@ models:
         END AS tier
       FROM {{{{ source("events_source") }}}}
       WHERE region IS NOT NULL
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -1652,13 +1652,13 @@ sources:
 
 models:
   - name: passthrough
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 1
     sql: |
       SELECT id, amount
       FROM {{{{ source("empty_source") }}}}
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 1
 """
 
         try:
@@ -1754,13 +1754,13 @@ sources:
 
 models:
   - name: burst_passthrough
-    materialized: topic
-    topic:
-      name: {model_topic}
-      partitions: 3
     sql: |
       SELECT id, amount
       FROM {{{{ source("burst_source") }}}}
+    advanced:
+      topic:
+        name: {model_topic}
+        partitions: 3
 """
 
         try:

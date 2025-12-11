@@ -16,7 +16,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestIndustrialSensorMonitoring:
     """Test industrial IoT sensor monitoring scenarios."""
 
@@ -76,9 +75,11 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "sensor_readings_cleaned",
                         "description": "Cleaned and normalized sensor readings",
-                        "materialized": "flink",
-                        "topic": {"partitions": 24},
-                        "flink": {"parallelism": 8},
+
+                        "advanced": {
+                            "topic": {"partitions": 24},
+                            "flink": {"parallelism": 8},
+                        },
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -102,8 +103,10 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "sensor_readings_1min",
                         "description": "1-minute aggregated sensor readings",
-                        "materialized": "flink",
-                        "topic": {"partitions": 12},
+
+                        "advanced": {
+                            "topic": {"partitions": 12},
+                        },
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -124,8 +127,10 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "sensor_readings_5min",
                         "description": "5-minute aggregated sensor readings",
-                        "materialized": "flink",
-                        "topic": {"partitions": 6},
+
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -146,8 +151,10 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "anomaly_detection",
                         "description": "Detected anomalies based on thresholds",
-                        "materialized": "flink",
-                        "topic": {"partitions": 6},
+
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 s.equipment_id,
@@ -174,8 +181,10 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "equipment_health_score",
                         "description": "Real-time equipment health score (0-100)",
-                        "materialized": "flink",
-                        "topic": {"partitions": 6},
+
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -191,8 +200,10 @@ class TestIndustrialSensorMonitoring:
                     {
                         "name": "maintenance_alerts",
                         "description": "Maintenance alerts for equipment needing attention",
-                        "materialized": "topic",
-                        "topic": {"partitions": 3},
+
+                        "advanced": {
+                            "topic": {"partitions": 3},
+                        },
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -285,7 +296,6 @@ class TestIndustrialSensorMonitoring:
             # Verify exposures are connected
             assert "plant_monitoring_dashboard" in dag.get_downstream("equipment_health_score")
 
-
 class TestFleetManagement:
     """Test vehicle fleet management scenarios."""
 
@@ -337,7 +347,7 @@ class TestFleetManagement:
                     {
                         "name": "vehicle_positions",
                         "description": "Latest vehicle positions with speed",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -355,7 +365,7 @@ class TestFleetManagement:
                     {
                         "name": "vehicle_geofence_events",
                         "description": "Geofence entry/exit events",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -375,7 +385,7 @@ class TestFleetManagement:
                     {
                         "name": "delivery_eta",
                         "description": "Real-time delivery ETA calculations",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -400,7 +410,7 @@ class TestFleetManagement:
                     {
                         "name": "late_deliveries",
                         "description": "Deliveries at risk of being late",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 3},
                         "sql": """
                             SELECT
@@ -424,7 +434,7 @@ class TestFleetManagement:
                     {
                         "name": "fleet_metrics",
                         "description": "Aggregated fleet performance metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 TUMBLE_END(event_time, INTERVAL '5' MINUTE) as window_end,
@@ -474,7 +484,6 @@ class TestFleetManagement:
             result = validator.validate()
             assert result.is_valid
 
-
 class TestSmartBuilding:
     """Test smart building IoT scenarios."""
 
@@ -516,7 +525,7 @@ class TestSmartBuilding:
                     {
                         "name": "zone_environment",
                         "description": "Combined environment metrics per zone",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -540,7 +549,7 @@ class TestSmartBuilding:
                     {
                         "name": "comfort_score",
                         "description": "Calculated comfort score per zone",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 zone_id,
@@ -561,7 +570,7 @@ class TestSmartBuilding:
                     {
                         "name": "hvac_commands",
                         "description": "HVAC control commands",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 3},
                         "sql": """
                             SELECT
@@ -585,7 +594,7 @@ class TestSmartBuilding:
                     {
                         "name": "energy_consumption",
                         "description": "Aggregated energy consumption per zone",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 zone_id,

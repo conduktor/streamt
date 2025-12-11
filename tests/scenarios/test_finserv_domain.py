@@ -17,7 +17,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestTradingPipeline:
     """Test trading and market data scenarios."""
 
@@ -89,10 +88,12 @@ class TestTradingPipeline:
                     {
                         "name": "consolidated_quotes",
                         "description": "Consolidated quotes from all exchanges",
-                        "materialized": "flink",
-                        "topic": {"partitions": 24, "config": {"retention.ms": "3600000"}},
-                        "flink": {"parallelism": 12},
+
                         "owner": "market-data-team",
+                        "advanced": {
+                            "topic": {"partitions": 24, "config": {"retention.ms": "3600000"}},
+                            "flink": {"parallelism": 12},
+                        },
                         "sql": """
                             SELECT
                                 symbol,
@@ -118,9 +119,11 @@ class TestTradingPipeline:
                     {
                         "name": "nbbo",
                         "description": "National Best Bid and Offer",
-                        "materialized": "flink",
-                        "topic": {"partitions": 12},
+
                         "owner": "market-data-team",
+                        "advanced": {
+                            "topic": {"partitions": 12},
+                        },
                         "sql": """
                             SELECT
                                 symbol,
@@ -137,9 +140,11 @@ class TestTradingPipeline:
                     {
                         "name": "vwap",
                         "description": "Volume Weighted Average Price per symbol",
-                        "materialized": "flink",
-                        "topic": {"partitions": 12},
+
                         "owner": "quant-team",
+                        "advanced": {
+                            "topic": {"partitions": 12},
+                        },
                         "sql": """
                             SELECT
                                 symbol,
@@ -157,9 +162,11 @@ class TestTradingPipeline:
                     {
                         "name": "price_anomalies",
                         "description": "Detected price anomalies",
-                        "materialized": "topic",
-                        "topic": {"partitions": 6, "config": {"retention.ms": "86400000"}},
+
                         "owner": "surveillance-team",
+                        "advanced": {
+                            "topic": {"partitions": 6, "config": {"retention.ms": "86400000"}},
+                        },
                         "sql": """
                             SELECT
                                 n.symbol,
@@ -184,9 +191,11 @@ class TestTradingPipeline:
                     {
                         "name": "market_summary",
                         "description": "End of day market summary",
-                        "materialized": "flink",
-                        "topic": {"partitions": 6},
+
                         "owner": "reporting-team",
+                        "advanced": {
+                            "topic": {"partitions": 6},
+                        },
                         "sql": """
                             SELECT
                                 symbol,
@@ -269,7 +278,6 @@ class TestTradingPipeline:
             assert "nyse_quotes" in upstream
             assert "nasdaq_quotes" in upstream
 
-
 class TestRiskManagement:
     """Test risk management scenarios."""
 
@@ -328,7 +336,7 @@ class TestRiskManagement:
                     {
                         "name": "positions",
                         "description": "Current positions per portfolio/symbol",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -344,7 +352,7 @@ class TestRiskManagement:
                     {
                         "name": "position_valuations",
                         "description": "Current position valuations",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -364,7 +372,7 @@ class TestRiskManagement:
                     {
                         "name": "portfolio_exposure",
                         "description": "Portfolio level exposure",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -382,7 +390,7 @@ class TestRiskManagement:
                     {
                         "name": "exposure_usd",
                         "description": "Portfolio exposure in USD",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 e.portfolio_id,
@@ -398,7 +406,7 @@ class TestRiskManagement:
                     {
                         "name": "limit_breaches",
                         "description": "Risk limit breaches",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 3},
                         "sql": """
                             SELECT
@@ -430,7 +438,7 @@ class TestRiskManagement:
                     {
                         "name": "pnl_attribution",
                         "description": "P&L attribution by portfolio and symbol",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 portfolio_id,
@@ -494,7 +502,6 @@ class TestRiskManagement:
             assert "position_valuations" in dag.get_upstream("portfolio_exposure")
             assert "portfolio_exposure" in dag.get_upstream("exposure_usd")
             assert "exposure_usd" in dag.get_upstream("limit_breaches")
-
 
 class TestFraudDetection:
     """Test fraud detection scenarios."""
@@ -566,7 +573,7 @@ class TestFraudDetection:
                     {
                         "name": "transaction_enriched",
                         "description": "Transactions enriched with customer data",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 24},
                         "flink": {"parallelism": 12},
                         "sql": """
@@ -592,7 +599,7 @@ class TestFraudDetection:
                     {
                         "name": "velocity_metrics",
                         "description": "Transaction velocity per customer",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -612,7 +619,7 @@ class TestFraudDetection:
                     {
                         "name": "device_anomalies",
                         "description": "Device-based anomaly signals",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -637,7 +644,7 @@ class TestFraudDetection:
                     {
                         "name": "fraud_score",
                         "description": "Calculated fraud risk score",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 12},
                         "sql": """
                             SELECT
@@ -667,7 +674,7 @@ class TestFraudDetection:
                     {
                         "name": "blocked_transactions",
                         "description": "Transactions blocked due to fraud",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 6},
                         "sql": """
                             SELECT
@@ -690,7 +697,7 @@ class TestFraudDetection:
                     {
                         "name": "fraud_metrics",
                         "description": "Aggregated fraud metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 TUMBLE_END(blocked_at, INTERVAL '5' MINUTE) as window_end,
@@ -772,7 +779,6 @@ class TestFraudDetection:
             assert "velocity_metrics" in upstream
             assert "device_anomalies" in upstream
 
-
 class TestRegulatoryCompliance:
     """Test regulatory compliance scenarios."""
 
@@ -832,7 +838,7 @@ class TestRegulatoryCompliance:
                     {
                         "name": "ctr_candidates",
                         "description": "Currency Transaction Report candidates (>$10k)",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "owner": "compliance-team",
                         "sql": """
@@ -852,7 +858,7 @@ class TestRegulatoryCompliance:
                     {
                         "name": "structuring_detection",
                         "description": "Potential structuring activity detection",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 6},
                         "owner": "compliance-team",
                         "sql": """
@@ -881,7 +887,7 @@ class TestRegulatoryCompliance:
                     {
                         "name": "watchlist_matches",
                         "description": "Matches against sanctions watchlists",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 3},
                         "owner": "compliance-team",
                         "sql": """
@@ -902,7 +908,7 @@ class TestRegulatoryCompliance:
                     {
                         "name": "sar_candidates",
                         "description": "Suspicious Activity Report candidates",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 3},
                         "owner": "compliance-team",
                         "sql": """

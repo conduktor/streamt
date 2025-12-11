@@ -215,8 +215,8 @@ class TestRunner:
         # Check models first
         model = self.project.get_model(model_name)
         if model:
-            if model.topic and model.topic.name:
-                return model.topic.name
+            if model.get_topic_config() and model.get_topic_config().name:
+                return model.get_topic_config().name
             return model.name
 
         # Check sources

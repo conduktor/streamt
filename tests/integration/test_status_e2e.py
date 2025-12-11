@@ -59,9 +59,8 @@ class TestStatusCommand:
                     "models": [
                         {
                             "name": topic_name,
-                            "materialized": "topic",
-                            "topic": {"partitions": 3},
                             "sql": 'SELECT * FROM {{ source("raw") }}',
+                            "advanced": {"topic": {"partitions": 3}},
                         }
                     ],
                 }
@@ -95,7 +94,6 @@ class TestStatusCommand:
                 "models": [
                     {
                         "name": topic_name,
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -133,9 +131,8 @@ class TestStatusCommand:
                     "models": [
                         {
                             "name": topic_name,
-                            "materialized": "topic",
-                            "topic": {"partitions": 2},
                             "sql": 'SELECT * FROM {{ source("raw") }}',
+                            "advanced": {"topic": {"partitions": 2}},
                         }
                     ],
                 }
@@ -192,17 +189,14 @@ class TestStatusCommand:
                     "models": [
                         {
                             "name": topic1,
-                            "materialized": "topic",
                             "sql": 'SELECT * FROM {{ source("raw") }}',
                         },
                         {
                             "name": topic2,
-                            "materialized": "topic",
                             "sql": 'SELECT * FROM {{ source("raw") }}',
                         },
                         {
                             "name": other_topic,
-                            "materialized": "topic",
                             "sql": 'SELECT * FROM {{ source("raw") }}',
                         },
                     ],
@@ -251,9 +245,8 @@ class TestStatusCommand:
                     "models": [
                         {
                             "name": topic_name,
-                            "materialized": "topic",
-                            "topic": {"partitions": 2},
                             "sql": 'SELECT * FROM {{ source("raw") }}',
+                            "advanced": {"topic": {"partitions": 2}},
                         }
                     ],
                 }
@@ -299,7 +292,6 @@ class TestStatusCommand:
                     "models": [
                         {
                             "name": topic_name,
-                            "materialized": "topic",
                             "sql": 'SELECT * FROM {{ source("raw") }}',
                         }
                     ],
@@ -375,9 +367,8 @@ class TestStatusCommandEdgeCases:
                     "models": [
                         {
                             "name": topic_name,
-                            "materialized": "topic",
-                            "topic": {"partitions": 3},
                             "sql": 'SELECT * FROM {{ source("raw") }}',
+                            "advanced": {"topic": {"partitions": 3}},
                         }
                     ],
                 }

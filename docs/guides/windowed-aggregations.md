@@ -94,11 +94,7 @@ Before aggregating, filter out invalid orders. Create `models/orders_clean.yml`:
 models:
   - name: orders_clean
     description: Validated orders with null checks
-    materialized: flink
-
-    topic:
-      name: orders.clean.v1
-      partitions: 6
+    # Auto-inferred as flink (simple SELECT defaults to topic, but can override)
 
     sql: |
       SELECT
@@ -112,6 +108,11 @@ models:
       WHERE order_id IS NOT NULL
         AND amount > 0
         AND status IN ('pending', 'confirmed', 'shipped', 'delivered')
+
+    advanced:  # Optional: override defaults
+      topic:
+        name: orders.clean.v1
+        partitions: 6
 ```
 
 This creates a cleaned stream that downstream models can rely on.
@@ -128,15 +129,7 @@ models:
     description: |
       Hourly order statistics by region.
       Uses a tumbling window to compute non-overlapping hourly aggregates.
-    materialized: flink
-
-    topic:
-      name: orders.stats.hourly.v1
-      partitions: 3
-
-    flink:
-      parallelism: 4
-      checkpoint_interval_ms: 60000  # Checkpoint every minute
+    # Auto-inferred as flink due to TUMBLE window function
 
     sql: |
       SELECT
@@ -152,6 +145,14 @@ models:
       GROUP BY
         region,
         TUMBLE(order_timestamp, INTERVAL '1' HOUR)
+
+    advanced:  # Optional: tune Flink behavior
+      topic:
+        name: orders.stats.hourly.v1
+        partitions: 3
+      flink:
+        parallelism: 4
+        checkpoint_interval_ms: 60000  # Checkpoint every minute
 ```
 
 **How it works:**
@@ -181,15 +182,7 @@ models:
       Rolling order trends updated every 15 minutes.
       Uses a hopping window: 1-hour windows sliding every 15 minutes.
       Good for dashboards that need smooth trend lines.
-    materialized: flink
-
-    topic:
-      name: orders.trends.15min.v1
-      partitions: 3
-
-    flink:
-      parallelism: 4
-      state_ttl_ms: 7200000  # 2 hours - keep state for trend calculation
+    # Auto-inferred as flink due to HOP window function
 
     sql: |
       SELECT
@@ -204,6 +197,14 @@ models:
       GROUP BY
         region,
         HOP(order_timestamp, INTERVAL '15' MINUTE, INTERVAL '1' HOUR)
+
+    advanced:  # Optional: tune for larger state
+      topic:
+        name: orders.trends.15min.v1
+        partitions: 3
+      flink:
+        parallelism: 4
+        state_ttl_ms: 7200000  # 2 hours - keep state for trend calculation
 ```
 
 **How it works:**

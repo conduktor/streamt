@@ -26,12 +26,13 @@ sources:
 
 models:
   - name: payments_validated
-    materialized: flink
     sql: |
       SELECT payment_id, customer_id, amount
       FROM {{ source("payments_raw") }}
       WHERE amount > 0 AND status IS NOT NULL
 ```
+
+That's it! The model is automatically materialized as a topic or Flink job based on your SQL.
 
 ## Features
 
@@ -56,38 +57,39 @@ streamt compiles your YAML definitions into deployable artifacts:
 
 ## Materializations
 
-| Type | Use Case | Creates |
-|------|----------|---------|
-| `topic` | Simple transforms, filtering | Kafka topic + Flink job |
-| `virtual_topic` | Read-time filtering (no storage) | Conduktor Gateway rule* |
-| `flink` | Stateful: windows, joins, aggregations | Kafka topic + Flink job |
-| `sink` | Export to external systems | Kafka Connect connector |
+Materializations are **automatically inferred** from your SQL:
+
+| SQL Pattern | Inferred Type | Creates |
+|-------------|---------------|---------|
+| Simple `SELECT` | `topic` | Kafka topic + Flink job |
+| `TUMBLE`, `HOP`, `JOIN` | `flink` | Kafka topic + Flink job |
+| `from:` only (no SQL) | `sink` | Kafka Connect connector |
+| Explicit `materialized: virtual_topic` | `virtual_topic` | Conduktor Gateway rule* |
 
 > *`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/) (commercial)
 
-### When to use `topic` vs `flink`?
+### Simple Surface, Advanced Control
 
-Both create Flink jobs when SQL is present. The difference is semantic:
-
-- **`topic`**: Focus is on the output topic. Simple transforms, filtering, field selection.
-- **`flink`**: Focus is on the processing. Use for windows, joins, aggregations, or when you need Flink-specific config (parallelism, checkpoints, state backend).
+Most models only need `name` and `sql`. Framework details go in the optional `advanced:` section:
 
 ```yaml
-# Use topic: simple filter, output is what matters
+# Simple: just the essentials
 - name: valid_orders
-  materialized: topic
   sql: SELECT * FROM {{ source("orders") }} WHERE status = 'valid'
 
-# Use flink: windowed aggregation, processing is complex
+# Advanced: tune performance when needed
 - name: hourly_stats
-  materialized: flink
-  flink:
-    parallelism: 4
-    checkpoint_interval_ms: 60000
   sql: |
     SELECT TUMBLE_START(ts, INTERVAL '1' HOUR), COUNT(*)
     FROM {{ ref("valid_orders") }}
     GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
+
+  advanced:
+    flink:
+      parallelism: 4
+      checkpoint_interval: 60000
+    topic:
+      partitions: 12
 ```
 
 ## Quick Start
@@ -122,13 +124,15 @@ sources:
 
 models:
   - name: events_clean
-    materialized: topic
-    topic:
-      partitions: 6
     sql: |
       SELECT event_id, user_id, event_type
       FROM {{ source("events") }}
       WHERE event_id IS NOT NULL
+
+    # Optional: only if you need custom settings
+    advanced:
+      topic:
+        partitions: 6
 ```
 
 ### CLI Commands
@@ -177,21 +181,19 @@ sources:
         classification: internal
 ```
 
-### Simple Transform (Topic)
+### Simple Transform (Auto-Inferred as Topic)
 
 ```yaml
 - name: high_value_orders
-  materialized: topic
   sql: |
     SELECT * FROM {{ source("orders_raw") }}
     WHERE amount > 10000
 ```
 
-### Windowed Aggregation (Flink)
+### Windowed Aggregation (Auto-Inferred as Flink)
 
 ```yaml
 - name: hourly_revenue
-  materialized: flink
   sql: |
     SELECT
       TUMBLE_START(ts, INTERVAL '1' HOUR) as hour,
@@ -200,16 +202,18 @@ sources:
     GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
 ```
 
-### Export to Warehouse (Sink)
+The `TUMBLE` window automatically triggers Flink materialization.
+
+### Export to Warehouse (Auto-Inferred as Sink)
 
 ```yaml
 - name: orders_snowflake
-  materialized: sink
-  from: orders_clean
-  connector:
-    type: snowflake-sink
-    config:
-      snowflake.database.name: ANALYTICS
+  from: orders_clean  # No SQL = sink
+  advanced:
+    connector:
+      type: snowflake-sink
+      config:
+        snowflake.database.name: ANALYTICS
 ```
 
 ### Data Quality Tests
@@ -322,7 +326,7 @@ streamt/
 - [ ] DLQ support — Dead Letter Queue for failed messages
 - [ ] Flink savepoint handling — Graceful upgrades without data loss
 - [ ] Global credentials/connections — Define Snowflake, S3, etc. once and reference everywhere
-- [ ] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
+- [x] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
 
 ### Operational
 

@@ -156,21 +156,14 @@ sources:
 ```yaml title="models/payments_validated.yml"
 models:
   - name: payments_validated
-    materialized: topic
     description: |
       Validated payments with basic data quality checks.
       Filters out malformed or clearly invalid payments.
     owner: payments-team
     tags: [payments, tier-1]
-
-    topic:
-      name: payments.validated.v1
-      partitions: 12
-      config:
-        retention.ms: 604800000
-
     key: payment_id
 
+    # Simple SELECT/WHERE is auto-inferred as 'topic' materialization
     sql: |
       SELECT
         payment_id,
@@ -191,6 +184,14 @@ models:
         AND amount < 10000000  -- Max $100,000
         AND currency IN ('USD', 'EUR', 'GBP', 'JPY', 'CAD')
         AND status IN ('pending', 'processing', 'completed', 'failed', 'refunded')
+
+    # Override defaults only when needed
+    advanced:
+      topic:
+        name: payments.validated.v1
+        partitions: 12
+        config:
+          retention.ms: 604800000
 ```
 
 ### 2. Enrich with Customer Data
@@ -198,23 +199,14 @@ models:
 ```yaml title="models/payments_enriched.yml"
 models:
   - name: payments_enriched
-    materialized: flink
     description: |
       Payments enriched with customer tier and country.
       Used for fraud scoring and analytics.
     owner: payments-team
     tags: [payments, tier-1]
-
-    flink:
-      parallelism: 8
-      checkpoint_interval: 30000
-
-    topic:
-      name: payments.enriched.v1
-      partitions: 12
-
     key: payment_id
 
+    # JOIN is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         p.payment_id,
@@ -239,6 +231,15 @@ models:
       FROM {{ ref("payments_validated") }} p
       LEFT JOIN {{ source("customers") }} FOR SYSTEM_TIME AS OF p.created_at AS c
         ON p.customer_id = c.customer_id
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval: 30000
+      topic:
+        name: payments.enriched.v1
+        partitions: 12
 ```
 
 ### 3. Fraud Scoring
@@ -246,30 +247,14 @@ models:
 ```yaml title="models/fraud_scores.yml"
 models:
   - name: fraud_scores
-    materialized: flink
     description: |
       Real-time fraud risk scores for each payment.
       Scores range from 0 (low risk) to 100 (high risk).
     owner: fraud-team
     tags: [fraud, ml, tier-1]
-
-    flink:
-      parallelism: 8
-      checkpoint_interval: 10000
-
-    topic:
-      name: payments.fraud-scores.v1
-      partitions: 12
-
     key: payment_id
 
-    security:
-      masking:
-        - column: ip_address
-          policy: hash
-        - column: card_last_four
-          policy: redact
-
+    # Complex SELECT is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         payment_id,
@@ -312,6 +297,22 @@ models:
         END as risk_level
 
       FROM {{ ref("payments_enriched") }}
+
+    security:
+      masking:
+        - column: ip_address
+          policy: hash
+        - column: card_last_four
+          policy: redact
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval: 10000
+      topic:
+        name: payments.fraud-scores.v1
+        partitions: 12
 ```
 
 ### 4. Payment Metrics
@@ -319,21 +320,13 @@ models:
 ```yaml title="models/payment_metrics.yml"
 models:
   - name: payment_metrics
-    materialized: flink
     description: |
       Aggregated payment metrics by 5-minute windows.
       Used for real-time dashboards and alerting.
     owner: analytics-team
     tags: [analytics, metrics]
 
-    flink:
-      parallelism: 4
-      checkpoint_interval: 60000
-
-    topic:
-      name: payments.metrics.v1
-      partitions: 6
-
+    # TUMBLE + GROUP BY is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         TUMBLE_START(created_at, INTERVAL '5' MINUTE) as window_start,
@@ -351,6 +344,15 @@ models:
         TUMBLE(created_at, INTERVAL '5' MINUTE),
         currency,
         customer_country
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 4
+        checkpoint_interval: 60000
+      topic:
+        name: payments.metrics.v1
+        partitions: 6
 ```
 
 ### 5. Export to Warehouse
@@ -358,13 +360,13 @@ models:
 ```yaml title="models/payments_warehouse.yml"
 models:
   - name: payments_warehouse
-    materialized: sink
     description: |
       Exports enriched payments to Snowflake for
       historical analysis and reporting.
     owner: data-platform
     tags: [warehouse, analytics]
 
+    # 'from:' without 'sql:' is auto-inferred as 'sink' materialization
     from: payments_enriched
 
     connector:

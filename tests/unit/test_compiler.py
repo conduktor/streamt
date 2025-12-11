@@ -32,9 +32,10 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
-                        "topic": {"partitions": 12, "replication_factor": 3},
                         "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "advanced": {
+                            "topic": {"partitions": 12, "replication_factor": 3}
+                        }
                     }
                 ],
             }
@@ -68,12 +69,10 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
                     },
                     {
                         "name": "customer_balance",
-                        "materialized": "flink",
                         "sql": """
                             SELECT customer_id, SUM(amount) as total
                             FROM {{ ref("payments_clean") }}
@@ -110,15 +109,13 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "to_snowflake",
-                        "materialized": "sink",
                         "from": [{"ref": "clean"}],
-                        "sink": {
-                            "connector": "snowflake-sink",
+                        "connector": {
+                            "type": "snowflake-sink",
                             "config": {
                                 "snowflake.database.name": "ANALYTICS",
                                 "snowflake.schema.name": "PUBLIC",
@@ -148,9 +145,10 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
-                        "topic": {"partitions": 6},
                         "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "advanced": {
+                            "topic": {"partitions": 6}
+                        }
                     }
                 ],
             }
@@ -179,7 +177,6 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "model1",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("src1") }}',
                     }
                 ],
@@ -230,7 +227,6 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "flink",
                         "sql": """
                             SELECT id, amount
                             FROM {{ source("payments") }}
@@ -262,7 +258,6 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     }
                 ],
@@ -296,15 +291,13 @@ class TestCompiler:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "to_sf",
-                        "materialized": "sink",
                         "from": [{"ref": "clean"}],
-                        "sink": {
-                            "connector": "snowflake-sink",
+                        "connector": {
+                            "type": "snowflake-sink",
                             "config": {
                                 "snowflake.url.name": "${SNOWFLAKE_URL}",
                             },
@@ -371,7 +364,6 @@ class TestCompilerSchemaGeneration:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "flink",
                         "sql": """
                             SELECT payment_id, customer_id, amount
                             FROM {{ source("payments_raw") }}
@@ -428,7 +420,6 @@ class TestCompilerSchemaGeneration:
                 "models": [
                     {
                         "name": "events_filtered",
-                        "materialized": "flink",
                         "sql": """
                             SELECT event_id, user_id
                             FROM {{ source("events") }}
@@ -479,8 +470,7 @@ class TestCompilerSchemaGeneration:
                 "models": [
                     {
                         "name": "passthrough",
-                        "materialized": "flink",
-                        "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "sql": 'SELECT * FROM {{ source("raw") }} GROUP BY id',
                     }
                 ],
             }
@@ -516,7 +506,6 @@ class TestCompilerSchemaGeneration:
                 "models": [
                     {
                         "name": "orders_renamed",
-                        "materialized": "flink",
                         "sql": """
                             SELECT order_id AS id, total AS amount
                             FROM {{ source("orders") }}
@@ -574,7 +563,6 @@ class TestCompilerBootstrapServers:
                 "models": [
                     {
                         "name": "events_clean",
-                        "materialized": "flink",
                         "sql": 'SELECT id FROM {{ source("events") }}',
                     }
                 ],
@@ -615,7 +603,6 @@ class TestCompilerBootstrapServers:
                 "models": [
                     {
                         "name": "events_clean",
-                        "materialized": "flink",
                         "sql": 'SELECT id FROM {{ source("events") }}',
                     }
                 ],
@@ -670,12 +657,13 @@ class TestContinuousTestCompilation:
                 "models": [
                     {
                         "name": "events_clean",
-                        "materialized": "topic",
-                        "topic": {"name": "events.clean.v1"},
                         "sql": """
                             SELECT event_id, user_id, event_type
                             FROM {{ source("events") }}
                         """,
+                        "advanced": {
+                            "topic": {"name": "events.clean.v1"}
+                        }
                     }
                 ],
                 "tests": [
@@ -725,9 +713,10 @@ class TestContinuousTestCompilation:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
-                        "topic": {"name": "clean.v1"},
                         "sql": 'SELECT id, status FROM {{ source("raw") }}',
+                        "advanced": {
+                            "topic": {"name": "clean.v1"}
+                        }
                     }
                 ],
                 "tests": [
@@ -783,9 +772,10 @@ class TestContinuousTestCompilation:
                 "models": [
                     {
                         "name": "m1",
-                        "materialized": "topic",
-                        "topic": {"name": "t2"},
                         "sql": 'SELECT col_a FROM {{ source("src") }}',
+                        "advanced": {
+                            "topic": {"name": "t2"}
+                        }
                     }
                 ],
                 "tests": [
@@ -850,7 +840,6 @@ class TestEventTimeConfiguration:
                 "models": [
                     {
                         "name": "events_clean",
-                        "materialized": "flink",
                         "sql": """
                             SELECT event_id, user_id, event_timestamp
                             FROM {{ source("events") }}
@@ -906,7 +895,6 @@ class TestEventTimeConfiguration:
                 "models": [
                     {
                         "name": "events_processed",
-                        "materialized": "flink",
                         "sql": 'SELECT id, ts FROM {{ source("events") }}',
                     }
                 ],
@@ -955,7 +943,6 @@ class TestEventTimeConfiguration:
                 "models": [
                     {
                         "name": "ordered_processed",
-                        "materialized": "flink",
                         "sql": 'SELECT id, created_at FROM {{ source("ordered_events") }}',
                     }
                 ],
@@ -1003,7 +990,6 @@ class TestEventTimeConfiguration:
                 "models": [
                     {
                         "name": "simple_processed",
-                        "materialized": "flink",
                         "sql": 'SELECT id, value FROM {{ source("simple_events") }}',
                     }
                 ],
@@ -1053,7 +1039,6 @@ class TestEventTimeConfiguration:
                 "models": [
                     {
                         "name": "mixed_processed",
-                        "materialized": "flink",
                         "sql": 'SELECT id, name, event_time, metadata FROM {{ source("mixed_types") }}',
                     }
                 ],
@@ -1102,11 +1087,12 @@ class TestStateTtlConfiguration:
                 "models": [
                     {
                         "name": "customer_counts",
-                        "materialized": "flink",
-                        "flink": {
-                            "state_ttl_ms": 86400000,  # 24 hours
-                        },
                         "sql": 'SELECT customer_id, COUNT(*) FROM {{ source("orders") }} GROUP BY customer_id',
+                        "advanced": {
+                            "flink": {
+                                "state_ttl_ms": 86400000  # 24 hours
+                            }
+                        }
                     }
                 ],
             }
@@ -1138,11 +1124,12 @@ class TestStateTtlConfiguration:
                 "models": [
                     {
                         "name": "event_counts",
-                        "materialized": "flink",
-                        "flink": {
-                            "state_ttl_ms": 1800000,  # 30 minutes
-                        },
                         "sql": 'SELECT type, COUNT(*) FROM {{ source("events") }} GROUP BY type',
+                        "advanced": {
+                            "flink": {
+                                "state_ttl_ms": 1800000  # 30 minutes
+                            }
+                        }
                     }
                 ],
             }
@@ -1174,11 +1161,12 @@ class TestStateTtlConfiguration:
                 "models": [
                     {
                         "name": "click_counts",
-                        "materialized": "flink",
-                        "flink": {
-                            "state_ttl_ms": 60000,  # 60 seconds
-                        },
                         "sql": 'SELECT url, COUNT(*) FROM {{ source("clicks") }} GROUP BY url',
+                        "advanced": {
+                            "flink": {
+                                "state_ttl_ms": 60000  # 60 seconds
+                            }
+                        }
                     }
                 ],
             }
@@ -1210,11 +1198,12 @@ class TestStateTtlConfiguration:
                 "models": [
                     {
                         "name": "aggregates",
-                        "materialized": "flink",
-                        "flink": {
-                            "state_ttl_ms": 604800000,  # 7 days
-                        },
                         "sql": 'SELECT id, SUM(value) FROM {{ source("data") }} GROUP BY id',
+                        "advanced": {
+                            "flink": {
+                                "state_ttl_ms": 604800000  # 7 days
+                            }
+                        }
                     }
                 ],
             }
@@ -1245,8 +1234,7 @@ class TestStateTtlConfiguration:
                 "models": [
                     {
                         "name": "simple_transform",
-                        "materialized": "flink",
-                        "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "sql": 'SELECT * FROM {{ source("raw") }} GROUP BY id',
                     }
                 ],
             }
@@ -1296,7 +1284,6 @@ class TestComplexSelectParsing:
                 "models": [
                     {
                         "name": "order_stats",
-                        "materialized": "flink",
                         "sql": """
                             SELECT
                                 UPPER(status) AS status_upper,
@@ -1340,7 +1327,6 @@ class TestComplexSelectParsing:
                 "models": [
                     {
                         "name": "categorized",
-                        "materialized": "flink",
                         "sql": """
                             SELECT
                                 type,
@@ -1382,7 +1368,6 @@ class TestComplexSelectParsing:
                 "models": [
                     {
                         "name": "transformed",
-                        "materialized": "flink",
                         "sql": """
                             SELECT
                                 a,

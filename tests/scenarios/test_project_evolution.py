@@ -17,7 +17,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestAddingNewModels:
     """Test adding new models to existing pipelines."""
 
@@ -61,7 +60,7 @@ class TestAddingNewModels:
                     {
                         "name": "page_views_cleaned",
                         "description": "Cleaned page views",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 user_id,
@@ -125,7 +124,7 @@ class TestAddingNewModels:
                     {
                         "name": "page_views_cleaned",
                         "description": "Cleaned page views",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 user_id,
@@ -141,7 +140,7 @@ class TestAddingNewModels:
                     {
                         "name": "user_sessions",
                         "description": "User sessions from page views",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 user_id,
@@ -160,7 +159,7 @@ class TestAddingNewModels:
                     {
                         "name": "hourly_metrics",
                         "description": "Hourly aggregated metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 TUMBLE_END(event_time, INTERVAL '1' HOUR) as hour,
@@ -246,14 +245,14 @@ class TestAddingNewModels:
                     {
                         "name": "page_views_cleaned",
                         "description": "Cleaned page views",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('page_views') }} WHERE user_id IS NOT NULL",
                     },
                     # MODIFIED: Now includes utm join
                     {
                         "name": "page_views_attributed",
                         "description": "Page views with campaign attribution",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 pv.*,
@@ -270,7 +269,7 @@ class TestAddingNewModels:
                     {
                         "name": "user_sessions",
                         "description": "User sessions from page views",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 user_id,
@@ -288,7 +287,7 @@ class TestAddingNewModels:
                     {
                         "name": "campaign_metrics",
                         "description": "Metrics per campaign",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 campaign_name,
@@ -320,7 +319,6 @@ class TestAddingNewModels:
             upstream = dag.get_upstream("page_views_attributed")
             assert "page_views_cleaned" in upstream
             assert "utm_campaigns" in upstream
-
 
 class TestRefactoringModels:
     """Test refactoring patterns - splitting, merging, renaming."""
@@ -359,7 +357,7 @@ class TestRefactoringModels:
                     {
                         "name": "orders_parsed",
                         "description": "Parsed order JSON with schema validation",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 order_id,
@@ -376,7 +374,7 @@ class TestRefactoringModels:
                     {
                         "name": "orders_enriched",
                         "description": "Orders with business classifications",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 *,
@@ -396,7 +394,7 @@ class TestRefactoringModels:
                     {
                         "name": "order_metrics",
                         "description": "Aggregated order metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 order_tier,
@@ -458,7 +456,7 @@ class TestRefactoringModels:
                     {
                         "name": "logs_processed",
                         "description": "Fully processed and enriched logs",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 log_id,
@@ -520,7 +518,7 @@ class TestRefactoringModels:
                     {
                         "name": "enriched_user_events",  # New canonical name
                         "description": "Enriched user events (formerly user_events_enriched)",
-                        "materialized": "flink",
+
                         "topic": {
                             "name": "events.enriched.v1",  # Explicit topic name
                         },
@@ -532,7 +530,6 @@ class TestRefactoringModels:
                     {
                         "name": "user_events_enriched",
                         "description": "DEPRECATED: Use enriched_user_events instead",
-                        "materialized": "topic",  # Simplified for test - alias forwards data
                         "sql": """
                             SELECT * FROM {{ ref("enriched_user_events") }}
                         """,
@@ -553,7 +550,6 @@ class TestRefactoringModels:
             dag_builder = DAGBuilder(project)
             dag = dag_builder.build()
             assert "enriched_user_events" in dag.get_upstream("user_events_enriched")
-
 
 class TestSchemaEvolution:
     """Test schema evolution and versioning patterns."""
@@ -590,7 +586,7 @@ class TestSchemaEvolution:
                     {
                         "name": "user_profiles",
                         "description": "Current user profile state",
-                        "materialized": "flink",
+
                         "schema": {
                             "compatibility": "BACKWARD",
                         },
@@ -646,7 +642,7 @@ class TestSchemaEvolution:
                     {
                         "name": "user_profiles_v1",
                         "description": "DEPRECATED: User profiles v1 format",
-                        "materialized": "flink",
+
                         "topic": {"name": "profiles.current.v1"},
                         "tags": ["deprecated", "v1"],
                         "sql": """
@@ -663,7 +659,7 @@ class TestSchemaEvolution:
                     {
                         "name": "user_profiles_v2",
                         "description": "User profiles v2 with improved schema",
-                        "materialized": "flink",
+
                         "topic": {"name": "profiles.current.v2"},
                         "tags": ["current", "v2"],
                         "sql": """
@@ -715,7 +711,6 @@ class TestSchemaEvolution:
             assert "profile_updates" in dag.get_upstream("user_profiles_v1")
             assert "profile_updates" in dag.get_upstream("user_profiles_v2")
 
-
 class TestMigrationPatterns:
     """Test migration and cutover patterns."""
 
@@ -762,7 +757,7 @@ class TestMigrationPatterns:
                     {
                         "name": "events_processed_new",
                         "description": "New event processing logic",
-                        "materialized": "flink",
+
                         "topic": {"name": "streamt.events.processed.v1"},
                         "sql": """
                             SELECT
@@ -778,7 +773,7 @@ class TestMigrationPatterns:
                     {
                         "name": "migration_comparison",
                         "description": "Compare new vs legacy output",
-                        "materialized": "flink",
+
                         "tags": ["migration", "validation"],
                         "sql": """
                             SELECT
@@ -803,7 +798,7 @@ class TestMigrationPatterns:
                     {
                         "name": "migration_metrics",
                         "description": "Migration comparison metrics",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 TUMBLE_END(new_time, INTERVAL '5' MINUTE) as window_end,
@@ -853,7 +848,7 @@ class TestMigrationPatterns:
                     {
                         "name": "orders_routed",
                         "description": "Route orders to old or new processing",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 o.*,
@@ -869,7 +864,7 @@ class TestMigrationPatterns:
                     {
                         "name": "orders_old_logic",
                         "description": "Orders processed with old logic",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 order_id,
@@ -883,7 +878,7 @@ class TestMigrationPatterns:
                     {
                         "name": "orders_new_logic",
                         "description": "Orders processed with new logic",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 order_id,
@@ -897,7 +892,7 @@ class TestMigrationPatterns:
                     {
                         "name": "orders_unified",
                         "description": "Unified output from both paths",
-                        "materialized": "topic",
+
                         "sql": """
                             SELECT * FROM {{ ref("orders_old_logic") }}
                             UNION ALL
@@ -914,7 +909,6 @@ class TestMigrationPatterns:
             validator = ProjectValidator(project)
             result = validator.validate()
             assert result.is_valid
-
 
 class TestDeprecationWorkflow:
     """Test model and source deprecation workflows."""
@@ -957,7 +951,7 @@ class TestDeprecationWorkflow:
                             Migration: Use events_summary_v2 instead.
                             Reason: Performance improvements in v2.
                         """,
-                        "materialized": "flink",
+
                         "tags": ["deprecated", "sunset:2024-04-15"],
                         "sql": """
                             SELECT
@@ -971,7 +965,7 @@ class TestDeprecationWorkflow:
                     {
                         "name": "events_summary_v2",
                         "description": "Event summary with improved performance",
-                        "materialized": "flink",
+
                         "tags": ["current"],
                         "sql": """
                             SELECT

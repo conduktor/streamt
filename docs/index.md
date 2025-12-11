@@ -34,7 +34,6 @@ sources:
 
 models:
   - name: payments_validated
-    materialized: flink
     description: Validated payments with fraud scores
     sql: |
       SELECT
@@ -139,13 +138,7 @@ graph LR
     ```yaml title="models/payments_clean.yml"
     models:
       - name: payments_clean
-        materialized: topic
         description: Cleaned and validated payments
-        topic:
-          name: payments.clean.v1
-          partitions: 12
-          config:
-            retention.ms: 604800000
         sql: |
           SELECT
             payment_id,
@@ -156,6 +149,12 @@ graph LR
           FROM {{ source("payments_raw") }}
           WHERE payment_id IS NOT NULL
             AND amount > 0
+        advanced:
+          topic:
+            name: payments.clean.v1
+            partitions: 12
+            config:
+              retention.ms: 604800000
     ```
 
 === "Add Tests"

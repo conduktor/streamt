@@ -155,7 +155,7 @@ class ProjectValidator:
     def _validate_model(self, model: Model) -> None:
         """Validate a single model."""
         # Check virtual_topic requires gateway
-        if model.materialized == MaterializedType.VIRTUAL_TOPIC:
+        if model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
             if not (self.project.runtime.conduktor and self.project.runtime.conduktor.gateway):
                 self.result.add_error(
                     "GATEWAY_REQUIRED",
@@ -163,15 +163,15 @@ class ProjectValidator:
                 )
 
         # Check sink requires sink config
-        if model.materialized == MaterializedType.SINK:
-            if not model.sink:
+        if model.get_materialized() == MaterializedType.SINK:
+            if not model.get_sink_config():
                 self.result.add_error(
                     "MISSING_SINK_CONFIG",
                     errors.missing_sink_config(model.name),
                 )
 
         # Check flink requires flink runtime
-        if model.materialized == MaterializedType.FLINK:
+        if model.get_materialized() == MaterializedType.FLINK:
             if not self.project.runtime.flink:
                 self.result.add_error(
                     "FLINK_REQUIRED",
@@ -179,8 +179,8 @@ class ProjectValidator:
                 )
 
         # Validate state_ttl_ms
-        if model.flink and model.flink.state_ttl_ms is not None:
-            ttl = model.flink.state_ttl_ms
+        if model.get_flink_config() and model.get_flink_config().state_ttl_ms is not None:
+            ttl = model.get_flink_config().state_ttl_ms
             if ttl <= 0:
                 self.result.add_error(
                     "INVALID_STATE_TTL",
@@ -413,7 +413,7 @@ class ProjectValidator:
         # Topic rules
         if rules.topics:
             for model in self.project.models:
-                if model.materialized in [
+                if model.get_materialized() in [
                     MaterializedType.TOPIC,
                     MaterializedType.FLINK,
                 ]:
@@ -436,7 +436,7 @@ class ProjectValidator:
     def _validate_topic_rules(self, model: Model, rules: TopicRules) -> None:
         """Validate topic rules for a model."""
 
-        topic_config = model.topic
+        topic_config = model.get_topic_config()
 
         # Check min partitions
         if rules.min_partitions is not None:

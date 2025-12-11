@@ -39,20 +39,45 @@ Adds on top of standalone:
 
 ## Implications for DSL
 
-The `materialized` field behavior changes:
+The `materialized` type is **auto-inferred** from SQL patterns:
 
 ```yaml
 models:
+  # Simple SELECT → inferred as 'topic'
   - name: payments_clean
-    materialized: virtual_topic  # Proxy required
+    sql: SELECT * FROM {{ source("payments_raw") }} WHERE status = 'CAPTURED'
+    # materialized: topic (auto-inferred)
+
+    advanced:
+      topic:
+        partitions: 12
     # ...
 
-  - name: payments_clean_v2
-    materialized: topic          # Works anywhere (real Kafka topic)
+  # JOIN → inferred as 'flink'
+  - name: payments_enriched
+    sql: |
+      SELECT p.*, c.risk_band
+      FROM {{ ref("payments_clean") }} p
+      JOIN {{ ref("customers") }} c ON p.customer_id = c.customer_id
+    # materialized: flink (auto-inferred)
+
+    advanced:
+      flink:
+        parallelism: 4
+    # ...
+
+  # Virtual topic (requires Gateway) - must be explicit
+  - name: payments_masked
+    sql: SELECT payment_id, amount FROM {{ source("payments_raw") }}
+
+    advanced:
+      materialized: virtual_topic  # Gateway required (explicit override)
+      gateway:
+        virtual_topic: true
     # ...
 ```
 
-If `materialized: virtual_topic` but no Proxy configured → **compilation error** with helpful message.
+If `materialized: virtual_topic` but no Gateway configured → **compilation error** with helpful message.
 
 ## Configuration
 

@@ -135,18 +135,10 @@ A stateless transformation that filters and validates orders:
 ```yaml title="models/orders_clean.yml"
 models:
   - name: orders_clean
-    materialized: topic
     description: |
       Cleaned and validated orders.
       Filters out invalid orders and normalizes data.
     owner: data-platform
-
-    topic:
-      name: orders.clean.v1
-      partitions: 12
-      config:
-        retention.ms: 604800000  # 7 days
-
     key: order_id
 
     sql: |
@@ -163,6 +155,14 @@ models:
         AND customer_id IS NOT NULL
         AND total_amount > 0
         AND status IN ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled')
+
+    # Optional: customize topic settings
+    advanced:
+      topic:
+        name: orders.clean.v1
+        partitions: 12
+        config:
+          retention.ms: 604800000  # 7 days
 ```
 
 ### 3b. Order Metrics (Flink Materialization)
@@ -172,19 +172,10 @@ A stateful aggregation computing real-time metrics:
 ```yaml title="models/order_metrics.yml"
 models:
   - name: order_metrics
-    materialized: flink
     description: |
       Real-time order metrics aggregated by 5-minute windows.
       Used for operational dashboards.
     owner: analytics-team
-
-    flink:
-      parallelism: 4
-      checkpoint_interval: 60000
-
-    topic:
-      name: orders.metrics.v1
-      partitions: 6
 
     sql: |
       SELECT
@@ -196,7 +187,18 @@ models:
         COUNT(DISTINCT customer_id) as unique_customers
       FROM {{ ref("orders_clean") }}
       GROUP BY TUMBLE(created_at, INTERVAL '5' MINUTE)
+
+    # Optional: tune Flink performance
+    advanced:
+      flink:
+        parallelism: 4
+        checkpoint_interval: 60000
+      topic:
+        name: orders.metrics.v1
+        partitions: 6
 ```
+
+The `TUMBLE` window function automatically triggers Flink materialization.
 
 ### 3c. Snowflake Sink (Sink Materialization)
 
@@ -205,27 +207,28 @@ Export orders to Snowflake for analytics:
 ```yaml title="models/orders_snowflake.yml"
 models:
   - name: orders_snowflake
-    materialized: sink
     description: |
       Exports cleaned orders to Snowflake data warehouse
       for historical analysis and reporting.
     owner: data-platform
-
     from: orders_clean
 
-    connector:
-      type: snowflake-sink
-      config:
-        snowflake.url.name: ${SNOWFLAKE_URL}
-        snowflake.user.name: ${SNOWFLAKE_USER}
-        snowflake.private.key: ${SNOWFLAKE_PRIVATE_KEY}
-        snowflake.database.name: ANALYTICS
-        snowflake.schema.name: ORDERS
-        snowflake.table.name: ORDERS_STREAM
-        key.converter: org.apache.kafka.connect.storage.StringConverter
-        value.converter: io.confluent.connect.avro.AvroConverter
-        value.converter.schema.registry.url: http://localhost:8081
+    advanced:
+      connector:
+        type: snowflake-sink
+        config:
+          snowflake.url.name: ${SNOWFLAKE_URL}
+          snowflake.user.name: ${SNOWFLAKE_USER}
+          snowflake.private.key: ${SNOWFLAKE_PRIVATE_KEY}
+          snowflake.database.name: ANALYTICS
+          snowflake.schema.name: ORDERS
+          snowflake.table.name: ORDERS_STREAM
+          key.converter: org.apache.kafka.connect.storage.StringConverter
+          value.converter: io.confluent.connect.avro.AvroConverter
+          value.converter.schema.registry.url: http://localhost:8081
 ```
+
+Using `from:` without `sql:` automatically triggers sink materialization.
 
 ## Step 4: Add Tests
 

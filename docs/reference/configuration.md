@@ -225,7 +225,7 @@ runtime:
 | `virtual_cluster` | string | - | Virtual cluster for multi-tenancy |
 
 !!! note "When to configure Gateway"
-    Gateway is required for `materialized: virtual_topic`. If you only use `topic`, `flink`, or `sink` materializations, Gateway is optional.
+    Gateway is required for virtual topic models (auto-inferred from `gateway:` configuration). If you only use simple models without Gateway features, it's optional.
 
 ## Defaults
 
@@ -446,7 +446,11 @@ sources:
 
 models:
   - name: events_clean
-    sql: SELECT * FROM {{ source("events") }}
+    description: "Cleaned events stream"
+    # materialized: topic (auto-inferred)
+    sql: |
+      SELECT * FROM {{ source("events") }}
+      WHERE event_id IS NOT NULL
 ```
 
 ### Multi-File (Large Projects)

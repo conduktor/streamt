@@ -79,11 +79,7 @@ Create a model that transforms the raw events:
 ```yaml title="models/events_clean.yml"
 models:
   - name: events_clean
-    materialized: topic
     description: Cleaned and validated events
-    topic:
-      name: events.clean.v1
-      partitions: 6
     sql: |
       SELECT
         event_id,
@@ -93,7 +89,15 @@ models:
       FROM {{ source("raw_events") }}
       WHERE event_id IS NOT NULL
         AND user_id IS NOT NULL
+
+    # Optional: customize topic settings
+    advanced:
+      topic:
+        name: events.clean.v1
+        partitions: 6
 ```
+
+The model is automatically materialized as a topic since it's a simple SELECT statement.
 
 ## 5. Validate Your Project
 

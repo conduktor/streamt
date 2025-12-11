@@ -91,7 +91,6 @@ sources:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
     sql: |
       SELECT * FROM {{ source("payments_raw") }}
 ```
@@ -110,7 +109,6 @@ models:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
     from:
       - source: payments_raw
     sql: |
@@ -131,7 +129,6 @@ models:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
     from:
       - source: payments_raw
       - source: customers_raw  # déclaré mais pas utilisé
@@ -153,7 +150,6 @@ models:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
     sql: |
       SELECT * FROM {{ source("nonexistent") }}
 ```
@@ -172,7 +168,6 @@ models:
 ```yaml
 models:
   - name: payments_enriched
-    materialized: flink
     sql: |
       SELECT * FROM {{ ref("payments_clean") }}
       # payments_clean n'existe pas
@@ -192,11 +187,9 @@ models:
 ```yaml
 models:
   - name: model_a
-    materialized: topic
     sql: SELECT * FROM {{ ref("model_b") }}
 
   - name: model_b
-    materialized: topic
     sql: SELECT * FROM {{ ref("model_a") }}
 ```
 
@@ -266,7 +259,6 @@ sources:
 
 models:
   - name: payments_clean
-    materialized: topic
     sql: SELECT * FROM {{ source("payments_raw") }}
 
 tests:
@@ -294,13 +286,13 @@ tests:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
-    topic:
-      partitions: 12
-      replication_factor: 3
     sql: |
       SELECT payment_id, amount
       FROM {{ source("payments_raw") }}
+    advanced:
+      topic:
+        partitions: 12
+        replication_factor: 3
 ```
 
 **When** `streamt compile`
@@ -325,7 +317,6 @@ models:
 ```yaml
 models:
   - name: customer_balance
-    materialized: flink
     key: customer_id
     sql: |
       SELECT
@@ -351,15 +342,15 @@ models:
 ```yaml
 models:
   - name: payments_to_snowflake
-    materialized: sink
     from:
       - ref: payments_clean
-    sink:
-      connector: snowflake-sink
-      config:
-        snowflake.database.name: ANALYTICS
-        snowflake.schema.name: PUBLIC
-        snowflake.url.name: ${SNOWFLAKE_URL}
+    advanced:
+      sink:
+        connector: snowflake-sink
+        config:
+          snowflake.database.name: ANALYTICS
+          snowflake.schema.name: PUBLIC
+          snowflake.url.name: ${SNOWFLAKE_URL}
 ```
 
 **When** `streamt compile`
@@ -393,10 +384,11 @@ runtime:
 
 models:
   - name: payments_filtered
-    materialized: virtual_topic
     sql: |
       SELECT * FROM {{ source("payments_raw") }}
       WHERE status = 'CAPTURED'
+    advanced:
+      materialized: virtual_topic
 ```
 
 **When** `streamt compile`
@@ -417,8 +409,9 @@ runtime:
 
 models:
   - name: payments_filtered
-    materialized: virtual_topic
     sql: SELECT * FROM {{ source("payments_raw") }}
+    advanced:
+      materialized: virtual_topic
 ```
 
 **When** `streamt compile`
@@ -435,7 +428,6 @@ models:
 ```yaml
 models:
   - name: payments_clean
-    materialized: topic
     sql: SELECT * FROM {{ source("payments_raw") }}
     security:
       policies:
@@ -777,9 +769,9 @@ tests:
 
 models:
   - name: payments_clean_dlq
-    materialized: topic
-    topic:
-      name: dlq.payments.clean
+    advanced:
+      topic:
+        name: dlq.payments.clean
 ```
 
 **When** `streamt test --deploy`
@@ -893,9 +885,9 @@ rules:
 
 models:
   - name: payments_clean
-    materialized: topic
-    topic:
-      partitions: 3  # < 6
+    advanced:
+      topic:
+        partitions: 3  # < 6
 ```
 
 **When** `streamt validate`
@@ -916,7 +908,6 @@ rules:
 
 models:
   - name: PaymentsClean  # PascalCase
-    materialized: topic
 ```
 
 **When** `streamt validate`
@@ -937,7 +928,6 @@ rules:
 
 models:
   - name: payments_clean
-    materialized: topic
     # pas de description
 ```
 
@@ -959,7 +949,6 @@ rules:
 
 models:
   - name: payments_clean
-    materialized: topic
 
 # pas de tests pour payments_clean
 ```
@@ -1022,13 +1011,14 @@ runtime:
 
 models:
   - name: payments_clean
-    materialized: virtual_topic
     security:
       policies:
         - mask:
             column: card_number
             method: partial
             for_roles: [support]
+    advanced:
+      materialized: virtual_topic
 ```
 
 **When** `streamt compile`
@@ -1049,7 +1039,6 @@ runtime:
 
 models:
   - name: payments_clean
-    materialized: topic
     security:
       policies:
         - mask:
@@ -1071,12 +1060,10 @@ models:
 ```yaml
 models:
   - name: payments_internal
-    materialized: topic
     access: private
     group: finance
 
   - name: fraud_model
-    materialized: flink
     # owner: team-fraud (pas dans groupe finance)
     sql: SELECT * FROM {{ ref("payments_internal") }}
 ```
@@ -1095,7 +1082,6 @@ models:
 ```yaml
 models:
   - name: payments_public
-    materialized: topic
     access: public
 
   - name: any_model
@@ -1241,7 +1227,8 @@ models:
 ```yaml
 models:
   - name: test
-    materialized: unknown_type
+    advanced:
+      materialized: unknown_type
 ```
 
 **When** `streamt validate`

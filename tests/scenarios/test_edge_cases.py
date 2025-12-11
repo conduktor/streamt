@@ -20,7 +20,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestComplexDAGStructures:
     """Test complex DAG topologies."""
 
@@ -61,17 +60,17 @@ class TestComplexDAGStructures:
                 "models": [
                     {
                         "name": "model_b",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('source_a') }} WHERE type = 'B'",
                     },
                     {
                         "name": "model_c",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('source_a') }} WHERE type = 'C'",
                     },
                     {
                         "name": "model_d",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT b.*, c.extra_field
                             FROM {{ ref("model_b") }} b
@@ -120,7 +119,7 @@ class TestComplexDAGStructures:
             models = [
                 {
                     "name": f"model_{i}",
-                    "materialized": "flink",
+
                     "sql": f"SELECT * FROM {{{{ source('events') }}}} WHERE category = '{i}'",
                 }
                 for i in range(10)
@@ -195,7 +194,7 @@ class TestComplexDAGStructures:
                 "models": [
                     {
                         "name": "enriched_model",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 s0.*,
@@ -249,7 +248,7 @@ class TestComplexDAGStructures:
                 models.append(
                     {
                         "name": f"stage_{i}",
-                        "materialized": "flink",
+
                         "sql": sql,
                     }
                 )
@@ -292,7 +291,6 @@ class TestComplexDAGStructures:
             for i in range(1, 10):
                 assert order.index(f"stage_{i}") < order.index(f"stage_{i + 1}")
 
-
 class TestCircularDependencyDetection:
     """Test circular dependency detection."""
 
@@ -327,12 +325,12 @@ class TestCircularDependencyDetection:
                 "models": [
                     {
                         "name": "model_a",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('model_b') }}",
                     },
                     {
                         "name": "model_b",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('model_a') }}",
                     },
                 ],
@@ -376,17 +374,17 @@ class TestCircularDependencyDetection:
                 "models": [
                     {
                         "name": "model_a",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('model_c') }}",
                     },
                     {
                         "name": "model_b",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('model_a') }}",
                     },
                     {
                         "name": "model_c",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('model_b') }}",
                     },
                 ],
@@ -429,7 +427,7 @@ class TestCircularDependencyDetection:
                 "models": [
                     {
                         "name": "recursive_model",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('recursive_model') }}",
                     },
                 ],
@@ -443,7 +441,6 @@ class TestCircularDependencyDetection:
             result = validator.validate()
 
             assert not result.is_valid
-
 
 class TestLargeScaleProjects:
     """Test large-scale project handling."""
@@ -480,7 +477,7 @@ class TestLargeScaleProjects:
                 "models": [
                     {
                         "name": "all_sources_combined",
-                        "materialized": "flink",
+
                         "sql": " UNION ALL ".join(
                             [
                                 f"SELECT '{i}' as source_id, * FROM {{{{ source('source_{i}') }}}}"
@@ -515,7 +512,7 @@ class TestLargeScaleProjects:
                 models.append(
                     {
                         "name": f"base_{i}",
-                        "materialized": "flink",
+
                         "sql": f"SELECT *, {i} as base_id FROM {{{{ source('events') }}}}",
                     }
                 )
@@ -526,7 +523,7 @@ class TestLargeScaleProjects:
                     models.append(
                         {
                             "name": f"derived_{base}_{derived}",
-                            "materialized": "flink",
+
                             "sql": f"SELECT *, {derived} as derived_id FROM {{{{ ref('base_{base}') }}}}",
                         }
                     )
@@ -564,7 +561,6 @@ class TestLargeScaleProjects:
             # Should have 101 nodes (1 source + 100 models)
             assert len(dag.nodes) == 101
 
-
 class TestInvalidConfigurations:
     """Test invalid configuration handling."""
 
@@ -598,7 +594,7 @@ class TestInvalidConfigurations:
                 "models": [
                     {
                         "name": "broken_model",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('nonexistent_source') }}",
                     },
                 ],
@@ -639,12 +635,12 @@ class TestInvalidConfigurations:
                 "models": [
                     {
                         "name": "valid_model",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('events') }}",
                     },
                     {
                         "name": "broken_model",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ ref('nonexistent_model') }}",
                     },
                 ],
@@ -685,12 +681,12 @@ class TestInvalidConfigurations:
                 "models": [
                     {
                         "name": "duplicate_model",
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('events') }} WHERE type = 'A'",
                     },
                     {
                         "name": "duplicate_model",  # Same name!
-                        "materialized": "flink",
+
                         "sql": "SELECT * FROM {{ source('events') }} WHERE type = 'B'",
                     },
                 ],
@@ -707,15 +703,17 @@ class TestInvalidConfigurations:
             error_messages = [e.message for e in result.errors]
             assert any("duplicate" in msg.lower() for msg in error_messages)
 
-    def test_invalid_materialization(self):
+    def test_invalid_advanced_config(self):
         """
-        SCENARIO: Invalid materialization type
+        SCENARIO: Invalid configuration in advanced section
 
-        Story: Model uses an unsupported materialization type.
+        Story: Model uses an invalid value in the advanced section.
+        Note: With auto-inference, materialization is always valid.
+              This test validates that invalid advanced config values are caught.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
-                "project": {"name": "invalid-materialization", "version": "1.0.0"},
+                "project": {"name": "invalid-config", "version": "1.0.0"},
                 "runtime": {
                     "kafka": {"bootstrap_servers": "localhost:9092"},
                     "flink": {
@@ -730,20 +728,28 @@ class TestInvalidConfigurations:
                 ],
                 "models": [
                     {
-                        "name": "broken_model",
-                        "materialized": "invalid_type",  # Invalid!
-                        "sql": "SELECT * FROM {{ source('events') }}",
+                        "name": "model_with_invalid_ttl",
+                        "sql": "SELECT * FROM {{ source('events') }} GROUP BY event_id",
+                        "advanced": {
+                            "flink": {
+                                "state_ttl_ms": -1000,  # Invalid: negative TTL
+                            }
+                        },
                     },
                 ],
             }
 
             project_path = self._create_project(tmpdir, config)
             parser = ProjectParser(project_path)
+            project = parser.parse()
 
-            # Should fail during parsing or validation
-            with pytest.raises(Exception):
-                parser.parse()
+            validator = ProjectValidator(project)
+            result = validator.validate()
 
+            # Should fail validation due to invalid state_ttl_ms
+            assert not result.is_valid
+            error_codes = [e.code for e in result.errors]
+            assert "INVALID_STATE_TTL" in error_codes
 
 class TestErrorRecoveryPatterns:
     """Test error recovery and DLQ patterns."""
@@ -779,7 +785,7 @@ class TestErrorRecoveryPatterns:
                     {
                         "name": "events_validated",
                         "description": "Valid events",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT *
                             FROM {{ source("events") }}
@@ -791,7 +797,7 @@ class TestErrorRecoveryPatterns:
                     {
                         "name": "events_dlq",
                         "description": "Invalid events for investigation",
-                        "materialized": "topic",
+
                         "topic": {
                             "name": "events.dlq.v1",
                             "partitions": 1,
@@ -855,7 +861,7 @@ class TestErrorRecoveryPatterns:
                     {
                         "name": "events_with_retries",
                         "description": "Events with retry tracking",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 event_id,
@@ -878,7 +884,7 @@ class TestErrorRecoveryPatterns:
                     {
                         "name": "events_max_retries_dlq",
                         "description": "Events that exceeded max retries",
-                        "materialized": "topic",
+
                         "sql": """
                             SELECT
                                 event_id,
@@ -901,7 +907,6 @@ class TestErrorRecoveryPatterns:
             validator = ProjectValidator(project)
             result = validator.validate()
             assert result.is_valid
-
 
 class TestResourceLimits:
     """Test resource limit configurations."""
@@ -937,19 +942,19 @@ class TestResourceLimits:
                 "models": [
                     {
                         "name": "high_throughput_model",
-                        "materialized": "flink",
+
                         "flink": {"parallelism": 16},  # High parallelism
                         "sql": "SELECT * FROM {{ source('events') }}",
                     },
                     {
                         "name": "low_throughput_model",
-                        "materialized": "flink",
+
                         "flink": {"parallelism": 2},  # Low parallelism
                         "sql": "SELECT * FROM {{ ref('high_throughput_model') }} WHERE is_special = true",
                     },
                     {
                         "name": "default_model",
-                        "materialized": "flink",
+
                         # Uses default parallelism (4)
                         "sql": "SELECT * FROM {{ source('events') }} WHERE type = 'default'",
                     },
@@ -995,19 +1000,19 @@ class TestResourceLimits:
                 "models": [
                     {
                         "name": "high_volume",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 48},  # Many partitions
                         "sql": "SELECT * FROM {{ source('events') }}",
                     },
                     {
                         "name": "low_volume",
-                        "materialized": "flink",
+
                         "topic": {"partitions": 3},  # Few partitions
                         "sql": "SELECT * FROM {{ ref('high_volume') }} WHERE is_rare = true",
                     },
                     {
                         "name": "aggregate_output",
-                        "materialized": "topic",
+
                         "topic": {"partitions": 1},  # Single partition for ordering
                         "sql": """
                             SELECT COUNT(*) as total

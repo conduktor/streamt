@@ -53,10 +53,6 @@ sources:
 models:
   - name: card_payments_clean
     description: "Cleaned payment events"
-    materialized: topic
-    topic:
-      partitions: 6
-      replication_factor: 1
     key: payment_id
     sql: |
       SELECT
@@ -68,10 +64,13 @@ models:
         event_time
       FROM {{ source("card_payments_raw") }}
       WHERE status IN ('AUTHORIZED', 'CAPTURED')
+    advanced:
+      topic:
+        partitions: 6
+        replication_factor: 1
 
   - name: customer_balance_5m
     description: "Customer balance aggregated over 5-minute windows"
-    materialized: flink
     key: customer_id
     sql: |
       SELECT

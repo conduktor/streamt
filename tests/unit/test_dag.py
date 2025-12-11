@@ -31,7 +31,6 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "payments_clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
                     }
                 ],
@@ -57,17 +56,14 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "enriched",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("clean") }}',
                     },
                     {
                         "name": "aggregated",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("enriched") }}',
                     },
                 ],
@@ -92,12 +88,10 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "enriched",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("clean") }}',
                     },
                 ],
@@ -128,17 +122,14 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "model1",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("src1") }}',
                     },
                     {
                         "name": "model2",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("src2") }}',
                     },
                     {
                         "name": "model3",
-                        "materialized": "topic",
                         "sql": """
                             SELECT * FROM {{ ref("model1") }}
                             JOIN {{ ref("model2") }} ON 1=1
@@ -167,17 +158,14 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "agg1",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("clean") }}',
                     },
                     {
                         "name": "agg2",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ ref("clean") }}',
                     },
                 ],
@@ -202,7 +190,6 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                 ],
@@ -234,13 +221,11 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                     {
                         "name": "enriched",
-                        "materialized": "flink",
-                        "sql": 'SELECT * FROM {{ ref("clean") }}',
+                        "sql": 'SELECT * FROM {{ ref("clean") }} GROUP BY id',
                     },
                 ],
                 "exposures": [
@@ -272,7 +257,6 @@ class TestDAGBuilder:
                 "models": [
                     {
                         "name": "clean",
-                        "materialized": "topic",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
                     },
                 ],

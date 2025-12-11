@@ -276,15 +276,7 @@ models:
       Real-time customer 360 view.
       Combines customer profile with aggregated order history.
       Updates whenever customer data or orders change.
-    materialized: flink
-
-    topic:
-      name: analytics.customer360.v1
-      partitions: 6
-
-    flink:
-      parallelism: 4
-      state_ttl_ms: 604800000  # 7 days - keep customer state for a week
+    # Auto-inferred as flink due to JOIN and GROUP BY
 
     sql: |
       SELECT
@@ -311,6 +303,14 @@ models:
       WHERE c.__deleted = FALSE
       GROUP BY
         c.id, c.name, c.email, c.tier, c.created_at
+
+    advanced:  # Optional: tune for stateful aggregation
+      topic:
+        name: analytics.customer360.v1
+        partitions: 6
+      flink:
+        parallelism: 4
+        state_ttl_ms: 604800000  # 7 days - keep customer state for a week
 ```
 
 **How it works:**
@@ -332,14 +332,7 @@ models:
     description: |
       Real-time revenue metrics updated every minute.
       Powers the executive dashboard.
-    materialized: flink
-
-    topic:
-      name: analytics.revenue.realtime.v1
-      partitions: 1  # Single partition for ordered revenue timeline
-
-    flink:
-      parallelism: 2
+    # Auto-inferred as flink due to TUMBLE window
 
     sql: |
       SELECT
@@ -355,6 +348,13 @@ models:
       FROM {{ source("orders_cdc") }} AS o
       WHERE o.__deleted = FALSE
       GROUP BY TUMBLE(o.updated_at, INTERVAL '1' MINUTE)
+
+    advanced:  # Optional: single partition for ordered timeline
+      topic:
+        name: analytics.revenue.realtime.v1
+        partitions: 1  # Single partition for ordered revenue timeline
+      flink:
+        parallelism: 2
 ```
 
 ---
@@ -369,15 +369,7 @@ models:
     description: |
       Orders enriched with customer and product details.
       Uses temporal joins to get the correct version at order time.
-    materialized: flink
-
-    topic:
-      name: analytics.orders.enriched.v1
-      partitions: 6
-
-    flink:
-      parallelism: 4
-      state_ttl_ms: 86400000  # 24 hours
+    # Auto-inferred as flink due to temporal JOINs (FOR SYSTEM_TIME AS OF)
 
     sql: |
       SELECT
@@ -406,6 +398,14 @@ models:
         FOR SYSTEM_TIME AS OF o.updated_at AS p
         ON o.product_id = p.id
       WHERE o.__deleted = FALSE
+
+    advanced:  # Optional: tune state for temporal lookups
+      topic:
+        name: analytics.orders.enriched.v1
+        partitions: 6
+      flink:
+        parallelism: 4
+        state_ttl_ms: 86400000  # 24 hours
 ```
 
 ---
@@ -420,15 +420,7 @@ models:
     description: |
       Real-time product performance metrics.
       Updated with each order.
-    materialized: flink
-
-    topic:
-      name: analytics.products.performance.v1
-      partitions: 3
-
-    flink:
-      parallelism: 2
-      state_ttl_ms: 604800000  # 7 days
+    # Auto-inferred as flink due to JOIN and GROUP BY
 
     sql: |
       SELECT
@@ -466,6 +458,14 @@ models:
       WHERE p.__deleted = FALSE
       GROUP BY
         p.id, p.name, p.category, p.price, p.inventory_count
+
+    advanced:  # Optional: tune for longer retention
+      topic:
+        name: analytics.products.performance.v1
+        partitions: 3
+      flink:
+        parallelism: 2
+        state_ttl_ms: 604800000  # 7 days
 ```
 
 ---
@@ -478,22 +478,23 @@ Export the analytics to Snowflake for BI tools. Create `models/revenue_to_snowfl
 models:
   - name: revenue_to_snowflake
     description: Export real-time revenue to Snowflake
-    materialized: sink
+    # Explicit materialization required for sinks
 
     from:
       - ref: real_time_revenue
 
-    sink:
-      connector: snowflake-sink
-      config:
-        snowflake.url.name: ${SNOWFLAKE_URL}
-        snowflake.user.name: ${SNOWFLAKE_USER}
-        snowflake.private.key: ${SNOWFLAKE_KEY}
-        snowflake.database.name: ANALYTICS
-        snowflake.schema.name: REALTIME
-        snowflake.topic2table.map: "analytics.revenue.realtime.v1:REVENUE_METRICS"
-        buffer.count.records: 1000
-        buffer.flush.time: 60
+    advanced:
+      sink:
+        connector: snowflake-sink
+        config:
+          snowflake.url.name: ${SNOWFLAKE_URL}
+          snowflake.user.name: ${SNOWFLAKE_USER}
+          snowflake.private.key: ${SNOWFLAKE_KEY}
+          snowflake.database.name: ANALYTICS
+          snowflake.schema.name: REALTIME
+          snowflake.topic2table.map: "analytics.revenue.realtime.v1:REVENUE_METRICS"
+          buffer.count.records: 1000
+          buffer.flush.time: 60
 ```
 
 ---

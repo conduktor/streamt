@@ -22,22 +22,35 @@ This page documents all Flink-related configuration options in streamt, includin
 
 ## Model Flink Configuration
 
-Configure Flink jobs in your model definitions:
+Configure Flink jobs in your model definitions using the `advanced` section:
 
 ```yaml
 models:
   - name: my_aggregation
-    materialized: flink
+    description: "Hourly aggregation"
 
-    flink:
-      parallelism: 4
-      checkpoint_interval_ms: 60000
-      state_backend: rocksdb
+    # materialized: flink (auto-inferred from GROUP BY)
+    sql: |
+      SELECT
+        customer_id,
+        COUNT(*) as order_count
+      FROM {{ ref("orders") }}
+      GROUP BY customer_id
 
-    flink_cluster: production    # Which cluster to deploy to
+    # Only when overriding defaults:
+    advanced:
+      flink:
+        parallelism: 4
+        checkpoint_interval_ms: 60000
+        state_backend: rocksdb
+        state_ttl_ms: 86400000
+
+      flink_cluster: production    # Which cluster to deploy to
 ```
 
 ### Supported Options
+
+All Flink options are nested under `advanced.flink`:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -52,13 +65,17 @@ State TTL (Time-To-Live) controls how long Flink keeps state entries before expi
 ```yaml
 models:
   - name: customer_counts
-    materialized: flink
-    flink:
-      state_ttl_ms: 86400000  # 24 hours
+    description: "Customer order counts"
+
+    # materialized: flink (auto-inferred from GROUP BY)
     sql: |
       SELECT customer_id, COUNT(*)
       FROM {{ ref("orders") }}
       GROUP BY customer_id
+
+    advanced:
+      flink:
+        state_ttl_ms: 86400000  # 24 hours
 ```
 
 **When to use State TTL:**
@@ -90,9 +107,9 @@ models:
 
 These options are parsed from YAML but not yet used when deploying jobs:
 
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `state_backend` | string | State backend type (`hashmap`, `rocksdb`) | Parsed only |
+| Option | Location | Type | Description | Status |
+|--------|----------|------|-------------|--------|
+| `state_backend` | `advanced.flink` | string | State backend type (`hashmap`, `rocksdb`) | Parsed only |
 
 !!! warning "state_backend not applied"
     The `state_backend` option is currently parsed but **not applied** to Flink jobs. The state backend is determined by your Flink cluster configuration. Support for setting this via streamt is planned.
@@ -107,19 +124,20 @@ The following options are planned for future releases:
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  checkpoint:
-    interval_ms: 60000
-    timeout_ms: 600000
-    min_pause_ms: 500
-    max_concurrent: 1
-    mode: exactly_once          # exactly_once, at_least_once
-    externalized:
-      enabled: true
-      cleanup: retain_on_cancellation
-    unaligned:
-      enabled: false
-    incremental: true           # For RocksDB
+advanced:
+  flink:
+    checkpoint:
+      interval_ms: 60000
+      timeout_ms: 600000
+      min_pause_ms: 500
+      max_concurrent: 1
+      mode: exactly_once          # exactly_once, at_least_once
+      externalized:
+        enabled: true
+        cleanup: retain_on_cancellation
+      unaligned:
+        enabled: false
+      incremental: true           # For RocksDB
 ```
 
 | Option | Type | Description | Status |
@@ -138,18 +156,19 @@ flink:
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  state:
-    backend: rocksdb
-    rocksdb:
-      block_cache_size_mb: 256
-      write_buffer_size_mb: 64
-      max_write_buffer_number: 4
-      predefined_options: SPINNING_DISK_OPTIMIZED_HIGH_MEM
-    ttl_ms: 86400000              # State TTL
-    incremental_cleanup:
-      enabled: true
-      records_per_cleanup: 1000
+advanced:
+  flink:
+    state:
+      backend: rocksdb
+      rocksdb:
+        block_cache_size_mb: 256
+        write_buffer_size_mb: 64
+        max_write_buffer_number: 4
+        predefined_options: SPINNING_DISK_OPTIMIZED_HIGH_MEM
+      ttl_ms: 86400000              # State TTL
+      incremental_cleanup:
+        enabled: true
+        records_per_cleanup: 1000
 ```
 
 | Option | Type | Description | Status |
@@ -163,20 +182,21 @@ flink:
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  restart:
-    strategy: fixed_delay        # fixed_delay, failure_rate, exponential_delay, none
-    fixed_delay:
-      attempts: 3
-      delay_ms: 10000
-    failure_rate:
-      max_failures_per_interval: 3
-      failure_interval_ms: 60000
-      delay_ms: 10000
-    exponential_delay:
-      initial_delay_ms: 1000
-      max_delay_ms: 60000
-      multiplier: 2.0
+advanced:
+  flink:
+    restart:
+      strategy: fixed_delay        # fixed_delay, failure_rate, exponential_delay, none
+      fixed_delay:
+        attempts: 3
+        delay_ms: 10000
+      failure_rate:
+        max_failures_per_interval: 3
+        failure_interval_ms: 60000
+        delay_ms: 10000
+      exponential_delay:
+        initial_delay_ms: 1000
+        max_delay_ms: 60000
+        multiplier: 2.0
 ```
 
 | Option | Type | Description | Status |
@@ -190,15 +210,16 @@ flink:
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  resources:
-    task_manager:
-      memory_mb: 4096
-      cpu_cores: 2
-      slots: 4
-    job_manager:
-      memory_mb: 2048
-      cpu_cores: 1
+advanced:
+  flink:
+    resources:
+      task_manager:
+        memory_mb: 4096
+        cpu_cores: 2
+        slots: 4
+      job_manager:
+        memory_mb: 2048
+        cpu_cores: 1
 ```
 
 | Option | Type | Description | Status |
@@ -213,12 +234,13 @@ flink:
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  savepoint:
-    enabled: true
-    path: s3://my-bucket/savepoints
-    on_upgrade: trigger_and_restore
-    on_cancel: trigger
+advanced:
+  flink:
+    savepoint:
+      enabled: true
+      path: s3://my-bucket/savepoints
+      on_upgrade: trigger_and_restore
+      on_cancel: trigger
 ```
 
 | Option | Type | Description | Status |
@@ -231,32 +253,36 @@ flink:
 ### Watermark Strategy
 
 ```yaml
-# PLANNED - Not yet supported
+# SUPPORTED - Use in sources or models
 sources:
   - name: events
     topic: events.raw.v1
 
-    # Time semantics
+    # Top-level: column name
     event_time:
       column: event_timestamp
-      watermark:
-        strategy: bounded_out_of_orderness
-        max_out_of_orderness_ms: 5000
-      # OR
-      watermark:
-        strategy: monotonous
-      # OR
-      watermark:
-        strategy: custom
-        expression: "event_timestamp - INTERVAL '5' SECOND"
+
+    # Advanced section: watermark details
+    advanced:
+      event_time:
+        watermark:
+          strategy: bounded_out_of_orderness
+          max_out_of_orderness_ms: 5000
+        # OR
+        watermark:
+          strategy: monotonous
+        # OR (planned)
+        watermark:
+          strategy: custom
+          expression: "event_timestamp - INTERVAL '5' SECOND"
 ```
 
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `event_time.column` | string | Event time column | Planned |
-| `event_time.watermark.strategy` | string | Watermark strategy | Planned |
-| `event_time.watermark.max_out_of_orderness_ms` | int | Allowed lateness | Planned |
-| `event_time.watermark.expression` | string | Custom watermark SQL | Planned |
+| Option | Location | Type | Description | Status |
+|--------|----------|------|-------------|--------|
+| `event_time.column` | Top-level | string | Event time column | Supported |
+| `event_time.watermark.strategy` | Advanced | string | Watermark strategy | Supported |
+| `event_time.watermark.max_out_of_orderness_ms` | Advanced | int | Allowed lateness | Supported |
+| `event_time.watermark.expression` | Advanced | string | Custom watermark SQL | Planned |
 
 ---
 
@@ -397,7 +423,8 @@ streamt generates Flink SQL from your YAML definitions. Understanding the genera
 ```yaml
 models:
   - name: orders_valid
-    materialized: topic
+    description: "Valid orders only"
+    # materialized: topic (auto-inferred from simple SELECT)
     sql: |
       SELECT * FROM {{ source("orders_raw") }}
       WHERE amount > 0
@@ -444,15 +471,20 @@ WHERE amount > 0;
 ```yaml
 models:
   - name: hourly_revenue
-    materialized: flink
-    flink:
-      parallelism: 4
+    description: "Hourly revenue aggregation"
+
+    # materialized: flink (auto-inferred from TUMBLE)
     sql: |
       SELECT
         TUMBLE_START(order_time, INTERVAL '1' HOUR) as window_start,
         SUM(amount) as revenue
       FROM {{ ref("orders_valid") }}
       GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR)
+
+    # Only when overriding defaults:
+    advanced:
+      flink:
+        parallelism: 4
 ```
 
 **Generated Flink SQL:**

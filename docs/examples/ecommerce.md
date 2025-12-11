@@ -88,16 +88,11 @@ sources:
 ```yaml title="models/events_clean.yml"
 models:
   - name: events_clean
-    materialized: topic
     description: Cleaned and validated user events
     owner: data-platform
-
-    topic:
-      name: ecom.events-clean.v1
-      partitions: 24
-
     key: session_id
 
+    # Simple SELECT/WHERE is auto-inferred as 'topic' materialization
     sql: |
       SELECT
         event_id,
@@ -118,6 +113,12 @@ models:
       WHERE event_id IS NOT NULL
         AND session_id IS NOT NULL
         AND event_type IN ('page_view', 'click', 'add_to_cart', 'remove_from_cart', 'purchase', 'search')
+
+    # Override defaults only when needed
+    advanced:
+      topic:
+        name: ecom.events-clean.v1
+        partitions: 24
 ```
 
 ### Enrich with Product Data
@@ -125,19 +126,11 @@ models:
 ```yaml title="models/events_enriched.yml"
 models:
   - name: events_enriched
-    materialized: flink
     description: Events enriched with product details
     owner: data-platform
-
-    flink:
-      parallelism: 8
-
-    topic:
-      name: ecom.events-enriched.v1
-      partitions: 24
-
     key: session_id
 
+    # JOIN is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         e.event_id,
@@ -159,6 +152,14 @@ models:
       FROM {{ ref("events_clean") }} e
       LEFT JOIN {{ source("products") }} FOR SYSTEM_TIME AS OF e.`timestamp` AS p
         ON e.product_id = p.product_id
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 8
+      topic:
+        name: ecom.events-enriched.v1
+        partitions: 24
 ```
 
 ### User Sessions
@@ -166,22 +167,13 @@ models:
 ```yaml title="models/user_sessions.yml"
 models:
   - name: user_sessions
-    materialized: flink
     description: |
       Aggregated user sessions with behavior metrics.
       Sessions are 30-minute tumbling windows.
     owner: analytics-team
-
-    flink:
-      parallelism: 8
-      checkpoint_interval: 60000
-
-    topic:
-      name: ecom.user-sessions.v1
-      partitions: 12
-
     key: session_id
 
+    # TUMBLE + GROUP BY is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         session_id,
@@ -207,6 +199,15 @@ models:
         device_type,
         country,
         TUMBLE(`timestamp`, INTERVAL '30' MINUTE)
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval: 60000
+      topic:
+        name: ecom.user-sessions.v1
+        partitions: 12
 ```
 
 ### Product Popularity
@@ -214,22 +215,13 @@ models:
 ```yaml title="models/product_popularity.yml"
 models:
   - name: product_popularity
-    materialized: flink
     description: |
       Real-time product popularity scores.
       Updated every 5 minutes based on user interactions.
     owner: recommendations-team
-
-    flink:
-      parallelism: 4
-      checkpoint_interval: 30000
-
-    topic:
-      name: ecom.product-popularity.v1
-      partitions: 6
-
     key: product_id
 
+    # TUMBLE + GROUP BY is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         product_id,
@@ -255,6 +247,15 @@ models:
         product_name,
         product_category,
         TUMBLE(`timestamp`, INTERVAL '5' MINUTE)
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 4
+        checkpoint_interval: 30000
+      topic:
+        name: ecom.product-popularity.v1
+        partitions: 6
 ```
 
 ## Tests

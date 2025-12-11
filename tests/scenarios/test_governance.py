@@ -24,7 +24,6 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
-
 class TestTopicNamingGovernance:
     """Test topic naming convention enforcement."""
 
@@ -75,8 +74,10 @@ class TestTopicNamingGovernance:
                     {
                         "name": "order_created",
                         "description": "Order created events",
-                        "materialized": "flink",
-                        "topic": {"name": "orders.purchase.created.v1"},  # Follows pattern
+
+                        "advanced": {
+                            "topic": {"name": "orders.purchase.created.v1"},  # Follows pattern
+                        },
                         "sql": """
                             SELECT * FROM {{ source("order_events") }}
                             WHERE event_type = 'CREATED'
@@ -85,8 +86,10 @@ class TestTopicNamingGovernance:
                     {
                         "name": "order_completed",
                         "description": "Order completed events",
-                        "materialized": "flink",
-                        "topic": {"name": "orders.purchase.completed.v1"},  # Follows pattern
+
+                        "advanced": {
+                            "topic": {"name": "orders.purchase.completed.v1"},  # Follows pattern
+                        },
                         "sql": """
                             SELECT * FROM {{ source("order_events") }}
                             WHERE event_type = 'COMPLETED'
@@ -158,7 +161,7 @@ class TestTopicNamingGovernance:
                 "models": [
                     {
                         "name": "user_registered",
-                        "materialized": "flink",
+
                         "topic": {"name": "users.registered.created.v1", "partitions": 6},
                         "sql": "SELECT * FROM {{ source('user_events') }} WHERE event_type = 'REGISTERED'",
                     },
@@ -172,7 +175,6 @@ class TestTopicNamingGovernance:
             validator = ProjectValidator(project)
             result = validator.validate()
             assert result.is_valid
-
 
 class TestOwnershipAndAccessControl:
     """Test ownership and access control patterns."""
@@ -223,14 +225,14 @@ class TestOwnershipAndAccessControl:
                     {
                         "name": "customer_profiles",
                         "description": "Current customer profiles",
-                        "materialized": "flink",
+
                         "owner": "customer-team",
                         "sql": "SELECT * FROM {{ source('customer_updates') }}",
                     },
                     {
                         "name": "customer_analytics",
                         "description": "Customer analytics aggregations",
-                        "materialized": "flink",
+
                         "owner": "analytics-team",
                         "sql": """
                             SELECT
@@ -305,7 +307,7 @@ class TestOwnershipAndAccessControl:
                     {
                         "name": "user_profiles_pii",
                         "description": "User profiles with PII",
-                        "materialized": "flink",
+
                         "owner": "data-governance",
                         "tags": ["pii", "gdpr-sensitive"],
                         "topic": {
@@ -324,7 +326,7 @@ class TestOwnershipAndAccessControl:
                     {
                         "name": "user_profiles_anonymized",
                         "description": "User profiles with PII masked",
-                        "materialized": "flink",
+
                         "owner": "data-governance",
                         "tags": ["anonymized", "public"],
                         "sql": """
@@ -367,7 +369,6 @@ class TestOwnershipAndAccessControl:
             # Verify PII model has appropriate tags
             pii_model = next(m for m in project.models if m.name == "user_profiles_pii")
             assert "pii" in pii_model.tags
-
 
 class TestCrossTeamDependencies:
     """Test cross-team dependency management."""
@@ -435,7 +436,7 @@ class TestCrossTeamDependencies:
                     {
                         "name": "enriched_orders",
                         "description": "Orders enriched with product details",
-                        "materialized": "flink",
+
                         "owner": "analytics-team",
                         "sql": """
                             SELECT
@@ -530,7 +531,7 @@ class TestCrossTeamDependencies:
                 "models": [
                     {
                         "name": "combined_view",
-                        "materialized": "flink",
+
                         "owner": "my-team",
                         "sql": """
                             SELECT
@@ -552,7 +553,6 @@ class TestCrossTeamDependencies:
             validator = ProjectValidator(project)
             result = validator.validate()
             assert result.is_valid
-
 
 class TestDataQualityEnforcement:
     """Test data quality rule enforcement."""
@@ -595,7 +595,7 @@ class TestDataQualityEnforcement:
                     {
                         "name": "critical_model",
                         "description": "Critical business model",
-                        "materialized": "flink",
+
                         "tags": ["critical", "tier-1"],
                         "sql": """
                             SELECT * FROM {{ source("raw_events") }}
@@ -605,7 +605,7 @@ class TestDataQualityEnforcement:
                     {
                         "name": "payment_events",
                         "description": "Payment processing events",
-                        "materialized": "flink",
+
                         "tags": ["critical", "financial"],
                         "sql": """
                             SELECT * FROM {{ source("raw_events") }}
@@ -689,7 +689,7 @@ class TestDataQualityEnforcement:
                 "models": [
                     {
                         "name": "transaction_summary",
-                        "materialized": "flink",
+
                         "sql": """
                             SELECT
                                 txn_id,
@@ -779,7 +779,6 @@ class TestDataQualityEnforcement:
             assert "schema" in test_types
             assert "continuous" in test_types
 
-
 class TestComplianceAndAudit:
     """Test compliance and audit requirements."""
 
@@ -826,21 +825,21 @@ class TestComplianceAndAudit:
                     {
                         "name": "customer_cleaned",
                         "description": "Cleaned customer data",
-                        "materialized": "flink",
+
                         "tags": ["pii", "gdpr"],
                         "sql": "SELECT * FROM {{ source('customer_data') }} WHERE is_valid = true",
                     },
                     {
                         "name": "transaction_cleaned",
                         "description": "Cleaned transaction data",
-                        "materialized": "flink",
+
                         "tags": ["financial", "sox"],
                         "sql": "SELECT * FROM {{ source('transaction_data') }} WHERE status != 'INVALID'",
                     },
                     {
                         "name": "customer_transactions",
                         "description": "Customer transaction history",
-                        "materialized": "flink",
+
                         "tags": ["pii", "financial", "gdpr", "sox"],
                         "sql": """
                             SELECT
@@ -855,7 +854,7 @@ class TestComplianceAndAudit:
                     {
                         "name": "customer_summary",
                         "description": "Aggregated customer summary - no PII",
-                        "materialized": "topic",
+
                         "tags": ["aggregated", "non-pii"],
                         "sql": """
                             SELECT
@@ -932,7 +931,7 @@ class TestComplianceAndAudit:
                     {
                         "name": "user_pii",
                         "description": "User PII - short retention",
-                        "materialized": "flink",
+
                         "tags": ["pii"],
                         "topic": {
                             "config": {
@@ -944,7 +943,7 @@ class TestComplianceAndAudit:
                     {
                         "name": "financial_records",
                         "description": "Financial records - long retention",
-                        "materialized": "flink",
+
                         "tags": ["financial"],
                         "topic": {
                             "config": {
@@ -956,7 +955,7 @@ class TestComplianceAndAudit:
                     {
                         "name": "operational_metrics",
                         "description": "Operational metrics - default retention",
-                        "materialized": "flink",
+
                         "tags": ["operational"],
                         "topic": {
                             "config": {

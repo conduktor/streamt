@@ -25,11 +25,11 @@ from confluent_kafka import Consumer
 from streamt.compiler.compiler import Compiler
 from streamt.compiler.manifest import FlinkJobArtifact
 from streamt.core.models import (
+    AdvancedConfig,
     ColumnDefinition,
     DataTest,
     DataTestType,
     KafkaConfig,
-    MaterializedType,
     Model,
     ProjectInfo,
     RuntimeConfig,
@@ -192,7 +192,6 @@ def create_test_project(
     # Create model
     model = Model(
         name="events_clean",
-        materialized=MaterializedType.TOPIC,
         sql=f"""SELECT
     event_id,
     user_id,
@@ -200,7 +199,9 @@ def create_test_project(
     `timestamp`
 FROM {{{{ source("raw_events") }}}}
 WHERE event_id IS NOT NULL""",
-        topic=TopicConfig(name=model_topic),
+        advanced=AdvancedConfig(
+            topic=TopicConfig(name=model_topic),
+        ),
     )
 
     # Create continuous test

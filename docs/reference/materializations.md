@@ -7,14 +7,16 @@ description: How models are deployed to infrastructure
 
 Materializations define how models are deployed. Each materialization type creates different infrastructure resources.
 
+**IMPORTANT:** As of the latest version, the `materialized` field is **auto-inferred** from your SQL and configuration. You no longer need to specify it explicitly.
+
 ## Overview
 
-| Materialization | Creates | Use Case |
-|-----------------|---------|----------|
-| `topic` | Kafka topic | Stateless transformations |
-| `virtual_topic` | Gateway rule | Read-time filtering |
-| `flink` | Flink SQL job | Stateful processing |
-| `sink` | Connect connector | External exports |
+| Materialization | Auto-Inferred When | Creates | Use Case |
+|-----------------|---------------------|---------|----------|
+| `topic` | Simple SELECT/WHERE | Kafka topic | Stateless transformations |
+| `virtual_topic` | Has `gateway:` config | Gateway rule | Read-time filtering |
+| `flink` | Has TUMBLE/HOP/SESSION/GROUP BY/JOIN | Flink SQL job | Stateful processing |
+| `sink` | Has `from:` without `sql:` | Connect connector | External exports |
 
 ## Topic
 
@@ -30,28 +32,42 @@ Creates a Kafka topic with optional stateless transformations.
 
 ### Configuration
 
+**Simple example:**
 ```yaml
 models:
   - name: orders_clean
-    materialized: topic
+    description: "Clean orders stream"
+    key: order_id
 
-    # Topic settings
-    topic:
-      name: orders.clean.v1          # Topic name
-      partitions: 12                  # Partition count
-      replication_factor: 3           # Replication
-      config:                         # Topic configs
-        retention.ms: 604800000       # 7 days
-        cleanup.policy: delete
-        min.insync.replicas: 2
+    # materialized: topic (auto-inferred from simple SELECT)
+    sql: |
+      SELECT order_id, customer_id, amount
+      FROM {{ source("orders_raw") }}
+      WHERE amount > 0
+```
 
-    # Partition key
+**With advanced overrides:**
+```yaml
+models:
+  - name: orders_clean
+    description: "Clean orders stream"
     key: order_id
 
     sql: |
       SELECT order_id, customer_id, amount
       FROM {{ source("orders_raw") }}
       WHERE amount > 0
+
+    # Only when overriding defaults:
+    advanced:
+      topic:
+        name: orders.clean.v1          # Topic name
+        partitions: 12                  # Partition count
+        replication_factor: 3           # Replication
+        config:                         # Topic configs
+          retention.ms: 604800000       # 7 days
+          cleanup.policy: delete
+          min.insync.replicas: 2
 ```
 
 ### How It Works
@@ -93,15 +109,14 @@ Creates a Gateway rule for read-time filtering without creating a physical topic
 ```yaml
 models:
   - name: orders_europe
-    materialized: virtual_topic
-    description: European orders view (filtered)
+    description: "European orders view (filtered)"
 
-    # Source topic
+    # materialized: virtual_topic (auto-inferred from gateway config)
     from: orders_clean
 
-    # Virtual topic name
-    virtual_topic:
-      name: orders.europe.virtual
+    # Gateway configuration triggers virtual_topic materialization
+    gateway:
+      virtual_topic: orders.europe.virtual
 
     # Access control
     access:
@@ -176,24 +191,31 @@ Deploys a Flink SQL job for stateful stream processing.
 
 ### Configuration
 
+**Simple example:**
 ```yaml
 models:
   - name: hourly_revenue
-    materialized: flink
+    description: "Hourly revenue by region"
 
-    # Flink job settings
-    flink:
-      parallelism: 8
-      checkpoint_interval: 60000    # 60 seconds
-      checkpoint_timeout: 300000    # 5 minutes
-      state_backend: rocksdb        # or hashmap
-      restart_strategy: fixed-delay
-      cluster: production           # Target cluster
+    # materialized: flink (auto-inferred from TUMBLE)
+    sql: |
+      SELECT
+        TUMBLE_START(order_time, INTERVAL '1' HOUR) as window_start,
+        TUMBLE_END(order_time, INTERVAL '1' HOUR) as window_end,
+        region,
+        SUM(amount) as total_revenue,
+        COUNT(*) as order_count
+      FROM {{ ref("orders_clean") }}
+      GROUP BY
+        region,
+        TUMBLE(order_time, INTERVAL '1' HOUR)
+```
 
-    # Output topic
-    topic:
-      name: analytics.revenue.v1
-      partitions: 6
+**With advanced overrides:**
+```yaml
+models:
+  - name: hourly_revenue
+    description: "Hourly revenue by region"
 
     sql: |
       SELECT
@@ -206,6 +228,19 @@ models:
       GROUP BY
         region,
         TUMBLE(order_time, INTERVAL '1' HOUR)
+
+    # Only when overriding defaults:
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval_ms: 60000
+        state_backend: rocksdb
+
+      flink_cluster: production
+
+      topic:
+        name: analytics.revenue.v1
+        partitions: 6
 ```
 
 ### Flink SQL Features
@@ -262,14 +297,16 @@ CONCAT(first, ' ', last)
 
 ### Flink Settings Reference
 
+All settings are nested under `advanced.flink`:
+
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `parallelism` | int | 1 | Job parallelism |
-| `checkpoint_interval` | long | 60000 | Checkpoint interval (ms) |
-| `checkpoint_timeout` | long | 300000 | Checkpoint timeout (ms) |
+| `checkpoint_interval_ms` | long | 60000 | Checkpoint interval (ms) |
 | `state_backend` | string | hashmap | `hashmap` or `rocksdb` |
-| `restart_strategy` | string | fixed-delay | Restart strategy |
-| `cluster` | string | default | Target Flink cluster |
+| `state_ttl_ms` | long | none | State TTL (ms) |
+
+Cluster selection is at `advanced.flink_cluster`.
 
 ---
 
@@ -287,27 +324,45 @@ Creates a Kafka Connect connector to export data externally.
 
 ### Configuration
 
+**Simple example:**
 ```yaml
 models:
   - name: orders_snowflake
-    materialized: sink
+    description: "Export orders to Snowflake"
 
-    # Source model
+    # materialized: sink (auto-inferred from 'from' without 'sql')
     from: orders_clean
 
-    # Connector settings
-    connector:
-      type: snowflake-sink
-      tasks_max: 4
-
+    sink:
+      connector: snowflake-sink
       config:
-        # Snowflake settings
         snowflake.url.name: ${SNOWFLAKE_URL}
         snowflake.user.name: ${SNOWFLAKE_USER}
         snowflake.private.key: ${SNOWFLAKE_KEY}
         snowflake.database.name: ANALYTICS
         snowflake.schema.name: RAW
         snowflake.table.name: ORDERS
+        tasks.max: 4
+```
+
+**With advanced overrides:**
+```yaml
+models:
+  - name: orders_snowflake
+    description: "Export orders to Snowflake"
+
+    from: orders_clean
+
+    sink:
+      connector: snowflake-sink
+      config:
+        snowflake.url.name: ${SNOWFLAKE_URL}
+        snowflake.user.name: ${SNOWFLAKE_USER}
+        snowflake.private.key: ${SNOWFLAKE_KEY}
+        snowflake.database.name: ANALYTICS
+        snowflake.schema.name: RAW
+        snowflake.table.name: ORDERS
+        tasks.max: 4
 
         # Converters
         key.converter: org.apache.kafka.connect.storage.StringConverter
@@ -318,6 +373,10 @@ models:
         insert.mode: UPSERT
         pk.mode: record_key
         pk.fields: order_id
+
+    # Only when overriding defaults:
+    advanced:
+      connect_cluster: production
 ```
 
 ### Supported Connector Types
@@ -335,8 +394,8 @@ models:
 ### Snowflake Sink
 
 ```yaml
-connector:
-  type: snowflake-sink
+sink:
+  connector: snowflake-sink
   config:
     snowflake.url.name: account.snowflakecomputing.com
     snowflake.user.name: STREAMT_USER
@@ -351,8 +410,8 @@ connector:
 ### S3 Sink
 
 ```yaml
-connector:
-  type: s3-sink
+sink:
+  connector: s3-sink
   config:
     s3.bucket.name: my-data-lake
     s3.region: us-east-1
@@ -368,8 +427,8 @@ connector:
 ### JDBC Sink
 
 ```yaml
-connector:
-  type: jdbc-sink
+sink:
+  connector: jdbc-sink
   config:
     connection.url: jdbc:postgresql://db:5432/analytics
     connection.user: ${DB_USER}

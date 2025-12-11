@@ -118,7 +118,7 @@ runtime:
 
 ### Conduktor Gateway (Optional)
 
-Required for `materialized: virtual_topic`. See [Gateway Guide](../guides/gateway.md).
+Required for virtual topic models (auto-inferred from `gateway:` configuration). See [Gateway Guide](../guides/gateway.md).
 
 ```yaml
 runtime:
@@ -329,6 +329,18 @@ sources:
 
 Configure event time semantics for streaming processing. This enables proper watermark generation for windowed aggregations.
 
+**Simple case** (just specify the column):
+
+```yaml
+sources:
+  - name: events
+    topic: events.raw.v1
+    event_time:
+      column: event_timestamp           # Simple: just the column name
+```
+
+**Advanced case** (custom watermark settings):
+
 ```yaml
 sources:
   - name: events
@@ -338,13 +350,17 @@ sources:
       - name: user_id
       - name: event_timestamp  # Will be TIMESTAMP(3) in Flink
 
-    # Event time configuration
+    # Top-level: just the column name
     event_time:
-      column: event_timestamp           # Which column is the event time
-      watermark:
-        strategy: bounded_out_of_orderness
-        max_out_of_orderness_ms: 5000   # Allow 5 seconds of late data
-      allowed_lateness_ms: 60000        # Accept data up to 1 minute late
+      column: event_timestamp
+
+    # Advanced section: watermark details
+    advanced:
+      event_time:
+        watermark:
+          strategy: bounded_out_of_orderness
+          max_out_of_orderness_ms: 5000   # Allow 5 seconds of late data
+        allowed_lateness_ms: 60000        # Accept data up to 1 minute late
 ```
 
 This generates proper Flink SQL watermark declarations:
@@ -358,12 +374,12 @@ CREATE TABLE events (
 
 **Event Time Fields:**
 
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `column` | string | Column name containing event time | Yes |
-| `watermark.strategy` | string | `bounded_out_of_orderness` or `monotonously_increasing` | No (default: bounded) |
-| `watermark.max_out_of_orderness_ms` | int | Max delay in ms | No (default: 5000) |
-| `allowed_lateness_ms` | int | Accept late events within window | No |
+| Field | Location | Type | Description | Required |
+|-------|----------|------|-------------|----------|
+| `column` | Top-level | string | Column name containing event time | Yes |
+| `watermark.strategy` | Advanced | string | `bounded_out_of_orderness` or `monotonously_increasing` | No (default: bounded) |
+| `watermark.max_out_of_orderness_ms` | Advanced | int | Max delay in ms | No (default: 5000) |
+| `allowed_lateness_ms` | Advanced | int | Accept late events within window | No |
 
 **Watermark Strategies:**
 
@@ -380,34 +396,31 @@ See [Streaming Fundamentals](../concepts/streaming-fundamentals.md) for more on 
 
 Models define transformations that create new data streams.
 
+### Auto-Inferred Materialization
+
+**IMPORTANT:** The `materialized` field is now **auto-inferred** from your SQL and configuration. You no longer need to specify it explicitly.
+
+**Inference Rules:**
+
+| SQL Pattern | Inferred Materialization |
+|-------------|-------------------------|
+| Contains `TUMBLE`, `HOP`, `SESSION`, or `CUMULATE` | `flink` |
+| Contains `GROUP BY` without window functions | `flink` |
+| Contains `JOIN` | `flink` |
+| Has `gateway:` configuration | `virtual_topic` |
+| Has `from:` without `sql:` | `sink` |
+| Simple `SELECT`, `WHERE`, projection | `topic` |
+
+### Basic Example (No Advanced Config)
+
 ```yaml
 models:
-  - name: orders_validated              # Required
-    description: "Validated orders"     # Optional
-    materialized: flink                 # Required: topic, virtual_topic, flink, sink
-    owner: orders-team                  # Optional
-    tags: [orders, validated]           # Optional
-    access: protected                   # Optional: private, protected, public
-    group: orders                       # Optional: Logical grouping
-    version: 1                          # Optional: Model version
-    key: order_id                       # Optional: Partition key
+  - name: orders_validated
+    description: "Validated orders"
+    owner: orders-team
+    tags: [orders, validated]
 
-    topic:                              # Output topic configuration
-      name: orders.validated.v1         # Optional: Explicit topic name
-      partitions: 12
-      replication_factor: 3
-      config:
-        retention.ms: 604800000
-        cleanup.policy: delete
-
-    flink:                              # Flink job configuration
-      parallelism: 4
-      checkpoint_interval_ms: 60000
-      state_backend: rocksdb
-
-    flink_cluster: production           # Optional: Target Flink cluster
-
-    sql: |                              # Required for non-sink
+    sql: |
       SELECT
         order_id,
         customer_id,
@@ -416,6 +429,115 @@ models:
       FROM {{ source("orders_raw") }}
       WHERE order_id IS NOT NULL
         AND amount > 0
+
+    # materialized: topic (auto-inferred from simple SELECT)
+```
+
+### Example With Advanced Overrides
+
+```yaml
+models:
+  - name: hourly_revenue
+    description: "Hourly revenue aggregation"
+    owner: analytics-team
+
+    sql: |
+      SELECT
+        TUMBLE_START(order_time, INTERVAL '1' HOUR) as window_start,
+        SUM(amount) as revenue
+      FROM {{ ref("orders_validated") }}
+      GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR)
+
+    # materialized: flink (auto-inferred from TUMBLE)
+
+    # Only specify when overriding defaults:
+    advanced:
+      flink:
+        parallelism: 8
+        checkpoint_interval_ms: 60000
+        state_backend: rocksdb
+        state_ttl_ms: 86400000
+
+      flink_cluster: production
+
+      topic:
+        name: analytics.revenue.v1
+        partitions: 12
+        replication_factor: 3
+        config:
+          retention.ms: 604800000
+          cleanup.policy: delete
+
+    columns:
+      - name: window_start
+        description: "Start of the hourly window"
+      - name: revenue
+        description: "Total revenue in the window"
+        classification: confidential
+```
+
+### Full Example (All Options)
+
+```yaml
+models:
+  - name: orders_validated
+    description: "Validated orders"     # Optional but recommended
+    owner: orders-team                  # Optional
+    tags: [orders, validated]           # Optional
+    access: protected                   # Optional: private, protected, public
+    group: orders                       # Optional: Logical grouping
+    version: 1                          # Optional: Model version
+    key: order_id                       # Optional: Partition key
+
+    sql: |                              # Required (except for sink models)
+      SELECT
+        order_id,
+        customer_id,
+        amount,
+        CASE WHEN amount > 1000 THEN 'high' ELSE 'normal' END as tier
+      FROM {{ source("orders_raw") }}
+      WHERE order_id IS NOT NULL
+        AND amount > 0
+
+    # Advanced configuration (optional - only when overriding defaults)
+    advanced:
+      # Flink job settings (for flink materialization)
+      flink:
+        parallelism: 4
+        checkpoint_interval_ms: 60000
+        state_backend: rocksdb
+        state_ttl_ms: 86400000
+
+      # Target Flink cluster
+      flink_cluster: production
+
+      # Output topic configuration
+      topic:
+        name: orders.validated.v1
+        partitions: 12
+        replication_factor: 3
+        config:
+          retention.ms: 604800000
+          cleanup.policy: delete
+
+      # Connect cluster (for sink materialization)
+      connect_cluster: production
+
+      # Event time configuration (advanced)
+      event_time:
+        watermark:
+          strategy: bounded_out_of_orderness
+          max_out_of_orderness_ms: 5000
+        allowed_lateness_ms: 60000
+
+    # Column metadata (stays at top level)
+    columns:
+      - name: customer_id
+        description: "Customer identifier"
+        classification: internal
+      - name: amount
+        description: "Order amount"
+        classification: confidential
 
     security:                           # Optional
       classification:
@@ -433,12 +555,13 @@ models:
         message: "Use v2 instead"
 ```
 
-### Model Fields
+### Model Fields (Top Level)
+
+**Top-level fields** (always visible, business-focused):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Unique model identifier |
-| `materialized` | string | Yes | `topic`, `virtual_topic`, `flink`, `sink` |
 | `description` | string | No | Human-readable description |
 | `owner` | string | No | Team or person responsible |
 | `tags` | list | No | Categorization tags |
@@ -447,13 +570,29 @@ models:
 | `version` | int | No | Model version number |
 | `key` | string | No | Partition key column |
 | `sql` | string | Conditional | SQL transformation (required except for sink) |
-| `topic` | object | No | Output topic configuration |
-| `flink` | object | No | Flink job configuration |
-| `flink_cluster` | string | No | Target Flink cluster |
-| `security` | object | No | Security policies |
+| `from` | string | Conditional | Source model (required for sink) |
+| `columns` | list | No | Column metadata and documentation |
+| `security` | object | No | Security policies and classification |
 | `deprecation` | object | No | Version deprecation info |
 
-### Topic Configuration
+**Note:** The `materialized` field is **no longer specified** - it's auto-inferred from your SQL and configuration.
+
+### Model Fields (Advanced Section)
+
+**Advanced section fields** (optional, infrastructure/tuning):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `advanced.flink` | object | Flink job configuration (see below) |
+| `advanced.flink_cluster` | string | Target Flink cluster name |
+| `advanced.topic` | object | Output topic configuration (see below) |
+| `advanced.connect_cluster` | string | Target Kafka Connect cluster |
+| `advanced.event_time` | object | Event time watermark configuration |
+| `advanced.gateway` | object | Gateway-specific settings |
+
+### Advanced: Topic Configuration
+
+Nested under `advanced.topic:`:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -462,29 +601,32 @@ models:
 | `replication_factor` | int | Replication factor |
 | `config` | map | Kafka topic configuration |
 
-### Flink Job Configuration
+### Advanced: Flink Configuration
+
+Nested under `advanced.flink:`:
 
 | Field | Type | Description | Status |
 |-------|------|-------------|--------|
 | `parallelism` | int | Job parallelism | Supported |
 | `checkpoint_interval_ms` | int | Checkpoint interval in milliseconds | Supported |
-| `state_backend` | string | `hashmap` or `rocksdb` | Parsed only (not applied yet) |
+| `state_backend` | string | `hashmap` or `rocksdb` | Parsed only |
+| `state_ttl_ms` | int | State time-to-live in milliseconds | Supported |
 
-**Coming Soon:**
+**Planned for Future:**
 
 ```yaml
 # PLANNED - Not yet supported
-flink:
-  parallelism: 4
-  checkpoint_interval_ms: 60000
-  state_backend: rocksdb
+advanced:
+  flink:
+    parallelism: 4
+    checkpoint_interval_ms: 60000
+    state_backend: rocksdb
+    state_ttl_ms: 86400000
 
-  # State management (planned)
-  state_ttl_ms: 86400000              # 24 hours - prevent unbounded state
-
-  # Advanced checkpointing (planned)
-  checkpoint_timeout_ms: 600000
-  checkpoint_min_pause_ms: 500
+    # Advanced checkpointing (planned)
+    checkpoint_timeout_ms: 600000
+    checkpoint_min_pause_ms: 500
+    max_concurrent_checkpoints: 1
 ```
 
 See [Flink Options Reference](flink-options.md) for complete Flink configuration.
@@ -515,12 +657,10 @@ Sink models export data to external systems via Kafka Connect.
 ```yaml
 models:
   - name: orders_snowflake
-    materialized: sink
     description: "Export orders to Snowflake"
 
+    # materialized: sink (auto-inferred from having 'from' without 'sql')
     from: orders_validated              # Source model or topic
-
-    connect_cluster: production         # Optional: Connect cluster
 
     sink:
       connector: snowflake-sink
@@ -532,6 +672,10 @@ models:
         snowflake.schema.name: RAW
         snowflake.table.name: ORDERS
         tasks.max: 4
+
+    # Only when overriding defaults:
+    advanced:
+      connect_cluster: production
 ```
 
 ### Sink Configuration
@@ -745,7 +889,9 @@ SELECT * FROM {{ ref("orders_validated") }}
 ```yaml
 models:
   - name: order_enriched
-    materialized: flink
+    description: "Orders enriched with customer data"
+
+    # materialized: flink (auto-inferred from JOIN)
     sql: |
       SELECT
         o.order_id,
@@ -755,6 +901,13 @@ models:
       FROM {{ ref("orders_validated") }} o
       JOIN {{ source("customers") }} c
         ON o.customer_id = c.id
+        AND o.order_time BETWEEN c.update_time - INTERVAL '1' HOUR
+                             AND c.update_time + INTERVAL '1' HOUR
+
+    # Only when overriding defaults:
+    advanced:
+      flink:
+        parallelism: 4
 ```
 
 ---
@@ -805,8 +958,11 @@ sources:
 
 models:
   - name: events_clean
-    materialized: topic
-    sql: SELECT * FROM {{ source("events") }}
+    description: "Cleaned event stream"
+    # materialized: topic (auto-inferred from simple SELECT)
+    sql: |
+      SELECT * FROM {{ source("events") }}
+      WHERE event_id IS NOT NULL
 ```
 
 ### Multi-File (Large Projects)
@@ -843,7 +999,8 @@ sources:
 ```yaml title="models/staging/stg_orders.yml"
 models:
   - name: stg_orders
-    materialized: topic
+    description: "Staging orders with basic validation"
+    # materialized: topic (auto-inferred)
     sql: |
       SELECT * FROM {{ source("orders_raw") }}
       WHERE order_id IS NOT NULL

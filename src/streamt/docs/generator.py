@@ -728,7 +728,7 @@ def generate_docs(project: StreamtProject, dag: DAG, output_path: Path) -> None:
         tags_html = "".join(f'<span class="tag">{tag}</span>' for tag in model.tags)
         models_html += f"""
         <div class="card">
-            <span class="card-type model">{model.materialized.value}</span>
+            <span class="card-type model">{model.get_materialized().value}</span>
             <h3 class="card-title">{model.name}</h3>
             <p class="card-description">{model.description or 'No description'}</p>
             <div class="card-meta">
@@ -774,7 +774,7 @@ def generate_docs(project: StreamtProject, dag: DAG, output_path: Path) -> None:
     dag_dict["models"] = [
         {
             "name": m.name,
-            "materialized": m.materialized.value,
+            "materialized": m.get_materialized().value,
             "description": m.description or "",
         }
         for m in project.models

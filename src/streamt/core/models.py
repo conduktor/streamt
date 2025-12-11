@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ============================================================================
 # Enums
@@ -424,29 +424,66 @@ class DeprecationConfig(BaseModel):
     message: Optional[str] = None
 
 
+class VirtualTopicConfig(BaseModel):
+    """Virtual topic configuration for Gateway."""
+
+    name: Optional[str] = None
+    compression: Optional[str] = None
+
+
+class ModelGatewayConfig(BaseModel):
+    """Gateway configuration for a model."""
+
+    virtual_topic: Optional[VirtualTopicConfig] = None
+
+
+class AdvancedConfig(BaseModel):
+    """Advanced configuration options for models (nested structure)."""
+
+    flink: Optional[FlinkJobConfig] = None
+    topic: Optional[TopicConfig] = None
+    flink_cluster: Optional[str] = None
+    connect_cluster: Optional[str] = None
+
+
 class Model(BaseModel):
     """Model declaration."""
 
     model_config = ConfigDict(populate_by_name=True)
 
+    # Top-level fields (user-facing)
     name: str
     description: Optional[str] = None
-    materialized: MaterializedType
-    topic: Optional[TopicConfig] = None
-    key: Optional[str] = None
-    from_: Optional[list[FromRef]] = Field(default=None, alias="from")
     sql: Optional[str] = None
+    from_: Optional[list[FromRef]] = Field(default=None, alias="from")
+    key: Optional[str] = None
+    columns: Optional[list[ColumnDefinition]] = None
     owner: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    security: Optional[SecurityPolicies] = None
+
+    # Optional: connector config (for sinks)
+    connector: Optional[dict[str, Any]] = None
+    sink: Optional[SinkConfig] = None
+
+    # Optional: Gateway config (for virtual topics)
+    gateway: Optional[ModelGatewayConfig] = None
+
+    # Advanced section (optional, nested)
+    advanced: Optional[AdvancedConfig] = None
+
+    # Legacy fields (for backward compatibility during transition)
+    materialized: Optional[MaterializedType] = None  # Auto-inferred if not provided
+    topic: Optional[TopicConfig] = None  # Moved to advanced, but kept for backward compat
+    flink: Optional[FlinkJobConfig] = None  # Moved to advanced, but kept for backward compat
+    flink_cluster: Optional[str] = None  # Moved to advanced, but kept for backward compat
+    connect_cluster: Optional[str] = None  # Moved to advanced, but kept for backward compat
+
+    # Other top-level fields
     access: AccessLevel = AccessLevel.PRIVATE
     group: Optional[str] = None
     version: Optional[int] = None
     deprecation: Optional[dict[str, DeprecationConfig]] = None
-    security: Optional[SecurityPolicies] = None
-    flink_cluster: Optional[str] = None
-    flink: Optional[FlinkJobConfig] = None
-    connect_cluster: Optional[str] = None
-    sink: Optional[SinkConfig] = None
 
     @field_validator("sql")
     @classmethod
@@ -454,6 +491,113 @@ class Model(BaseModel):
         """Validate that SQL is provided for non-sink models."""
         # Note: This validation is relaxed - sink models may not need SQL
         return v
+
+    @model_validator(mode="after")
+    def convert_connector_to_sink(self) -> "Model":
+        """Convert connector dict to sink config if needed."""
+        # If connector is a dict with 'type' and 'config', convert to SinkConfig
+        if self.connector and isinstance(self.connector, dict):
+            if "type" in self.connector:
+                connector_type = self.connector["type"]
+                connector_config = self.connector.get("config", {})
+                self.sink = SinkConfig(connector=connector_type, config=connector_config)
+                # Clear connector dict after conversion
+                self.connector = None
+        return self
+
+    def get_materialized(self) -> MaterializedType:
+        """Get materialization type, auto-inferring if not explicitly set."""
+        # If explicitly set, use that
+        if self.materialized is not None:
+            return self.materialized
+
+        # Auto-infer based on configuration
+        # Check if it's a sink (has from: without sql:)
+        if self.from_ and not self.sql:
+            return MaterializedType.SINK
+
+        # Check if it has Gateway rules (virtual topic)
+        if self.gateway and self.gateway.virtual_topic:
+            return MaterializedType.VIRTUAL_TOPIC
+
+        # Check if SQL contains Flink-specific operations (case-insensitive)
+        if self.sql:
+            import re
+            sql_upper = self.sql.upper()
+
+            # Check for window functions (with proper word boundaries)
+            # Patterns: TUMBLE(, TUMBLE , HOP(, HOP , SESSION(, SESSION , CUMULATE(, CUMULATE
+            window_patterns = [
+                r'\bTUMBLE\s*\(',
+                r'\bHOP\s*\(',
+                r'\bSESSION\s*\(',
+                r'\bCUMULATE\s*\(',
+            ]
+            for pattern in window_patterns:
+                if re.search(pattern, sql_upper):
+                    return MaterializedType.FLINK
+
+            # Check for aggregations with GROUP BY
+            if re.search(r'\bGROUP\s+BY\b', sql_upper):
+                return MaterializedType.FLINK
+
+            # Check for joins
+            if re.search(r'\s+JOIN\s+', sql_upper):
+                return MaterializedType.FLINK
+
+            # If there's SQL with transformation (not just SELECT *), use Flink
+            # This handles filters, projections, etc.
+            # Only pure "SELECT * FROM source" without WHERE would be topic
+            # Check if it's a simple passthrough (SELECT * FROM ... with no WHERE/GROUP/JOIN/etc)
+            is_simple_passthrough = bool(
+                re.search(r'^\s*SELECT\s+\*\s+FROM\s+', sql_upper) and
+                not re.search(r'\bWHERE\b', sql_upper) and
+                not re.search(r'\bGROUP\s+BY\b', sql_upper) and
+                not re.search(r'\s+JOIN\s+', sql_upper) and
+                not re.search(r'\bORDER\s+BY\b', sql_upper) and
+                not re.search(r'\bLIMIT\b', sql_upper)
+            )
+
+            if is_simple_passthrough:
+                return MaterializedType.TOPIC
+
+            # Any other SQL transformation requires Flink
+            return MaterializedType.FLINK
+
+        # Default to topic for models without SQL
+        return MaterializedType.TOPIC
+
+    def get_flink_config(self) -> Optional["FlinkJobConfig"]:
+        """Get Flink config from advanced section or legacy top-level field."""
+        if self.advanced and self.advanced.flink:
+            return self.advanced.flink
+        return self.flink
+
+    def get_topic_config(self) -> Optional["TopicConfig"]:
+        """Get topic config from advanced section or legacy top-level field."""
+        if self.advanced and self.advanced.topic:
+            return self.advanced.topic
+        return self.topic
+
+    def get_flink_cluster(self) -> Optional[str]:
+        """Get flink_cluster from advanced section or legacy top-level field."""
+        if self.advanced and self.advanced.flink_cluster:
+            return self.advanced.flink_cluster
+        return self.flink_cluster
+
+    def get_connect_cluster(self) -> Optional[str]:
+        """Get connect_cluster from advanced section or legacy top-level field."""
+        if self.advanced and self.advanced.connect_cluster:
+            return self.advanced.connect_cluster
+        return self.connect_cluster
+
+    def get_gateway_config(self) -> Optional["ModelGatewayConfig"]:
+        """Get gateway config."""
+        return self.gateway
+
+    def get_sink_config(self) -> Optional["SinkConfig"]:
+        """Get sink config (connector dict is auto-converted to sink by model_validator)."""
+        return self.sink
 
 
 # ============================================================================

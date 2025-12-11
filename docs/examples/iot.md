@@ -115,21 +115,14 @@ sources:
 ```yaml title="models/readings_clean.yml"
 models:
   - name: readings_clean
-    materialized: topic
     description: |
       Validated sensor readings with quality filtering.
       Removes readings with quality < 50.
     owner: iot-platform
     tags: [iot, tier-1]
-
-    topic:
-      name: iot.readings-clean.v1
-      partitions: 48  # High partition count
-      config:
-        retention.ms: 86400000  # 1 day
-
     key: sensor_id
 
+    # Simple SELECT/WHERE is auto-inferred as 'topic' materialization
     sql: |
       SELECT
         reading_id,
@@ -146,6 +139,14 @@ models:
         AND sensor_id IS NOT NULL
         AND quality >= 50
         AND value IS NOT NULL
+
+    # Override defaults only when needed
+    advanced:
+      topic:
+        name: iot.readings-clean.v1
+        partitions: 48  # High partition count
+        config:
+          retention.ms: 86400000  # 1 day
 ```
 
 ### Sensor Status (Windowed)
@@ -153,24 +154,14 @@ models:
 ```yaml title="models/sensor_status.yml"
 models:
   - name: sensor_status
-    materialized: flink
     description: |
       Aggregated sensor status per minute.
       Shows health metrics for each sensor.
     owner: operations-team
     tags: [iot, monitoring]
-
-    flink:
-      parallelism: 16
-      checkpoint_interval: 30000
-      cluster: edge
-
-    topic:
-      name: iot.sensor-status.v1
-      partitions: 24
-
     key: sensor_id
 
+    # TUMBLE + GROUP BY is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         sensor_id,
@@ -197,6 +188,16 @@ models:
         facility_id,
         zone,
         TUMBLE(`timestamp`, INTERVAL '1' MINUTE)
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 16
+        checkpoint_interval: 30000
+        cluster: edge
+      topic:
+        name: iot.sensor-status.v1
+        partitions: 24
 ```
 
 ### Anomaly Detection
@@ -204,24 +205,14 @@ models:
 ```yaml title="models/anomaly_detection.yml"
 models:
   - name: anomaly_detection
-    materialized: flink
     description: |
       Real-time anomaly detection using threshold comparison.
       Compares readings against sensor-specific thresholds.
     owner: reliability-team
     tags: [iot, alerts, tier-1]
-
-    flink:
-      parallelism: 16
-      checkpoint_interval: 10000
-      cluster: edge
-
-    topic:
-      name: iot.anomalies.v1
-      partitions: 12
-
     key: sensor_id
 
+    # JOIN is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         r.reading_id,
@@ -260,6 +251,16 @@ models:
         ON r.sensor_id = m.sensor_id
       WHERE r.value < m.min_threshold
          OR r.value > m.max_threshold
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 16
+        checkpoint_interval: 10000
+        cluster: edge
+      topic:
+        name: iot.anomalies.v1
+        partitions: 12
 ```
 
 ### Facility Aggregates
@@ -267,22 +268,12 @@ models:
 ```yaml title="models/facility_metrics.yml"
 models:
   - name: facility_metrics
-    materialized: flink
     description: Facility-level aggregations for executive dashboards
     owner: analytics-team
     tags: [iot, analytics]
-
-    flink:
-      parallelism: 4
-      checkpoint_interval: 60000
-      cluster: cloud
-
-    topic:
-      name: iot.facility-metrics.v1
-      partitions: 6
-
     key: facility_id
 
+    # TUMBLE + GROUP BY is auto-inferred as 'flink' materialization
     sql: |
       SELECT
         facility_id,
@@ -300,6 +291,16 @@ models:
       GROUP BY
         facility_id,
         TUMBLE(`timestamp`, INTERVAL '5' MINUTE)
+
+    # Override defaults only when needed
+    advanced:
+      flink:
+        parallelism: 4
+        checkpoint_interval: 60000
+        cluster: cloud
+      topic:
+        name: iot.facility-metrics.v1
+        partitions: 6
 ```
 
 ### Archive to S3
@@ -307,11 +308,11 @@ models:
 ```yaml title="models/readings_archive.yml"
 models:
   - name: readings_archive
-    materialized: sink
     description: Archive sensor readings to S3 for long-term analysis
     owner: data-platform
     tags: [archive, s3]
 
+    # 'from:' without 'sql:' is auto-inferred as 'sink' materialization
     from: readings_clean
 
     connector:
