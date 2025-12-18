@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 199 89% 48%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 199 89% 48%;
+  }
+
+  * {
+    @apply border-slate-800;
+  }
+
+  body {
+    @apply bg-slate-950 text-slate-100;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-slate-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-700 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-600;
+  }
+}
+
+@layer components {
+  /* Glass effect */
+  .glass {
+    @apply bg-slate-900/50 backdrop-blur-xl border border-slate-800/50;
+  }
+
+  /* Glow effects */
+  .glow-source {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+  }
+
+  .glow-model {
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+  }
+
+  .glow-test {
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
+  }
+
+  .glow-exposure {
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.3);
+  }
+
+  /* Animated gradient border */
+  .gradient-border {
+    position: relative;
+    background: linear-gradient(135deg, #0ea5e9, #6366f1, #ec4899);
+    padding: 1px;
+    border-radius: 0.75rem;
+  }
+
+  .gradient-border > * {
+    @apply bg-slate-900 rounded-xl;
+  }
+
+  /* Status indicators */
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .status-running {
+    @apply bg-emerald-500 animate-pulse;
+  }
+
+  .status-failed {
+    @apply bg-red-500;
+  }
+
+  .status-pending {
+    @apply bg-yellow-500;
+  }
+
+  .status-stopped {
+    @apply bg-slate-500;
+  }
+
+  /* Node styles for ReactFlow */
+  .react-flow__node-source {
+    @apply !bg-transparent;
+  }
+
+  .react-flow__node-model {
+    @apply !bg-transparent;
+  }
+
+  .react-flow__node-test {
+    @apply !bg-transparent;
+  }
+
+  .react-flow__node-exposure {
+    @apply !bg-transparent;
+  }
+
+  /* Animated edges */
+  .react-flow__edge-path {
+    stroke-dasharray: 5;
+    animation: flow 1s linear infinite;
+  }
+
+  @keyframes flow {
+    from {
+      stroke-dashoffset: 24;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* Selection ring */
+  .ring-selected {
+    @apply ring-2 ring-streamt-500 ring-offset-2 ring-offset-slate-900;
+  }
+
+  /* Card hover effect */
+  .card-hover {
+    @apply transition-all duration-200 hover:border-slate-700 hover:shadow-lg hover:shadow-slate-900/50;
+  }
+
+  /* Button variants */
+  .btn-primary {
+    @apply bg-streamt-600 hover:bg-streamt-500 text-white font-medium px-4 py-2 rounded-lg transition-all duration-200 shadow-lg shadow-streamt-900/30 hover:shadow-streamt-800/40;
+  }
+
+  .btn-secondary {
+    @apply bg-slate-800 hover:bg-slate-700 text-slate-100 font-medium px-4 py-2 rounded-lg transition-all duration-200 border border-slate-700;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-slate-800 text-slate-300 hover:text-white font-medium px-4 py-2 rounded-lg transition-all duration-200;
+  }
+
+  .btn-danger {
+    @apply bg-red-600/10 hover:bg-red-600/20 text-red-400 font-medium px-4 py-2 rounded-lg transition-all duration-200 border border-red-900/50;
+  }
+
+  /* Input styles */
+  .input {
+    @apply bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-streamt-500 focus:border-transparent transition-all duration-200;
+  }
+
+  /* Badge styles */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-source {
+    @apply bg-source-light/10 text-source border border-source/30;
+  }
+
+  .badge-model {
+    @apply bg-model-light/10 text-model border border-model/30;
+  }
+
+  .badge-test {
+    @apply bg-test-light/10 text-test border border-test/30;
+  }
+
+  .badge-exposure {
+    @apply bg-exposure-light/10 text-exposure border border-exposure/30;
+  }
+}
+
+/* Monaco editor customizations */
+.monaco-editor {
+  @apply rounded-lg overflow-hidden;
+}
+
+.monaco-editor .margin {
+  @apply bg-slate-900 !important;
+}
+
+/* ReactFlow customizations */
+.react-flow__background {
+  @apply bg-slate-950;
+}
+
+.react-flow__controls {
+  @apply bg-slate-800 border-slate-700 rounded-lg overflow-hidden shadow-xl;
+}
+
+.react-flow__controls-button {
+  @apply bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300;
+}
+
+.react-flow__minimap {
+  @apply bg-slate-900 rounded-lg overflow-hidden border border-slate-800;
+}
