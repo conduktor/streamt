@@ -164,6 +164,15 @@ class ProjectValidator:
 
     def _validate_model(self, model: Model) -> None:
         """Validate a single model."""
+        # Check SQL has FROM clause (required for streaming)
+        if model.sql and not re.search(r'\bFROM\b', model.sql, re.IGNORECASE):
+            self.result.add_error(
+                "SQL_NO_FROM",
+                f"Model '{model.name}' SQL has no FROM clause. "
+                "Streaming models must read from at least one table or source.",
+                f"model '{model.name}'",
+            )
+
         # Check virtual_topic gateway availability
         if model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
             has_gateway = self.project.runtime.conduktor and self.project.runtime.conduktor.gateway

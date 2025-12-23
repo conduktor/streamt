@@ -293,6 +293,8 @@ tests:
 - [ ] External app support — Register "blackbox" applications (Java, Go) with input/output models for lineage
 - [ ] High-level intent mode — "I want X" and streamt builds the entire pipeline
 - [ ] KStreams runtime — `materialized: kstreams` for users without Flink; SQL→topology conversion via `ksqlDBContext`; K8s auto-scaling
+- [ ] RisingWave runtime — Streaming SQL database alternative to Flink; PostgreSQL-compatible SQL
+- [ ] Materialize runtime — Incremental view maintenance; PostgreSQL-compatible streaming SQL
 
 ### Deferred
 
