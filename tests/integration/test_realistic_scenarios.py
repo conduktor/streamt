@@ -13,22 +13,20 @@ HIGH SEVERITY coverage gaps addressed:
 """
 
 import json
-import os
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import pytest
 from confluent_kafka import Consumer
 
 from streamt.compiler.compiler import Compiler
+from streamt.compiler.manifest import FlinkJobArtifact, SchemaArtifact, TopicArtifact
 from streamt.core.parser import ProjectParser
 from streamt.deployer.flink import FlinkDeployer
 from streamt.deployer.kafka import KafkaDeployer
 from streamt.deployer.schema_registry import SchemaRegistryDeployer
-from streamt.compiler.manifest import FlinkJobArtifact, SchemaArtifact, TopicArtifact
 
 from .conftest import (
     INFRA_CONFIG,
@@ -1187,7 +1185,7 @@ class TestSchemaRegistryFlinkIntegration:
             kafka_helper.create_topic(topic_name, partitions=1)
 
             # Register v1
-            schema_id_v1 = schema_registry_helper.register_schema(
+            schema_registry_helper.register_schema(
                 subject,
                 schema_v1,
                 schema_type="AVRO",

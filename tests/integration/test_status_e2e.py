@@ -225,7 +225,6 @@ class TestStatusCommand:
         """TC-STATUS-005: Status with --lag should show message counts."""
         runner = CliRunner()
         topic_name = f"test_lag_topic_{uuid.uuid4().hex[:8]}"
-        deployer = KafkaDeployer(INFRA_CONFIG.kafka_bootstrap_servers)
 
         try:
             # Create topic and produce messages

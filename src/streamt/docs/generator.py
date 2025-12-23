@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from streamt.core.models import StreamtProject
 from streamt.core.dag import DAG
-
+from streamt.core.models import StreamtProject
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">

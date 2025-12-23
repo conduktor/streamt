@@ -4,7 +4,6 @@ These tests validate that sqlglot can parse Flink-compatible SQL patterns
 and that type inference works correctly for various expressions.
 """
 
-import pytest
 import sqlglot
 from sqlglot import exp
 
@@ -317,9 +316,7 @@ class TestTypeInferenceFromSchema:
     @staticmethod
     def _create_test_project(sources, models):
         """Helper to create a minimal test project with required fields."""
-        from streamt.core.models import (
-            StreamtProject, ProjectInfo, RuntimeConfig, KafkaConfig
-        )
+        from streamt.core.models import KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
         return StreamtProject(
             project=ProjectInfo(name="test_project"),
             runtime=RuntimeConfig(
@@ -332,7 +329,7 @@ class TestTypeInferenceFromSchema:
     def test_column_type_from_schema(self):
         """Test that column types are resolved from schema context."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import Source, Model, ColumnDefinition
+        from streamt.core.models import ColumnDefinition, Model, Source
 
         # Create a minimal project with typed columns
         project = self._create_test_project(
@@ -368,7 +365,7 @@ class TestTypeInferenceFromSchema:
     def test_type_inference_with_schema(self):
         """Test full type inference with schema context."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import Source, Model, ColumnDefinition
+        from streamt.core.models import ColumnDefinition, Model, Source
 
         project = self._create_test_project(
             sources=[
@@ -405,7 +402,7 @@ class TestTypeInferenceFromSchema:
     def test_aggregate_type_inference(self):
         """Test that aggregate functions get correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import Source, Model, ColumnDefinition
+        from streamt.core.models import ColumnDefinition, Model, Source
 
         project = self._create_test_project(
             sources=[
@@ -448,7 +445,7 @@ class TestTypeInferenceFromSchema:
     def test_case_when_boolean_inference(self):
         """Test CASE WHEN with TRUE/FALSE infers BOOLEAN."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import Source, Model, ColumnDefinition
+        from streamt.core.models import ColumnDefinition, Model, Source
 
         project = self._create_test_project(
             sources=[

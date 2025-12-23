@@ -6,9 +6,7 @@ These tests verify that:
 - Flink can parse and execute the generated SQL with watermarks
 """
 
-import json
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
@@ -17,8 +15,6 @@ import yaml
 
 from streamt.compiler import Compiler
 from streamt.core.parser import ProjectParser
-from streamt.deployer.flink import FlinkDeployer
-from streamt.deployer.kafka import KafkaDeployer
 
 from .conftest import INFRA_CONFIG, FlinkHelper
 
@@ -87,9 +83,9 @@ class TestEventTimeFlinkSQL:
                     "models": [
                         {
                             "name": output_topic,
-                            "sql": f"""
+                            "sql": """
                                 SELECT event_id, event_timestamp, value
-                                FROM {{{{ source("events") }}}}
+                                FROM {{ source("events") }}
                             """,
                         }
                     ],
@@ -97,7 +93,7 @@ class TestEventTimeFlinkSQL:
                 project = self._create_project(Path(tmpdir), config)
                 output_dir = Path(tmpdir) / "generated"
                 compiler = Compiler(project, output_dir)
-                manifest = compiler.compile(dry_run=False)
+                compiler.compile(dry_run=False)
 
                 # Read the generated SQL
                 sql_path = output_dir / "flink" / f"{output_topic}.sql"
@@ -178,9 +174,9 @@ class TestEventTimeFlinkSQL:
                     "models": [
                         {
                             "name": output_topic,
-                            "sql": f"""
+                            "sql": """
                                 SELECT id, ts
-                                FROM {{{{ source("ordered_events") }}}}
+                                FROM {{ source("ordered_events") }}
                             """,
                         }
                     ],

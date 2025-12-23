@@ -17,7 +17,6 @@ Improvements over naive implementation:
 import json
 import time
 import uuid
-from typing import Optional
 
 import pytest
 from confluent_kafka import Consumer
@@ -37,14 +36,12 @@ from streamt.core.models import (
     StreamtProject,
     TopicConfig,
 )
-
 from streamt.deployer.flink import FlinkDeployer
 
 from .conftest import (
     INFRA_CONFIG,
     FlinkHelper,
     KafkaHelper,
-    poll_until_messages,
 )
 
 
@@ -192,12 +189,12 @@ def create_test_project(
     # Create model
     model = Model(
         name="events_clean",
-        sql=f"""SELECT
+        sql="""SELECT
     event_id,
     user_id,
     event_type,
     `timestamp`
-FROM {{{{ source("raw_events") }}}}
+FROM {{ source("raw_events") }}
 WHERE event_id IS NOT NULL""",
         advanced=AdvancedConfig(
             topic=TopicConfig(name=model_topic),

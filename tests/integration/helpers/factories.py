@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Optional
 
-from streamt.compiler.manifest import TopicArtifact, FlinkJobArtifact
+from streamt.compiler.manifest import FlinkJobArtifact, TopicArtifact
 
 
 class TopicFactory:

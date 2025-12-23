@@ -12,12 +12,12 @@ from dotenv import load_dotenv
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
 
 from streamt.core.models import (
+    DataTest,
     Defaults,
     Exposure,
     Model,
     ProjectInfo,
     Rules,
-    DataTest,
     RuntimeConfig,
     Source,
     StreamtProject,

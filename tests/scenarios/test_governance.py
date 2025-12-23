@@ -16,13 +16,13 @@ with @pytest.mark.skip indicate features that require enforcement logic.
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
 from streamt.compiler import Compiler
 from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
+
 
 class TestTopicNamingGovernance:
     """Test topic naming convention enforcement."""

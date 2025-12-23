@@ -16,6 +16,7 @@ from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
+
 class TestIndustrialSensorMonitoring:
     """Test industrial IoT sensor monitoring scenarios."""
 

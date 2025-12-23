@@ -212,7 +212,7 @@ def jinja_syntax_error(model_name: str, error: str, sql: Optional[str] = None) -
     sql_snippet = ""
     if sql:
         lines = sql.strip().split("\n")[:5]  # First 5 lines
-        sql_snippet = "\n\nYour SQL:\n" + "\n".join(f"    {l}" for l in lines)
+        sql_snippet = "\n\nYour SQL:\n" + "\n".join(f"    {line}" for line in lines)
         if len(sql.strip().split("\n")) > 5:
             sql_snippet += "\n    ..."
 
@@ -237,7 +237,7 @@ def duplicate_name(
     explanation += "Each name must be unique within its type."
 
     if locations and len(locations) > 1:
-        explanation += f"\n\nFound in:\n" + "\n".join(f"  - {loc}" for loc in locations)
+        explanation += "\n\nFound in:\n" + "\n".join(f"  - {loc}" for loc in locations)
 
     return format_error(
         title=f"Duplicate {entity_type} name '{name}'",
@@ -473,9 +473,6 @@ def schema_incompatible(
 
 def flink_sql_error(error_msg: str, sql_snippet: Optional[str] = None) -> str:
     """Parse and improve Flink SQL error messages."""
-    # Try to extract useful info from Flink's error
-    improved = error_msg
-
     # Common patterns and their user-friendly explanations
     patterns = [
         (

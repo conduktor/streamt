@@ -1,7 +1,7 @@
 """Flink SQL helper for integration tests."""
 
 import time
-from typing import Optional, Union
+from typing import Optional
 
 import requests
 

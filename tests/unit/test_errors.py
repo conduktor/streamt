@@ -1,6 +1,5 @@
 """Tests for rich error message formatting."""
 
-import pytest
 
 from streamt.core import errors
 

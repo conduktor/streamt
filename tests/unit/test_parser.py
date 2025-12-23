@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from streamt.core.parser import ProjectParser, ParseError, EnvVarError
+from streamt.core.parser import EnvVarError, ParseError, ProjectParser
 
 
 class TestProjectParser:

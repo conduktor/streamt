@@ -16,6 +16,7 @@ from streamt.compiler import Compiler
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator
 
+
 class TestSchemaRegistryBasics:
     """Test basic Schema Registry scenarios."""
 

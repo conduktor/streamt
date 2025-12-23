@@ -4,11 +4,11 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
-from streamt.core.parser import ProjectParser
 from streamt.compiler import Compiler
+from streamt.core.models import StreamtProject
+from streamt.core.parser import ProjectParser
 
 
 class TestCompiler:
@@ -155,7 +155,7 @@ class TestCompiler:
             project = self._create_project(tmpdir, config)
             output_dir = Path(tmpdir) / "generated"
             compiler = Compiler(project, output_dir)
-            manifest = compiler.compile(dry_run=False)
+            compiler.compile(dry_run=False)
 
             # Check files were created
             assert (output_dir / "manifest.json").exists()
@@ -375,7 +375,7 @@ class TestCompilerSchemaGeneration:
             project = self._create_project(tmpdir, config)
             output_dir = Path(tmpdir) / "generated"
             compiler = Compiler(project, output_dir)
-            manifest = compiler.compile(dry_run=False)
+            compiler.compile(dry_run=False)
 
             # Read generated SQL file
             flink_sql_path = output_dir / "flink" / "payments_clean.sql"
@@ -1055,8 +1055,8 @@ class TestEventTimeConfiguration:
             assert "WATERMARK FOR `created_at` AS `created_at`" in sql_content
             # Should NOT have INTERVAL for monotonous
             # Note: It might have the INTERVAL line, so check specifically for "AS `created_at`" at end
-            lines = [l.strip() for l in sql_content.split("\n")]
-            watermark_line = [l for l in lines if "WATERMARK FOR" in l][0]
+            lines = [line.strip() for line in sql_content.split("\n")]
+            watermark_line = [line for line in lines if "WATERMARK FOR" in line][0]
             assert watermark_line.endswith("AS `created_at`") or "AS `created_at`" in watermark_line
 
     def test_source_without_event_time_no_watermark(self):

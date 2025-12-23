@@ -3,8 +3,9 @@
 Tests async operation handling, error surfacing, and API compatibility.
 """
 
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 import requests
 
 from streamt.deployer.flink import FlinkDeployer
@@ -80,7 +81,7 @@ class TestFlinkDeployerSqlGateway:
         assert "SQL Gateway URL not configured" in str(exc_info.value)
         deployer.close()
 
-    def test_get_session_uses_sessionHandle(self):
+    def test_get_session_uses_session_handle(self):
         """Should extract sessionHandle from Flink 1.18+ response."""
         deployer = FlinkDeployer(
             rest_url="http://localhost:8082",

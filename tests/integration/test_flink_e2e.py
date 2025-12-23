@@ -12,7 +12,6 @@ import time
 import uuid
 
 import pytest
-import requests
 
 from streamt.compiler.manifest import FlinkJobArtifact
 from streamt.deployer.flink import FlinkDeployer
@@ -785,7 +784,7 @@ class TestFlinkJobLifecycle:
             assert cancelled is True, f"Failed to cancel job {job_to_cancel}"
 
             # Use polling to wait for cancellation instead of hardcoded sleep
-            cancel_success = flink_helper.wait_for_job_status(
+            flink_helper.wait_for_job_status(
                 job_to_cancel,
                 expected_status="CANCELED",
                 timeout=15,

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any, Optional
 
-from streamt.core.models import DataTest, DataTestType, Model, Source, StreamtProject
+from streamt.core.models import DataTest, DataTestType, StreamtProject
 
 logger = logging.getLogger(__name__)
 

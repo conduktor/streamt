@@ -3,11 +3,11 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
-from streamt.core.parser import ProjectParser
 from streamt.core.dag import DAGBuilder, NodeType
+from streamt.core.models import StreamtProject
+from streamt.core.parser import ProjectParser
 
 
 class TestDAGBuilder:

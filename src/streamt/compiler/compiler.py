@@ -8,14 +8,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import BaseLoader, Environment
 import sqlglot
+from jinja2 import BaseLoader, Environment
 from sqlglot import exp
 
-from streamt.compiler.flink_dialect import FlinkDialect, get_flink_function_type
-
-logger = logging.getLogger(__name__)
-
+from streamt.compiler.flink_dialect import get_flink_function_type
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -26,9 +23,9 @@ from streamt.compiler.manifest import (
 )
 from streamt.core.dag import DAGBuilder
 from streamt.core.models import (
-    MaterializedType,
     DataTest,
     EventTimeConfig,
+    MaterializedType,
     Model,
     Source,
     StreamtProject,
@@ -36,6 +33,8 @@ from streamt.core.models import (
     WatermarkStrategy,
 )
 from streamt.core.parser import ProjectParser
+
+logger = logging.getLogger(__name__)
 
 # Connector class mapping
 CONNECTOR_CLASSES = {

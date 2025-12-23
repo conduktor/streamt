@@ -2,14 +2,13 @@
 
 import json
 import time
-from typing import Callable, Optional, TypeVar
+
+# Import KafkaHelper type for type hints (avoid circular import at runtime)
+from typing import TYPE_CHECKING, Callable, Optional, TypeVar
 
 from confluent_kafka import Consumer
 
 from .config import INFRA_CONFIG
-
-# Import KafkaHelper type for type hints (avoid circular import at runtime)
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .kafka import KafkaHelper

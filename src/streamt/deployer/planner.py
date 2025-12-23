@@ -142,7 +142,6 @@ class DeploymentPlanner:
 
         # Plan schemas first (before topics that may depend on them)
         if self.schema_registry_deployer:
-            from streamt.compiler.manifest import SchemaArtifact
             from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
             for schema_data in self.manifest.artifacts.get("schemas", []):
@@ -207,7 +206,6 @@ class DeploymentPlanner:
 
         # Apply schemas first (before topics that may use them)
         if self.schema_registry_deployer:
-            from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
             for change in plan.schema_changes:
                 if change.action in ["register", "update"] and change.desired:

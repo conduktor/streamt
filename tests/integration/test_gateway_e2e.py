@@ -24,7 +24,6 @@ from streamt.deployer import GatewayDeployer
 from .conftest import GatewayHelper, KafkaHelper
 from .helpers import INFRA_CONFIG
 
-
 # =============================================================================
 # Test Fixtures
 # =============================================================================
@@ -1540,7 +1539,7 @@ class TestGatewayCleanup:
             )
 
             # Cleanup test- prefix only
-            counts = gateway_helper.cleanup_test_resources(prefix="test-")
+            gateway_helper.cleanup_test_resources(prefix="test-")
 
             # Test resources should be deleted
             assert gateway_helper.get_alias_topic(test_alias1) is None

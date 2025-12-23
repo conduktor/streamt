@@ -4,7 +4,7 @@ This package provides helper classes and utilities for integration testing
 with Kafka, Flink, Connect, Schema Registry, and Conduktor Gateway.
 """
 
-from .config import INFRA_CONFIG, FlinkConfig, GatewayConfig, InfrastructureConfig, PROJECT_ROOT
+from .config import INFRA_CONFIG, PROJECT_ROOT, FlinkConfig, GatewayConfig, InfrastructureConfig
 from .connect import ConnectHelper
 from .docker import (
     DockerComposeManager,

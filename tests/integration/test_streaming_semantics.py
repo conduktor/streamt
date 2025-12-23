@@ -429,11 +429,11 @@ class TestStateTTL:
                                 "state_ttl_ms": 3600000,  # 1 hour
                             }
                         },
-                        "sql": f"""
+                        "sql": """
                             SELECT
                                 user_id,
                                 COUNT(*) as event_count
-                            FROM {{{{ source("events") }}}}
+                            FROM {{ source("events") }}
                             GROUP BY user_id
                         """,
                     }
