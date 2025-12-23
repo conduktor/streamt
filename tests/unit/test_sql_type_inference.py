@@ -811,3 +811,667 @@ class TestTypeInferenceFromSchema:
 
         assert len(columns_with_types) == 1
         assert columns_with_types[0] == ("is_premium", "BOOLEAN")
+
+
+class TestFlinkDialectTypeInference:
+    """Test type inference using FlinkDialect for Flink-specific SQL patterns.
+
+    These tests validate that the compiler correctly infers types when using
+    FlinkDialect to parse advanced Flink SQL syntax.
+    """
+
+    @staticmethod
+    def _create_test_project(sources, models):
+        """Helper to create a minimal test project with required fields."""
+        from streamt.core.models import KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        return StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=sources,
+            models=models
+        )
+
+    def test_cast_to_timestamp(self):
+        """Test CAST to TIMESTAMP type inference."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="event_id", type="INT"),
+                        ColumnDefinition(name="event_time_str", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        event_id,
+                        CAST(event_time_str AS TIMESTAMP(3)) AS event_time
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["event_id"] == "INT"
+        assert type_map["event_time"] == "TIMESTAMP(3)"
+
+    def test_cast_to_decimal(self):
+        """Test CAST to DECIMAL with precision and scale."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CAST(amount AS DECIMAL(10, 2)) AS precise_amount
+                    FROM {{ source('orders') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["precise_amount"] == "DECIMAL(10, 2)"
+
+    def test_tumble_window_time_attributes(self):
+        """Test TUMBLE_START and TUMBLE_END return TIMESTAMP(3)."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_id", type="INT"),
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        TUMBLE_START(order_time, INTERVAL '10' MINUTE) AS window_start,
+                        TUMBLE_END(order_time, INTERVAL '10' MINUTE) AS window_end,
+                        SUM(amount) AS total
+                    FROM {{ source('orders') }}
+                    GROUP BY TUMBLE(order_time, INTERVAL '10' MINUTE)"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["window_start"] == "TIMESTAMP(3)"
+        assert type_map["window_end"] == "TIMESTAMP(3)"
+        assert type_map["total"] == "DOUBLE"
+
+    def test_hop_window_time_attributes(self):
+        """Test HOP_START and HOP_END return TIMESTAMP(3)."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        HOP_START(order_time, INTERVAL '5' MINUTE, INTERVAL '10' MINUTE) AS window_start,
+                        HOP_END(order_time, INTERVAL '5' MINUTE, INTERVAL '10' MINUTE) AS window_end,
+                        AVG(amount) AS avg_amount
+                    FROM {{ source('orders') }}
+                    GROUP BY HOP(order_time, INTERVAL '5' MINUTE, INTERVAL '10' MINUTE)"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["window_start"] == "TIMESTAMP(3)"
+        assert type_map["window_end"] == "TIMESTAMP(3)"
+        assert type_map["avg_amount"] == "DOUBLE"
+
+    def test_coalesce_type_inference(self):
+        """Test COALESCE inherits type from first non-null argument."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="users",
+                    topic="users_topic",
+                    columns=[
+                        ColumnDefinition(name="user_id", type="INT"),
+                        ColumnDefinition(name="nickname", type="STRING"),
+                        ColumnDefinition(name="full_name", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        user_id,
+                        COALESCE(nickname, full_name, 'Anonymous') AS display_name
+                    FROM {{ source('users') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["user_id"] == "INT"
+        assert type_map["display_name"] == "STRING"
+
+    def test_if_function_type_inference(self):
+        """Test IF function inherits type from THEN branch."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="discount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        IF(amount > 100, amount * 0.9, amount) AS final_price
+                    FROM {{ source('orders') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["final_price"] == "DOUBLE"
+
+    def test_min_max_type_preserves_column_type(self):
+        """Test MIN/MAX preserve the column type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="value", type="INT"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        MIN(event_time) AS first_event,
+                        MAX(event_time) AS last_event,
+                        MIN(value) AS min_value,
+                        MAX(value) AS max_value
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["first_event"] == "TIMESTAMP(3)"
+        assert type_map["last_event"] == "TIMESTAMP(3)"
+        assert type_map["min_value"] == "INT"
+        assert type_map["max_value"] == "INT"
+
+    def test_concat_returns_string(self):
+        """Test CONCAT always returns STRING."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="users",
+                    topic="users_topic",
+                    columns=[
+                        ColumnDefinition(name="first_name", type="STRING"),
+                        ColumnDefinition(name="last_name", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CONCAT(first_name, ' ', last_name) AS full_name
+                    FROM {{ source('users') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["full_name"] == "STRING"
+
+    def test_arithmetic_type_promotion(self):
+        """Test arithmetic operations follow type promotion rules."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="metrics",
+                    topic="metrics_topic",
+                    columns=[
+                        ColumnDefinition(name="int_val", type="INT"),
+                        ColumnDefinition(name="bigint_val", type="BIGINT"),
+                        ColumnDefinition(name="double_val", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        int_val + int_val AS int_sum,
+                        int_val + bigint_val AS bigint_sum,
+                        int_val * double_val AS double_product
+                    FROM {{ source('metrics') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["int_sum"] == "INT"
+        assert type_map["bigint_sum"] == "BIGINT"
+        assert type_map["double_product"] == "DOUBLE"
+
+    def test_window_rank_functions_return_bigint(self):
+        """Test ROW_NUMBER, RANK, DENSE_RANK return BIGINT."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="INT"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        customer_id,
+                        amount,
+                        ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS rn,
+                        RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS rnk,
+                        DENSE_RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS dense_rnk
+                    FROM {{ source('orders') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["rn"] == "BIGINT"
+        assert type_map["rnk"] == "BIGINT"
+        assert type_map["dense_rnk"] == "BIGINT"
+
+    def test_lag_lead_preserve_column_type(self):
+        """Test LAG/LEAD preserve the column type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="user_id", type="INT"),
+                        ColumnDefinition(name="value", type="DOUBLE"),
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        user_id,
+                        value,
+                        LAG(value, 1) OVER (PARTITION BY user_id ORDER BY event_time) AS prev_value,
+                        LEAD(value, 1) OVER (PARTITION BY user_id ORDER BY event_time) AS next_value
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["prev_value"] == "DOUBLE"
+        assert type_map["next_value"] == "DOUBLE"
+
+    def test_temporal_join_type_inference(self):
+        """Test type inference for temporal join with FOR SYSTEM_TIME AS OF."""
+        # This tests that FlinkDialect can parse temporal joins
+        sql = """SELECT
+            o.order_id,
+            o.amount,
+            r.rate,
+            o.amount * r.rate AS converted_amount
+        FROM orders o
+        LEFT JOIN currency_rates FOR SYSTEM_TIME AS OF o.order_time r
+        ON o.currency = r.currency"""
+
+        parsed = sqlglot.parse_one(sql, dialect=FlinkDialect)
+        assert isinstance(parsed, exp.Select)
+        assert len(parsed.expressions) == 4
+
+        # Verify the join is parsed correctly
+        joins = list(parsed.find_all(exp.Join))
+        assert len(joins) == 1
+
+    def test_cumulate_tvf_parsing_with_dialect(self):
+        """Test CUMULATE TVF parsing with FlinkDialect."""
+        sql = """SELECT
+            window_start,
+            window_end,
+            user_id,
+            SUM(amount) AS total
+        FROM TABLE(
+            CUMULATE(TABLE orders, DESCRIPTOR(order_time), INTERVAL '1' HOUR, INTERVAL '1' DAY)
+        )
+        GROUP BY window_start, window_end, user_id"""
+
+        parsed = sqlglot.parse_one(sql, dialect=FlinkDialect)
+        assert isinstance(parsed, exp.Select)
+        assert len(parsed.expressions) == 4
+
+    def test_match_recognize_parsing_with_dialect(self):
+        """Test MATCH_RECOGNIZE parsing with FlinkDialect."""
+        sql = """SELECT T.start_price, T.end_price
+        FROM stock_ticks
+        MATCH_RECOGNIZE (
+            PARTITION BY symbol
+            ORDER BY event_time
+            MEASURES
+                A.price AS start_price,
+                LAST(B.price) AS end_price
+            PATTERN (A B+)
+            DEFINE
+                A AS A.price > 10,
+                B AS B.price > A.price
+        ) AS T"""
+
+        parsed = sqlglot.parse_one(sql, dialect=FlinkDialect)
+        assert isinstance(parsed, exp.Select)
+
+        # Verify MATCH_RECOGNIZE is in the tree
+        match_recognize = list(parsed.find_all(exp.MatchRecognize))
+        assert len(match_recognize) == 1
+
+    def test_complex_nested_type_inference(self):
+        """Test type inference with nested expressions."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="event_type", type="STRING"),
+                        ColumnDefinition(name="value", type="DOUBLE"),
+                        ColumnDefinition(name="quantity", type="INT"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CASE
+                            WHEN event_type = 'sale' THEN value * quantity
+                            WHEN event_type = 'refund' THEN -1 * value * quantity
+                            ELSE 0.0
+                        END AS net_amount,
+                        COALESCE(
+                            CASE WHEN value > 100 THEN 'high' ELSE NULL END,
+                            CASE WHEN value > 50 THEN 'medium' ELSE 'low' END
+                        ) AS value_tier
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["net_amount"] == "DOUBLE"
+        assert type_map["value_tier"] == "STRING"
+
+    def test_to_timestamp_returns_timestamp(self):
+        """Test TO_TIMESTAMP function returns TIMESTAMP type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="logs",
+                    topic="logs_topic",
+                    columns=[
+                        ColumnDefinition(name="log_time_str", type="STRING"),
+                        ColumnDefinition(name="message", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        TO_TIMESTAMP(log_time_str) AS log_time,
+                        message
+                    FROM {{ source('logs') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["log_time"] == "TIMESTAMP(3)"
+        assert type_map["message"] == "STRING"
+
+    def test_string_functions_return_string(self):
+        """Test string manipulation functions return STRING."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="users",
+                    topic="users_topic",
+                    columns=[
+                        ColumnDefinition(name="name", type="STRING"),
+                        ColumnDefinition(name="email", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        UPPER(name) AS upper_name,
+                        LOWER(email) AS lower_email,
+                        SUBSTRING(name, 1, 10) AS short_name,
+                        TRIM(name) AS trimmed_name
+                    FROM {{ source('users') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["upper_name"] == "STRING"
+        assert type_map["lower_email"] == "STRING"
+        assert type_map["short_name"] == "STRING"
+        assert type_map["trimmed_name"] == "STRING"
+
+    def test_comparison_returns_boolean(self):
+        """Test comparison expressions return BOOLEAN."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="status", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        amount > 100 AS is_large,
+                        status = 'completed' AS is_completed,
+                        status IN ('pending', 'processing') AS is_in_progress
+                    FROM {{ source('orders') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["is_large"] == "BOOLEAN"
+        assert type_map["is_completed"] == "BOOLEAN"
+        assert type_map["is_in_progress"] == "BOOLEAN"

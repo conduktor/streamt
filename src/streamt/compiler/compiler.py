@@ -12,7 +12,7 @@ import sqlglot
 from jinja2 import BaseLoader, Environment
 from sqlglot import exp
 
-from streamt.compiler.flink_dialect import get_flink_function_type
+from streamt.compiler.flink_dialect import FlinkDialect, get_flink_function_type
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -790,8 +790,8 @@ WHERE {condition}""")
         clean_sql = re.sub(r'\{\{\s*ref\s*\(\s*["\'](\w+)["\']\s*\)\s*\}\}', r'\1', clean_sql)
 
         try:
-            # Parse SQL with sqlglot (using default dialect - Flink isn't supported)
-            parsed = sqlglot.parse_one(clean_sql)
+            # Parse SQL with FlinkDialect for proper Flink SQL support
+            parsed = sqlglot.parse_one(clean_sql, dialect=FlinkDialect)
             if not isinstance(parsed, exp.Select):
                 # Might be wrapped in other statements
                 select = parsed.find(exp.Select)
@@ -842,6 +842,12 @@ WHERE {condition}""")
         if isinstance(expr, exp.Count):
             return "BIGINT"
         if isinstance(expr, (exp.Sum, exp.Avg)):
+            # SUM and AVG of numeric types return DOUBLE
+            if expr.this and isinstance(expr.this, exp.Column):
+                col_type = schema.get(expr.this.name, "DOUBLE")
+                # SUM preserves the type for non-integer types
+                if isinstance(expr, exp.Sum) and col_type in ("DOUBLE", "FLOAT", "DECIMAL"):
+                    return col_type
             return "DOUBLE"
         if isinstance(expr, (exp.Min, exp.Max)):
             # Try to infer from the argument
@@ -849,17 +855,37 @@ WHERE {condition}""")
                 return schema.get(expr.this.name, "DOUBLE")
             return "DOUBLE"
 
-        # Case expression - check if boolean
+        # Case expression - infer from THEN/ELSE branches
         if isinstance(expr, exp.Case):
-            # Check if any THEN clause returns TRUE/FALSE
+            # Check the first THEN clause for type inference
             for when in expr.args.get("ifs", []):
                 then_expr = when.args.get("true")
                 if isinstance(then_expr, exp.Boolean):
                     return "BOOLEAN"
+                # Recursively infer type from THEN branch
+                if then_expr:
+                    return self._infer_expression_type(then_expr, schema)
+            # Check ELSE clause
+            else_expr = expr.args.get("default")
+            if else_expr:
+                return self._infer_expression_type(else_expr, schema)
+            return "STRING"
+
+        # IF function - infer type from THEN branch
+        if isinstance(expr, exp.If):
+            true_expr = expr.args.get("true")
+            if true_expr:
+                return self._infer_expression_type(true_expr, schema)
+            return "STRING"
+
+        # Coalesce - infer type from first argument
+        if isinstance(expr, exp.Coalesce):
+            if expr.expressions:
+                return self._infer_expression_type(expr.expressions[0], schema)
             return "STRING"
 
         # String functions
-        if isinstance(expr, (exp.Upper, exp.Lower, exp.Concat, exp.Substring, exp.Trim)):
+        if isinstance(expr, (exp.Upper, exp.Lower, exp.Concat, exp.ConcatWs, exp.Substring, exp.Trim)):
             return "STRING"
 
         # Numeric literals
@@ -874,8 +900,41 @@ WHERE {condition}""")
         # Boolean literals and comparisons
         if isinstance(expr, exp.Boolean):
             return "BOOLEAN"
-        if isinstance(expr, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.And, exp.Or, exp.Not)):
+        if isinstance(expr, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.And, exp.Or, exp.Not, exp.In)):
             return "BOOLEAN"
+
+        # Arithmetic operations - use type promotion
+        if isinstance(expr, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+            left_type = self._infer_expression_type(expr.left, schema) if expr.left else "STRING"
+            right_type = self._infer_expression_type(expr.right, schema) if expr.right else "STRING"
+            return self._promote_numeric_types(left_type, right_type)
+
+        # Window functions
+        if isinstance(expr, exp.Window):
+            inner = expr.this
+            if inner:
+                return self._infer_expression_type(inner, schema)
+            return "STRING"
+
+        # Ranking window functions
+        if isinstance(expr, (exp.RowNumber, exp.Rank, exp.DenseRank, exp.Ntile)):
+            return "BIGINT"
+
+        # LAG/LEAD - preserve argument type
+        if isinstance(expr, (exp.Lag, exp.Lead)):
+            if expr.this and isinstance(expr.this, exp.Column):
+                return schema.get(expr.this.name, "STRING")
+            return "STRING"
+
+        # FirstValue/LastValue - preserve argument type
+        if isinstance(expr, (exp.FirstValue, exp.LastValue)):
+            if expr.this and isinstance(expr.this, exp.Column):
+                return schema.get(expr.this.name, "STRING")
+            return "STRING"
+
+        # Timestamp conversion functions
+        if isinstance(expr, (exp.TsOrDsToTimestamp, exp.StrToTime)):
+            return "TIMESTAMP(3)"
 
         # Anonymous functions (like TUMBLE_START, PROCTIME, etc.)
         if isinstance(expr, exp.Anonymous):
@@ -884,12 +943,18 @@ WHERE {condition}""")
             flink_type = get_flink_function_type(func_name)
             if flink_type:
                 return flink_type
+            # Timestamp conversion functions
+            if func_name in ("TO_TIMESTAMP", "FROM_UNIXTIME"):
+                return "TIMESTAMP(3)"
             # String functions
-            if func_name in ("UPPER", "LOWER", "CONCAT", "SUBSTRING", "TRIM"):
+            if func_name in ("UPPER", "LOWER", "CONCAT", "CONCAT_WS", "SUBSTRING", "TRIM", "REGEXP_REPLACE"):
                 return "STRING"
             # Window boundaries
             if func_name in ("WINDOW_START", "WINDOW_END"):
                 return "TIMESTAMP(3)"
+            # JSON functions usually return STRING
+            if func_name in ("JSON_VALUE", "JSON_QUERY"):
+                return "STRING"
 
         # CurrentTimestamp
         if isinstance(expr, exp.CurrentTimestamp):
@@ -900,8 +965,45 @@ WHERE {condition}""")
             target_type = expr.to.sql().upper()
             return target_type
 
+        # Paren - unwrap
+        if isinstance(expr, exp.Paren):
+            return self._infer_expression_type(expr.this, schema)
+
+        # Neg (unary minus) - preserve type
+        if isinstance(expr, exp.Neg):
+            return self._infer_expression_type(expr.this, schema)
+
         # Default to STRING for unknown expressions
         return "STRING"
+
+    def _promote_numeric_types(self, left_type: str, right_type: str) -> str:
+        """Promote numeric types following Flink SQL rules."""
+        type_order = {
+            "TINYINT": 1,
+            "SMALLINT": 2,
+            "INT": 3,
+            "INTEGER": 3,
+            "BIGINT": 4,
+            "FLOAT": 5,
+            "DOUBLE": 6,
+            "DECIMAL": 7,
+        }
+
+        # Extract base type (remove precision/scale)
+        left_base = left_type.split("(")[0].upper()
+        right_base = right_type.split("(")[0].upper()
+
+        left_order = type_order.get(left_base, 0)
+        right_order = type_order.get(right_base, 0)
+
+        # If neither is numeric, return STRING
+        if left_order == 0 and right_order == 0:
+            return "STRING"
+
+        # Return the higher precedence type
+        if left_order >= right_order:
+            return left_type if left_order > 0 else right_type
+        return right_type
 
     def _extract_select_columns_with_types_regex(
         self, sql: str, schema: dict[str, str]
