@@ -32,7 +32,7 @@ The `materialized` property is automatically inferred from your SQL. Simple tran
 
 ## Materializations
 
-Materializations are **automatically inferred** using smart SQL analysis:
+Materializations are **automatically inferred** from your SQL:
 
 - **Stateless** SQL (`WHERE`, projections) → **virtual_topic** (if Gateway configured) or **flink** (fallback)
 - **Stateful** SQL (`GROUP BY`, `JOIN`, windows) → **flink** materialization

@@ -219,7 +219,7 @@ graph LR
 
 ## Materializations
 
-Materializations are **automatically inferred** using smart SQL analysis:
+Materializations are **automatically inferred** from your SQL:
 
 | Type | Auto-detected When | Infrastructure |
 |------|-------------------|----------------|

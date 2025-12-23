@@ -58,7 +58,7 @@ streamt compiles your YAML definitions into deployable artifacts:
 
 ## Materializations
 
-Materializations are **automatically inferred** using smart SQL analysis:
+Materializations are **automatically inferred** from your SQL:
 
 | SQL Pattern | Inferred Type | Creates |
 |-------------|---------------|---------|
@@ -277,7 +277,7 @@ tests:
 | YAML parsing & validation | ✅ Stable | Pydantic models, governance rules |
 | DAG & lineage | ✅ Stable | Automatic from SQL refs |
 | SQL parsing & type inference | ✅ Stable | sqlglot-based with custom Flink dialect |
-| Smart materialization | ✅ Stable | Auto-detects stateless vs stateful SQL |
+| Automatic backend selection | ✅ Stable | Auto-detects stateless vs stateful SQL |
 | Kafka topic deployment | ✅ Stable | Create, update partitions, config |
 | Schema Registry | ✅ Stable | Avro/JSON/Protobuf, compatibility checks |
 | Flink job generation | ✅ Works | SQL generation, REST API deployment |
