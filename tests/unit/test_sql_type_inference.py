@@ -473,6 +473,17 @@ class TestAdvancedFlinkSQLPatterns:
                 assert isinstance(inner, exp.Window)
                 assert isinstance(inner.this, exp.Lead)
 
+    def test_first_value_ignore_nulls_parsing(self):
+        """Test FIRST_VALUE with IGNORE NULLS parses correctly."""
+        sql = """SELECT
+            FIRST_VALUE(amount) IGNORE NULLS OVER (ORDER BY event_time) AS first_amount
+        FROM events"""
+        parsed = sqlglot.parse_one(sql, dialect=FlinkDialect)
+
+        assert isinstance(parsed, exp.Select)
+        ignore_nulls = list(parsed.find_all(exp.IgnoreNulls))
+        assert len(ignore_nulls) == 1
+
     def test_json_value_function(self):
         """Test JSON_VALUE extraction from JSON strings."""
         sql = """SELECT
@@ -812,6 +823,185 @@ class TestTypeInferenceFromSchema:
         assert len(columns_with_types) == 1
         assert columns_with_types[0] == ("is_premium", "BOOLEAN")
 
+    def test_proctime_function_inference(self):
+        """Test PROCTIME() returns TIMESTAMP_LTZ(3)."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_id", type="INT"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="SELECT PROCTIME() AS proc_time FROM {{ source('orders') }}",
+                )
+            ],
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        assert columns_with_types == [("proc_time", "TIMESTAMP_LTZ(3)")]
+
+    def test_window_aggregate_type_inference(self):
+        """Test window aggregates and row number types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="category", type="STRING"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        SUM(amount) OVER (
+                            PARTITION BY category
+                            ORDER BY order_time
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                        ) AS running_total,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY category
+                            ORDER BY order_time
+                        ) AS rn
+                    FROM {{ source('orders') }}""",
+                )
+            ],
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+
+        assert type_map["running_total"] == "DOUBLE"
+        assert type_map["rn"] == "BIGINT"
+
+    def test_cast_timestamp_ltz_inference(self):
+        """Test CAST to TIMESTAMP_LTZ keeps Flink type name."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CAST(order_time AS TIMESTAMP_LTZ(3)) AS order_time_ltz
+                    FROM {{ source('orders') }}""",
+                )
+            ],
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        assert columns_with_types == [("order_time_ltz", "TIMESTAMP_LTZ(3)")]
+
+    def test_current_timestamp_inference(self):
+        """Test CURRENT_TIMESTAMP returns TIMESTAMP_LTZ(3)."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_id", type="INT"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="SELECT CURRENT_TIMESTAMP AS now_ts FROM {{ source('orders') }}",
+                )
+            ],
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        assert columns_with_types == [("now_ts", "TIMESTAMP_LTZ(3)")]
+
+    def test_case_numeric_inference(self):
+        """Test CASE numeric branches infer numeric type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CASE WHEN amount > 0 THEN 1 ELSE 0 END AS is_positive
+                    FROM {{ source('orders') }}""",
+                )
+            ],
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        assert columns_with_types == [("is_positive", "BIGINT")]
+
 
 class TestFlinkDialectTypeInference:
     """Test type inference using FlinkDialect for Flink-specific SQL patterns.
@@ -1023,6 +1213,43 @@ class TestFlinkDialectTypeInference:
         assert type_map["user_id"] == "INT"
         assert type_map["display_name"] == "STRING"
 
+    def test_ifnull_nvl_type_inference(self):
+        """Test IFNULL/NVL return the argument type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="users",
+                    topic="users_topic",
+                    columns=[
+                        ColumnDefinition(name="nickname", type="STRING"),
+                        ColumnDefinition(name="full_name", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        IFNULL(nickname, full_name) AS display_name,
+                        NVL(nickname, 'Anonymous') AS fallback_name
+                    FROM {{ source('users') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["display_name"] == "STRING"
+        assert type_map["fallback_name"] == "STRING"
+
     def test_if_function_type_inference(self):
         """Test IF function inherits type from THEN branch."""
         from streamt.compiler.compiler import Compiler
@@ -1174,6 +1401,80 @@ class TestFlinkDialectTypeInference:
         assert type_map["bigint_sum"] == "BIGINT"
         assert type_map["double_product"] == "DOUBLE"
 
+    def test_division_type_inference(self):
+        """Test division returns floating or decimal types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="metrics",
+                    topic="metrics_topic",
+                    columns=[
+                        ColumnDefinition(name="int_val", type="INT"),
+                        ColumnDefinition(name="decimal_val", type="DECIMAL(10, 2)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        int_val / int_val AS ratio,
+                        decimal_val / int_val AS decimal_ratio
+                    FROM {{ source('metrics') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["ratio"] == "DOUBLE"
+        assert type_map["decimal_ratio"] == "DECIMAL(10, 2)"
+
+    def test_greatest_least_type_inference(self):
+        """Test GREATEST/LEAST return promoted numeric type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="metrics",
+                    topic="metrics_topic",
+                    columns=[
+                        ColumnDefinition(name="int_val", type="INT"),
+                        ColumnDefinition(name="double_val", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        GREATEST(int_val, double_val) AS max_val,
+                        LEAST(int_val, double_val) AS min_val
+                    FROM {{ source('metrics') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["max_val"] == "DOUBLE"
+        assert type_map["min_val"] == "DOUBLE"
+
     def test_window_rank_functions_return_bigint(self):
         """Test ROW_NUMBER, RANK, DENSE_RANK return BIGINT."""
         from streamt.compiler.compiler import Compiler
@@ -1254,6 +1555,45 @@ class TestFlinkDialectTypeInference:
         type_map = dict(columns_with_types)
         assert type_map["prev_value"] == "DOUBLE"
         assert type_map["next_value"] == "DOUBLE"
+
+    def test_first_last_nth_value_type_inference(self):
+        """Test FIRST_VALUE/LAST_VALUE/NTH_VALUE preserve argument type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        FIRST_VALUE(amount) OVER (ORDER BY event_time) AS first_amount,
+                        LAST_VALUE(amount) OVER (ORDER BY event_time) AS last_amount,
+                        NTH_VALUE(amount, 2) OVER (ORDER BY event_time) AS nth_amount
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["first_amount"] == "DOUBLE"
+        assert type_map["last_amount"] == "DOUBLE"
+        assert type_map["nth_amount"] == "DOUBLE"
 
     def test_temporal_join_type_inference(self):
         """Test type inference for temporal join with FOR SYSTEM_TIME AS OF."""
@@ -1396,6 +1736,45 @@ class TestFlinkDialectTypeInference:
         assert type_map["log_time"] == "TIMESTAMP(3)"
         assert type_map["message"] == "STRING"
 
+    def test_unix_timestamp_and_date_format_inference(self):
+        """Test UNIX_TIMESTAMP, FROM_UNIXTIME, and DATE_FORMAT return correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="epoch_ms", type="BIGINT"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        UNIX_TIMESTAMP(event_time) AS epoch,
+                        FROM_UNIXTIME(epoch_ms) AS event_time_ts,
+                        DATE_FORMAT(event_time, 'yyyy-MM-dd') AS event_date
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["epoch"] == "BIGINT"
+        assert type_map["event_time_ts"] == "TIMESTAMP(3)"
+        assert type_map["event_date"] == "STRING"
+
     def test_string_functions_return_string(self):
         """Test string manipulation functions return STRING."""
         from streamt.compiler.compiler import Compiler
@@ -1475,3 +1854,797 @@ class TestFlinkDialectTypeInference:
         assert type_map["is_large"] == "BOOLEAN"
         assert type_map["is_completed"] == "BOOLEAN"
         assert type_map["is_in_progress"] == "BOOLEAN"
+
+
+class TestConfluentFlinkCompatibility:
+    """Tests for Confluent Cloud for Apache Flink compatibility.
+
+    These tests verify that the FlinkDialect can parse and handle Confluent-specific
+    SQL functions and patterns.
+    """
+
+    def test_json_functions_parsing(self):
+        """Test Confluent JSON functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="data", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        JSON_VALUE(data, '$.name') AS name,
+                        JSON_QUERY(data, '$.items') AS items,
+                        JSON_EXISTS(data, '$.valid') AS has_valid,
+                        JSON_QUOTE(data) AS quoted
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["name"] == "STRING"
+        assert type_map["items"] == "STRING"
+        assert type_map["has_valid"] == "BOOLEAN"
+        assert type_map["quoted"] == "STRING"
+
+    def test_json_value_type_inference(self):
+        """Test JSON_VALUE returns STRING type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="data", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        JSON_VALUE(data, '$.name') AS extracted_name
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["extracted_name"] == "STRING"
+
+    def test_datetime_functions_parsing(self):
+        """Test Confluent datetime functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="epoch_ms", type="BIGINT"),
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="start_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="end_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="event_date", type="DATE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        TO_TIMESTAMP_LTZ(epoch_ms, 3) AS event_time_ltz,
+                        TIMESTAMPDIFF(MINUTE, start_time, end_time) AS duration_mins,
+                        DAYOFWEEK(event_date) AS dow,
+                        QUARTER(event_date) AS q
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["event_time_ltz"] == "TIMESTAMP_LTZ(3)"
+        assert type_map["duration_mins"] == "BIGINT"
+        assert type_map["dow"] == "INT"
+        assert type_map["q"] == "INT"
+
+    def test_to_timestamp_ltz_type_inference(self):
+        """Test TO_TIMESTAMP_LTZ returns TIMESTAMP_LTZ type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="epoch_ms", type="BIGINT"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        TO_TIMESTAMP_LTZ(epoch_ms, 3) AS event_time_ltz
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["event_time_ltz"] == "TIMESTAMP_LTZ(3)"
+
+    def test_aggregate_functions_parsing(self):
+        """Test Confluent aggregate functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="STRING"),
+                        ColumnDefinition(name="product_name", type="STRING"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        customer_id,
+                        LISTAGG(product_name, ', ') AS products,
+                        STDDEV_POP(amount) AS std_dev,
+                        VAR_SAMP(amount) AS variance
+                    FROM {{ source('orders') }}
+                    GROUP BY customer_id"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["customer_id"] == "STRING"
+        assert type_map["products"] == "STRING"
+        assert type_map["std_dev"] == "DOUBLE"
+        assert type_map["variance"] == "DOUBLE"
+
+    def test_string_functions_parsing(self):
+        """Test Confluent string functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="url", type="STRING"),
+                        ColumnDefinition(name="tags", type="STRING"),
+                        ColumnDefinition(name="query_string", type="STRING"),
+                        ColumnDefinition(name="raw_data", type="BYTES"),
+                        ColumnDefinition(name="customer_name", type="STRING"),
+                        ColumnDefinition(name="code", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        REGEXP_EXTRACT(url, '/([^/]+)$', 1) AS path_segment,
+                        SPLIT_INDEX(tags, ',', 0) AS first_tag,
+                        PARSE_URL(url, 'HOST') AS host,
+                        URL_ENCODE(query_string) AS encoded,
+                        TO_BASE64(raw_data) AS base64_data,
+                        INITCAP(customer_name) AS formatted_name,
+                        LPAD(code, 10, '0') AS padded_code
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["path_segment"] == "STRING"
+        assert type_map["first_tag"] == "STRING"
+        assert type_map["host"] == "STRING"
+        assert type_map["encoded"] == "STRING"
+        assert type_map["base64_data"] == "STRING"
+        assert type_map["formatted_name"] == "STRING"
+        assert type_map["padded_code"] == "STRING"
+
+    def test_regexp_extract_type_inference(self):
+        """Test REGEXP_EXTRACT returns STRING type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="logs",
+                    topic="logs_topic",
+                    columns=[
+                        ColumnDefinition(name="url", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        REGEXP_EXTRACT(url, '/([^/]+)$', 1) AS path
+                    FROM {{ source('logs') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["path"] == "STRING"
+
+    def test_array_functions_parsing(self):
+        """Test Confluent array/collection functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="items", type="ARRAY<STRING>"),
+                        ColumnDefinition(name="tags", type="ARRAY<STRING>"),
+                        ColumnDefinition(name="categories", type="ARRAY<STRING>"),
+                        ColumnDefinition(name="metadata", type="MAP<STRING, INT>"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CARDINALITY(items) AS item_count,
+                        ARRAY_CONTAINS(tags, 'important') AS is_important,
+                        ARRAY_DISTINCT(categories) AS unique_cats,
+                        ARRAY_POSITION(items, 'target') AS position,
+                        MAP_KEYS(metadata) AS keys,
+                        MAP_VALUES(metadata) AS vals
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["item_count"] == "INT"
+        assert type_map["is_important"] == "BOOLEAN"
+        assert type_map["unique_cats"] == "ARRAY<STRING>"
+        assert type_map["position"] == "INT"
+        assert type_map["keys"] == "ARRAY<STRING>"
+        assert type_map["vals"] == "ARRAY<INT>"
+
+    def test_cardinality_type_inference(self):
+        """Test CARDINALITY returns INT type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="items", type="ARRAY<STRING>"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        CARDINALITY(items) AS item_count
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["item_count"] == "INT"
+
+    def test_array_and_map_type_inference(self):
+        """Test ARRAY and MAP function return types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="items", type="ARRAY<STRING>"),
+                        ColumnDefinition(name="metadata", type="MAP<STRING, INT>"),
+                        ColumnDefinition(name="keys", type="ARRAY<STRING>"),
+                        ColumnDefinition(name="values", type="ARRAY<INT>"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        ARRAY_DISTINCT(items) AS unique_items,
+                        MAP_KEYS(metadata) AS meta_keys,
+                        MAP_VALUES(metadata) AS meta_values,
+                        MAP_FROM_ARRAYS(keys, values) AS combined_map
+                    FROM {{ source('events') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["unique_items"] == "ARRAY<STRING>"
+        assert type_map["meta_keys"] == "ARRAY<STRING>"
+        assert type_map["meta_values"] == "ARRAY<INT>"
+        assert type_map["combined_map"] == "MAP<STRING, INT>"
+
+    def test_ml_predict_parsing(self):
+        """Test Confluent ML_PREDICT function can be parsed and has correct type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="customers",
+                    topic="customers_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="STRING"),
+                        ColumnDefinition(name="my_model", type="STRING"),
+                        ColumnDefinition(name="feature1", type="DOUBLE"),
+                        ColumnDefinition(name="feature2", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        customer_id,
+                        ML_PREDICT(my_model, feature1, feature2) AS prediction
+                    FROM {{ source('customers') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["customer_id"] == "STRING"
+        assert type_map["prediction"] == "ROW"
+
+    def test_window_tvf_with_descriptor(self):
+        """Test Confluent window TVF syntax with DESCRIPTOR and verify types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="STRING"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        window_start,
+                        window_end,
+                        customer_id,
+                        SUM(amount) AS total
+                    FROM TABLE(
+                        TUMBLE(TABLE {{ source('orders') }}, DESCRIPTOR(event_time), INTERVAL '1' HOUR)
+                    )
+                    GROUP BY window_start, window_end, customer_id"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["customer_id"] == "STRING"
+        assert type_map["total"] == "DOUBLE"
+
+    def test_cumulate_window_tvf(self):
+        """Test Confluent CUMULATE window TVF syntax and verify types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_id", type="STRING"),
+                        ColumnDefinition(name="event_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        window_start,
+                        window_end,
+                        COUNT(*) AS cnt
+                    FROM TABLE(
+                        CUMULATE(TABLE {{ source('orders') }}, DESCRIPTOR(event_time), INTERVAL '10' MINUTE, INTERVAL '1' HOUR)
+                    )
+                    GROUP BY window_start, window_end"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["cnt"] == "BIGINT"
+
+    def test_hop_window_tvf(self):
+        """Test Confluent HOP window TVF syntax and verify types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="prices",
+                    topic="prices_topic",
+                    columns=[
+                        ColumnDefinition(name="price", type="DOUBLE"),
+                        ColumnDefinition(name="price_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        window_start,
+                        window_end,
+                        AVG(price) AS avg_price
+                    FROM TABLE(
+                        HOP(TABLE {{ source('prices') }}, DESCRIPTOR(price_time), INTERVAL '5' MINUTE, INTERVAL '10' MINUTE)
+                    )
+                    GROUP BY window_start, window_end"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["avg_price"] == "DOUBLE"
+
+    def test_conditional_functions_parsing(self):
+        """Test Confluent conditional functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="products",
+                    topic="products_topic",
+                    columns=[
+                        ColumnDefinition(name="name", type="STRING"),
+                        ColumnDefinition(name="status", type="STRING"),
+                        ColumnDefinition(name="price1", type="DOUBLE"),
+                        ColumnDefinition(name="price2", type="DOUBLE"),
+                        ColumnDefinition(name="price3", type="DOUBLE"),
+                        ColumnDefinition(name="qty1", type="INT"),
+                        ColumnDefinition(name="qty2", type="INT"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        IFNULL(name, 'Unknown') AS display_name,
+                        NVL(status, 'pending') AS actual_status,
+                        GREATEST(price1, price2, price3) AS max_price,
+                        LEAST(qty1, qty2) AS min_qty
+                    FROM {{ source('products') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["display_name"] == "STRING"
+        assert type_map["actual_status"] == "STRING"
+        assert type_map["max_price"] == "DOUBLE"
+        assert type_map["min_qty"] == "INT"
+
+    def test_math_functions_parsing(self):
+        """Test Confluent math functions can be parsed and have correct types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="measurements",
+                    topic="measurements_topic",
+                    columns=[
+                        ColumnDefinition(name="value", type="DOUBLE"),
+                        ColumnDefinition(name="angle", type="DOUBLE"),
+                        ColumnDefinition(name="radians", type="DOUBLE"),
+                        ColumnDefinition(name="degrees", type="DOUBLE"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        LOG2(value) AS log2_val,
+                        LOG10(value) AS log10_val,
+                        SINH(angle) AS sinh_val,
+                        COSH(angle) AS cosh_val,
+                        TANH(angle) AS tanh_val,
+                        DEGREES(radians) AS deg,
+                        RADIANS(degrees) AS rad
+                    FROM {{ source('measurements') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["log2_val"] == "DOUBLE"
+        assert type_map["log10_val"] == "DOUBLE"
+        assert type_map["sinh_val"] == "DOUBLE"
+        assert type_map["cosh_val"] == "DOUBLE"
+        assert type_map["tanh_val"] == "DOUBLE"
+        assert type_map["deg"] == "DOUBLE"
+        assert type_map["rad"] == "DOUBLE"
+
+    def test_complex_confluent_query(self):
+        """Test a complex Confluent Flink SQL query with multiple features and verify types."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="STRING"),
+                        ColumnDefinition(name="product_name", type="STRING"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="metadata", type="STRING"),
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        window_start,
+                        window_end,
+                        customer_id,
+                        JSON_VALUE(metadata, '$.region') AS region,
+                        LISTAGG(product_name, ', ') AS products,
+                        SUM(amount) AS total_amount,
+                        COUNT(*) AS order_count,
+                        STDDEV_POP(amount) AS amount_stddev,
+                        GREATEST(MAX(amount), 0) AS max_amount
+                    FROM TABLE(
+                        TUMBLE(TABLE {{ source('orders') }}, DESCRIPTOR(order_time), INTERVAL '1' HOUR)
+                    )
+                    WHERE JSON_EXISTS(metadata, '$.valid')
+                    GROUP BY window_start, window_end, customer_id, JSON_VALUE(metadata, '$.region')
+                    HAVING COUNT(*) > 1"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["customer_id"] == "STRING"
+        assert type_map["region"] == "STRING"
+        assert type_map["products"] == "STRING"
+        assert type_map["total_amount"] == "DOUBLE"
+        assert type_map["order_count"] == "BIGINT"
+        assert type_map["amount_stddev"] == "DOUBLE"
+        assert type_map["max_amount"] == "DOUBLE"

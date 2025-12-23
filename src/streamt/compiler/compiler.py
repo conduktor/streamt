@@ -841,47 +841,77 @@ WHERE {condition}""")
         # Aggregate functions
         if isinstance(expr, exp.Count):
             return "BIGINT"
-        if isinstance(expr, (exp.Sum, exp.Avg)):
-            # SUM and AVG of numeric types return DOUBLE
-            if expr.this and isinstance(expr.this, exp.Column):
-                col_type = schema.get(expr.this.name, "DOUBLE")
-                # SUM preserves the type for non-integer types
-                if isinstance(expr, exp.Sum) and col_type in ("DOUBLE", "FLOAT", "DECIMAL"):
-                    return col_type
+        if isinstance(expr, exp.Sum):
+            if expr.this is None:
+                return "DOUBLE"
+            input_type = self._infer_expression_type(expr.this, schema)
+            base_type = input_type.split("(")[0].upper()
+            if base_type in ("DECIMAL", "NUMERIC"):
+                return input_type
+            if base_type in ("FLOAT", "DOUBLE"):
+                return "DOUBLE"
+            if base_type in ("TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT"):
+                return "BIGINT"
+            return "DOUBLE"
+        if isinstance(expr, exp.Avg):
+            if expr.this is None:
+                return "DOUBLE"
+            input_type = self._infer_expression_type(expr.this, schema)
+            base_type = input_type.split("(")[0].upper()
+            if base_type in ("DECIMAL", "NUMERIC"):
+                return input_type
             return "DOUBLE"
         if isinstance(expr, (exp.Min, exp.Max)):
-            # Try to infer from the argument
-            if expr.this and isinstance(expr.this, exp.Column):
-                return schema.get(expr.this.name, "DOUBLE")
+            if expr.this is not None:
+                return self._infer_expression_type(expr.this, schema)
+            return "STRING"
+        if isinstance(
+            expr,
+            (
+                exp.Stddev,
+                exp.StddevPop,
+                exp.StddevSamp,
+                exp.Variance,
+                exp.VariancePop,
+                exp.CumeDist,
+                exp.PercentRank,
+            ),
+        ):
             return "DOUBLE"
 
         # Case expression - infer from THEN/ELSE branches
         if isinstance(expr, exp.Case):
-            # Check the first THEN clause for type inference
+            branch_types: list[str] = []
             for when in expr.args.get("ifs", []):
                 then_expr = when.args.get("true")
-                if isinstance(then_expr, exp.Boolean):
-                    return "BOOLEAN"
-                # Recursively infer type from THEN branch
-                if then_expr:
-                    return self._infer_expression_type(then_expr, schema)
-            # Check ELSE clause
+                if then_expr is not None:
+                    branch_types.append(self._infer_expression_type(then_expr, schema))
             else_expr = expr.args.get("default")
-            if else_expr:
-                return self._infer_expression_type(else_expr, schema)
-            return "STRING"
+            if else_expr is not None:
+                branch_types.append(self._infer_expression_type(else_expr, schema))
+            return self._merge_types(branch_types)
 
         # IF function - infer type from THEN branch
         if isinstance(expr, exp.If):
-            true_expr = expr.args.get("true")
-            if true_expr:
-                return self._infer_expression_type(true_expr, schema)
-            return "STRING"
+            return self._merge_types(
+                [
+                    self._infer_expression_type(expr.args.get("true"), schema)
+                    if expr.args.get("true") is not None
+                    else "",
+                    self._infer_expression_type(expr.args.get("false"), schema)
+                    if expr.args.get("false") is not None
+                    else "",
+                ]
+            )
 
-        # Coalesce - infer type from first argument
+        # Coalesce - infer type from all arguments
         if isinstance(expr, exp.Coalesce):
-            if expr.expressions:
-                return self._infer_expression_type(expr.expressions[0], schema)
+            return self._merge_types(
+                [self._infer_expression_type(arg, schema) for arg in expr.iter_expressions()]
+            )
+        if isinstance(expr, exp.Nullif):
+            if expr.this is not None:
+                return self._infer_expression_type(expr.this, schema)
             return "STRING"
 
         # String functions
@@ -900,11 +930,38 @@ WHERE {condition}""")
         # Boolean literals and comparisons
         if isinstance(expr, exp.Boolean):
             return "BOOLEAN"
-        if isinstance(expr, (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.And, exp.Or, exp.Not, exp.In)):
+        if isinstance(
+            expr,
+            (
+                exp.EQ,
+                exp.NEQ,
+                exp.GT,
+                exp.GTE,
+                exp.LT,
+                exp.LTE,
+                exp.And,
+                exp.Or,
+                exp.Not,
+                exp.In,
+                exp.Between,
+                exp.Like,
+                exp.ILike,
+                exp.Is,
+                exp.IsNullValue,
+                exp.Exists,
+                exp.RegexpLike,
+                exp.RegexpILike,
+                exp.RegexpFullMatch,
+            ),
+        ):
             return "BOOLEAN"
 
         # Arithmetic operations - use type promotion
-        if isinstance(expr, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        if isinstance(expr, exp.Div):
+            left_type = self._infer_expression_type(expr.left, schema) if expr.left else "STRING"
+            right_type = self._infer_expression_type(expr.right, schema) if expr.right else "STRING"
+            return self._infer_division_type(left_type, right_type)
+        if isinstance(expr, (exp.Add, exp.Sub, exp.Mul, exp.Mod)):
             left_type = self._infer_expression_type(expr.left, schema) if expr.left else "STRING"
             right_type = self._infer_expression_type(expr.right, schema) if expr.right else "STRING"
             return self._promote_numeric_types(left_type, right_type)
@@ -922,19 +979,23 @@ WHERE {condition}""")
 
         # LAG/LEAD - preserve argument type
         if isinstance(expr, (exp.Lag, exp.Lead)):
-            if expr.this and isinstance(expr.this, exp.Column):
-                return schema.get(expr.this.name, "STRING")
+            if expr.this is not None:
+                return self._infer_expression_type(expr.this, schema)
             return "STRING"
 
         # FirstValue/LastValue - preserve argument type
-        if isinstance(expr, (exp.FirstValue, exp.LastValue)):
-            if expr.this and isinstance(expr.this, exp.Column):
-                return schema.get(expr.this.name, "STRING")
+        if isinstance(expr, (exp.FirstValue, exp.LastValue, exp.NthValue)):
+            if expr.this is not None:
+                return self._infer_expression_type(expr.this, schema)
             return "STRING"
 
         # Timestamp conversion functions
-        if isinstance(expr, (exp.TsOrDsToTimestamp, exp.StrToTime)):
+        if isinstance(expr, (exp.TsOrDsToTimestamp, exp.StrToTime, exp.UnixToTime)):
             return "TIMESTAMP(3)"
+        if isinstance(expr, exp.TimeToUnix):
+            return "BIGINT"
+        if isinstance(expr, (exp.TimeToStr, exp.UnixToStr)):
+            return "STRING"
 
         # Anonymous functions (like TUMBLE_START, PROCTIME, etc.)
         if isinstance(expr, exp.Anonymous):
@@ -943,6 +1004,40 @@ WHERE {condition}""")
             flink_type = get_flink_function_type(func_name)
             if flink_type:
                 return flink_type
+            args = list(expr.expressions)
+            if func_name in ("IFNULL", "NVL", "GREATEST", "LEAST"):
+                return self._merge_types(
+                    [self._infer_expression_type(arg, schema) for arg in args]
+                )
+            if func_name == "TIMESTAMPADD":
+                if len(args) >= 3:
+                    return self._infer_expression_type(args[2], schema)
+                return "TIMESTAMP(3)"
+            if func_name == "COLLECT":
+                return self._infer_collect_type(args, schema)
+            if func_name == "ELEMENT":
+                return self._infer_element_type(args, schema)
+            if func_name in (
+                "ARRAY_CONCAT",
+                "ARRAY_DISTINCT",
+                "ARRAY_REMOVE",
+                "ARRAY_REVERSE",
+                "ARRAY_SLICE",
+                "ARRAY_UNION",
+            ):
+                return self._infer_array_return_type(args, schema)
+            if func_name == "MAP_KEYS":
+                return self._infer_map_keys_type(args, schema)
+            if func_name == "MAP_VALUES":
+                return self._infer_map_values_type(args, schema)
+            if func_name == "MAP_ENTRIES":
+                return self._infer_map_entries_type(args, schema)
+            if func_name == "MAP_UNION":
+                return self._infer_map_union_type(args, schema)
+            if func_name == "MAP_FROM_ARRAYS":
+                return self._infer_map_from_arrays_type(args, schema)
+            if func_name == "STR_TO_MAP":
+                return "MAP<STRING, STRING>"
             # Timestamp conversion functions
             if func_name in ("TO_TIMESTAMP", "FROM_UNIXTIME"):
                 return "TIMESTAMP(3)"
@@ -955,15 +1050,25 @@ WHERE {condition}""")
             # JSON functions usually return STRING
             if func_name in ("JSON_VALUE", "JSON_QUERY"):
                 return "STRING"
+            if func_name in ("NOW", "CURRENT_ROW_TIMESTAMP"):
+                return "TIMESTAMP_LTZ(3)"
 
-        # CurrentTimestamp
-        if isinstance(expr, exp.CurrentTimestamp):
+        # Current timestamp/time/date functions
+        if isinstance(expr, (exp.CurrentTimestamp, exp.CurrentTimestampLTZ)):
+            return "TIMESTAMP_LTZ(3)"
+        if isinstance(expr, exp.Localtimestamp):
             return "TIMESTAMP(3)"
+        if isinstance(expr, (exp.CurrentTime, exp.Localtime)):
+            return "TIME(0)"
+        if isinstance(expr, exp.CurrentDate):
+            return "DATE"
 
         # Cast - use the target type
-        if isinstance(expr, exp.Cast):
+        if isinstance(expr, (exp.Cast, exp.TryCast)):
+            if expr.to is None:
+                return "STRING"
             target_type = expr.to.sql().upper()
-            return target_type
+            return self._normalize_cast_type(target_type)
 
         # Paren - unwrap
         if isinstance(expr, exp.Paren):
@@ -976,6 +1081,175 @@ WHERE {condition}""")
         # Default to STRING for unknown expressions
         return "STRING"
 
+    def _is_numeric_type(self, type_name: str) -> bool:
+        base_type = type_name.split("(")[0].upper()
+        return base_type in {
+            "TINYINT",
+            "SMALLINT",
+            "INT",
+            "INTEGER",
+            "BIGINT",
+            "FLOAT",
+            "DOUBLE",
+            "DECIMAL",
+            "NUMERIC",
+        }
+
+    def _merge_types(self, types: list[str]) -> str:
+        merged = [type_name for type_name in types if type_name]
+        if not merged:
+            return "STRING"
+        if all(type_name.split("(")[0].upper() == "BOOLEAN" for type_name in merged):
+            return "BOOLEAN"
+        if all(self._is_numeric_type(type_name) for type_name in merged):
+            result = merged[0]
+            for next_type in merged[1:]:
+                result = self._promote_numeric_types(result, next_type)
+            return result
+        base_types = {type_name.split("(")[0].upper() for type_name in merged}
+        if len(base_types) == 1:
+            return merged[0]
+        return "STRING"
+
+    def _normalize_cast_type(self, target_type: str) -> str:
+        ltz_match = re.match(r"^TIMESTAMPLTZ(?:\((\d+)\))?$", target_type)
+        if ltz_match:
+            precision = ltz_match.group(1)
+            return f"TIMESTAMP_LTZ({precision})" if precision else "TIMESTAMP_LTZ"
+        tz_match = re.match(r"^TIMESTAMPTZ(?:\((\d+)\))?$", target_type)
+        if tz_match:
+            precision = tz_match.group(1)
+            if precision:
+                return f"TIMESTAMP({precision}) WITH TIME ZONE"
+            return "TIMESTAMP WITH TIME ZONE"
+        ntz_match = re.match(r"^TIMESTAMPNTZ(?:\((\d+)\))?$", target_type)
+        if ntz_match:
+            precision = ntz_match.group(1)
+            return f"TIMESTAMP({precision})" if precision else "TIMESTAMP"
+        return target_type
+
+    def _normalize_type_whitespace(self, type_name: str) -> str:
+        return " ".join(type_name.strip().split())
+
+    def _split_type_params(self, type_body: str) -> list[str]:
+        parts: list[str] = []
+        current: list[str] = []
+        depth = 0
+
+        for char in type_body:
+            if char == "<":
+                depth += 1
+                current.append(char)
+                continue
+            if char == ">":
+                depth -= 1
+                current.append(char)
+                continue
+            if char == "," and depth == 0:
+                parts.append("".join(current).strip())
+                current = []
+                continue
+            current.append(char)
+
+        if current:
+            parts.append("".join(current).strip())
+
+        return parts
+
+    def _extract_array_element_type(self, type_name: str) -> str | None:
+        normalized = self._normalize_type_whitespace(type_name)
+        if not normalized.upper().startswith("ARRAY<") or not normalized.endswith(">"):
+            return None
+        inner = normalized[6:-1].strip()
+        return inner or None
+
+    def _extract_map_key_value_types(self, type_name: str) -> tuple[str, str] | None:
+        normalized = self._normalize_type_whitespace(type_name)
+        if not normalized.upper().startswith("MAP<") or not normalized.endswith(">"):
+            return None
+        inner = normalized[4:-1].strip()
+        parts = self._split_type_params(inner)
+        if len(parts) != 2:
+            return None
+        return parts[0], parts[1]
+
+    def _build_array_type(self, element_type: str) -> str:
+        return f"ARRAY<{element_type}>"
+
+    def _build_map_type(self, key_type: str, value_type: str) -> str:
+        return f"MAP<{key_type}, {value_type}>"
+
+    def _build_row_type(self, fields: list[tuple[str, str]]) -> str:
+        field_defs = ", ".join(f"{name} {field_type}" for name, field_type in fields)
+        return f"ROW<{field_defs}>"
+
+    def _infer_array_return_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "ARRAY"
+        input_type = self._infer_expression_type(args[0], schema)
+        element_type = self._extract_array_element_type(input_type)
+        return input_type if element_type else "ARRAY"
+
+    def _infer_collect_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "ARRAY"
+        element_type = self._infer_expression_type(args[0], schema)
+        return self._build_array_type(element_type)
+
+    def _infer_element_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "STRING"
+        input_type = self._infer_expression_type(args[0], schema)
+        element_type = self._extract_array_element_type(input_type)
+        return element_type or "STRING"
+
+    def _infer_map_keys_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "ARRAY"
+        map_type = self._infer_expression_type(args[0], schema)
+        key_value = self._extract_map_key_value_types(map_type)
+        if key_value:
+            return self._build_array_type(key_value[0])
+        return "ARRAY"
+
+    def _infer_map_values_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "ARRAY"
+        map_type = self._infer_expression_type(args[0], schema)
+        key_value = self._extract_map_key_value_types(map_type)
+        if key_value:
+            return self._build_array_type(key_value[1])
+        return "ARRAY"
+
+    def _infer_map_entries_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "ARRAY"
+        map_type = self._infer_expression_type(args[0], schema)
+        key_value = self._extract_map_key_value_types(map_type)
+        if key_value:
+            row_type = self._build_row_type([("key", key_value[0]), ("value", key_value[1])])
+            return self._build_array_type(row_type)
+        return "ARRAY"
+
+    def _infer_map_union_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if not args:
+            return "MAP"
+        map_type = self._infer_expression_type(args[0], schema)
+        if self._extract_map_key_value_types(map_type):
+            return map_type
+        return "MAP"
+
+    def _infer_map_from_arrays_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
+        if len(args) < 2:
+            return "MAP"
+        keys_type = self._infer_expression_type(args[0], schema)
+        values_type = self._infer_expression_type(args[1], schema)
+        key_element = self._extract_array_element_type(keys_type)
+        value_element = self._extract_array_element_type(values_type)
+        if key_element and value_element:
+            return self._build_map_type(key_element, value_element)
+        return "MAP"
+
     def _promote_numeric_types(self, left_type: str, right_type: str) -> str:
         """Promote numeric types following Flink SQL rules."""
         type_order = {
@@ -987,6 +1261,7 @@ WHERE {condition}""")
             "FLOAT": 5,
             "DOUBLE": 6,
             "DECIMAL": 7,
+            "NUMERIC": 7,
         }
 
         # Extract base type (remove precision/scale)
@@ -1004,6 +1279,25 @@ WHERE {condition}""")
         if left_order >= right_order:
             return left_type if left_order > 0 else right_type
         return right_type
+
+    def _infer_division_type(self, left_type: str, right_type: str) -> str:
+        left_base = left_type.split("(")[0].upper()
+        right_base = right_type.split("(")[0].upper()
+        if left_base in ("DECIMAL", "NUMERIC"):
+            return left_type
+        if right_base in ("DECIMAL", "NUMERIC"):
+            return right_type
+        if left_base in ("FLOAT", "DOUBLE") or right_base in ("FLOAT", "DOUBLE"):
+            return "DOUBLE"
+        if left_base in ("TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT") or right_base in (
+            "TINYINT",
+            "SMALLINT",
+            "INT",
+            "INTEGER",
+            "BIGINT",
+        ):
+            return "DOUBLE"
+        return "STRING"
 
     def _extract_select_columns_with_types_regex(
         self, sql: str, schema: dict[str, str]
@@ -1084,17 +1378,48 @@ WHERE {condition}""")
         if re.match(r'^COUNT\s*\(', expr_upper):
             return "BIGINT"
 
-        # Aggregate functions that return DOUBLE
-        if re.match(r'^(SUM|AVG)\s*\(', expr_upper):
+        sum_match = re.match(r'^SUM\s*\((.+)\)$', expr_upper)
+        if sum_match:
+            arg = sum_match.group(1).strip()
+            col_match = re.match(r'^[`"]?(\w+)[`"]?$', arg)
+            if col_match:
+                col_type = schema.get(col_match.group(1), "DOUBLE")
+                base_type = col_type.split("(")[0].upper()
+                if base_type in ("DECIMAL", "NUMERIC"):
+                    return col_type
+                if base_type in ("FLOAT", "DOUBLE"):
+                    return "DOUBLE"
+                if base_type in ("TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT"):
+                    return "BIGINT"
             return "DOUBLE"
 
-        # MIN/MAX preserve type, but default to DOUBLE for numeric aggregates
-        if re.match(r'^(MIN|MAX)\s*\(', expr_upper):
+        avg_match = re.match(r'^AVG\s*\((.+)\)$', expr_upper)
+        if avg_match:
+            arg = avg_match.group(1).strip()
+            col_match = re.match(r'^[`"]?(\w+)[`"]?$', arg)
+            if col_match:
+                col_type = schema.get(col_match.group(1), "DOUBLE")
+                base_type = col_type.split("(")[0].upper()
+                if base_type in ("DECIMAL", "NUMERIC"):
+                    return col_type
+            return "DOUBLE"
+
+        min_max_match = re.match(r'^(MIN|MAX)\s*\((.+)\)$', expr_upper)
+        if min_max_match:
+            arg = min_max_match.group(2).strip()
+            col_match = re.match(r'^[`"]?(\w+)[`"]?$', arg)
+            if col_match:
+                return schema.get(col_match.group(1), "STRING")
             return "DOUBLE"
 
         # Window functions that return TIMESTAMP
-        if re.match(r'^(TUMBLE_START|TUMBLE_END|WINDOW_START|WINDOW_END|HOP_START|HOP_END)\s*\(', expr_upper):
+        if re.match(
+            r'^(TUMBLE_START|TUMBLE_END|TUMBLE_ROWTIME|HOP_START|HOP_END|HOP_ROWTIME|SESSION_START|SESSION_END|SESSION_ROWTIME|WINDOW_START|WINDOW_END)\s*\(',
+            expr_upper,
+        ):
             return "TIMESTAMP(3)"
+        if re.match(r'^(TUMBLE_PROCTIME|HOP_PROCTIME|SESSION_PROCTIME)\s*\(', expr_upper):
+            return "TIMESTAMP_LTZ(3)"
 
         # String functions
         if re.match(r'^(UPPER|LOWER|CONCAT|SUBSTRING|TRIM|LTRIM|RTRIM|REPLACE|REGEXP_REPLACE)\s*\(', expr_upper):
@@ -1102,6 +1427,13 @@ WHERE {condition}""")
 
         # PROCTIME()
         if expr_upper.startswith('PROCTIME('):
+            return "TIMESTAMP_LTZ(3)"
+
+        if (
+            expr_upper.startswith("CURRENT_TIMESTAMP")
+            or expr_upper.startswith("NOW(")
+            or expr_upper.startswith("CURRENT_ROW_TIMESTAMP(")
+        ):
             return "TIMESTAMP_LTZ(3)"
 
         # Numeric literals
