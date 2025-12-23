@@ -50,6 +50,9 @@ htmlcov/
 generated/
 site/
 
+# Orchestrator analysis (implementation detail)
+.orchestrator/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -263,23 +263,23 @@ tests:
 
 ### What's Missing for Production
 
-- **State management** — ~~State TTL~~, savepoint handling for job upgrades
-- **Kubernetes Flink operator** — Currently REST API only
-- **CI/CD templates** — GitHub Actions, etc.
-- **Metrics integration** — Prometheus/OpenTelemetry for alerting
+- **SQL injection mitigation** — Add input validation for identifiers in SQL generation
+- **Planner module tests** — Add test coverage for deployment logic
+- **HTTP response validation** — Add checks before `.json()` calls
+- **Input validation** — Pydantic validators for URLs, topic names, bootstrap servers
 
 ## Roadmap
 
 ### High Value
 
-- [ ] Multi-environment support — dev/staging/prod profiles
 - [x] Basic test assertions — `not_null`, `accepted_values`, `range`, `accepted_types`, `custom_sql` (continuous tests)
+- [x] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
+- [ ] Multi-environment support — dev/staging/prod profiles
 - [ ] Advanced test assertions — `unique_key`, `foreign_key`, `distribution`, `max_lag`, `throughput` (require windowing/aggregation)
 - [ ] Test failure handlers — `on_failure` actions (alert to Slack/PagerDuty, pause model, route to DLQ, block deployment)
 - [ ] DLQ support — Dead Letter Queue for failed messages
 - [ ] Flink savepoint handling — Graceful upgrades without data loss
 - [ ] Global credentials/connections — Define Snowflake, S3, etc. once and reference everywhere
-- [x] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
 
 ### Operational
 
