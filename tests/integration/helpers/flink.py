@@ -150,6 +150,88 @@ class FlinkHelper:
         response.raise_for_status()
         return response.json()
 
+    @retry_on_transient_error(max_retries=3, delay=1.0)
+    def _get_statement_status(self, operation_handle: str) -> dict:
+        """Get SQL Gateway statement status."""
+        response = requests.get(
+            f"{self.sql_gateway_url}/v1/sessions/{self.session_handle}/operations/{operation_handle}/status",
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _get_statement_error(self, operation_handle: str) -> str:
+        """Fetch error details for a failed statement."""
+        try:
+            response = requests.get(
+                f"{self.sql_gateway_url}/v1/sessions/{self.session_handle}/operations/{operation_handle}/result/0",
+                timeout=10,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                errors = data.get("errors", [])
+                if errors:
+                    return " ".join(errors)
+                return data.get("message", "Unknown error")
+            try:
+                data = response.json()
+                errors = data.get("errors", [])
+                if errors:
+                    return " ".join(errors)
+            except Exception:
+                pass
+            return response.text or f"HTTP {response.status_code}"
+        except Exception as exc:
+            return f"Unknown error (failed to fetch details: {exc})"
+
+    def wait_for_statement_status(
+        self,
+        operation_handle: str,
+        expected_statuses: set[str],
+        timeout: float = 60.0,
+        interval: float = 0.5,
+    ) -> str:
+        """Wait for a statement to reach one of the expected statuses."""
+        def check() -> tuple[bool, Optional[tuple[str, str]]]:
+            status_response = self._get_statement_status(operation_handle)
+            status = status_response.get("status")
+            if status in expected_statuses:
+                return True, ("ok", status)
+            if status == "ERROR":
+                error_msg = status_response.get("error") or self._get_statement_error(operation_handle)
+                return True, ("error", error_msg)
+            if status in ["RUNNING", "PENDING"]:
+                return False, None
+            return True, ("error", f"Unknown statement status '{status}'")
+
+        result = poll_for_result(check, timeout=timeout, interval=interval)
+        if result is None:
+            raise TimeoutError("Statement did not reach expected status in time")
+
+        outcome, value = result
+        if outcome == "error":
+            raise RuntimeError(f"Flink SQL statement failed: {value}")
+        return value
+
+    def execute_sql_and_wait(
+        self,
+        statement: str,
+        expected_statuses: Optional[set[str]] = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        """Execute SQL and wait for expected status (FINISHED by default)."""
+        response = self.execute_sql(statement)
+        operation_handle = response.get("operationHandle")
+        if not operation_handle:
+            raise RuntimeError("No operationHandle returned for statement execution")
+        statuses = expected_statuses or {"FINISHED"}
+        status = self.wait_for_statement_status(
+            operation_handle,
+            expected_statuses=statuses,
+            timeout=timeout,
+        )
+        return {"operationHandle": operation_handle, "status": status}
+
     def get_statement_result(
         self,
         operation_handle: str,

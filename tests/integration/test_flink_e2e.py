@@ -8,7 +8,6 @@ These tests verify that the FlinkDeployer correctly:
 - Cancels jobs
 """
 
-import time
 import uuid
 
 import pytest
@@ -117,12 +116,12 @@ class TestFlinkDDLExecution:
             )
             """
 
-            result = flink_helper.execute_sql(create_table_sql)
-            assert "operationHandle" in result
+            result = flink_helper.execute_sql_and_wait(create_table_sql)
+            assert result["status"] == "FINISHED"
 
             # Verify table was created by listing tables
-            show_tables_result = flink_helper.execute_sql("SHOW TABLES")
-            assert "operationHandle" in show_tables_result
+            show_tables_result = flink_helper.execute_sql_and_wait("SHOW TABLES")
+            assert show_tables_result["status"] == "FINISHED"
 
         finally:
             # Drop table
@@ -159,8 +158,8 @@ class TestFlinkDDLExecution:
             )
             """
 
-            result = flink_helper.execute_sql(create_table_sql)
-            assert "operationHandle" in result
+            result = flink_helper.execute_sql_and_wait(create_table_sql)
+            assert result["status"] == "FINISHED"
 
         finally:
             try:
@@ -191,7 +190,7 @@ class TestFlinkDDLExecution:
                 'rows-per-second' = '1'
             )
             """
-            flink_helper.execute_sql(create_table_sql)
+            flink_helper.execute_sql_and_wait(create_table_sql)
 
             # Create view
             create_view_sql = f"""
@@ -199,8 +198,8 @@ class TestFlinkDDLExecution:
             SELECT id, UPPER(`value`) as upper_value
             FROM {table_name}
             """
-            result = flink_helper.execute_sql(create_view_sql)
-            assert "operationHandle" in result
+            result = flink_helper.execute_sql_and_wait(create_view_sql)
+            assert result["status"] == "FINISHED"
 
         finally:
             try:
@@ -236,7 +235,7 @@ class TestFlinkJobSubmission:
             flink_helper.open_sql_session()
 
             # Create source table
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 id INT,
@@ -253,7 +252,7 @@ class TestFlinkJobSubmission:
             )
 
             # Create sink table
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {sink_table} (
                 id INT,
@@ -268,21 +267,23 @@ class TestFlinkJobSubmission:
             )
 
             # Submit job
-            result = flink_helper.execute_sql(
+            before_job_ids = {j["id"] for j in flink_helper.get_running_jobs()}
+            result = flink_helper.execute_sql_and_wait(
                 f"""
             INSERT INTO {sink_table}
             SELECT id, name FROM {source_table}
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=60.0,
             )
+            assert result["status"] in {"RUNNING", "FINISHED"}
 
-            assert "operationHandle" in result
-
-            # Give it a moment to start
-            time.sleep(3)
-
-            # Verify job submitted successfully - check that jobs list is accessible
-            jobs = flink_helper.list_jobs()
-            assert isinstance(jobs, list), "Expected list of jobs from Flink cluster"
+            job_id = flink_helper.wait_for_new_running_job(
+                known_job_ids=before_job_ids,
+                timeout=60.0,
+                interval=2.0,
+            )
+            assert job_id is not None, "Expected a new running job after INSERT"
 
         finally:
             try:
@@ -312,7 +313,7 @@ class TestFlinkJobSubmission:
             flink_helper.open_sql_session()
 
             # Create source with event time
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 user_id STRING,
@@ -331,7 +332,7 @@ class TestFlinkJobSubmission:
             )
 
             # Create sink for aggregation results
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {sink_table} (
                 window_start TIMESTAMP(3),
@@ -349,7 +350,8 @@ class TestFlinkJobSubmission:
             )
 
             # Submit aggregation job with tumbling window
-            result = flink_helper.execute_sql(
+            before_job_ids = {j["id"] for j in flink_helper.get_running_jobs()}
+            result = flink_helper.execute_sql_and_wait(
                 f"""
             INSERT INTO {sink_table}
             SELECT
@@ -360,10 +362,18 @@ class TestFlinkJobSubmission:
                 COUNT(*) as tx_count
             FROM {source_table}
             GROUP BY TUMBLE(event_time, INTERVAL '1' MINUTE), user_id
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=60.0,
             )
+            assert result["status"] in {"RUNNING", "FINISHED"}
 
-            assert "operationHandle" in result
+            job_id = flink_helper.wait_for_new_running_job(
+                known_job_ids=before_job_ids,
+                timeout=60.0,
+                interval=2.0,
+            )
+            assert job_id is not None, "Expected a new running aggregation job"
 
         finally:
             try:
@@ -498,7 +508,7 @@ class TestFlinkEndToEndDataFlow:
             flink_helper.open_sql_session()
 
             # Source table
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 id INT,
@@ -516,7 +526,7 @@ class TestFlinkEndToEndDataFlow:
             )
 
             # Sink table
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {sink_table} (
                 id INT,
@@ -532,7 +542,8 @@ class TestFlinkEndToEndDataFlow:
             )
 
             # Submit transformation job
-            flink_helper.execute_sql(
+            before_job_ids = {j["id"] for j in flink_helper.get_running_jobs()}
+            flink_helper.execute_sql_and_wait(
                 f"""
             INSERT INTO {sink_table}
             SELECT
@@ -540,12 +551,17 @@ class TestFlinkEndToEndDataFlow:
                 UPPER(name) as name_upper,
                 score * 2 as score_doubled
             FROM {source_table}
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=60.0,
             )
 
-            # Wait for job to process data and poll for results
-            # Flink jobs may take 10-20s to initialize and start processing
-            time.sleep(5)  # Give job time to start
+            job_id = flink_helper.wait_for_new_running_job(
+                known_job_ids=before_job_ids,
+                timeout=60.0,
+                interval=2.0,
+            )
+            assert job_id is not None, "Expected a running job for transformation pipeline"
 
             results = poll_until_messages(
                 kafka_helper,
@@ -617,7 +633,7 @@ class TestFlinkEndToEndDataFlow:
             flink_helper.open_sql_session()
 
             # Source - Note: 'value' is a reserved keyword, use backticks
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 id INT,
@@ -635,7 +651,7 @@ class TestFlinkEndToEndDataFlow:
             )
 
             # Sink - Note: 'value' is a reserved keyword, use backticks
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {sink_table} (
                 id INT,
@@ -650,17 +666,24 @@ class TestFlinkEndToEndDataFlow:
             )
 
             # Filter only active records
-            flink_helper.execute_sql(
+            before_job_ids = {j["id"] for j in flink_helper.get_running_jobs()}
+            flink_helper.execute_sql_and_wait(
                 f"""
             INSERT INTO {sink_table}
             SELECT id, `value`
             FROM {source_table}
             WHERE status = 'active'
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=60.0,
             )
 
-            # Wait for job to process data and poll for filtered results
-            time.sleep(5)  # Give job time to start
+            job_id = flink_helper.wait_for_new_running_job(
+                known_job_ids=before_job_ids,
+                timeout=60.0,
+                interval=2.0,
+            )
+            assert job_id is not None, "Expected a running job for filtering pipeline"
 
             results = poll_until_messages(
                 kafka_helper,
@@ -723,7 +746,7 @@ class TestFlinkJobLifecycle:
             flink_helper.open_sql_session()
 
             # Note: 'value' is a reserved keyword, use backticks
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 id INT,
@@ -739,7 +762,7 @@ class TestFlinkJobLifecycle:
             """
             )
 
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {sink_table} (
                 id INT,
@@ -757,11 +780,13 @@ class TestFlinkJobLifecycle:
             before_job_ids = {j["id"] for j in flink_helper.get_running_jobs()}
 
             # Submit a streaming job
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             INSERT INTO {sink_table}
             SELECT id, `value` FROM {source_table}
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=60.0,
             )
 
             # Use polling instead of hardcoded sleep - wait for new job to appear
@@ -850,7 +875,7 @@ class TestFlinkJobLifecycle:
             flink_helper.open_sql_session()
 
             # Create a simple datagen source
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {source_table} (
                 id INT,
@@ -863,14 +888,14 @@ class TestFlinkJobLifecycle:
             )
 
             # Execute a query
-            result = flink_helper.execute_sql(
+            result = flink_helper.execute_sql_and_wait(
                 f"""
             SELECT * FROM {source_table}
-            """
+            """,
+                expected_statuses={"RUNNING", "FINISHED"},
+                timeout=30.0,
             )
-
-            # The result should contain operation handle
-            assert "operationHandle" in result
+            assert result["status"] in {"RUNNING", "FINISHED"}
 
         finally:
             try:
@@ -934,7 +959,7 @@ class TestFlinkErrorHandling:
             flink_helper.open_sql_session()
 
             # Create table first time - should succeed
-            flink_helper.execute_sql(
+            flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {table_name} (
                 id INT
@@ -978,7 +1003,7 @@ class TestFlinkErrorHandling:
             flink_helper.open_sql_session()
 
             # Create with IF NOT EXISTS - should succeed
-            result1 = flink_helper.execute_sql(
+            result1 = flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id INT
@@ -988,10 +1013,10 @@ class TestFlinkErrorHandling:
             )
             """
             )
-            assert "operationHandle" in result1
+            assert result1["status"] == "FINISHED"
 
             # Create again with IF NOT EXISTS - should also succeed (no-op)
-            result2 = flink_helper.execute_sql(
+            result2 = flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
                 id INT
@@ -1001,7 +1026,7 @@ class TestFlinkErrorHandling:
             )
             """
             )
-            assert "operationHandle" in result2
+            assert result2["status"] == "FINISHED"
 
         finally:
             try:
@@ -1032,7 +1057,7 @@ class TestFailureModes:
         try:
             # Create table pointing to non-existent broker
             # Note: 'value' is a reserved keyword, use backticks
-            result = flink_helper.execute_sql(
+            result = flink_helper.execute_sql_and_wait(
                 f"""
             CREATE TABLE {table_name} (
                 id INT,
@@ -1049,19 +1074,14 @@ class TestFailureModes:
             )
 
             # Table creation succeeds (lazy connection)
-            assert "operationHandle" in result
+            assert result["status"] == "FINISHED"
 
-            # But querying should eventually fail or timeout
-            # This tests that we don't silently hang forever
-            try:
-                select_result = flink_helper.execute_sql(f"SELECT * FROM {table_name}")
-                # If we get here, the operation was submitted
-                # The job will fail when it tries to connect
-                assert "operationHandle" in select_result
-            except Exception as e:
-                # Expected - connection should fail
-                # Any explicit error is acceptable - we just want it surfaced
-                assert len(str(e)) > 0, "Expected non-empty error message"
+            # Querying should surface an error for invalid broker
+            error = flink_helper.execute_sql_and_check_error(
+                f"SELECT * FROM {table_name}",
+                timeout=30.0,
+            )
+            assert error is not None, "Expected error for invalid Kafka broker"
 
         finally:
             try:

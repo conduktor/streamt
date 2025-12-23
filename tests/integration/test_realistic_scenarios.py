@@ -1004,7 +1004,7 @@ class TestSchemaRegistryFlinkIntegration:
 
             # Note: This requires flink-avro and flink-avro-confluent-registry JARs
             # For JSON fallback, we test the schema deployment worked
-            flink_helper.execute_sql(f"""
+            flink_helper.execute_sql_and_wait(f"""
                 CREATE TABLE avro_source_{suffix} (
                     event_id STRING,
                     user_id STRING,
@@ -1019,7 +1019,7 @@ class TestSchemaRegistryFlinkIntegration:
                 )
             """)
 
-            flink_helper.execute_sql(f"""
+            flink_helper.execute_sql_and_wait(f"""
                 CREATE TABLE avro_sink_{suffix} (
                     event_id STRING,
                     user_id STRING,
@@ -1032,12 +1032,12 @@ class TestSchemaRegistryFlinkIntegration:
                 )
             """)
 
-            flink_helper.execute_sql(f"""
+            flink_helper.execute_sql_and_wait(f"""
                 INSERT INTO avro_sink_{suffix}
                 SELECT event_id, user_id, amount
                 FROM avro_source_{suffix}
                 WHERE amount > 50
-            """)
+            """, expected_statuses={"RUNNING", "FINISHED"}, timeout=60.0)
 
             time.sleep(5)
 

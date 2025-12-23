@@ -311,7 +311,6 @@ class TestWatermarkBehavior:
             assert "`event_time` TIMESTAMP(3)" in sql_content, \
                 f"event_time should be TIMESTAMP(3). SQL: {sql_content}"
 
-    @pytest.mark.xfail(reason="Compiler doesn't yet support monotonously_increasing watermark strategy")
     def test_monotonously_increasing_watermark_strategy(self, docker_services):
         """TC-STREAMING-003: Monotonously increasing watermark should use row-time directly.
 
@@ -356,10 +355,14 @@ class TestWatermarkBehavior:
             project = self._create_project(Path(tmpdir), config)
             output_dir = Path(tmpdir) / "generated"
             compiler = Compiler(project, output_dir)
-            compiler.compile(dry_run=False)
+            manifest = compiler.compile(dry_run=False)
 
-            sql_path = output_dir / "flink" / f"{output_topic}.sql"
-            sql_content = sql_path.read_text()
+            flink_jobs = manifest.artifacts.get("flink_jobs", [])
+            assert flink_jobs, "Expected at least one Flink job in manifest"
+            expected_names = {output_topic, f"{output_topic}_processor"}
+            job = next((j for j in flink_jobs if j["name"] in expected_names), None)
+            assert job is not None, f"Expected Flink job for {output_topic}"
+            sql_content = job["sql"]
 
             # Monotonously increasing should not have INTERVAL subtraction
             assert "WATERMARK FOR `event_time`" in sql_content
@@ -460,7 +463,6 @@ class TestStateTTL:
 class TestIdempotentProcessing:
     """Test idempotent processing patterns via streamt."""
 
-    @pytest.mark.xfail(reason="Kafka sink doesn't support changelog (update/delete) from ROW_NUMBER")
     def test_deduplication_model(
         self, docker_services, flink_helper: FlinkHelper, kafka_helper: KafkaHelper
     ):
@@ -643,7 +645,6 @@ models:
             assert "INTERVAL '10' SECOND" in sql_content, \
                 "Should have 10-second out-of-orderness (10000ms)"
 
-    @pytest.mark.xfail(reason="Compiler doesn't yet generate PROCTIME() for proctime columns")
     def test_processing_time_model(
         self, docker_services, flink_helper: FlinkHelper, kafka_helper: KafkaHelper
     ):
@@ -687,7 +688,7 @@ models:
   - name: recent_events
     description: Filter events based on processing time window
     sql: |
-      SELECT event_id, value
+      SELECT event_id, `value`
       FROM {{{{ source("events") }}}}
     advanced:
       topic:

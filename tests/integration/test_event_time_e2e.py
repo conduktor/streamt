@@ -114,7 +114,7 @@ class TestEventTimeFlinkSQL:
                 for ddl in ddl_statements:
                     if ddl:
                         try:
-                            flink_helper.execute_sql(ddl + ";")
+                            flink_helper.execute_sql_and_wait(ddl + ";")
                         except Exception as e:
                             pytest.fail(f"DDL failed: {e}\nSQL: {ddl}")
 
@@ -198,7 +198,7 @@ class TestEventTimeFlinkSQL:
 
                 for ddl in ddl_statements:
                     if ddl:
-                        flink_helper.execute_sql(ddl + ";")
+                        flink_helper.execute_sql_and_wait(ddl + ";")
 
         finally:
             try:
