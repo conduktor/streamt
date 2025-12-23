@@ -158,6 +158,26 @@ def flink_required(model_name: str) -> str:
     )
 
 
+def confluent_flink_required(model_name: str, function_name: str) -> str:
+    """Error when Confluent-specific functions are used without Confluent Flink."""
+    return format_error(
+        title=f"Confluent Flink required for '{function_name}' in '{model_name}'",
+        explanation=f"Model '{model_name}' uses '{function_name}' which is only available "
+        f"in Confluent Cloud for Apache Flink. This function is not available in "
+        f"open-source Apache Flink and will fail at runtime.",
+        suggestion="Configure a Confluent Flink cluster:",
+        example="""runtime:
+  flink:
+    default: confluent
+    clusters:
+      confluent:
+        type: confluent
+        environment: env-xxxxx
+        api_key: $CONFLUENT_API_KEY""",
+        docs_path="reference/confluent-flink",
+    )
+
+
 def missing_sink_config(model_name: str) -> str:
     """Error when sink materialization is missing sink config."""
     return format_error(

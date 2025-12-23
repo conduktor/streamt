@@ -27,6 +27,7 @@ class ValidationLevel(str, Enum):
 
     ERROR = "error"
     WARNING = "warning"
+    INFO = "info"
 
 
 @dataclass
@@ -60,6 +61,11 @@ class ValidationResult:
         """Get warning messages."""
         return [m for m in self.messages if m.level == ValidationLevel.WARNING]
 
+    @property
+    def infos(self) -> list[ValidationMessage]:
+        """Get info messages."""
+        return [m for m in self.messages if m.level == ValidationLevel.INFO]
+
     def add_error(self, code: str, message: str, location: Optional[str] = None) -> None:
         """Add an error message."""
         self.messages.append(ValidationMessage(ValidationLevel.ERROR, code, message, location))
@@ -67,6 +73,10 @@ class ValidationResult:
     def add_warning(self, code: str, message: str, location: Optional[str] = None) -> None:
         """Add a warning message."""
         self.messages.append(ValidationMessage(ValidationLevel.WARNING, code, message, location))
+
+    def add_info(self, code: str, message: str, location: Optional[str] = None) -> None:
+        """Add an info message."""
+        self.messages.append(ValidationMessage(ValidationLevel.INFO, code, message, location))
 
 
 class ProjectValidator:
@@ -154,13 +164,43 @@ class ProjectValidator:
 
     def _validate_model(self, model: Model) -> None:
         """Validate a single model."""
-        # Check virtual_topic requires gateway
+        # Check virtual_topic gateway availability
         if model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
-            if not (self.project.runtime.conduktor and self.project.runtime.conduktor.gateway):
-                self.result.add_error(
-                    "GATEWAY_REQUIRED",
-                    errors.gateway_required(model.name),
-                )
+            has_gateway = self.project.runtime.conduktor and self.project.runtime.conduktor.gateway
+            is_explicit_virtual_topic = model.gateway and model.gateway.virtual_topic
+
+            if not has_gateway:
+                if is_explicit_virtual_topic:
+                    # User explicitly configured virtual_topic but Gateway not available → error
+                    self.result.add_error(
+                        "GATEWAY_REQUIRED",
+                        errors.gateway_required(model.name),
+                    )
+                else:
+                    # Auto-detected stateless SQL but Gateway not available
+                    has_flink = self.project.runtime.flink is not None
+
+                    if has_flink:
+                        # Gateway not available but Flink is → warn about ambiguity, will use Flink
+                        self.result.add_warning(
+                            "AMBIGUOUS_MATERIALIZATION",
+                            f"Model '{model.name}' has stateless SQL that could use either Gateway or Flink. "
+                            f"No Gateway is configured, so Flink will be used. "
+                            f"Consider specifying explicitly:\n"
+                            f"  - materialized: virtual_topic  # Uses Gateway (faster, no Flink job)\n"
+                            f"  - materialized: flink          # Uses Flink SQL job",
+                            f"model '{model.name}'",
+                        )
+                    else:
+                        # Neither Gateway nor Flink available → error
+                        self.result.add_error(
+                            "NO_PROCESSING_RUNTIME",
+                            f"Model '{model.name}' has SQL transformations but no processing runtime is configured. "
+                            f"Configure either:\n"
+                            f"  - conduktor.gateway: For stateless transformations (WHERE, projections)\n"
+                            f"  - flink: For all SQL transformations including stateful operations",
+                            f"model '{model.name}'",
+                        )
 
         # Check sink requires sink config
         if model.get_materialized() == MaterializedType.SINK:
@@ -241,6 +281,9 @@ class ProjectValidator:
                         f"Model '{declared}' declared in 'from' but not used in SQL",
                         f"model '{model.name}'",
                     )
+
+            # Check ML_PREDICT usage without ml_outputs declaration
+            self._validate_ml_predict_declarations(model)
 
         # Warn about security policies that require Gateway
         if model.security and model.security.policies:
@@ -602,3 +645,75 @@ class ProjectValidator:
                             f"Column '{col}' in '{entity_name}' classified as sensitive "
                             f"has no masking policy",
                         )
+
+    def _has_confluent_flink(self) -> bool:
+        """Check if any configured Flink cluster is Confluent Cloud."""
+        if not self.project.runtime.flink:
+            return False
+        for cluster in self.project.runtime.flink.clusters.values():
+            if cluster.type == "confluent":
+                return True
+        return False
+
+    def _validate_ml_predict_declarations(self, model: Model) -> None:
+        """Validate ML_PREDICT/ML_EVALUATE usage has corresponding ml_outputs declarations.
+
+        When a model uses ML_PREDICT or ML_EVALUATE functions:
+        1. Error if no Confluent Flink cluster is configured (these are Confluent-only)
+        2. Warn if there's no corresponding ml_outputs declaration
+        """
+        if not model.sql:
+            return
+
+        # Find ML_PREDICT/ML_EVALUATE patterns in SQL
+        ml_pattern = re.compile(
+            r'\b(ML_PREDICT|ML_EVALUATE)\s*\(\s*(\w+|\([^)]+\))',
+            re.IGNORECASE
+        )
+        matches = ml_pattern.findall(model.sql)
+
+        if not matches:
+            return
+
+        # Check if Confluent Flink is configured - ML_PREDICT/ML_EVALUATE are Confluent-only
+        if not self._has_confluent_flink():
+            # Get the first function name used for the error message
+            func_name = matches[0][0].upper()
+            self.result.add_error(
+                "CONFLUENT_FLINK_REQUIRED",
+                errors.confluent_flink_required(model.name, func_name),
+                f"model '{model.name}'",
+            )
+            return  # Don't add further warnings if there's a fundamental error
+
+        # Extract ML model names from the matches
+        ml_models_used: set[str] = set()
+        for func_name, first_arg in matches:
+            # First argument is typically the model reference
+            # Could be: model_name, `model_name`, or TABLE(model_name)
+            clean_name = first_arg.strip('`"\'() ')
+            if clean_name.upper().startswith('TABLE'):
+                # Extract from TABLE(...) syntax
+                inner = re.match(r'TABLE\s*\(\s*(\w+)', first_arg, re.IGNORECASE)
+                if inner:
+                    clean_name = inner.group(1)
+            ml_models_used.add(clean_name)
+
+        # Check which ML models lack declarations
+        declared_ml_outputs = set(model.ml_outputs.keys()) if model.ml_outputs else set()
+        undeclared = ml_models_used - declared_ml_outputs
+
+        for ml_model in undeclared:
+            self.result.add_warning(
+                "ML_PREDICT_OPAQUE_OUTPUT",
+                f"Model '{model.name}' uses ML_PREDICT/ML_EVALUATE with '{ml_model}' "
+                "but no ml_outputs declaration found. The ML output schema is opaque - "
+                "streamt cannot infer types, track lineage, or detect breaking changes "
+                "if the ML model schema changes. Add ml_outputs declaration:\n"
+                f"  ml_outputs:\n"
+                f"    {ml_model}:\n"
+                f"      columns:\n"
+                f"        - name: <output_column>\n"
+                f"          type: <FLINK_SQL_TYPE>",
+                f"model '{model.name}'",
+            )

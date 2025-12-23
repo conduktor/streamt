@@ -211,6 +211,7 @@ class FlinkDialect(Dialect):
             "DEGREES": lambda args: exp.Anonymous(this="DEGREES", expressions=args),
             "RADIANS": lambda args: exp.Anonymous(this="RADIANS", expressions=args),
             "TRUNCATE": lambda args: exp.Anonymous(this="TRUNCATE", expressions=args),
+            "RAND_INTEGER": lambda args: exp.Anonymous(this="RAND_INTEGER", expressions=args),
         }
 
         def _parse_lambda(self, alias: bool = False) -> t.Optional[exp.Expression]:
@@ -352,6 +353,7 @@ FLINK_FUNCTION_TYPES = {
     "COT": "DOUBLE",
     "DEGREES": "DOUBLE",
     "RADIANS": "DOUBLE",
+    "RAND_INTEGER": "INT",
     # ML functions (Confluent Flink AI/ML)
     "ML_PREDICT": "ROW",
     "ML_EVALUATE": "ROW",

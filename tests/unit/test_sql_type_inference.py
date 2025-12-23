@@ -1000,7 +1000,7 @@ class TestTypeInferenceFromSchema:
             model.sql, model=model
         )
 
-        assert columns_with_types == [("is_positive", "BIGINT")]
+        assert columns_with_types == [("is_positive", "INT")]
 
 
 class TestFlinkDialectTypeInference:
@@ -1775,6 +1775,96 @@ class TestFlinkDialectTypeInference:
         assert type_map["event_time_ts"] == "TIMESTAMP(3)"
         assert type_map["event_date"] == "STRING"
 
+    def test_workshop_functions_inference(self):
+        """Test workshop-specific functions and array literal handling."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="price", type="DOUBLE"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        EXTRACT(MILLISECOND FROM $rowtime) AS ms,
+                        RAND() AS rand_val,
+                        RAND_INTEGER(100000) AS customer_id,
+                        UUID() AS request_id,
+                        ROUND(price * RAND() * 50, 2) AS amount,
+                        ARRAY['CREDIT','BANK_TRANSFER','WALLET'][RAND_INTEGER(3) + 1] AS payment_method,
+                        ARRAY['A','B'] AS tags
+                    FROM {{ source('orders') }}"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["ms"] == "BIGINT"
+        assert type_map["rand_val"] == "DOUBLE"
+        assert type_map["customer_id"] == "INT"
+        assert type_map["request_id"] == "STRING"
+        assert type_map["amount"] == "DOUBLE"
+        assert type_map["payment_method"] == "STRING"
+        assert type_map["tags"] == "ARRAY<STRING>"
+
+    def test_window_tvf_columns_inference(self):
+        """Test window TVF output columns are inferred as timestamps."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import ColumnDefinition, Model, Source
+
+        project = self._create_test_project(
+            sources=[
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_time", type="TIMESTAMP(3)"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ],
+                )
+            ],
+            models=[
+                Model(
+                    name="test_model",
+                    sql="""SELECT
+                        window_start,
+                        window_end,
+                        window_time,
+                        SUM(amount) AS total
+                    FROM TABLE(
+                        TUMBLE(TABLE {{ source('orders') }}, DESCRIPTOR(order_time), INTERVAL '1' HOUR)
+                    )
+                    GROUP BY window_start, window_end, window_time"""
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("test_model")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["window_start"] == "TIMESTAMP(3)"
+        assert type_map["window_end"] == "TIMESTAMP(3)"
+        assert type_map["window_time"] == "TIMESTAMP(3)"
+        assert type_map["total"] == "DOUBLE"
+
     def test_string_functions_return_string(self):
         """Test string manipulation functions return STRING."""
         from streamt.compiler.compiler import Compiler
@@ -2349,6 +2439,110 @@ class TestConfluentFlinkCompatibility:
         type_map = dict(columns_with_types)
         assert type_map["customer_id"] == "STRING"
         assert type_map["prediction"] == "ROW"
+
+    def test_ml_predict_with_ml_outputs_declaration(self):
+        """Test ML_PREDICT uses ml_outputs declaration for type inference."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import (
+            ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo,
+            RuntimeConfig, StreamtProject, MLModelOutput
+        )
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="transactions",
+                    topic="transactions_topic",
+                    columns=[
+                        ColumnDefinition(name="tx_id", type="STRING"),
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                        ColumnDefinition(name="merchant", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="fraud_detection",
+                    sql="""SELECT
+                        tx_id,
+                        amount,
+                        ML_PREDICT(fraud_detector, amount, merchant) AS fraud_result
+                    FROM {{ source('transactions') }}""",
+                    ml_outputs={
+                        "fraud_detector": MLModelOutput(
+                            columns=[
+                                ColumnDefinition(name="is_fraud", type="BOOLEAN"),
+                                ColumnDefinition(name="confidence", type="DOUBLE"),
+                                ColumnDefinition(name="risk_category", type="STRING"),
+                            ],
+                            description="Fraud detection model outputs"
+                        )
+                    }
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("fraud_detection")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["tx_id"] == "STRING"
+        assert type_map["amount"] == "DOUBLE"
+        # With ml_outputs declared, should have full ROW type
+        assert type_map["fraud_result"] == "ROW<is_fraud BOOLEAN, confidence DOUBLE, risk_category STRING>"
+
+    def test_ml_predict_without_ml_outputs_returns_opaque_row(self):
+        """Test ML_PREDICT without ml_outputs returns generic ROW type."""
+        from streamt.compiler.compiler import Compiler
+        from streamt.core.models import (
+            ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo,
+            RuntimeConfig, StreamtProject
+        )
+
+        project = StreamtProject(
+            project=ProjectInfo(name="test_project"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092")
+            ),
+            sources=[
+                Source(
+                    name="events",
+                    topic="events_topic",
+                    columns=[
+                        ColumnDefinition(name="event_id", type="STRING"),
+                        ColumnDefinition(name="data", type="STRING"),
+                    ]
+                )
+            ],
+            models=[
+                Model(
+                    name="predictions",
+                    sql="""SELECT
+                        event_id,
+                        ML_PREDICT(some_model, data) AS result
+                    FROM {{ source('events') }}"""
+                    # No ml_outputs declared
+                )
+            ]
+        )
+
+        compiler = Compiler(project)
+        model = project.get_model("predictions")
+        columns_with_types = compiler._extract_select_columns_with_types(
+            model.sql, model=model
+        )
+
+        type_map = dict(columns_with_types)
+        assert type_map["event_id"] == "STRING"
+        # Without ml_outputs, should return opaque ROW
+        assert type_map["result"] == "ROW"
 
     def test_window_tvf_with_descriptor(self):
         """Test Confluent window TVF syntax with DESCRIPTOR and verify types."""

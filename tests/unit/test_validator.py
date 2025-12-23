@@ -232,12 +232,20 @@ class TestProjectValidator:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 "project": {"name": "test"},
-                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8081"}},
+                    },
+                },
                 "rules": {"topics": {"min_partitions": 6}},
+                "sources": [{"name": "payments_raw", "topic": "t1"}],
                 "models": [
                     {
                         "name": "payments_clean",
-                        "sql": "SELECT 1",
+                        # Use GROUP BY to ensure FLINK materialization
+                        "sql": 'SELECT count(*) FROM {{ source("payments_raw") }} GROUP BY id',
                         "advanced": {
                             "topic": {"partitions": 3}  # Less than 6
                         }
@@ -366,3 +374,128 @@ class TestProjectValidator:
 
             assert not result.is_valid
             assert any("TEST_MODEL_NOT_FOUND" in e.code for e in result.errors)
+
+    def test_ml_predict_without_confluent_flink_errors(self):
+        """TC-ML-001: ML_PREDICT without Confluent Flink should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    # No Confluent Flink - only open-source Flink
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8081"}},
+                    },
+                },
+                "sources": [{"name": "events", "topic": "events.v1"}],
+                "models": [
+                    {
+                        "name": "predictions",
+                        "sql": 'SELECT event_id, ML_PREDICT(fraud_model, amount) AS prediction FROM {{ source("events") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            assert any("CONFLUENT_FLINK_REQUIRED" in e.code for e in result.errors)
+            error = next(e for e in result.errors if "CONFLUENT_FLINK_REQUIRED" in e.code)
+            assert "ML_PREDICT" in error.message
+            assert "Confluent" in error.message
+
+    def test_ml_predict_without_ml_outputs_warns(self):
+        """TC-ML-002: ML_PREDICT without ml_outputs should warn (with Confluent Flink)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "confluent",
+                        "clusters": {"confluent": {"type": "confluent", "environment": "env-xxx"}},
+                    },
+                },
+                "sources": [{"name": "events", "topic": "events.v1"}],
+                "models": [
+                    {
+                        "name": "predictions",
+                        "sql": 'SELECT event_id, ML_PREDICT(fraud_model, amount) AS prediction FROM {{ source("events") }}',
+                        # No ml_outputs declared
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert result.is_valid  # Should still be valid (warning, not error)
+            assert any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)
+            warning = next(w for w in result.warnings if "ML_PREDICT_OPAQUE_OUTPUT" in w.code)
+            assert "fraud_model" in warning.message
+            assert "ml_outputs" in warning.message
+
+    def test_ml_predict_with_ml_outputs_no_warning(self):
+        """TC-ML-003: ML_PREDICT with proper ml_outputs should not warn."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "confluent",
+                        "clusters": {"confluent": {"type": "confluent", "environment": "env-xxx"}},
+                    },
+                },
+                "sources": [{"name": "events", "topic": "events.v1"}],
+                "models": [
+                    {
+                        "name": "predictions",
+                        "sql": 'SELECT event_id, ML_PREDICT(fraud_model, amount) AS prediction FROM {{ source("events") }}',
+                        "ml_outputs": {
+                            "fraud_model": {
+                                "columns": [
+                                    {"name": "is_fraud", "type": "BOOLEAN"},
+                                    {"name": "confidence", "type": "DOUBLE"},
+                                ]
+                            }
+                        },
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert result.is_valid
+            # Should NOT have ML_PREDICT_OPAQUE_OUTPUT warning
+            assert not any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)
+
+    def test_ml_evaluate_without_ml_outputs_warns(self):
+        """TC-ML-004: ML_EVALUATE without ml_outputs should warn."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "confluent",
+                        "clusters": {"confluent": {"type": "confluent", "environment": "env-xxx"}},
+                    },
+                },
+                "sources": [{"name": "events", "topic": "events.v1"}],
+                "models": [
+                    {
+                        "name": "model_eval",
+                        "sql": 'SELECT ML_EVALUATE(my_classifier, features) AS eval_result FROM {{ source("events") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert result.is_valid
+            assert any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)

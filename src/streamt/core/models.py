@@ -14,7 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class MaterializedType(str, Enum):
-    """Types of model materialization."""
+    """Types of model materialization.
+
+    - TOPIC: Pure passthrough, no transformation (just topic aliasing)
+    - VIRTUAL_TOPIC: Stateless transformations via Conduktor Gateway (filters, projections)
+    - FLINK: Stateful transformations requiring Flink SQL (aggregations, joins, windows)
+    - SINK: Connector sink (from: without sql:)
+    """
 
     TOPIC = "topic"
     VIRTUAL_TOPIC = "virtual_topic"
@@ -308,6 +314,30 @@ class ColumnDefinition(BaseModel):
     proctime: bool = False  # If true, this column is a processing time attribute
 
 
+class MLModelOutput(BaseModel):
+    """Output schema declaration for ML models used with ML_PREDICT.
+
+    When using Confluent Flink's ML_PREDICT function, the output schema depends on
+    the model's OUTPUT definition from CREATE MODEL. Since streamt cannot introspect
+    the model registry, users should declare the expected output schema here to enable:
+    - Proper type inference for downstream consumers
+    - Lineage tracking through ML_PREDICT
+    - Schema validation and breaking change detection
+
+    Example:
+        ml_outputs:
+          fraud_detector:
+            columns:
+              - name: is_fraud
+                type: BOOLEAN
+              - name: confidence
+                type: DOUBLE
+    """
+
+    columns: list[ColumnDefinition]
+    description: Optional[str] = None
+
+
 class FreshnessConfig(BaseModel):
     """Freshness SLA configuration."""
 
@@ -471,6 +501,10 @@ class Model(BaseModel):
     # Optional: Gateway config (for virtual topics)
     gateway: Optional[ModelGatewayConfig] = None
 
+    # Optional: ML model output schemas (for ML_PREDICT type inference)
+    # Maps model name to its expected output schema
+    ml_outputs: Optional[dict[str, MLModelOutput]] = None
+
     # Advanced section (optional, nested)
     advanced: Optional[AdvancedConfig] = None
 
@@ -508,27 +542,49 @@ class Model(BaseModel):
         return self
 
     def get_materialized(self) -> MaterializedType:
-        """Get materialization type, auto-inferring if not explicitly set."""
+        """Get materialization type, auto-inferring if not explicitly set.
+
+        Detection logic:
+        - SINK: has from: without sql:
+        - VIRTUAL_TOPIC: explicit gateway.virtual_topic config OR stateless SQL
+        - FLINK: stateful SQL (aggregations, joins, windows, ML_PREDICT)
+        - TOPIC: pure passthrough (SELECT * FROM source)
+
+        Stateless operations (can use Gateway):
+        - Filters (WHERE)
+        - Projections (SELECT a, b, c)
+        - Simple expressions, CASE WHEN
+        - Field renames
+
+        Stateful operations (require Flink):
+        - Aggregations (GROUP BY, COUNT, SUM, etc.)
+        - Window functions (TUMBLE, HOP, SESSION, CUMULATE)
+        - Joins (JOIN, LEFT JOIN, etc.)
+        - DISTINCT
+        - ORDER BY (needs all data)
+        - ML_PREDICT, ML_EVALUATE (Confluent Flink specific)
+        """
+        import re
+
         # If explicitly set, use that
         if self.materialized is not None:
             return self.materialized
 
-        # Auto-infer based on configuration
         # Check if it's a sink (has from: without sql:)
         if self.from_ and not self.sql:
             return MaterializedType.SINK
 
-        # Check if it has Gateway rules (virtual topic)
+        # Check if it has explicit Gateway virtual_topic config
         if self.gateway and self.gateway.virtual_topic:
             return MaterializedType.VIRTUAL_TOPIC
 
-        # Check if SQL contains Flink-specific operations (case-insensitive)
+        # Analyze SQL for stateful vs stateless operations
         if self.sql:
-            import re
             sql_upper = self.sql.upper()
 
-            # Check for window functions (with proper word boundaries)
-            # Patterns: TUMBLE(, TUMBLE , HOP(, HOP , SESSION(, SESSION , CUMULATE(, CUMULATE
+            # === STATEFUL OPERATIONS (require Flink) ===
+
+            # Window TVFs
             window_patterns = [
                 r'\bTUMBLE\s*\(',
                 r'\bHOP\s*\(',
@@ -539,32 +595,71 @@ class Model(BaseModel):
                 if re.search(pattern, sql_upper):
                     return MaterializedType.FLINK
 
-            # Check for aggregations with GROUP BY
+            # Aggregations with GROUP BY
             if re.search(r'\bGROUP\s+BY\b', sql_upper):
                 return MaterializedType.FLINK
 
-            # Check for joins
+            # Joins
             if re.search(r'\s+JOIN\s+', sql_upper):
                 return MaterializedType.FLINK
 
-            # If there's SQL with transformation (not just SELECT *), use Flink
-            # This handles filters, projections, etc.
-            # Only pure "SELECT * FROM source" without WHERE would be topic
-            # Check if it's a simple passthrough (SELECT * FROM ... with no WHERE/GROUP/JOIN/etc)
+            # DISTINCT (requires state to track uniqueness)
+            if re.search(r'\bSELECT\s+DISTINCT\b', sql_upper):
+                return MaterializedType.FLINK
+
+            # ORDER BY (requires seeing all data)
+            if re.search(r'\bORDER\s+BY\b', sql_upper):
+                return MaterializedType.FLINK
+
+            # Window functions (ROW_NUMBER, LAG, LEAD, RANK, etc.)
+            window_funcs = [
+                r'\bROW_NUMBER\s*\(',
+                r'\bLAG\s*\(',
+                r'\bLEAD\s*\(',
+                r'\bRANK\s*\(',
+                r'\bDENSE_RANK\s*\(',
+                r'\bFIRST_VALUE\s*\(',
+                r'\bLAST_VALUE\s*\(',
+                r'\bNTH_VALUE\s*\(',
+            ]
+            for pattern in window_funcs:
+                if re.search(pattern, sql_upper):
+                    return MaterializedType.FLINK
+
+            # Aggregate functions without GROUP BY (still stateful)
+            agg_funcs = [
+                r'\bCOUNT\s*\(',
+                r'\bSUM\s*\(',
+                r'\bAVG\s*\(',
+                r'\bMIN\s*\(',
+                r'\bMAX\s*\(',
+                r'\bCOLLECT\s*\(',
+                r'\bLISTAGG\s*\(',
+            ]
+            for pattern in agg_funcs:
+                if re.search(pattern, sql_upper):
+                    return MaterializedType.FLINK
+
+            # ML functions (Confluent Flink specific)
+            if re.search(r'\bML_PREDICT\s*\(', sql_upper):
+                return MaterializedType.FLINK
+            if re.search(r'\bML_EVALUATE\s*\(', sql_upper):
+                return MaterializedType.FLINK
+
+            # === PURE PASSTHROUGH (no transformation) ===
             is_simple_passthrough = bool(
                 re.search(r'^\s*SELECT\s+\*\s+FROM\s+', sql_upper) and
                 not re.search(r'\bWHERE\b', sql_upper) and
-                not re.search(r'\bGROUP\s+BY\b', sql_upper) and
-                not re.search(r'\s+JOIN\s+', sql_upper) and
-                not re.search(r'\bORDER\s+BY\b', sql_upper) and
                 not re.search(r'\bLIMIT\b', sql_upper)
             )
 
             if is_simple_passthrough:
                 return MaterializedType.TOPIC
 
-            # Any other SQL transformation requires Flink
-            return MaterializedType.FLINK
+            # === STATELESS OPERATIONS (can use Gateway) ===
+            # Filters (WHERE), projections, CASE WHEN, simple expressions
+            # If we got here, it's a stateless transformation
+            return MaterializedType.VIRTUAL_TOPIC
 
         # Default to topic for models without SQL
         return MaterializedType.TOPIC

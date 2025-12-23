@@ -178,13 +178,27 @@ class Compiler:
 
     def _compile_model(self, model: Model) -> None:
         """Compile a single model."""
-        if model.get_materialized() == MaterializedType.TOPIC:
+        materialized = model.get_materialized()
+
+        # Handle VIRTUAL_TOPIC fallback to FLINK when Gateway is not available
+        if materialized == MaterializedType.VIRTUAL_TOPIC:
+            has_gateway = (
+                self.project.runtime.conduktor
+                and self.project.runtime.conduktor.gateway
+            )
+            is_explicit_virtual_topic = model.gateway and model.gateway.virtual_topic
+
+            if not has_gateway and not is_explicit_virtual_topic:
+                # Auto-detected stateless SQL but no Gateway → fallback to Flink
+                materialized = MaterializedType.FLINK
+
+        if materialized == MaterializedType.TOPIC:
             self._compile_topic_model(model)
-        elif model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
+        elif materialized == MaterializedType.VIRTUAL_TOPIC:
             self._compile_virtual_topic_model(model)
-        elif model.get_materialized() == MaterializedType.FLINK:
+        elif materialized == MaterializedType.FLINK:
             self._compile_flink_model(model)
-        elif model.get_materialized() == MaterializedType.SINK:
+        elif materialized == MaterializedType.SINK:
             self._compile_sink_model(model)
 
     def _compile_topic_model(self, model: Model) -> None:
@@ -785,6 +799,9 @@ WHERE {condition}""")
         elif schema_context is None:
             schema_context = {}
 
+        # Store model for ML_PREDICT type inference (accessed in _infer_expression_type)
+        self._current_model = model
+
         # Clean Jinja templates for parsing (replace with valid identifiers)
         clean_sql = re.sub(r'\{\{\s*source\s*\(\s*["\'](\w+)["\']\s*\)\s*\}\}', r'\1', sql)
         clean_sql = re.sub(r'\{\{\s*ref\s*\(\s*["\'](\w+)["\']\s*\)\s*\}\}', r'\1', clean_sql)
@@ -796,6 +813,7 @@ WHERE {condition}""")
                 # Might be wrapped in other statements
                 select = parsed.find(exp.Select)
                 if not select:
+                    self._current_model = None
                     return []
                 parsed = select
 
@@ -806,10 +824,12 @@ WHERE {condition}""")
                 if col_name:
                     columns.append((col_name, col_type))
 
+            self._current_model = None
             return columns
 
         except Exception as e:
             logger.debug(f"sqlglot parse failed, falling back to regex: {e}")
+            self._current_model = None
             # Fallback to regex-based extraction
             return self._extract_select_columns_with_types_regex(sql, schema_context)
 
@@ -828,6 +848,7 @@ WHERE {condition}""")
         """Infer Flink SQL type from a sqlglot expression.
 
         Uses the schema context to resolve column reference types.
+        Uses _current_model (set during extraction) for ML_PREDICT type inference.
         """
         # Unwrap alias to get the actual expression
         if isinstance(expr, exp.Alias):
@@ -836,7 +857,18 @@ WHERE {condition}""")
         # Column reference - look up in schema
         if isinstance(expr, exp.Column):
             col_name = expr.name
-            return schema.get(col_name, "STRING")
+            if col_name in schema:
+                return schema[col_name]
+            upper_name = col_name.upper()
+            if upper_name == "$ROWTIME":
+                return "TIMESTAMP_LTZ(3)"
+            if upper_name == "ROWTIME":
+                return "TIMESTAMP(3)"
+            if upper_name in ("$PROCTIME", "PROCTIME"):
+                return "TIMESTAMP_LTZ(3)"
+            if upper_name in ("WINDOW_START", "WINDOW_END", "WINDOW_TIME"):
+                return "TIMESTAMP(3)"
+            return "STRING"
 
         # Aggregate functions
         if isinstance(expr, exp.Count):
@@ -921,11 +953,43 @@ WHERE {condition}""")
         # Numeric literals
         if isinstance(expr, exp.Literal):
             if expr.is_int:
-                return "BIGINT"
+                return "INT"
             if expr.is_number:
                 return "DOUBLE"
             if expr.is_string:
                 return "STRING"
+
+        if isinstance(expr, exp.Extract):
+            return "BIGINT"
+
+        if isinstance(expr, exp.Round):
+            value_type = (
+                self._infer_expression_type(expr.this, schema)
+                if expr.this is not None
+                else "DOUBLE"
+            )
+            return value_type if self._is_numeric_type(value_type) else "DOUBLE"
+
+        if isinstance(expr, exp.Rand):
+            return "DOUBLE"
+
+        if isinstance(expr, exp.Uuid):
+            return "STRING"
+
+        if isinstance(expr, exp.Array):
+            return self._infer_array_literal_type(expr, schema)
+
+        if isinstance(expr, exp.Bracket):
+            if expr.this is None:
+                return "STRING"
+            container_type = self._infer_expression_type(expr.this, schema)
+            element_type = self._extract_array_element_type(container_type)
+            if element_type:
+                return element_type
+            key_value = self._extract_map_key_value_types(container_type)
+            if key_value:
+                return key_value[1]
+            return "STRING"
 
         # Boolean literals and comparisons
         if isinstance(expr, exp.Boolean):
@@ -1000,6 +1064,11 @@ WHERE {condition}""")
         # Anonymous functions (like TUMBLE_START, PROCTIME, etc.)
         if isinstance(expr, exp.Anonymous):
             func_name = expr.name.upper()
+
+            # Handle ML_PREDICT specially - use ml_outputs if declared
+            if func_name in ("ML_PREDICT", "ML_EVALUATE"):
+                return self._infer_ml_predict_type(expr)
+
             # Check Flink-specific window functions first
             flink_type = get_flink_function_type(func_name)
             if flink_type:
@@ -1111,6 +1180,66 @@ WHERE {condition}""")
             return merged[0]
         return "STRING"
 
+    def _infer_ml_predict_type(self, expr: exp.Anonymous) -> str:
+        """Infer the return type for ML_PREDICT/ML_EVALUATE functions.
+
+        Attempts to use declared ml_outputs for precise type inference.
+        Falls back to opaque ROW type with a warning if not declared.
+
+        Args:
+            expr: The ML_PREDICT or ML_EVALUATE Anonymous expression
+
+        Returns:
+            ROW type string with field definitions if ml_outputs declared,
+            otherwise generic "ROW" with a warning logged
+        """
+        # Try to extract the ML model name from the function arguments
+        # ML_PREDICT syntax: ML_PREDICT(model_name, input_columns...)
+        # The first argument is typically the model reference
+        args = list(expr.expressions)
+        ml_model_name = None
+
+        if args:
+            first_arg = args[0]
+            # Model name could be a Column reference, Literal, or other expression
+            if isinstance(first_arg, exp.Column):
+                ml_model_name = first_arg.name
+            elif isinstance(first_arg, exp.Literal) and first_arg.is_string:
+                ml_model_name = first_arg.this
+            elif isinstance(first_arg, exp.Anonymous) and first_arg.name.upper() == "TABLE":
+                # TABLE(model_name) syntax
+                inner_args = list(first_arg.expressions)
+                if inner_args and hasattr(inner_args[0], "name"):
+                    ml_model_name = inner_args[0].name
+
+        # Check if we have ml_outputs declared for this model
+        model = getattr(self, "_current_model", None)
+        if model and model.ml_outputs and ml_model_name:
+            ml_output = model.ml_outputs.get(ml_model_name)
+            if ml_output and ml_output.columns:
+                # Build ROW type from declared columns
+                field_defs = []
+                for col in ml_output.columns:
+                    col_type = col.type or "STRING"
+                    field_defs.append(f"{col.name} {col_type}")
+                return f"ROW<{', '.join(field_defs)}>"
+
+        # No ml_outputs declared - log warning and return opaque ROW
+        func_name = expr.name.upper()
+        model_name = model.name if model else "unknown"
+        ml_model_ref = ml_model_name or "unknown"
+
+        logger.warning(
+            f"ML_PREDICT/ML_EVALUATE used in model '{model_name}' without ml_outputs declaration. "
+            f"ML model '{ml_model_ref}' output schema is opaque. "
+            "Declare ml_outputs in your model configuration to enable:\n"
+            "  - Proper type inference for downstream consumers\n"
+            "  - Lineage tracking through ML transformations\n"
+            "  - Breaking change detection if the ML model schema changes\n"
+            "Without ml_outputs, streamt cannot ensure schema compatibility."
+        )
+        return "ROW"
+
     def _normalize_cast_type(self, target_type: str) -> str:
         ltz_match = re.match(r"^TIMESTAMPLTZ(?:\((\d+)\))?$", target_type)
         if ltz_match:
@@ -1182,6 +1311,14 @@ WHERE {condition}""")
     def _build_row_type(self, fields: list[tuple[str, str]]) -> str:
         field_defs = ", ".join(f"{name} {field_type}" for name, field_type in fields)
         return f"ROW<{field_defs}>"
+
+    def _infer_array_literal_type(self, expr: exp.Array, schema: dict[str, str]) -> str:
+        if not expr.expressions:
+            return "ARRAY"
+        element_type = self._merge_types(
+            [self._infer_expression_type(item, schema) for item in expr.expressions]
+        )
+        return self._build_array_type(element_type)
 
     def _infer_array_return_type(self, args: list[exp.Expression], schema: dict[str, str]) -> str:
         if not args:
@@ -1438,14 +1575,26 @@ WHERE {condition}""")
 
         # Numeric literals
         if re.match(r'^-?\d+$', expr.strip()):
-            return "BIGINT"
+            return "INT"
         if re.match(r'^-?\d+\.\d*$', expr.strip()):
             return "DOUBLE"
 
         # Simple column reference - look up in schema
         col_match = re.match(r'^[`"]?(\w+)[`"]?$', expr.strip())
         if col_match:
-            return schema.get(col_match.group(1), "STRING")
+            col_name = col_match.group(1)
+            if col_name in schema:
+                return schema[col_name]
+            upper_name = col_name.upper()
+            if upper_name == "$ROWTIME":
+                return "TIMESTAMP_LTZ(3)"
+            if upper_name == "ROWTIME":
+                return "TIMESTAMP(3)"
+            if upper_name in ("$PROCTIME", "PROCTIME"):
+                return "TIMESTAMP_LTZ(3)"
+            if upper_name in ("WINDOW_START", "WINDOW_END", "WINDOW_TIME"):
+                return "TIMESTAMP(3)"
+            return "STRING"
 
         # Default to STRING for unknown expressions
         return "STRING"
