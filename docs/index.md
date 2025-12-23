@@ -248,30 +248,6 @@ pip install "streamt[all]"
 
 ---
 
-## Recent Updates
-
-| Feature | Description |
-|---------|-------------|
-| **Smart materialization** | Auto-detects stateless vs stateful SQL for optimal deployment |
-| **ML_PREDICT/ML_EVALUATE** | Confluent Cloud Flink ML inference support |
-| **sqlglot-based parsing** | Robust SQL parsing with custom Flink dialect |
-| **CI/CD pipeline** | GitHub Actions for automated testing |
-
-## What's Coming
-
-We're actively working on:
-
-| Feature | Description |
-|---------|-------------|
-| **Multi-environment** | dev/staging/prod profiles with promotion |
-| **Flink savepoints** | Graceful job upgrades without data loss |
-| **Prometheus metrics** | Export job and topic metrics |
-| **RisingWave/Materialize** | Alternative streaming SQL backends |
-
-See the [full roadmap](https://github.com/streamt/streamt#roadmap) for more.
-
----
-
 ## Community
 
 - [Slack](https://conduktor.io/slack) — Join the conversation, get help, share ideas

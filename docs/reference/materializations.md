@@ -18,30 +18,14 @@ Materializations define how models are deployed. Each materialization type creat
 | `flink` | `ML_PREDICT`/`ML_EVALUATE` functions | Confluent Flink job | ML inference |
 | `sink` | Has `from:` without `sql:` | Connect connector | External exports |
 
-## Smart SQL Detection
+## Automatic Backend Selection
 
-streamt uses **sqlglot** to parse your SQL and analyze whether it requires stateful processing:
+streamt analyzes your SQL to determine if it's stateless or stateful, then automatically picks the best backend:
 
-### Stateless Patterns (can use Gateway)
+- **Stateless SQL** (filters, projections) → Uses Gateway when available, otherwise Flink
+- **Stateful SQL** (aggregations, joins, windows) → Uses Flink
 
-- `WHERE` clauses with simple conditions
-- Column projections (`SELECT a, b, c`)
-- `CAST` and type conversions
-- `COALESCE`, `CASE WHEN` (without aggregation)
-- Simple function calls
-
-### Stateful Patterns (require Flink)
-
-- `GROUP BY` (aggregations)
-- `JOIN` (stream-to-stream, temporal)
-- `TUMBLE`, `HOP`, `SESSION` windows
-- `OVER` clauses (window functions)
-- `DISTINCT`
-- `LAG`, `LEAD`, `ROW_NUMBER`, `RANK`
-
-### Automatic Fallback
-
-When Gateway is not configured but your SQL is stateless, streamt automatically falls back to Flink with a warning. This ensures your pipeline works regardless of infrastructure availability.
+This means you don't need to manually specify `materialized:` in most cases.
 
 ## Topic
 
