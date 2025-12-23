@@ -72,15 +72,6 @@ Materializations are **automatically inferred** using smart SQL analysis:
 > *ML functions require Confluent Cloud Flink.
 > **`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/).
 
-### Smart SQL Detection
-
-streamt analyzes your SQL to determine whether it's **stateless** (can run on Gateway) or **stateful** (requires Flink):
-
-- **Stateless**: `WHERE` filters, column projections, `CAST`, `COALESCE`
-- **Stateful**: `GROUP BY`, `JOIN`, `TUMBLE`/`HOP`/`SESSION` windows, `OVER` clauses, `DISTINCT`
-
-If Gateway is configured, stateless SQL automatically uses `virtual_topic`. Otherwise, it falls back to Flink with an informational warning.
-
 ### Simple Surface, Advanced Control
 
 Most models only need `name` and `sql`. Framework details go in the optional `advanced:` section:
