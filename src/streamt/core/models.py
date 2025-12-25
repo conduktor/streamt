@@ -156,7 +156,7 @@ class GatewayConfig(BaseModel):
         virtual_cluster: Optional virtual cluster for multi-tenant setups
     """
 
-    admin_url: Optional[str] = Field(None, alias="url")  # alias for backward compatibility
+    admin_url: Optional[str] = None
     proxy_bootstrap: Optional[str] = None
     username: str = "admin"
     password: str = "conduktor"
@@ -449,13 +449,6 @@ class FromRef(BaseModel):
     ref: Optional[str] = None
 
 
-class DeprecationConfig(BaseModel):
-    """Deprecation configuration for model versions."""
-
-    sunset_date: Optional[str] = None
-    message: Optional[str] = None
-
-
 class VirtualTopicConfig(BaseModel):
     """Virtual topic configuration for Gateway."""
 
@@ -508,18 +501,13 @@ class Model(BaseModel):
     # Advanced section (optional, nested)
     advanced: Optional[AdvancedConfig] = None
 
-    # Legacy fields (for backward compatibility during transition)
-    materialized: Optional[MaterializedType] = None  # Auto-inferred if not provided
-    topic: Optional[TopicConfig] = None  # Moved to advanced, but kept for backward compat
-    flink: Optional[FlinkJobConfig] = None  # Moved to advanced, but kept for backward compat
-    flink_cluster: Optional[str] = None  # Moved to advanced, but kept for backward compat
-    connect_cluster: Optional[str] = None  # Moved to advanced, but kept for backward compat
+    # Materialization is auto-inferred from SQL if not provided
+    materialized: Optional[MaterializedType] = None
 
     # Other top-level fields
     access: AccessLevel = AccessLevel.PRIVATE
     group: Optional[str] = None
     version: Optional[int] = None
-    deprecation: Optional[dict[str, DeprecationConfig]] = None
 
     @field_validator("sql")
     @classmethod
@@ -665,28 +653,28 @@ class Model(BaseModel):
         return MaterializedType.TOPIC
 
     def get_flink_config(self) -> Optional["FlinkJobConfig"]:
-        """Get Flink config from advanced section or legacy top-level field."""
-        if self.advanced and self.advanced.flink:
+        """Get Flink config from advanced section."""
+        if self.advanced:
             return self.advanced.flink
-        return self.flink
+        return None
 
     def get_topic_config(self) -> Optional["TopicConfig"]:
-        """Get topic config from advanced section or legacy top-level field."""
-        if self.advanced and self.advanced.topic:
+        """Get topic config from advanced section."""
+        if self.advanced:
             return self.advanced.topic
-        return self.topic
+        return None
 
     def get_flink_cluster(self) -> Optional[str]:
-        """Get flink_cluster from advanced section or legacy top-level field."""
-        if self.advanced and self.advanced.flink_cluster:
+        """Get flink_cluster from advanced section."""
+        if self.advanced:
             return self.advanced.flink_cluster
-        return self.flink_cluster
+        return None
 
     def get_connect_cluster(self) -> Optional[str]:
-        """Get connect_cluster from advanced section or legacy top-level field."""
-        if self.advanced and self.advanced.connect_cluster:
+        """Get connect_cluster from advanced section."""
+        if self.advanced:
             return self.advanced.connect_cluster
-        return self.connect_cluster
+        return None
 
     def get_gateway_config(self) -> Optional["ModelGatewayConfig"]:
         """Get gateway config."""

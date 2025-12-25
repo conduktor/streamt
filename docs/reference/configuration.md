@@ -82,10 +82,10 @@ runtime:
     sasl_username: ${KAFKA_USER}
     sasl_password: ${KAFKA_PASSWORD}
 
-    # SSL (optional)
-    ssl_ca_location: /path/to/ca.pem
-    ssl_certificate_location: /path/to/cert.pem
-    ssl_key_location: /path/to/key.pem
+    # SSL (planned - not yet implemented)
+    # ssl_ca_location: /path/to/ca.pem
+    # ssl_certificate_location: /path/to/cert.pem
+    # ssl_key_location: /path/to/key.pem
 ```
 
 | Field | Type | Default | Description |
@@ -95,6 +95,7 @@ runtime:
 | `sasl_mechanism` | string | - | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
 | `sasl_username` | string | - | SASL username |
 | `sasl_password` | string | - | SASL password |
+| `ssl_*` | string | - | SSL certificate paths (🚧 planned) |
 
 ### Schema Registry
 

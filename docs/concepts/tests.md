@@ -80,10 +80,11 @@ tests:
 
     assertions:
       - max_lag:
-          seconds: 300       # Alert if lag > 5 minutes
+          column: order_time
+          max_seconds: 300   # Alert if lag > 5 minutes
 
       - throughput:
-          min_per_minute: 100
+          min_per_second: 2  # ~120/minute
 
     on_failure:
       - alert:
@@ -172,18 +173,20 @@ Check referential integrity:
 ```yaml
 - foreign_key:
     column: customer_id
-    references:
-      model: customers
-      column: id
+    ref_model: customers       # Referenced model
+    ref_key: id                # Referenced key column
+    window: "1 HOUR"           # Optional: time window for join
+    match_rate: 0.99           # Optional: minimum match rate (0.0-1.0)
 ```
 
 ### max_lag 🚧
 
-Monitor consumer lag (continuous only):
+Monitor event time lag (continuous only):
 
 ```yaml
 - max_lag:
-    seconds: 300        # 5 minutes max lag
+    column: event_timestamp    # Event time column
+    max_seconds: 300           # 5 minutes max lag
 ```
 
 ### throughput 🚧
@@ -192,36 +195,45 @@ Monitor message throughput (continuous only):
 
 ```yaml
 - throughput:
-    min_per_minute: 100
-    max_per_minute: 10000
+    min_per_second: 10         # Minimum messages/second
+    max_per_second: 1000       # Maximum messages/second
 ```
 
 ### distribution 🚧
 
-Check value distribution:
+Check value distribution using buckets:
 
 ```yaml
 - distribution:
-    column: country
-    expected:
-      US: 0.4           # ~40% US
-      EU: 0.3           # ~30% EU
-      APAC: 0.3         # ~30% APAC
-    tolerance: 0.1      # Allow 10% variance
+    column: amount
+    buckets:
+      - min: 0
+        max: 100
+        expected_ratio: 0.4     # ~40% in this range
+        tolerance: 0.1          # Allow 10% variance
+      - min: 100
+        max: 1000
+        expected_ratio: 0.5
+        tolerance: 0.1
+      - min: 1000
+        max: 10000
+        expected_ratio: 0.1
+        tolerance: 0.05
 ```
 
 ### custom_sql ✅
 
-Write custom validation with a WHERE clause:
+Write custom validation SQL that returns the expected result:
 
 ```yaml
 - custom_sql:
-    name: positive_balance
-    where: CAST(`balance` AS DOUBLE) < 0
-    detail_column: account_id
+    sql: |
+      SELECT COUNT(*) FROM {{ ref("orders") }}
+      WHERE amount < 0
+    expect: 0                  # Expected result (0 negative amounts)
 ```
 
-**Note:** For continuous tests, provide a `where` condition that identifies violations. The `detail_column` specifies which column value to include in violation details.
+**Note:** The `sql` field contains the validation query, and `expect` is the expected result value.
 
 ## Failure Actions
 
@@ -316,13 +328,20 @@ tests:
           tolerance: 0.001
 
       - distribution:
-          column: status
-          expected:
-            pending: 0.2
-            confirmed: 0.5
-            shipped: 0.2
-            delivered: 0.1
-          tolerance: 0.15
+          column: amount
+          buckets:
+            - min: 0
+              max: 100
+              expected_ratio: 0.3
+              tolerance: 0.1
+            - min: 100
+              max: 1000
+              expected_ratio: 0.5
+              tolerance: 0.1
+            - min: 1000
+              max: 100000
+              expected_ratio: 0.2
+              tolerance: 0.1
 
   # Continuous monitoring (always-on)
   - name: orders_monitoring
@@ -332,11 +351,12 @@ tests:
 
     assertions:
       - max_lag:
-          seconds: 180
+          column: created_at
+          max_seconds: 180
 
       - throughput:
-          min_per_minute: 50
-          max_per_minute: 5000
+          min_per_second: 1          # ~60/minute
+          max_per_second: 100        # ~6000/minute
 
     on_failure:
       - alert:
@@ -437,7 +457,7 @@ Results: 3 passed, 1 failed, 2 deployed
     tolerance: 0.001   # 0.1% for high-volume with rare duplicates
 
 - throughput:
-    min_per_minute: 100   # Based on actual expected volume
+    min_per_second: 2     # Based on actual expected volume
 ```
 
 ### 3. Test Critical Paths

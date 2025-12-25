@@ -36,7 +36,6 @@ project:
 runtime:
   kafka:
     bootstrap_servers: kafka:9092           # Required
-    bootstrap_servers_internal: kafka:29092 # Optional: For Flink/Connect in Docker
     security_protocol: SASL_SSL             # Optional
     sasl_mechanism: PLAIN                   # Optional
     sasl_username: ${KAFKA_USER}            # Optional
@@ -46,7 +45,6 @@ runtime:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `bootstrap_servers` | string | Yes | Kafka broker address(es) |
-| `bootstrap_servers_internal` | string | No | Internal address for Flink/Connect in Docker |
 | `security_protocol` | string | No | `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, `SASL_SSL` |
 | `sasl_mechanism` | string | No | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
 | `sasl_username` | string | No | SASL username |
@@ -315,8 +313,29 @@ sources:
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Column name |
+| `type` | string | Flink SQL type (e.g., `STRING`, `BIGINT`, `TIMESTAMP(3)`) |
 | `description` | string | Column description |
 | `classification` | string | `public`, `internal`, `confidential`, `sensitive`, `highly_sensitive` |
+| `proctime` | bool | Mark as processing time attribute (for Flink) |
+
+**Processing Time Example:**
+
+```yaml
+columns:
+  - name: order_id
+    type: STRING
+  - name: proc_time
+    type: TIMESTAMP(3)
+    proctime: true         # This column will use PROCTIME() in Flink SQL
+```
+
+This generates:
+```sql
+CREATE TABLE ... (
+  `order_id` STRING,
+  `proc_time` AS PROCTIME()  -- Processing time attribute
+)
+```
 
 ### Freshness Configuration
 
@@ -573,9 +592,46 @@ models:
 | `from` | string | Conditional | Source model (required for sink) |
 | `columns` | list | No | Column metadata and documentation |
 | `security` | object | No | Security policies and classification |
-| `deprecation` | object | No | Version deprecation info |
+| `ml_outputs` | object | No | ML model output schemas for `ML_PREDICT` (see below) |
 
 **Note:** The `materialized` field is **no longer specified** - it's auto-inferred from your SQL and configuration.
+
+### ML Output Schemas
+
+When using `ML_PREDICT` in your SQL, declare the expected output schema so streamt can properly type-check the results:
+
+```yaml
+models:
+  - name: fraud_scored_orders
+    description: "Orders with fraud predictions"
+
+    sql: |
+      SELECT
+        order_id,
+        amount,
+        ML_PREDICT('fraud_detector', order_id, amount, customer_id) as prediction
+      FROM {{ ref("orders_validated") }}
+
+    # Declare ML model output schemas for type inference
+    ml_outputs:
+      fraud_detector:
+        description: "Fraud detection ML model"
+        columns:
+          - name: is_fraud
+            type: BOOLEAN
+          - name: confidence
+            type: DOUBLE
+          - name: risk_score
+            type: DOUBLE
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ml_outputs.<model_name>.columns` | list | Output columns from the ML model |
+| `ml_outputs.<model_name>.description` | string | Description of the ML model |
+
+!!! note "Confluent Cloud Only"
+    `ML_PREDICT` and `ML_EVALUATE` are only available on Confluent Cloud Flink clusters.
 
 ### Model Fields (Advanced Section)
 
@@ -600,6 +656,35 @@ Nested under `advanced.topic:`:
 | `partitions` | int | Partition count |
 | `replication_factor` | int | Replication factor |
 | `config` | map | Kafka topic configuration |
+
+### Advanced: Gateway Configuration
+
+Nested under `advanced.gateway:` (for virtual topic models):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `virtual_topic.name` | string | Custom virtual topic name |
+| `virtual_topic.compression` | string | Compression type (`gzip`, `snappy`, `lz4`, `zstd`) |
+
+```yaml
+models:
+  - name: filtered_orders
+    description: "Orders filtered by region"
+
+    sql: |
+      SELECT * FROM {{ source("orders") }}
+      WHERE region = 'US'
+
+    # Gateway virtual topic with compression
+    advanced:
+      gateway:
+        virtual_topic:
+          name: orders.us.filtered
+          compression: lz4
+```
+
+!!! tip "Virtual Topics"
+    Virtual topics are automatically inferred when Gateway is configured. They provide schema transformation and data masking without creating physical Kafka topics. See the [Gateway Guide](../guides/gateway.md).
 
 ### Advanced: Flink Configuration
 
