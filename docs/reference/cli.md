@@ -16,9 +16,13 @@ streamt [OPTIONS] COMMAND [ARGS]
 
 Options:
   --project-dir PATH    Path to project directory (default: current)
+  --env ENV             Target environment (for multi-env mode)
   --version            Show version and exit
   --help               Show help message and exit
 ```
+
+!!! info "Environment Selection"
+    In multi-environment mode, specify the target environment with `--env` or the `STREAMT_ENV` variable. The CLI flag takes precedence over the environment variable.
 
 ## Commands
 
@@ -35,6 +39,8 @@ streamt validate [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+| `--all-envs` | Validate all environments sequentially |
 | `--check-schemas` | Fetch and validate schemas from Schema Registry |
 | `--strict` | Treat warnings as errors |
 
@@ -43,6 +49,13 @@ streamt validate [OPTIONS]
 ```bash
 # Basic validation
 streamt validate
+
+# Validate specific environment
+streamt validate --env dev
+streamt validate --env prod
+
+# Validate all environments at once
+streamt validate --all-envs
 
 # With schema registry validation
 streamt validate --check-schemas
@@ -82,6 +95,7 @@ streamt compile [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--output PATH` | Output directory (default: `generated/`) |
 | `--dry-run` | Show what would be generated without writing |
 
@@ -90,6 +104,9 @@ streamt compile [OPTIONS]
 ```bash
 # Compile to default directory
 streamt compile
+
+# Compile for specific environment
+streamt compile --env prod
 
 # Custom output directory
 streamt compile --output ./build
@@ -131,6 +148,7 @@ streamt plan [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--target MODEL` | Plan only for specific model |
 
 **Examples:**
@@ -138,6 +156,9 @@ streamt plan [OPTIONS]
 ```bash
 # Plan all changes
 streamt plan
+
+# Plan for specific environment
+streamt plan --env staging
 
 # Plan specific model
 streamt plan --target order_metrics
@@ -174,16 +195,28 @@ streamt apply [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--target MODEL` | Deploy only specific model |
 | `--select SELECTOR` | Filter by tag or selector |
 | `--dry-run` | Show what would be deployed |
 | `--auto-approve` | Skip confirmation prompt |
+| `--confirm` | Confirm deployment to protected environments (required in CI/CD) |
+| `--force` | Allow destructive operations in protected environments |
 
 **Examples:**
 
 ```bash
 # Deploy all
 streamt apply
+
+# Deploy to specific environment
+streamt apply --env dev
+
+# Deploy to protected environment (CI/CD)
+streamt apply --env prod --confirm
+
+# Override destructive safety (use with caution)
+streamt apply --env prod --confirm --force
 
 # Deploy specific model
 streamt apply --target order_metrics
@@ -194,6 +227,9 @@ streamt apply --select tag:critical
 # Auto-approve (CI/CD)
 streamt apply --auto-approve
 ```
+
+!!! warning "Protected Environments"
+    When deploying to a protected environment, you must confirm interactively (by typing the environment name) or use `--confirm` in CI/CD. If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
 
 **Output:**
 
@@ -225,6 +261,7 @@ streamt test [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--model MODEL` | Test specific model only |
 | `--type TYPE` | Filter by type: `schema`, `sample`, `continuous` |
 | `--deploy` | Deploy continuous tests as Flink jobs |
@@ -234,6 +271,9 @@ streamt test [OPTIONS]
 ```bash
 # Run all tests
 streamt test
+
+# Run tests against specific environment
+streamt test --env staging
 
 # Run schema tests only
 streamt test --type schema
@@ -277,6 +317,7 @@ streamt lineage [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--model MODEL` | Focus on specific model |
 | `--upstream` | Show only upstream dependencies |
 | `--downstream` | Show only downstream dependencies |
@@ -287,6 +328,9 @@ streamt lineage [OPTIONS]
 ```bash
 # Full lineage (ASCII)
 streamt lineage
+
+# Full lineage for specific environment
+streamt lineage --env prod
 
 # Focus on one model
 streamt lineage --model order_metrics
@@ -329,6 +373,7 @@ streamt status [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--lag` | Show consumer lag and message counts for topics |
 | `--format FORMAT` | Output format: `text` (default) or `json` |
 | `--filter PATTERN` | Filter resources by name pattern (glob-style) |
@@ -338,6 +383,9 @@ streamt status [OPTIONS]
 ```bash
 # Full status
 streamt status
+
+# Status for specific environment
+streamt status --env prod
 
 # With consumer lag info
 streamt status --lag
@@ -418,6 +466,7 @@ streamt docs generate [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
 | `--output PATH` | Output directory (default: `site/`) |
 
 **Examples:**
@@ -426,8 +475,85 @@ streamt docs generate [OPTIONS]
 # Generate docs
 streamt docs generate
 
+# Generate docs for specific environment
+streamt docs generate --env prod
+
 # Custom output
 streamt docs generate --output ./public
+```
+
+---
+
+### envs
+
+Manage and inspect environments (multi-env mode only).
+
+```bash
+streamt envs COMMAND [OPTIONS]
+```
+
+#### envs list
+
+List all available environments.
+
+```bash
+streamt envs list [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+
+**Examples:**
+
+```bash
+streamt envs list
+```
+
+**Output:**
+
+```
+dev          Local development environment
+staging      Staging environment
+prod         Production environment [protected]
+```
+
+#### envs show
+
+Show resolved configuration for an environment (secrets masked).
+
+```bash
+streamt envs show ENV [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+
+**Examples:**
+
+```bash
+streamt envs show prod
+```
+
+**Output:**
+
+```yaml
+environment:
+  name: prod
+  description: Production environment
+  protected: true
+runtime:
+  kafka:
+    bootstrap_servers: prod-kafka.example.com:9092
+  schema_registry:
+    url: https://prod-sr.example.com
+    username: admin
+    password: '****'
 ```
 
 ---
@@ -436,9 +562,20 @@ streamt docs generate --output ./public
 
 | Variable | Description |
 |----------|-------------|
+| `STREAMT_ENV` | Default target environment (overridden by `--env` flag) |
 | `STREAMT_PROJECT_DIR` | Default project directory |
 | `STREAMT_LOG_LEVEL` | Log level (DEBUG, INFO, WARNING, ERROR) |
 | `STREAMT_NO_COLOR` | Disable colored output |
+
+### .env File Loading
+
+In multi-environment mode, environment variables are loaded with precedence:
+
+1. `.env` — Base variables (always loaded)
+2. `.env.{environment}` — Environment-specific overrides (e.g., `.env.prod`)
+3. Actual environment variables — Highest priority
+
+See [Multi-Environment Support](../guides/multi-environment.md) for details.
 
 ## Exit Codes
 
@@ -452,7 +589,7 @@ streamt docs generate --output ./public
 
 ## Examples
 
-### CI/CD Pipeline
+### CI/CD Pipeline (Single Environment)
 
 ```bash
 #!/bin/bash
@@ -471,9 +608,32 @@ streamt apply --auto-approve
 streamt test
 ```
 
+### CI/CD Pipeline (Multi-Environment)
+
+```bash
+#!/bin/bash
+set -e
+
+# Validate all environments
+streamt validate --all-envs --strict
+
+# Deploy to staging
+streamt plan --env staging
+streamt apply --env staging --auto-approve
+streamt test --env staging
+
+# Deploy to production (protected)
+streamt plan --env prod
+streamt apply --env prod --confirm --auto-approve
+streamt test --env prod
+```
+
 ### Development Workflow
 
 ```bash
+# Set environment for session
+export STREAMT_ENV=dev
+
 # 1. Validate changes
 streamt validate
 
@@ -516,5 +676,10 @@ The following commands and options are planned:
 | `streamt rollback` | Rollback to previous deployment | Planned |
 | `streamt diff` | Show diff between local and deployed | Planned |
 | `streamt init` | Initialize new project from template | Planned |
+| `streamt build` | Generate deployable artifacts | Planned |
 
 See the [roadmap](https://github.com/conduktor/streamt#roadmap) for the full list of planned features.
+
+## See Also
+
+- [Multi-Environment Support](../guides/multi-environment.md) — Complete guide for managing dev/staging/prod environments

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,16 @@ from rich.console import Console
 from rich.table import Table
 
 from streamt import __version__
+from streamt.core.environment import (
+    EmptyEnvironmentsDirectoryError,
+    EnvironmentError,
+    EnvironmentManager,
+    EnvironmentNotFoundError,
+    InvalidEnvironmentNameError,
+    NoEnvironmentsConfiguredError,
+    NoEnvironmentSpecifiedError,
+    mask_secrets,
+)
 
 console = Console()
 error_console = Console(stderr=True)
@@ -41,59 +52,127 @@ def main() -> None:
     help="Path to project directory",
 )
 @click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+@click.option(
+    "--all-envs",
+    is_flag=True,
+    help="Validate all environments",
+)
+@click.option(
     "--check-schemas",
     is_flag=True,
     help="Validate schemas against Schema Registry",
 )
-def validate(project_dir: Optional[str], check_schemas: bool) -> None:
+def validate(
+    project_dir: Optional[str],
+    environment: Optional[str],
+    all_envs: bool,
+    check_schemas: bool,
+) -> None:
     """Validate project syntax and references."""
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
 
     project_path = get_project_path(project_dir)
 
+    def validate_single_env(env_name: Optional[str]) -> bool:
+        """Validate a single environment. Returns True if valid."""
+        try:
+            # Parse project
+            parser = ProjectParser(
+                project_path,
+                environment=env_name,
+                warn_callback=lambda msg: console.print(msg),
+            )
+            project = parser.parse()
+
+            # Validate project
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            # Print results
+            if result.warnings:
+                for warning in result.warnings:
+                    console.print(f"[yellow]WARNING[/yellow]: {warning.message}")
+                    if warning.location:
+                        console.print(f"  Location: {warning.location}")
+
+            if result.errors:
+                for error in result.errors:
+                    error_console.print(f"[red]ERROR[/red]: {error.message}")
+                    if error.location:
+                        error_console.print(f"  Location: {error.location}")
+                return False
+
+            env_label = f" ({env_name})" if env_name else ""
+            console.print(f"[green]Project '{project.project.name}'{env_label} is valid[/green]")
+
+            # Print summary
+            table = Table(title="Project Summary")
+            table.add_column("Type", style="cyan")
+            table.add_column("Count", style="green")
+            table.add_row("Sources", str(len(project.sources)))
+            table.add_row("Models", str(len(project.models)))
+            table.add_row("Tests", str(len(project.tests)))
+            table.add_row("Exposures", str(len(project.exposures)))
+            console.print(table)
+
+            if project.rules:
+                console.print("[green]All governance rules passed[/green]")
+
+            return True
+
+        except EnvVarError as e:
+            error_console.print(f"[red]ERROR[/red]: {e}")
+            return False
+        except ParseError as e:
+            error_console.print(f"[red]ERROR[/red]: {e}")
+            return False
+        except EnvironmentError as e:
+            error_console.print(f"[red]ERROR[/red]: {e}")
+            return False
+
     try:
-        # Parse project
-        parser = ProjectParser(project_path)
-        project = parser.parse()
+        if all_envs:
+            # Validate all environments
+            env_manager = EnvironmentManager(project_path)
+            if env_manager.mode == "single":
+                error_console.print(
+                    "[red]ERROR[/red]: --all-envs requires multi-environment mode. "
+                    "Create an environments/ directory with environment files."
+                )
+                sys.exit(1)
 
-        # Validate project
-        validator = ProjectValidator(project)
-        result = validator.validate()
+            environments = env_manager.discover_environments()
+            if not environments:
+                error_console.print(
+                    "[red]ERROR[/red]: No environment files found in environments/ directory."
+                )
+                sys.exit(1)
 
-        # Print results
-        if result.warnings:
-            for warning in result.warnings:
-                console.print(f"[yellow]WARNING[/yellow]: {warning.message}")
-                if warning.location:
-                    console.print(f"  Location: {warning.location}")
+            console.print(f"Validating {len(environments)} environments...\n")
+            all_valid = True
+            for env_name in environments:
+                console.print(f"[cyan]--- Environment: {env_name} ---[/cyan]")
+                if not validate_single_env(env_name):
+                    all_valid = False
+                console.print()
 
-        if result.errors:
-            for error in result.errors:
-                error_console.print(f"[red]ERROR[/red]: {error.message}")
-                if error.location:
-                    error_console.print(f"  Location: {error.location}")
-            sys.exit(1)
+            if not all_valid:
+                error_console.print("[red]Some environments failed validation[/red]")
+                sys.exit(1)
 
-        console.print(f"[green]Project '{project.project.name}' is valid[/green]")
+            console.print(f"[green]All {len(environments)} environments are valid[/green]")
+        else:
+            # Validate single environment
+            if not validate_single_env(environment):
+                sys.exit(1)
 
-        # Print summary
-        table = Table(title="Project Summary")
-        table.add_column("Type", style="cyan")
-        table.add_column("Count", style="green")
-        table.add_row("Sources", str(len(project.sources)))
-        table.add_row("Models", str(len(project.models)))
-        table.add_row("Tests", str(len(project.tests)))
-        table.add_row("Exposures", str(len(project.exposures)))
-        console.print(table)
-
-        if project.rules:
-            console.print("[green]All governance rules passed[/green]")
-
-    except EnvVarError as e:
-        error_console.print(f"[red]ERROR[/red]: {e}")
-        sys.exit(1)
-    except ParseError as e:
+    except EnvironmentError as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
     except Exception as e:
@@ -109,6 +188,12 @@ def validate(project_dir: Optional[str], check_schemas: bool) -> None:
     help="Path to project directory",
 )
 @click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+@click.option(
     "--output",
     "-o",
     type=click.Path(),
@@ -119,7 +204,12 @@ def validate(project_dir: Optional[str], check_schemas: bool) -> None:
     is_flag=True,
     help="Show what would be generated without writing files",
 )
-def compile(project_dir: Optional[str], output: Optional[str], dry_run: bool) -> None:
+def compile(
+    project_dir: Optional[str],
+    environment: Optional[str],
+    output: Optional[str],
+    dry_run: bool,
+) -> None:
     """Compile project to artifacts."""
     from streamt.compiler import Compiler
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -129,7 +219,11 @@ def compile(project_dir: Optional[str], output: Optional[str], dry_run: bool) ->
 
     try:
         # Parse and validate
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         validator = ProjectValidator(project)
@@ -187,7 +281,7 @@ def compile(project_dir: Optional[str], output: Optional[str], dry_run: bool) ->
             table.add_row("Gateway Rules", str(len(manifest.artifacts.get("gateway_rules", []))))
             console.print(table)
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
     except Exception as e:
@@ -202,7 +296,13 @@ def compile(project_dir: Optional[str], output: Optional[str], dry_run: bool) ->
     type=click.Path(exists=True),
     help="Path to project directory",
 )
-def plan(project_dir: Optional[str]) -> None:
+@click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+def plan(project_dir: Optional[str], environment: Optional[str]) -> None:
     """Show what would change on apply."""
     from streamt.compiler import Compiler
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -217,7 +317,11 @@ def plan(project_dir: Optional[str]) -> None:
 
     try:
         # Parse, validate, compile
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         validator = ProjectValidator(project)
@@ -286,7 +390,7 @@ def plan(project_dir: Optional[str]) -> None:
         deployment_plan = planner.plan()
         console.print(deployment_plan.details())
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
 
@@ -299,6 +403,12 @@ def plan(project_dir: Optional[str]) -> None:
     help="Path to project directory",
 )
 @click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+@click.option(
     "--target",
     "-t",
     help="Deploy only this model and its dependencies",
@@ -308,7 +418,24 @@ def plan(project_dir: Optional[str]) -> None:
     "-s",
     help="Select models by tag (e.g., 'tag:payments')",
 )
-def apply(project_dir: Optional[str], target: Optional[str], select: Optional[str]) -> None:
+@click.option(
+    "--confirm",
+    is_flag=True,
+    help="Skip confirmation prompt for protected environments",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Override safety checks (allow destructive operations)",
+)
+def apply(
+    project_dir: Optional[str],
+    environment: Optional[str],
+    target: Optional[str],
+    select: Optional[str],
+    confirm: bool,
+    force: bool,
+) -> None:
     """Deploy the project."""
     from streamt.compiler import Compiler
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -323,8 +450,53 @@ def apply(project_dir: Optional[str], target: Optional[str], select: Optional[st
 
     try:
         # Parse, validate, compile
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
+
+        # Check protected environment confirmation
+        if parser.env_config and parser.env_config.environment.protected:
+            env_name = parser.env_config.environment.name
+            console.print(
+                f"[yellow]WARNING[/yellow]: Deploying to protected environment '{env_name}'"
+            )
+            if not confirm:
+                # Check if running interactively
+                if sys.stdin.isatty():
+                    console.print(
+                        f"[yellow]WARNING[/yellow]: '{env_name}' is a protected environment."
+                    )
+                    user_input = click.prompt(
+                        f"Type '{env_name}' to confirm", default="", show_default=False
+                    )
+                    if user_input != env_name:
+                        error_console.print("[red]Aborted[/red]")
+                        sys.exit(1)
+                else:
+                    # Non-interactive (CI) mode requires --confirm flag
+                    error_console.print(
+                        f"[red]ERROR[/red]: '{env_name}' is a protected environment. "
+                        "Use --confirm flag in non-interactive mode."
+                    )
+                    sys.exit(1)
+
+        # Check destructive safety
+        if parser.env_config and not parser.env_config.safety.allow_destructive:
+            env_name = parser.env_config.environment.name
+            if not force:
+                error_console.print(
+                    f"[red]ERROR[/red]: Destructive operations blocked for '{env_name}' environment. "
+                    "Use --force flag to override."
+                )
+                sys.exit(1)
+            else:
+                console.print(
+                    f"[yellow]WARNING[/yellow]: --force flag used, "
+                    f"allowing destructive operations on '{env_name}'"
+                )
 
         validator = ProjectValidator(project)
         result = validator.validate()
@@ -402,7 +574,7 @@ def apply(project_dir: Optional[str], target: Optional[str], select: Optional[st
 
         console.print("\n[green]Apply complete[/green]")
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
     except Exception as e:
@@ -416,6 +588,12 @@ def apply(project_dir: Optional[str], target: Optional[str], select: Optional[st
     "-p",
     type=click.Path(exists=True),
     help="Path to project directory",
+)
+@click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
 )
 @click.option(
     "--model",
@@ -435,6 +613,7 @@ def apply(project_dir: Optional[str], target: Optional[str], select: Optional[st
 )
 def test(
     project_dir: Optional[str],
+    environment: Optional[str],
     model: Optional[str],
     test_type: Optional[str],
     deploy: bool,
@@ -448,7 +627,11 @@ def test(
 
     try:
         # Parse and validate
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         validator = ProjectValidator(project)
@@ -493,7 +676,7 @@ def test(
         if failed > 0:
             sys.exit(1)
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
 
@@ -504,6 +687,12 @@ def test(
     "-p",
     type=click.Path(exists=True),
     help="Path to project directory",
+)
+@click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
 )
 @click.option(
     "--model",
@@ -529,6 +718,7 @@ def test(
 )
 def lineage(
     project_dir: Optional[str],
+    environment: Optional[str],
     model: Optional[str],
     upstream: bool,
     downstream: bool,
@@ -544,7 +734,11 @@ def lineage(
 
     try:
         # Parse project
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         # Build DAG
@@ -556,7 +750,7 @@ def lineage(
         else:
             console.print(dag.render_ascii(focus=model))
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
 
@@ -567,6 +761,12 @@ def lineage(
     "-p",
     type=click.Path(exists=True),
     help="Path to project directory",
+)
+@click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
 )
 @click.option(
     "--lag",
@@ -588,6 +788,7 @@ def lineage(
 )
 def status(
     project_dir: Optional[str],
+    environment: Optional[str],
     lag: bool,
     output_format: str,
     filter_pattern: Optional[str],
@@ -624,7 +825,11 @@ def status(
 
     try:
         # Parse and compile
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         compiler = Compiler(project)
@@ -813,7 +1018,7 @@ def status(
             # JSON output
             console.print(json.dumps(status_data, indent=2))
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
 
@@ -832,13 +1037,19 @@ def docs() -> None:
     help="Path to project directory",
 )
 @click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+@click.option(
     "--output",
     "-o",
     type=click.Path(),
     default="docs",
     help="Output directory",
 )
-def docs_generate(project_dir: Optional[str], output: str) -> None:
+def docs_generate(project_dir: Optional[str], environment: Optional[str], output: str) -> None:
     """Generate HTML documentation."""
     from streamt.core.dag import DAGBuilder
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -848,7 +1059,11 @@ def docs_generate(project_dir: Optional[str], output: str) -> None:
 
     try:
         # Parse project
-        parser = ProjectParser(project_path)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: console.print(msg),
+        )
         project = parser.parse()
 
         # Build DAG
@@ -861,7 +1076,97 @@ def docs_generate(project_dir: Optional[str], output: str) -> None:
 
         console.print(f"[green]Documentation generated at {output_path}[/green]")
 
-    except (EnvVarError, ParseError) as e:
+    except (EnvVarError, ParseError, EnvironmentError) as e:
+        error_console.print(f"[red]ERROR[/red]: {e}")
+        sys.exit(1)
+
+
+# =============================================================================
+# Environment Commands
+# =============================================================================
+
+
+@main.group()
+def envs() -> None:
+    """Environment management commands."""
+    pass
+
+
+@envs.command("list")
+@click.option(
+    "--project-dir",
+    "-p",
+    type=click.Path(exists=True),
+    help="Path to project directory",
+)
+def envs_list(project_dir: Optional[str]) -> None:
+    """List available environments."""
+    project_path = get_project_path(project_dir)
+    env_manager = EnvironmentManager(project_path)
+
+    if env_manager.mode == "single":
+        console.print("No environments configured (single-env mode)")
+        return
+
+    environments = env_manager.discover_environments()
+    if not environments:
+        console.print("No environment files found in environments/ directory")
+        return
+
+    for env_name in environments:
+        try:
+            env_config = env_manager.load_environment(env_name)
+            description = env_config.environment.description or ""
+            protected_label = " \\[protected]" if env_config.environment.protected else ""
+            if description:
+                console.print(f"{env_name:12} {description}{protected_label}")
+            else:
+                console.print(f"{env_name}{protected_label}")
+        except EnvironmentError as e:
+            console.print(f"{env_name:12} [red]Error: {e}[/red]")
+
+
+@envs.command("show")
+@click.option(
+    "--project-dir",
+    "-p",
+    type=click.Path(exists=True),
+    help="Path to project directory",
+)
+@click.argument("name")
+def envs_show(project_dir: Optional[str], name: str) -> None:
+    """Show resolved configuration for an environment."""
+    import yaml
+
+    project_path = get_project_path(project_dir)
+    env_manager = EnvironmentManager(project_path)
+
+    if env_manager.mode == "single":
+        error_console.print(
+            "[red]ERROR[/red]: No environments configured (single-env mode)"
+        )
+        sys.exit(1)
+
+    try:
+        env_config = env_manager.load_environment(name)
+
+        # Mask secrets before displaying
+        masked_runtime = mask_secrets(env_config.runtime)
+
+        console.print(f"[cyan]Environment:[/cyan] {env_config.environment.name}")
+        if env_config.environment.description:
+            console.print(f"[cyan]Description:[/cyan] {env_config.environment.description}")
+        if env_config.environment.protected:
+            console.print("[cyan]Protected:[/cyan] [yellow]yes[/yellow]")
+
+        console.print("\n[cyan]Runtime:[/cyan]")
+        console.print(yaml.dump(masked_runtime, default_flow_style=False, sort_keys=False))
+
+        console.print("[cyan]Safety:[/cyan]")
+        console.print(f"  confirm_apply: {env_config.safety.confirm_apply}")
+        console.print(f"  allow_destructive: {env_config.safety.allow_destructive}")
+
+    except EnvironmentError as e:
         error_console.print(f"[red]ERROR[/red]: {e}")
         sys.exit(1)
 

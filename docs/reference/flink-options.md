@@ -15,6 +15,7 @@ This page documents all Flink-related configuration options in streamt, includin
 | Parallelism | Supported | Per-job configuration |
 | Checkpointing | Partial | Interval only, no advanced options |
 | State backend | Partial | Type selection only |
+| MATCH_RECOGNIZE (CEP) | Supported | Complex event processing patterns |
 | Savepoints | Planned | Not yet implemented |
 | Kubernetes operator | Planned | Currently REST API only |
 
@@ -312,9 +313,9 @@ runtime:
 | Type | Description | Status |
 |------|-------------|--------|
 | `rest` | Connect via REST API | Supported |
+| `confluent` | Confluent Cloud for Flink | Supported |
 | `docker` | Local Docker deployment | Planned |
 | `kubernetes` | Kubernetes Flink Operator | Planned |
-| `confluent` | Confluent Cloud for Flink | Planned |
 
 ### REST Cluster Configuration
 
@@ -410,6 +411,69 @@ FROM orders o
 JOIN products FOR SYSTEM_TIME AS OF o.order_time AS p
   ON o.product_id = p.id
 ```
+
+### Complex Event Processing (MATCH_RECOGNIZE)
+
+`MATCH_RECOGNIZE` enables pattern matching on event streams - detecting sequences of events that match a specified pattern. This is useful for fraud detection, user behavior analysis, and anomaly detection.
+
+| Feature | Description |
+|---------|-------------|
+| Pattern matching | Detect sequences like "A followed by B then C" |
+| Quantifiers | Match zero or more (`*`), one or more (`+`), optional (`?`) |
+| Measures | Extract values from matched events |
+| Row pattern output | `ONE ROW PER MATCH` or `ALL ROWS PER MATCH` |
+
+**Example: Detect Price Increases**
+
+```sql
+SELECT *
+FROM stock_prices
+MATCH_RECOGNIZE (
+  PARTITION BY symbol
+  ORDER BY ts
+  MEASURES
+    A.price AS start_price,
+    LAST(B.price) AS end_price,
+    A.ts AS start_time,
+    LAST(B.ts) AS end_time
+  ONE ROW PER MATCH
+  AFTER MATCH SKIP PAST LAST ROW
+  PATTERN (A B+)
+  DEFINE
+    A AS A.price > 0,
+    B AS B.price > LAST(price)
+) AS m
+```
+
+**Example: User Session Pattern**
+
+```sql
+-- Detect users who browse, add to cart, then purchase
+SELECT *
+FROM user_events
+MATCH_RECOGNIZE (
+  PARTITION BY user_id
+  ORDER BY event_time
+  MEASURES
+    FIRST(A.event_time) AS session_start,
+    C.event_time AS purchase_time,
+    C.amount AS purchase_amount
+  ONE ROW PER MATCH
+  PATTERN (A+ B+ C)
+  DEFINE
+    A AS A.event_type = 'browse',
+    B AS B.event_type = 'add_to_cart',
+    C AS C.event_type = 'purchase'
+) AS matched
+```
+
+!!! tip "Pattern Quantifiers"
+    - `A` — Exactly one A
+    - `A*` — Zero or more A
+    - `A+` — One or more A
+    - `A?` — Zero or one A
+    - `A{3}` — Exactly 3 A
+    - `A{2,4}` — Between 2 and 4 A
 
 ---
 
@@ -571,6 +635,7 @@ GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR);
 - [x] **`streamt status` command** — Show running jobs with health, lag, checkpoint status
 - [x] **State TTL configuration** — `state_ttl_ms` to prevent unbounded state growth
 - [x] **Watermark strategies** — bounded out-of-orderness, monotonous
+- [x] **Confluent Cloud for Flink** — `type: confluent` cluster with ML_PREDICT/ML_EVALUATE support
 
 ### Soon
 
@@ -586,7 +651,6 @@ GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR);
 
 ### Deferred
 
-- [ ] Confluent Cloud for Flink support
 - [ ] Changelog mode configuration (append, upsert, retract)
 
 See [GitHub Issues](https://github.com/conduktor/streamt/issues) for the latest roadmap updates.

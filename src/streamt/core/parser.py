@@ -5,12 +5,20 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from dotenv import load_dotenv
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
 
+from streamt.core.environment import (
+    EnvironmentConfig,
+    EnvironmentError,
+    EnvironmentManager,
+    EnvironmentNotFoundError,
+    NoEnvironmentSpecifiedError,
+    NoEnvironmentsConfiguredError,
+)
 from streamt.core.models import (
     DataTest,
     Defaults,
@@ -47,26 +55,59 @@ class ProjectParser:
 
     ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-    def __init__(self, project_path: Path) -> None:
-        """Initialize parser with project path."""
-        self.project_path = project_path.resolve()
+    def __init__(
+        self,
+        project_path: Path,
+        environment: str | None = None,
+        warn_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Initialize parser with project path and optional environment.
 
-        # Load .env file if present
-        env_file = self.project_path / ".env"
-        if env_file.exists():
-            load_dotenv(env_file)
+        Args:
+            project_path: Path to the project directory.
+            environment: Environment name (for multi-env mode). If None, uses
+                        STREAMT_ENV env var or fails if in multi-env mode.
+            warn_callback: Optional callback for warnings (e.g., console.print).
+        """
+        self.project_path = project_path.resolve()
+        self.environment = environment
+        self.warn_callback = warn_callback or (lambda x: None)
+
+        # Environment manager for multi-env support
+        self.env_manager = EnvironmentManager(self.project_path)
+        self.env_config: EnvironmentConfig | None = None
+        self.warnings: list[str] = []
 
         # Jinja environment for SQL parsing
         self.jinja_env = Environment(loader=BaseLoader())
 
+    def _setup_environment(self) -> None:
+        """Setup environment variables and load environment config."""
+        # Resolve environment (handles mode detection, env var loading, etc.)
+        self.env_config, self.warnings = self.env_manager.resolve_environment(
+            self.environment, self.warn_callback
+        )
+
+        # Emit warnings
+        for warning in self.warnings:
+            self.warn_callback(f"[yellow]WARNING[/yellow]: {warning}")
+
     def parse(self) -> StreamtProject:
         """Parse the entire project."""
+        # Setup environment first (loads .env files, resolves env config)
+        self._setup_environment()
+
         # Find and parse stream_project.yml
         project_file = self._find_project_file()
         if not project_file:
             raise ParseError(f"No stream_project.yml found in {self.project_path}")
 
         project_data = self._load_yaml(project_file)
+
+        # Check for runtime: in project file when in multi-env mode
+        runtime_warning = self.env_manager.check_project_runtime_warning(project_data)
+        if runtime_warning:
+            self.warn_callback(f"[yellow]WARNING[/yellow]: {runtime_warning}")
 
         # Parse project info and runtime
         project_info = self._parse_project_info(project_data)
@@ -157,7 +198,28 @@ class ProjectParser:
         return ProjectInfo(**data["project"])
 
     def _parse_runtime(self, data: dict[str, Any]) -> RuntimeConfig:
-        """Parse runtime configuration."""
+        """Parse runtime configuration.
+
+        In multi-env mode, runtime comes from the environment file.
+        In single-env mode, runtime is required in the project file.
+        """
+        # In multi-env mode, use runtime from environment config
+        if self.env_config is not None:
+            runtime_data = self.env_config.runtime
+
+            # Check for missing env vars
+            missing = self._check_env_vars(runtime_data)
+            if missing:
+                raise EnvVarError(
+                    f"Environment variable{'s' if len(missing) > 1 else ''} "
+                    f"not set: {', '.join(sorted(set(missing)))}"
+                )
+
+            # Resolve env vars
+            resolved = self._resolve_env_vars(runtime_data)
+            return RuntimeConfig(**resolved)
+
+        # Single-env mode: require runtime in project file
         if "runtime" not in data:
             raise ParseError("Missing 'runtime' section in stream_project.yml")
 

@@ -444,6 +444,59 @@ rules:
     sensitive_columns_require_masking: true
 ```
 
+## Multi-Environment Mode
+
+For managing multiple environments (dev, staging, prod), create an `environments/` directory. See the [Multi-Environment Guide](../guides/multi-environment.md) for complete documentation.
+
+### Quick Overview
+
+```
+project/
+├── stream_project.yml     # Project config (no runtime section)
+├── environments/
+│   ├── dev.yml            # Development environment
+│   ├── staging.yml        # Staging environment
+│   └── prod.yml           # Production environment
+├── .env                   # Base environment variables
+├── .env.dev               # Dev-specific variables
+├── .env.staging           # Staging-specific variables
+└── .env.prod              # Prod-specific variables
+```
+
+### Environment File Format
+
+```yaml title="environments/prod.yml"
+environment:
+  name: prod
+  description: Production environment
+  protected: true              # Requires confirmation for apply
+
+runtime:
+  kafka:
+    bootstrap_servers: ${PROD_KAFKA_SERVERS}
+  schema_registry:
+    url: ${PROD_SR_URL}
+  flink:
+    default: prod-cluster
+    clusters:
+      prod-cluster:
+        rest_url: ${PROD_FLINK_URL}
+
+safety:
+  confirm_apply: true          # Require --confirm in CI/CD
+  allow_destructive: false     # Block topic deletions, etc.
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `environment.name` | string | Required | Must match filename |
+| `environment.description` | string | - | Human-readable description |
+| `environment.protected` | bool | `false` | Require confirmation for apply |
+| `safety.confirm_apply` | bool | `false` | Require `--confirm` flag in CI |
+| `safety.allow_destructive` | bool | `true` | Allow destructive operations |
+
+---
+
 ## File Organization
 
 ### Single File (Simple Projects)

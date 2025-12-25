@@ -158,6 +158,85 @@ streamt test
 streamt lineage
 ```
 
+## Multi-Environment Support
+
+streamt supports managing multiple environments (dev, staging, prod) with different configurations.
+
+### Setup
+
+Create an `environments/` directory with YAML files for each environment:
+
+```
+my-project/
+├── stream_project.yml      # No runtime section needed
+├── environments/
+│   ├── dev.yml
+│   ├── staging.yml
+│   └── prod.yml
+└── models/
+```
+
+Each environment file defines its runtime configuration:
+
+```yaml
+# environments/prod.yml
+environment:
+  name: prod
+  description: Production environment
+  protected: true  # Requires confirmation for apply
+
+runtime:
+  kafka:
+    bootstrap_servers: ${PROD_KAFKA_SERVERS}
+  schema_registry:
+    url: ${PROD_SR_URL}
+  flink:
+    default: prod-cluster
+    clusters:
+      prod-cluster:
+        rest_url: ${PROD_FLINK_URL}
+
+safety:
+  confirm_apply: true
+  allow_destructive: false  # Block destructive operations
+```
+
+### CLI Usage
+
+```bash
+# Target a specific environment
+streamt validate --env dev
+streamt plan --env prod
+streamt apply --env staging
+
+# Use STREAMT_ENV environment variable
+export STREAMT_ENV=prod
+streamt validate
+
+# Protected environment apply
+streamt apply --env prod --confirm  # Required for protected envs in CI
+
+# Override destructive safety
+streamt apply --env prod --confirm --force
+
+# Validate all environments at once
+streamt validate --all-envs
+
+# List available environments
+streamt envs list
+
+# Show resolved config (secrets masked)
+streamt envs show prod
+```
+
+### .env File Loading
+
+Environment variables are loaded with precedence:
+
+1. `.env` (base, always loaded)
+2. `.env.{environment}` (if exists, e.g., `.env.prod`)
+3. Actual environment variables (highest priority)
+
 ## Examples
 
 ### Source with Schema
@@ -287,7 +366,7 @@ tests:
 | Continuous tests | ✅ Works | Flink-based monitoring, real-time violations |
 | ML_PREDICT/ML_EVALUATE | ✅ Works | Confluent Cloud Flink only |
 | CI/CD pipeline | ✅ Works | GitHub Actions for tests and linting |
-| Multi-environment | 🚧 Planned | Dev/staging/prod profiles |
+| Multi-environment | ✅ Stable | Dev/staging/prod profiles, protected envs |
 
 ### What's Missing for Production
 
@@ -302,7 +381,7 @@ tests:
 
 - [x] Basic test assertions — `not_null`, `accepted_values`, `range`, `accepted_types`, `custom_sql` (continuous tests)
 - [x] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
-- [ ] Multi-environment support — dev/staging/prod profiles
+- [x] Multi-environment support — dev/staging/prod profiles with protected environments
 - [ ] Advanced test assertions — `unique_key`, `foreign_key`, `distribution`, `max_lag`, `throughput` (require windowing/aggregation)
 - [ ] Test failure handlers — `on_failure` actions (alert to Slack/PagerDuty, pause model, route to DLQ, block deployment)
 - [ ] DLQ support — Dead Letter Queue for failed messages

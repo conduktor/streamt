@@ -18,8 +18,39 @@ from click.testing import CliRunner
 from streamt.cli import main
 
 
+# Default Flink config required for models with SQL transformations
+DEFAULT_FLINK_CONFIG = {
+    "default": "local",
+    "clusters": {
+        "local": {
+            "rest_url": "http://localhost:8082",
+            "sql_gateway_url": "http://localhost:8084",
+        }
+    },
+}
+
+
+def make_runtime(bootstrap: str = "localhost:9092") -> dict:
+    """Create a complete runtime config with kafka and flink."""
+    return {
+        "kafka": {"bootstrap_servers": bootstrap},
+        "flink": DEFAULT_FLINK_CONFIG,
+    }
+
+
 class ProjectFactory:
     """Helper to create test projects."""
+
+    # Default Flink config required for models with SQL transformations
+    DEFAULT_FLINK_CONFIG = {
+        "default": "local",
+        "clusters": {
+            "local": {
+                "rest_url": "http://localhost:8082",
+                "sql_gateway_url": "http://localhost:8084",
+            }
+        },
+    }
 
     def __init__(self, tmpdir: str):
         self.project_path = Path(tmpdir)
@@ -39,7 +70,10 @@ class ProjectFactory:
         if runtime:
             config["runtime"] = runtime
         else:
-            config["runtime"] = {"kafka": {"bootstrap_servers": "localhost:9092"}}
+            config["runtime"] = {
+                "kafka": {"bootstrap_servers": "localhost:9092"},
+                "flink": self.DEFAULT_FLINK_CONFIG,
+            }
 
         with open(self.project_path / "stream_project.yml", "w") as f:
             yaml.dump(config, f)
@@ -64,7 +98,10 @@ class ProjectFactory:
             ],
         }
         if include_runtime_in_project:
-            config["runtime"] = {"kafka": {"bootstrap_servers": "should-be-ignored:9092"}}
+            config["runtime"] = {
+                "kafka": {"bootstrap_servers": "should-be-ignored:9092"},
+                "flink": self.DEFAULT_FLINK_CONFIG,
+            }
 
         with open(self.project_path / "stream_project.yml", "w") as f:
             yaml.dump(config, f)
@@ -155,7 +192,7 @@ class TestMultiEnvMode:
         """Helper to create environment config."""
         return {
             "environment": {"name": name, "description": f"{name} environment"},
-            "runtime": {"kafka": {"bootstrap_servers": bootstrap}},
+            "runtime": make_runtime(bootstrap),
         }
 
     def test_t2_1_multi_env_requires_env_flag(self):
@@ -390,7 +427,7 @@ class TestStreamtEnvVariable:
     def _make_env_config(self, name: str) -> dict:
         return {
             "environment": {"name": name},
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
     def test_t3_1_streamt_env_selects_environment(self):
@@ -491,7 +528,7 @@ class TestPerEnvDotenvLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             factory = ProjectFactory(tmpdir)
             factory.create_single_env_project(
-                runtime={"kafka": {"bootstrap_servers": "${TEST_BOOTSTRAP}"}}
+                runtime=make_runtime("${TEST_BOOTSTRAP}")
             )
             factory.create_dotenv(".env", {"TEST_BOOTSTRAP": "from-base:9092"})
 
@@ -506,9 +543,10 @@ class TestPerEnvDotenvLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             factory = ProjectFactory(tmpdir)
 
+            runtime = make_runtime("${TEST_BOOTSTRAP}")
             env_config = {
                 "environment": {"name": "dev"},
-                "runtime": {"kafka": {"bootstrap_servers": "${TEST_BOOTSTRAP}"}},
+                "runtime": runtime,
             }
             factory.create_multi_env_project(environments={"dev": env_config})
             factory.create_dotenv(".env", {"TEST_BOOTSTRAP": "from-base:9092"})
@@ -546,9 +584,10 @@ class TestPerEnvDotenvLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             factory = ProjectFactory(tmpdir)
 
+            runtime = make_runtime("${TEST_BOOTSTRAP}")
             env_config = {
                 "environment": {"name": "dev"},
-                "runtime": {"kafka": {"bootstrap_servers": "${TEST_BOOTSTRAP}"}},
+                "runtime": runtime,
             }
             factory.create_multi_env_project(environments={"dev": env_config})
             factory.create_dotenv(".env.dev", {"TEST_BOOTSTRAP": "from-dotenv:9092"})
@@ -569,9 +608,10 @@ class TestPerEnvDotenvLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             factory = ProjectFactory(tmpdir)
 
+            runtime = make_runtime("${SHARED_VAR}")
             env_config = {
                 "environment": {"name": "dev"},
-                "runtime": {"kafka": {"bootstrap_servers": "${SHARED_VAR}"}},
+                "runtime": runtime,
             }
             factory.create_multi_env_project(environments={"dev": env_config})
             factory.create_dotenv(".env", {"SHARED_VAR": "shared-value:9092"})
@@ -631,7 +671,7 @@ class TestEnvironmentNameValidation:
 
             env_config = {
                 "environment": {"name": "prod-us-east-1"},
-                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "runtime": make_runtime("localhost:9092"),
             }
             factory.create_multi_env_project(environments={"prod-us-east-1": env_config})
 
@@ -653,7 +693,7 @@ class TestEnvFlagAcrossCommands:
     def _make_env_config(self, name: str) -> dict:
         return {
             "environment": {"name": name},
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
     @pytest.mark.parametrize(
@@ -780,7 +820,7 @@ class TestEdgeCases:
 
             env_config = {
                 "environment": {"name": "dev"},
-                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "runtime": make_runtime("localhost:9092"),
             }
             factory.create_multi_env_project(environments={"dev": env_config})
 
@@ -811,7 +851,7 @@ class TestProtectedEnvironments:
                 "description": f"{name} environment",
                 "protected": protected,
             },
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
             "safety": {"confirm_apply": confirm_apply, "allow_destructive": True},
         }
 
@@ -819,7 +859,7 @@ class TestProtectedEnvironments:
         """Helper to create non-protected environment config."""
         return {
             "environment": {"name": name, "description": f"{name} environment"},
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
     def test_t5_1_protected_env_prompts_in_interactive_mode(self):
@@ -976,7 +1016,7 @@ class TestDestructiveSafety:
                 "description": f"{name} environment",
                 "protected": True,
             },
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
             "safety": {"confirm_apply": True, "allow_destructive": allow_destructive},
         }
 
@@ -1127,7 +1167,7 @@ class TestEnvsCommands:
                 "description": description or f"{name} environment",
                 "protected": protected,
             },
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
     def test_t7_1_envs_list_shows_all_environments(self):
@@ -1259,7 +1299,7 @@ class TestEnvsCommands:
 
             env_config = {
                 "environment": {"name": "dev", "description": "Dev environment"},
-                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "runtime": make_runtime("localhost:9092"),
             }
             factory.create_multi_env_project(environments={"dev": env_config})
 
@@ -1301,7 +1341,7 @@ class TestSecurityFeatures:
     def _make_env_config(self, name: str, bootstrap: str) -> dict:
         return {
             "environment": {"name": name},
-            "runtime": {"kafka": {"bootstrap_servers": bootstrap}},
+            "runtime": make_runtime(bootstrap),
         }
 
     def test_cross_environment_credential_isolation(self):
@@ -1316,15 +1356,11 @@ class TestSecurityFeatures:
                 environments={
                     "dev": {
                         "environment": {"name": "dev"},
-                        "runtime": {
-                            "kafka": {"bootstrap_servers": "${DEV_KAFKA}"},
-                        },
+                        "runtime": make_runtime("${DEV_KAFKA}"),
                     },
                     "prod": {
                         "environment": {"name": "prod"},
-                        "runtime": {
-                            "kafka": {"bootstrap_servers": "${PROD_KAFKA}"},
-                        },
+                        "runtime": make_runtime("${PROD_KAFKA}"),
                     },
                 }
             )
@@ -1363,10 +1399,12 @@ class TestSecurityFeatures:
                 main, ["validate", "-p", str(tmpdir), "--env", "../../../etc/passwd"]
             )
 
-            # Should fail safely
+            # Should fail safely with validation error (not filesystem error)
             assert result.exit_code != 0
-            # Should not expose filesystem errors
-            assert "etc/passwd" not in result.output.lower() or "not found" in result.output.lower()
+            # Should show "invalid" error (blocked by validation, not filesystem access)
+            assert "invalid" in result.output.lower(), (
+                f"Expected 'invalid' in error message. Got: {result.output}"
+            )
 
     def test_secret_env_vars_not_logged(self):
         """Sensitive environment variables should not appear in verbose output."""
@@ -1415,7 +1453,7 @@ class TestErrorMessageQuality:
     def _make_env_config(self, name: str) -> dict:
         return {
             "environment": {"name": name},
-            "runtime": {"kafka": {"bootstrap_servers": f"{name}-kafka:9092"}},
+            "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
     def test_missing_env_error_suggests_available(self):
@@ -1677,6 +1715,7 @@ class TestRealisticConfigurations:
                 "environment": {"name": "dev", "description": "Development"},
                 "runtime": {
                     "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": DEFAULT_FLINK_CONFIG,
                     "schema_registry": {
                         "url": "http://localhost:8081",
                         "compatibility": "BACKWARD",  # Relaxed for dev
@@ -1688,6 +1727,7 @@ class TestRealisticConfigurations:
                 "environment": {"name": "prod", "description": "Production", "protected": True},
                 "runtime": {
                     "kafka": {"bootstrap_servers": "${PROD_KAFKA}"},
+                    "flink": DEFAULT_FLINK_CONFIG,
                     "schema_registry": {
                         "url": "${PROD_SR_URL}",
                         "compatibility": "FULL_TRANSITIVE",  # Strict for prod
