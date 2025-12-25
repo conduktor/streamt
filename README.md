@@ -396,6 +396,7 @@ tests:
 - [ ] CI/CD GitHub Actions templates — Automation for deploy pipelines
 - [ ] Curated connector library — Tested configs for Postgres, Snowflake, S3
 - [ ] CLI: `streamt init` — Initialize new project from template
+- [ ] CLI: `streamt init --discover` — Bootstrap config from existing Kafka/SR infrastructure ([spec](docs/specs/init-command.md))
 - [ ] CLI: `streamt diff` — Show diff between local and deployed state
 - [ ] CLI: `streamt rollback` — Rollback to previous deployment
 
