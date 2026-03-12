@@ -267,7 +267,7 @@ class TestConnectClusterConfigAuth:
             ssl_ca_location="/certs/ca.pem",
         )
         assert cfg.username == "admin"
-        assert cfg.password == "secret"
+        assert cfg.password.get_secret_value() == "secret"
         assert cfg.ssl_ca_location == "/certs/ca.pem"
 
     def test_connect_config_minimal(self):
@@ -337,11 +337,11 @@ class TestYamlParsingAuthFields:
             assert k.security_protocol == "SASL_SSL"
             assert k.sasl_mechanism == "SCRAM-SHA-256"
             assert k.sasl_username == "admin"
-            assert k.sasl_password == "secret"
+            assert k.sasl_password.get_secret_value() == "secret"
             assert k.ssl_ca_location == "/certs/ca.pem"
             assert k.ssl_certificate_location == "/certs/client.pem"
             assert k.ssl_key_location == "/certs/client.key"
-            assert k.ssl_key_password == "keypass"
+            assert k.ssl_key_password.get_secret_value() == "keypass"
 
     def test_schema_registry_ssl_parsed(self):
         from streamt.core.parser import ProjectParser
@@ -365,7 +365,7 @@ class TestYamlParsingAuthFields:
             project = ProjectParser(p).parse()
             sr = project.runtime.schema_registry
             assert sr.username == "sruser"
-            assert sr.password == "srpass"
+            assert sr.password.get_secret_value() == "srpass"
             assert sr.ssl_ca_location == "/certs/sr-ca.pem"
             assert sr.ssl_certificate_location == "/certs/sr-client.pem"
             assert sr.ssl_key_location == "/certs/sr-client.key"
@@ -399,8 +399,8 @@ class TestYamlParsingAuthFields:
             project = ProjectParser(p).parse()
             fc = project.runtime.flink.clusters["prod"]
             assert fc.username == "fuser"
-            assert fc.password == "fpass"
-            assert fc.api_key == "fkey-123"
+            assert fc.password.get_secret_value() == "fpass"
+            assert fc.api_key.get_secret_value() == "fkey-123"
             assert fc.ssl_ca_location == "/certs/flink-ca.pem"
             assert fc.ssl_certificate_location == "/certs/flink-client.pem"
             assert fc.ssl_key_location == "/certs/flink-client.key"
@@ -432,7 +432,7 @@ class TestYamlParsingAuthFields:
             project = ProjectParser(p).parse()
             cc = project.runtime.connect.clusters["prod"]
             assert cc.username == "cuser"
-            assert cc.password == "cpass"
+            assert cc.password.get_secret_value() == "cpass"
             assert cc.ssl_ca_location == "/certs/connect-ca.pem"
             assert cc.ssl_certificate_location == "/certs/connect-client.pem"
             assert cc.ssl_key_location == "/certs/connect-client.key"
@@ -462,7 +462,7 @@ class TestYamlParsingAuthFields:
                 project = ProjectParser(p).parse()
                 k = project.runtime.kafka
                 assert k.sasl_username == "envuser"
-                assert k.sasl_password == "envpass"
+                assert k.sasl_password.get_secret_value() == "envpass"
                 assert k.ssl_ca_location == "/resolved/ca.pem"
             finally:
                 del os.environ["TEST_KAFKA_USER"]
@@ -486,7 +486,7 @@ class TestYamlParsingAuthFields:
             with open(p / ".env", "w") as f:
                 f.write("DOTENV_KAFKA_PASS=from-dotenv\n")
             project = ProjectParser(p).parse()
-            assert project.runtime.kafka.sasl_password == "from-dotenv"
+            assert project.runtime.kafka.sasl_password.get_secret_value() == "from-dotenv"
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +771,7 @@ class TestMultiEnvAuthOverride:
             assert k.security_protocol == "SASL_SSL"
             assert k.sasl_mechanism == "PLAIN"
             assert k.sasl_username == "produser"
-            assert k.sasl_password == "prodpass"
+            assert k.sasl_password.get_secret_value() == "prodpass"
             assert k.ssl_ca_location == "/certs/prod-ca.pem"
 
     def test_env_specific_dotenv_for_auth(self):
@@ -803,7 +803,7 @@ class TestMultiEnvAuthOverride:
                 f.write("STAGING_KAFKA_PASS=staging-secret\n")
 
             project = ProjectParser(p, environment="staging").parse()
-            assert project.runtime.kafka.sasl_password == "staging-secret"
+            assert project.runtime.kafka.sasl_password.get_secret_value() == "staging-secret"
 
     def test_dev_plaintext_prod_sasl_ssl(self):
         from streamt.core.parser import ProjectParser

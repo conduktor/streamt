@@ -91,6 +91,13 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
 
 
+def _resolve_secret(val):
+    """Resolve SecretStr to plain string for deployer constructors."""
+    if val is None:
+        return None
+    return val.get_secret_value() if hasattr(val, "get_secret_value") else val
+
+
 def _make_sr_deployer(project: Any, fmt: Any) -> Any:
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
     if project.runtime.schema_registry:
@@ -99,7 +106,7 @@ def _make_sr_deployer(project: Any, fmt: Any) -> Any:
             return SchemaRegistryDeployer(
                 sr.url,
                 username=sr.username,
-                password=sr.password,
+                password=_resolve_secret(sr.password),
                 ssl_ca_location=sr.ssl_ca_location,
                 ssl_certificate_location=sr.ssl_certificate_location,
                 ssl_key_location=sr.ssl_key_location,
@@ -132,8 +139,8 @@ def _make_flink_deployer(project: Any, fmt: Any) -> Any:
                         rest_url=cfg.rest_url,
                         sql_gateway_url=cfg.sql_gateway_url,
                         username=cfg.username,
-                        password=cfg.password,
-                        api_key=cfg.api_key,
+                        password=_resolve_secret(cfg.password),
+                        api_key=_resolve_secret(cfg.api_key),
                         ssl_ca_location=cfg.ssl_ca_location,
                         ssl_certificate_location=cfg.ssl_certificate_location,
                         ssl_key_location=cfg.ssl_key_location,
@@ -153,7 +160,7 @@ def _make_connect_deployer(project: Any, fmt: Any) -> Any:
                 return ConnectDeployer(
                     cfg.rest_url,
                     username=cfg.username,
-                    password=cfg.password,
+                    password=_resolve_secret(cfg.password),
                     ssl_ca_location=cfg.ssl_ca_location,
                     ssl_certificate_location=cfg.ssl_certificate_location,
                     ssl_key_location=cfg.ssl_key_location,

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 # ============================================================================
 # Enums
@@ -103,14 +103,17 @@ class KafkaConfig(BaseModel):
     security_protocol: Optional[str] = None
     sasl_mechanism: Optional[str] = None
     sasl_username: Optional[str] = None
-    sasl_password: Optional[str] = None
+    sasl_password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
-    ssl_key_password: Optional[str] = None
+    ssl_key_password: Optional[SecretStr] = None
 
     def to_confluent_config(self) -> dict[str, str]:
-        """Return confluent_kafka config dict with only non-None values."""
+        """Return confluent_kafka config dict with only non-None values.
+
+        Resolves SecretStr fields to plain strings for confluent_kafka compatibility.
+        """
         mapping = {
             "bootstrap_servers": "bootstrap.servers",
             "security_protocol": "security.protocol",
@@ -122,11 +125,12 @@ class KafkaConfig(BaseModel):
             "ssl_key_location": "ssl.key.location",
             "ssl_key_password": "ssl.key.password",
         }
-        return {
-            confluent_key: getattr(self, field)
-            for field, confluent_key in mapping.items()
-            if getattr(self, field) is not None
-        }
+        result = {}
+        for field, confluent_key in mapping.items():
+            val = getattr(self, field)
+            if val is not None:
+                result[confluent_key] = val.get_secret_value() if isinstance(val, SecretStr) else val
+        return result
 
 
 class SchemaRegistryConfig(BaseModel):
@@ -134,7 +138,7 @@ class SchemaRegistryConfig(BaseModel):
 
     url: str
     username: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
@@ -148,9 +152,9 @@ class FlinkClusterConfig(BaseModel):
     sql_gateway_url: Optional[str] = None  # Flink SQL Gateway URL for SQL submission
     version: Optional[str] = None
     environment: Optional[str] = None
-    api_key: Optional[str] = None
+    api_key: Optional[SecretStr] = None
     username: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
@@ -168,7 +172,7 @@ class ConnectClusterConfig(BaseModel):
 
     rest_url: str
     username: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
@@ -182,20 +186,12 @@ class ConnectConfig(BaseModel):
 
 
 class GatewayConfig(BaseModel):
-    """Conduktor Gateway configuration.
-
-    Attributes:
-        admin_url: Gateway Admin API URL (e.g., http://localhost:8888)
-        proxy_bootstrap: Gateway proxy bootstrap servers for Kafka clients (e.g., localhost:6969)
-        username: Admin API username (default: admin)
-        password: Admin API password (default: conduktor)
-        virtual_cluster: Optional virtual cluster for multi-tenant setups
-    """
+    """Conduktor Gateway configuration."""
 
     admin_url: Optional[str] = None
     proxy_bootstrap: Optional[str] = None
-    username: str = "admin"
-    password: str = "conduktor"
+    username: Optional[str] = None
+    password: Optional[SecretStr] = None
     virtual_cluster: Optional[str] = None
 
 

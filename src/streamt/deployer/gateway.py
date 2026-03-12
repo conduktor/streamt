@@ -96,20 +96,13 @@ class GatewayDeployer:
     def __init__(
         self,
         admin_url: str,
-        username: str = "admin",
-        password: str = "conduktor",
+        username: Optional[str] = None,
+        password: Optional[str] = None,
         virtual_cluster: Optional[str] = None,
     ) -> None:
-        """Initialize Gateway deployer.
-
-        Args:
-            admin_url: Gateway Admin API URL (e.g., http://localhost:8888)
-            username: Admin API username
-            password: Admin API password
-            virtual_cluster: Optional virtual cluster for multi-tenant setups
-        """
+        """Initialize Gateway deployer."""
         self.admin_url = admin_url.rstrip("/")
-        self.auth = HTTPBasicAuth(username, password)
+        self.auth = HTTPBasicAuth(username, password) if username and password else None
         self.virtual_cluster = virtual_cluster
         self._session = requests.Session()
         self._session.auth = self.auth

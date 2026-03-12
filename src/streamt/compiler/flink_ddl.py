@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from pydantic import SecretStr
+
 from streamt.core.models import KafkaConfig
+
+
+def _secret(val: str | SecretStr | None) -> str | None:
+    """Resolve SecretStr to plain string."""
+    if val is None:
+        return None
+    return val.get_secret_value() if isinstance(val, SecretStr) else val
 
 # SASL mechanism → Java login module class
 _JAAS_MODULES = {
@@ -60,7 +69,7 @@ def _kafka_auth_properties(kafka: KafkaConfig) -> list[tuple[str, str]]:
             jaas = (
                 f'{module} required '
                 f'username="{kafka.sasl_username}" '
-                f'password="{kafka.sasl_password}";'
+                f'password="{_secret(kafka.sasl_password)}";'
             )
             props.append(("properties.sasl.jaas.config", jaas))
 
@@ -74,6 +83,6 @@ def _kafka_auth_properties(kafka: KafkaConfig) -> list[tuple[str, str]]:
         props.append(("properties.ssl.key.location", kafka.ssl_key_location))
 
     if kafka.ssl_key_password:
-        props.append(("properties.ssl.key.password", kafka.ssl_key_password))
+        props.append(("properties.ssl.key.password", _secret(kafka.ssl_key_password)))
 
     return props
