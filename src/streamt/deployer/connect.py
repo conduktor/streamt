@@ -99,19 +99,17 @@ class ConnectDeployer:
         endpoint: str,
         timeout: int = DEFAULT_TIMEOUT,
         **kwargs: Any,
-    ) -> dict | list:
-        """Make a request to Connect REST API.
+    ) -> Any:
+        """Make a request to Connect REST API. Returns parsed JSON.
 
-        Args:
-            method: HTTP method
-            endpoint: API endpoint
-            timeout: Request timeout in seconds
-            **kwargs: Additional arguments passed to requests
+        Raises on HTTP errors.
         """
         url = f"{self.rest_url}{endpoint}"
         response = self._http_session.request(method, url, timeout=timeout, **kwargs)
         response.raise_for_status()
-        return response.json() if response.content else {}
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
 
     def check_connection(self) -> bool:
         """Check if Connect cluster is accessible."""

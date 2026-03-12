@@ -157,15 +157,10 @@ class FlinkDeployer:
         use_sql_gateway: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
         **kwargs: Any,
-    ) -> dict:
-        """Make a request to Flink API.
+    ) -> Any:
+        """Make a request to Flink API. Returns parsed JSON.
 
-        Args:
-            method: HTTP method
-            endpoint: API endpoint
-            use_sql_gateway: If True, use SQL Gateway URL instead of REST URL
-            timeout: Request timeout in seconds
-            **kwargs: Additional arguments passed to requests
+        Raises on HTTP errors.
         """
         if use_sql_gateway:
             if not self.sql_gateway_url:
@@ -176,7 +171,9 @@ class FlinkDeployer:
         url = f"{base_url}{endpoint}"
         response = self._http_session.request(method, url, timeout=timeout, **kwargs)
         response.raise_for_status()
-        return response.json() if response.content else {}
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
 
     def check_connection(self) -> bool:
         """Check if Flink cluster is accessible."""

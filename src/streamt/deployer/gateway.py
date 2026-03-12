@@ -127,8 +127,12 @@ class GatewayDeployer:
         endpoint: str,
         json: Optional[dict[str, Any]] = None,
         params: Optional[dict[str, str]] = None,
-    ) -> requests.Response:
-        """Make an authenticated request to the Gateway API."""
+        not_found_ok: bool = False,
+    ) -> Any:
+        """Make an authenticated request to the Gateway API. Returns parsed JSON.
+
+        Raises on HTTP errors. If not_found_ok=True, returns None on 404.
+        """
         url = f"{self.admin_url}/gateway/v2{endpoint}"
 
         try:
@@ -149,7 +153,14 @@ class GatewayDeployer:
                 "Gateway authentication failed. Check username/password."
             )
 
-        return response
+        if not_found_ok and response.status_code == 404:
+            return None
+
+        if response.status_code == 204:
+            return None
+
+        response.raise_for_status()
+        return response.json()
 
     def health_check(self) -> bool:
         """Check if Gateway is healthy."""
@@ -168,10 +179,8 @@ class GatewayDeployer:
 
     def list_interceptors(self) -> list[dict[str, Any]]:
         """List all interceptors."""
-        response = self._request("GET", "/interceptor")
-        if response.status_code == 200:
-            return response.json()
-        return []
+        data = self._request("GET", "/interceptor")
+        return data if isinstance(data, list) else []
 
     def get_interceptor(self, name: str) -> Optional[dict[str, Any]]:
         """Get a specific interceptor by name."""
@@ -227,20 +236,15 @@ class GatewayDeployer:
             },
         }
 
-        response = self._request("PUT", "/interceptor", json=payload)
-        response.raise_for_status()
-
+        self._request("PUT", "/interceptor", json=payload)
         logger.info(f"Created/updated interceptor '{name}'")
         return payload
 
     def delete_interceptor(self, name: str) -> bool:
         """Delete an interceptor by name."""
-        response = self._request("DELETE", f"/interceptor/{name}")
-
-        if response.status_code == 404:
+        data = self._request("DELETE", f"/interceptor/{name}", not_found_ok=True)
+        if data is None:
             return False
-
-        response.raise_for_status()
         logger.info(f"Deleted interceptor '{name}'")
         return True
 
@@ -250,10 +254,8 @@ class GatewayDeployer:
 
     def list_alias_topics(self) -> list[dict[str, Any]]:
         """List all alias topic mappings."""
-        response = self._request("GET", "/alias-topic")
-        if response.status_code == 200:
-            return response.json()
-        return []
+        data = self._request("GET", "/alias-topic")
+        return data if isinstance(data, list) else []
 
     def get_alias_topic(self, name: str) -> Optional[dict[str, Any]]:
         """Get a specific alias topic by name."""
@@ -298,9 +300,7 @@ class GatewayDeployer:
             },
         }
 
-        response = self._request("PUT", "/alias-topic", json=payload)
-        response.raise_for_status()
-
+        self._request("PUT", "/alias-topic", json=payload)
         logger.info(f"Created/updated alias topic '{name}' -> '{physical_topic}'")
         return payload
 
@@ -313,17 +313,10 @@ class GatewayDeployer:
         elif self.virtual_cluster:
             body["vCluster"] = self.virtual_cluster
 
-        response = self._request("DELETE", "/alias-topic", json=body)
-
-        if response.status_code == 404:
+        data = self._request("DELETE", "/alias-topic", json=body, not_found_ok=True)
+        if data is None:
             return False
-
-        # 200 and 204 are both success
-        if response.status_code in (200, 204):
-            logger.info(f"Deleted alias topic '{name}'")
-            return True
-
-        response.raise_for_status()
+        logger.info(f"Deleted alias topic '{name}'")
         return True
 
     # -------------------------------------------------------------------------

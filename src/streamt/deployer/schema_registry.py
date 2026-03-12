@@ -101,52 +101,48 @@ class SchemaRegistryDeployer:
         method: str,
         path: str,
         timeout: int = DEFAULT_TIMEOUT,
+        not_found_ok: bool = False,
         **kwargs: Any,
-    ) -> requests.Response:
-        """Make a request to Schema Registry.
+    ) -> Any:
+        """Make a request to Schema Registry. Returns parsed JSON.
 
-        Args:
-            method: HTTP method
-            path: API path
-            timeout: Request timeout in seconds
-            **kwargs: Additional arguments passed to requests
+        Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
         url = f"{self.url}{path}"
-        return self._http_session.request(method, url, timeout=timeout, **kwargs)
+        response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+        if not_found_ok and response.status_code == 404:
+            return None
+        response.raise_for_status()
+        if response.status_code == 204:
+            return None
+        return response.json()
 
     def check_connection(self) -> bool:
         """Check if Schema Registry is available."""
         try:
-            response = self._request("GET", "/subjects", timeout=HEALTH_CHECK_TIMEOUT)
-            return response.status_code == 200
+            self._request("GET", "/subjects", timeout=HEALTH_CHECK_TIMEOUT)
+            return True
         except Exception as e:
             logger.debug(f"Schema Registry connection check failed: {e}")
             return False
 
     def list_subjects(self) -> list[str]:
         """List all subjects."""
-        response = self._request("GET", "/subjects")
-        response.raise_for_status()
-        return response.json()
+        return self._request("GET", "/subjects")
 
     def get_schema_state(self, subject: str) -> SchemaState:
         """Get current state of a schema subject."""
-        response = self._request("GET", f"/subjects/{subject}/versions/latest")
+        data = self._request("GET", f"/subjects/{subject}/versions/latest", not_found_ok=True)
 
-        if response.status_code == 404:
+        if data is None:
             return SchemaState(subject=subject, exists=False)
-
-        response.raise_for_status()
-        data = response.json()
 
         # Parse schema JSON string
         schema = json.loads(data.get("schema", "{}"))
 
         # Get compatibility level
-        compat_response = self._request("GET", f"/config/{subject}")
-        compatibility = None
-        if compat_response.status_code == 200:
-            compatibility = compat_response.json().get("compatibilityLevel")
+        compat_data = self._request("GET", f"/config/{subject}", not_found_ok=True)
+        compatibility = compat_data.get("compatibilityLevel") if compat_data else None
 
         return SchemaState(
             subject=subject,
@@ -169,22 +165,12 @@ class SchemaRegistryDeployer:
             "schema": json.dumps(schema) if isinstance(schema, dict) else schema,
             "schemaType": schema_type,
         }
-        response = self._request(
-            "POST",
-            f"/subjects/{subject}/versions",
-            json=payload,
-        )
-        response.raise_for_status()
-        return response.json()["id"]
+        data = self._request("POST", f"/subjects/{subject}/versions", json=payload)
+        return data["id"]
 
     def set_compatibility(self, subject: str, level: str) -> None:
         """Set compatibility level for a subject."""
-        response = self._request(
-            "PUT",
-            f"/config/{subject}",
-            json={"compatibility": level},
-        )
-        response.raise_for_status()
+        self._request("PUT", f"/config/{subject}", json={"compatibility": level})
 
     def check_compatibility(
         self,
@@ -197,26 +183,23 @@ class SchemaRegistryDeployer:
             "schema": json.dumps(schema) if isinstance(schema, dict) else schema,
             "schemaType": schema_type,
         }
-        response = self._request(
+        data = self._request(
             "POST",
             f"/compatibility/subjects/{subject}/versions/latest",
             json=payload,
+            not_found_ok=True,
         )
-        if response.status_code == 404:
+        if data is None:
             return True  # No existing schema, anything is compatible
-        response.raise_for_status()
-        return response.json().get("is_compatible", False)
+        return data.get("is_compatible", False)
 
     def delete_subject(self, subject: str, permanent: bool = False) -> list[int]:
         """Delete a subject."""
         url = f"/subjects/{subject}"
         if permanent:
             url += "?permanent=true"
-        response = self._request("DELETE", url)
-        if response.status_code == 404:
-            return []
-        response.raise_for_status()
-        return response.json()
+        data = self._request("DELETE", url, not_found_ok=True)
+        return data if data is not None else []
 
     def plan_schema(self, artifact: SchemaArtifact) -> SchemaChange:
         """Plan changes for a schema."""
