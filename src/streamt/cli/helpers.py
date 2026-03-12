@@ -43,6 +43,47 @@ def close_deployers(*deployers: Any) -> None:
                 pass
 
 
+def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
+    """Classify a deployer exception into (error_code, actionable_message)."""
+    from streamt.core.errors import ErrorCode
+
+    msg = str(e).lower()
+
+    # SSL/TLS errors
+    if any(kw in msg for kw in ("ssl", "certificate", "tls", "handshake")):
+        return (
+            ErrorCode.SSL_ERROR,
+            f"SSL/TLS error connecting to {service}: {e}. "
+            f"Check ssl_ca_location, ssl_certificate_location, and ssl_key_location in your runtime config.",
+        )
+
+    # Auth errors (HTTP 401/403 or SASL failures)
+    if any(kw in msg for kw in ("401", "403", "unauthorized", "forbidden", "authentication", "sasl")):
+        return (
+            ErrorCode.AUTH_FAILED,
+            f"Authentication failed for {service}: {e}. "
+            f"Check your username/password or API key in your runtime config.",
+        )
+
+    # Connection refused / unreachable
+    if any(kw in msg for kw in ("connection refused", "connect timeout", "name or service not known", "no route", "unreachable")):
+        return (
+            ErrorCode.CONNECTION_REFUSED,
+            f"Cannot reach {service}: {e}. Check that the URL/bootstrap_servers is correct and the service is running.",
+        )
+
+    # Fallback
+    return ("", f"Cannot connect to {service}: {e}")
+
+
+def _warn_deployer_error(fmt: OutputFormatter, e: Exception, service: str) -> None:
+    """Emit a structured warning for a deployer connection error."""
+    code, message = _classify_connection_error(e, service)
+    if code:
+        fmt.add_error(StructuredError(code=code, message=message))
+    fmt.print_warning(message)
+
+
 def _resolve_secret(val: Any) -> Any:
     """Resolve SecretStr to plain string for deployer constructors."""
     if val is None:
@@ -58,7 +99,7 @@ def make_kafka_deployer(project: Any, fmt: OutputFormatter) -> Any:
         bootstrap = confluent_config.pop("bootstrap.servers")
         return KafkaDeployer(bootstrap, **confluent_config)
     except Exception as e:
-        fmt.print_warning(f"Cannot connect to Kafka: {e}")
+        _warn_deployer_error(fmt, e, "Kafka")
     return None
 
 
@@ -77,7 +118,7 @@ def make_sr_deployer(project: Any, fmt: OutputFormatter) -> Any:
                 ssl_key_location=sr.ssl_key_location,
             )
         except Exception as e:
-            fmt.print_warning(f"Cannot connect to Schema Registry: {e}")
+            _warn_deployer_error(fmt, e, "Schema Registry")
     return None
 
 
@@ -101,7 +142,7 @@ def make_flink_deployer(project: Any, fmt: OutputFormatter) -> Any:
                         ssl_key_location=cfg.ssl_key_location,
                     )
         except Exception as e:
-            fmt.print_warning(f"Cannot connect to Flink: {e}")
+            _warn_deployer_error(fmt, e, "Flink")
     return None
 
 
@@ -122,5 +163,5 @@ def make_connect_deployer(project: Any, fmt: OutputFormatter) -> Any:
                     ssl_key_location=cfg.ssl_key_location,
                 )
         except Exception as e:
-            fmt.print_warning(f"Cannot connect to Connect: {e}")
+            _warn_deployer_error(fmt, e, "Kafka Connect")
     return None
