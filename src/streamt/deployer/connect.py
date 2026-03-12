@@ -56,10 +56,26 @@ class ConnectDeployer:
             deployer.list_connectors()
     """
 
-    def __init__(self, rest_url: str) -> None:
+    def __init__(
+        self,
+        rest_url: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        ssl_ca_location: Optional[str] = None,
+        ssl_certificate_location: Optional[str] = None,
+        ssl_key_location: Optional[str] = None,
+    ) -> None:
         """Initialize Connect deployer."""
         self.rest_url = rest_url.rstrip("/")
         self._http_session = requests.Session()
+        if username and password:
+            self._http_session.auth = (username, password)
+        if ssl_ca_location:
+            self._http_session.verify = ssl_ca_location
+        if ssl_certificate_location and ssl_key_location:
+            self._http_session.cert = (ssl_certificate_location, ssl_key_location)
+        elif ssl_certificate_location:
+            self._http_session.cert = ssl_certificate_location
 
     def __enter__(self) -> "ConnectDeployer":
         """Enter context manager."""

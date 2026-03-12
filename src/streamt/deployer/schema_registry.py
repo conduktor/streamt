@@ -61,6 +61,9 @@ class SchemaRegistryDeployer:
         url: str,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        ssl_ca_location: Optional[str] = None,
+        ssl_certificate_location: Optional[str] = None,
+        ssl_key_location: Optional[str] = None,
     ) -> None:
         """Initialize Schema Registry deployer."""
         self.url = url.rstrip("/")
@@ -70,6 +73,12 @@ class SchemaRegistryDeployer:
         self._http_session.headers.update(self.headers)
         if self.auth:
             self._http_session.auth = self.auth
+        if ssl_ca_location:
+            self._http_session.verify = ssl_ca_location
+        if ssl_certificate_location and ssl_key_location:
+            self._http_session.cert = (ssl_certificate_location, ssl_key_location)
+        elif ssl_certificate_location:
+            self._http_session.cert = ssl_certificate_location
 
     def __enter__(self) -> "SchemaRegistryDeployer":
         """Enter context manager."""

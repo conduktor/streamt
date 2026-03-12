@@ -65,10 +65,14 @@ def status(
                 fmt.print("\n[cyan]Schemas:[/cyan]")
             if project.runtime.schema_registry:
                 try:
+                    sr = project.runtime.schema_registry
                     sd = SchemaRegistryDeployer(
-                        project.runtime.schema_registry.url,
-                        username=project.runtime.schema_registry.username,
-                        password=project.runtime.schema_registry.password,
+                        sr.url,
+                        username=sr.username,
+                        password=sr.password,
+                        ssl_ca_location=sr.ssl_ca_location,
+                        ssl_certificate_location=sr.ssl_certificate_location,
+                        ssl_key_location=sr.ssl_key_location,
                     )
                     for s in manifest.artifacts["schemas"]:
                         if not matches(s["subject"]):
@@ -93,7 +97,9 @@ def status(
         if is_text:
             fmt.print("\n[cyan]Topics:[/cyan]")
         try:
-            kd = KafkaDeployer(project.runtime.kafka.bootstrap_servers)
+            confluent_config = project.runtime.kafka.to_confluent_config()
+            bootstrap = confluent_config.pop("bootstrap.servers")
+            kd = KafkaDeployer(bootstrap, **confluent_config)
             for t in manifest.artifacts.get("topics", []):
                 if not matches(t["name"]):
                     continue
@@ -126,7 +132,15 @@ def status(
                     if default and default in project.runtime.flink.clusters:
                         cfg = project.runtime.flink.clusters[default]
                         if cfg.rest_url:
-                            fd = FlinkDeployer(cfg.rest_url)
+                            fd = FlinkDeployer(
+                                cfg.rest_url,
+                                username=cfg.username,
+                                password=cfg.password,
+                                api_key=cfg.api_key,
+                                ssl_ca_location=cfg.ssl_ca_location,
+                                ssl_certificate_location=cfg.ssl_certificate_location,
+                                ssl_key_location=cfg.ssl_key_location,
+                            )
                             for j in manifest.artifacts["flink_jobs"]:
                                 if not matches(j["name"]):
                                     continue
@@ -156,7 +170,14 @@ def status(
                     default = project.runtime.connect.default
                     if default and default in project.runtime.connect.clusters:
                         cfg = project.runtime.connect.clusters[default]
-                        cd = ConnectDeployer(cfg.rest_url)
+                        cd = ConnectDeployer(
+                            cfg.rest_url,
+                            username=cfg.username,
+                            password=cfg.password,
+                            ssl_ca_location=cfg.ssl_ca_location,
+                            ssl_certificate_location=cfg.ssl_certificate_location,
+                            ssl_key_location=cfg.ssl_key_location,
+                        )
                         for c in manifest.artifacts["connectors"]:
                             if not matches(c["name"]):
                                 continue

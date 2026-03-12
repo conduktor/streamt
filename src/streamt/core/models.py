@@ -104,6 +104,29 @@ class KafkaConfig(BaseModel):
     sasl_mechanism: Optional[str] = None
     sasl_username: Optional[str] = None
     sasl_password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
+    ssl_certificate_location: Optional[str] = None
+    ssl_key_location: Optional[str] = None
+    ssl_key_password: Optional[str] = None
+
+    def to_confluent_config(self) -> dict[str, str]:
+        """Return confluent_kafka config dict with only non-None values."""
+        mapping = {
+            "bootstrap_servers": "bootstrap.servers",
+            "security_protocol": "security.protocol",
+            "sasl_mechanism": "sasl.mechanism",
+            "sasl_username": "sasl.username",
+            "sasl_password": "sasl.password",
+            "ssl_ca_location": "ssl.ca.location",
+            "ssl_certificate_location": "ssl.certificate.location",
+            "ssl_key_location": "ssl.key.location",
+            "ssl_key_password": "ssl.key.password",
+        }
+        return {
+            confluent_key: getattr(self, field)
+            for field, confluent_key in mapping.items()
+            if getattr(self, field) is not None
+        }
 
 
 class SchemaRegistryConfig(BaseModel):
@@ -112,6 +135,9 @@ class SchemaRegistryConfig(BaseModel):
     url: str
     username: Optional[str] = None
     password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
+    ssl_certificate_location: Optional[str] = None
+    ssl_key_location: Optional[str] = None
 
 
 class FlinkClusterConfig(BaseModel):
@@ -123,6 +149,11 @@ class FlinkClusterConfig(BaseModel):
     version: Optional[str] = None
     environment: Optional[str] = None
     api_key: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
+    ssl_certificate_location: Optional[str] = None
+    ssl_key_location: Optional[str] = None
 
 
 class FlinkConfig(BaseModel):
@@ -136,6 +167,11 @@ class ConnectClusterConfig(BaseModel):
     """Connect cluster configuration."""
 
     rest_url: str
+    username: Optional[str] = None
+    password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
+    ssl_certificate_location: Optional[str] = None
+    ssl_key_location: Optional[str] = None
 
 
 class ConnectConfig(BaseModel):

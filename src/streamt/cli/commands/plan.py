@@ -99,10 +99,14 @@ def _make_sr_deployer(project: Any, fmt: Any) -> Any:
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
     if project.runtime.schema_registry:
         try:
+            sr = project.runtime.schema_registry
             return SchemaRegistryDeployer(
-                project.runtime.schema_registry.url,
-                username=project.runtime.schema_registry.username,
-                password=project.runtime.schema_registry.password,
+                sr.url,
+                username=sr.username,
+                password=sr.password,
+                ssl_ca_location=sr.ssl_ca_location,
+                ssl_certificate_location=sr.ssl_certificate_location,
+                ssl_key_location=sr.ssl_key_location,
             )
         except Exception as e:
             fmt.print_warning(f"Cannot connect to Schema Registry: {e}")
@@ -112,7 +116,9 @@ def _make_sr_deployer(project: Any, fmt: Any) -> Any:
 def _make_kafka_deployer(project: Any, fmt: Any) -> Any:
     from streamt.deployer.kafka import KafkaDeployer
     try:
-        return KafkaDeployer(project.runtime.kafka.bootstrap_servers)
+        confluent_config = project.runtime.kafka.to_confluent_config()
+        bootstrap = confluent_config.pop("bootstrap.servers")
+        return KafkaDeployer(bootstrap, **confluent_config)
     except Exception as e:
         fmt.print_warning(f"Cannot connect to Kafka: {e}")
     return None
@@ -126,7 +132,16 @@ def _make_flink_deployer(project: Any, fmt: Any) -> Any:
             if default and default in project.runtime.flink.clusters:
                 cfg = project.runtime.flink.clusters[default]
                 if cfg.rest_url:
-                    return FlinkDeployer(rest_url=cfg.rest_url, sql_gateway_url=cfg.sql_gateway_url)
+                    return FlinkDeployer(
+                        rest_url=cfg.rest_url,
+                        sql_gateway_url=cfg.sql_gateway_url,
+                        username=cfg.username,
+                        password=cfg.password,
+                        api_key=cfg.api_key,
+                        ssl_ca_location=cfg.ssl_ca_location,
+                        ssl_certificate_location=cfg.ssl_certificate_location,
+                        ssl_key_location=cfg.ssl_key_location,
+                    )
         except Exception as e:
             fmt.print_warning(f"Cannot connect to Flink: {e}")
     return None
@@ -139,7 +154,14 @@ def _make_connect_deployer(project: Any, fmt: Any) -> Any:
             default = project.runtime.connect.default
             if default and default in project.runtime.connect.clusters:
                 cfg = project.runtime.connect.clusters[default]
-                return ConnectDeployer(cfg.rest_url)
+                return ConnectDeployer(
+                    cfg.rest_url,
+                    username=cfg.username,
+                    password=cfg.password,
+                    ssl_ca_location=cfg.ssl_ca_location,
+                    ssl_certificate_location=cfg.ssl_certificate_location,
+                    ssl_key_location=cfg.ssl_key_location,
+                )
         except Exception as e:
             fmt.print_warning(f"Cannot connect to Connect: {e}")
     return None

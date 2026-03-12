@@ -82,10 +82,11 @@ runtime:
     sasl_username: ${KAFKA_USER}
     sasl_password: ${KAFKA_PASSWORD}
 
-    # SSL (planned - not yet implemented)
-    # ssl_ca_location: /path/to/ca.pem
-    # ssl_certificate_location: /path/to/cert.pem
-    # ssl_key_location: /path/to/key.pem
+    # SSL/mTLS (optional)
+    ssl_ca_location: /path/to/ca.pem
+    ssl_certificate_location: /path/to/client-cert.pem
+    ssl_key_location: /path/to/client-key.pem
+    ssl_key_password: ${SSL_KEY_PASSWORD}
 ```
 
 | Field | Type | Default | Description |
@@ -95,7 +96,10 @@ runtime:
 | `sasl_mechanism` | string | - | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
 | `sasl_username` | string | - | SASL username |
 | `sasl_password` | string | - | SASL password |
-| `ssl_*` | string | - | SSL certificate paths (🚧 planned) |
+| `ssl_ca_location` | string | - | Path to CA certificate for SSL verification |
+| `ssl_certificate_location` | string | - | Path to client certificate for mTLS |
+| `ssl_key_location` | string | - | Path to client private key for mTLS |
+| `ssl_key_password` | string | - | Password for encrypted client key |
 
 ### Schema Registry
 
@@ -103,25 +107,25 @@ runtime:
 runtime:
   schema_registry:
     url: http://schema-registry:8081
-    # Or multiple URLs
-    url:
-      - http://sr-1:8081
-      - http://sr-2:8081
 
     # Authentication (optional)
     username: ${SR_USER}
     password: ${SR_PASSWORD}
 
-    # SSL (optional)
-    ssl:
-      ca_location: /path/to/ca.pem
+    # SSL/mTLS (optional)
+    ssl_ca_location: /path/to/ca.pem
+    ssl_certificate_location: /path/to/client-cert.pem
+    ssl_key_location: /path/to/client-key.pem
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | string/list | Required | Schema Registry URL(s) |
+| `url` | string | Required | Schema Registry URL |
 | `username` | string | - | Basic auth username |
 | `password` | string | - | Basic auth password |
+| `ssl_ca_location` | string | - | Path to CA certificate for SSL verification |
+| `ssl_certificate_location` | string | - | Path to client certificate for mTLS |
+| `ssl_key_location` | string | - | Path to client key for mTLS |
 
 ### Flink
 
@@ -155,6 +159,15 @@ runtime:
         type: rest
         rest_url: http://flink-jobmanager:8081
         sql_gateway_url: http://flink-sql-gateway:8083
+        # Auth (optional)
+        username: ${FLINK_USER}
+        password: ${FLINK_PASSWORD}
+        # Or Bearer token
+        api_key: ${FLINK_API_KEY}
+        # SSL/mTLS (optional)
+        ssl_ca_location: /path/to/ca.pem
+        ssl_certificate_location: /path/to/client-cert.pem
+        ssl_key_location: /path/to/client-key.pem
     ```
 
 === "Docker"
@@ -206,6 +219,10 @@ runtime:
         # Authentication (optional)
         username: ${CONNECT_USER}
         password: ${CONNECT_PASSWORD}
+        # SSL/mTLS (optional)
+        ssl_ca_location: /path/to/ca.pem
+        ssl_certificate_location: /path/to/client-cert.pem
+        ssl_key_location: /path/to/client-key.pem
 ```
 
 | Field | Type | Description |
@@ -213,6 +230,9 @@ runtime:
 | `rest_url` | string | Connect REST API URL |
 | `username` | string | Basic auth username |
 | `password` | string | Basic auth password |
+| `ssl_ca_location` | string | Path to CA certificate for SSL verification |
+| `ssl_certificate_location` | string | Path to client certificate for mTLS |
+| `ssl_key_location` | string | Path to client key for mTLS |
 
 ### Conduktor (Optional)
 
@@ -399,6 +419,7 @@ runtime:
     url: ${SCHEMA_REGISTRY_URL}
     username: ${SR_USER}
     password: ${SR_PASSWORD}
+    ssl_ca_location: ${SR_CA_CERT}
 
   flink:
     default: production
@@ -407,6 +428,8 @@ runtime:
         type: rest
         rest_url: ${FLINK_REST_URL}
         sql_gateway_url: ${FLINK_SQL_GATEWAY_URL}
+        username: ${FLINK_USER}
+        password: ${FLINK_PASSWORD}
       staging:
         type: rest
         rest_url: ${FLINK_STAGING_URL}
@@ -417,6 +440,8 @@ runtime:
     clusters:
       production:
         rest_url: ${CONNECT_URL}
+        username: ${CONNECT_USER}
+        password: ${CONNECT_PASSWORD}
 
 defaults:
   models:

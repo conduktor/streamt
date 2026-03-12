@@ -381,6 +381,7 @@ tests:
 | Flink job generation | ✅ Works | SQL generation, REST API deployment |
 | Flink job upgrades | ⚠️ Basic | No savepoint handling yet |
 | Connect deployment | ✅ Works | Connector CRUD via REST |
+| Auth/SSL | ✅ Stable | SASL, SSL, mTLS, basic auth, Bearer tokens |
 | Testing framework | ✅ Works | Schema, sample, continuous tests |
 | Continuous tests | ✅ Works | Flink-based monitoring, real-time violations |
 | ML_PREDICT/ML_EVALUATE | ✅ Works | Confluent Cloud Flink only |
