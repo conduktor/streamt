@@ -4,7 +4,6 @@ These tests validate that sqlglot can parse Flink-compatible SQL patterns
 and that type inference works correctly for various expressions.
 """
 
-import pytest
 import sqlglot
 from sqlglot import exp
 
@@ -1956,7 +1955,15 @@ class TestConfluentFlinkCompatibility:
     def test_json_functions_parsing(self):
         """Test Confluent JSON functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2000,7 +2007,15 @@ class TestConfluentFlinkCompatibility:
     def test_json_value_type_inference(self):
         """Test JSON_VALUE returns STRING type."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2038,7 +2053,15 @@ class TestConfluentFlinkCompatibility:
     def test_datetime_functions_parsing(self):
         """Test Confluent datetime functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2086,7 +2109,15 @@ class TestConfluentFlinkCompatibility:
     def test_to_timestamp_ltz_type_inference(self):
         """Test TO_TIMESTAMP_LTZ returns TIMESTAMP_LTZ type."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2124,7 +2155,15 @@ class TestConfluentFlinkCompatibility:
     def test_aggregate_functions_parsing(self):
         """Test Confluent aggregate functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2171,7 +2210,15 @@ class TestConfluentFlinkCompatibility:
     def test_string_functions_parsing(self):
         """Test Confluent string functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2226,7 +2273,15 @@ class TestConfluentFlinkCompatibility:
     def test_regexp_extract_type_inference(self):
         """Test REGEXP_EXTRACT returns STRING type."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2264,7 +2319,15 @@ class TestConfluentFlinkCompatibility:
     def test_array_functions_parsing(self):
         """Test Confluent array/collection functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2315,7 +2378,15 @@ class TestConfluentFlinkCompatibility:
     def test_cardinality_type_inference(self):
         """Test CARDINALITY returns INT type."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2353,7 +2424,15 @@ class TestConfluentFlinkCompatibility:
     def test_array_and_map_type_inference(self):
         """Test ARRAY and MAP function return types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2400,7 +2479,15 @@ class TestConfluentFlinkCompatibility:
     def test_ml_predict_parsing(self):
         """Test Confluent ML_PREDICT function can be parsed and has correct type."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2444,8 +2531,14 @@ class TestConfluentFlinkCompatibility:
         """Test ML_PREDICT uses ml_outputs declaration for type inference."""
         from streamt.compiler.compiler import Compiler
         from streamt.core.models import (
-            ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo,
-            RuntimeConfig, StreamtProject, MLModelOutput
+            ColumnDefinition,
+            KafkaConfig,
+            MLModelOutput,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
         )
 
         project = StreamtProject(
@@ -2502,8 +2595,13 @@ class TestConfluentFlinkCompatibility:
         """Test ML_PREDICT without ml_outputs returns generic ROW type."""
         from streamt.compiler.compiler import Compiler
         from streamt.core.models import (
-            ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo,
-            RuntimeConfig, StreamtProject
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
         )
 
         project = StreamtProject(
@@ -2547,7 +2645,15 @@ class TestConfluentFlinkCompatibility:
     def test_window_tvf_with_descriptor(self):
         """Test Confluent window TVF syntax with DESCRIPTOR and verify types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2594,7 +2700,15 @@ class TestConfluentFlinkCompatibility:
     def test_cumulate_window_tvf(self):
         """Test Confluent CUMULATE window TVF syntax and verify types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2638,7 +2752,15 @@ class TestConfluentFlinkCompatibility:
     def test_hop_window_tvf(self):
         """Test Confluent HOP window TVF syntax and verify types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2682,7 +2804,15 @@ class TestConfluentFlinkCompatibility:
     def test_conditional_functions_parsing(self):
         """Test Confluent conditional functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2732,7 +2862,15 @@ class TestConfluentFlinkCompatibility:
     def test_math_functions_parsing(self):
         """Test Confluent math functions can be parsed and have correct types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),
@@ -2785,7 +2923,15 @@ class TestConfluentFlinkCompatibility:
     def test_complex_confluent_query(self):
         """Test a complex Confluent Flink SQL query with multiple features and verify types."""
         from streamt.compiler.compiler import Compiler
-        from streamt.core.models import ColumnDefinition, Model, Source, KafkaConfig, ProjectInfo, RuntimeConfig, StreamtProject
+        from streamt.core.models import (
+            ColumnDefinition,
+            KafkaConfig,
+            Model,
+            ProjectInfo,
+            RuntimeConfig,
+            Source,
+            StreamtProject,
+        )
 
         project = StreamtProject(
             project=ProjectInfo(name="test_project"),

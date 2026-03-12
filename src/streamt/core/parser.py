@@ -4,20 +4,16 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
 
 from streamt.core.environment import (
     EnvironmentConfig,
-    EnvironmentError,
     EnvironmentManager,
-    EnvironmentNotFoundError,
-    NoEnvironmentSpecifiedError,
-    NoEnvironmentsConfiguredError,
 )
 from streamt.core.models import (
     DataTest,
@@ -151,7 +147,7 @@ class ProjectParser:
                 content = f.read()
             return yaml.safe_load(content) or {}
         except yaml.YAMLError as e:
-            raise ParseError(f"YAML parse error in '{path}': {e}")
+            raise ParseError(f"YAML parse error in '{path}': {e}") from e
 
     def _resolve_env_vars(self, value: Any) -> Any:
         """Recursively resolve environment variables in a value."""

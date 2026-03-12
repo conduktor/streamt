@@ -2,8 +2,9 @@
 
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import requests
 from confluent_kafka.admin import AdminClient

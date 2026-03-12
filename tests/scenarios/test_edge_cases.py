@@ -14,7 +14,6 @@ from pathlib import Path
 
 import yaml
 
-from streamt.compiler import Compiler
 from streamt.core.dag import DAGBuilder
 from streamt.core.parser import ProjectParser
 from streamt.core.validator import ProjectValidator

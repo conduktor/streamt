@@ -77,7 +77,7 @@ class ConnectDeployer:
         elif ssl_certificate_location:
             self._http_session.cert = ssl_certificate_location
 
-    def __enter__(self) -> "ConnectDeployer":
+    def __enter__(self) -> ConnectDeployer:
         """Enter context manager."""
         return self
 

@@ -15,7 +15,6 @@ from streamt.cli.helpers import make_formatter
 from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError
 
-
 INTERNAL_TOPIC_PREFIXES = ("__", "_schemas", "_confluent", "_streamt-connect-")
 
 DEFAULT_PROJECT_TEMPLATE = {
@@ -121,7 +120,7 @@ def init(
             code=ErrorCode.ENVIRONMENT_ERROR,
             message=f"stream_project.yml already exists in {project_path}. Use --force to overwrite.",
         ))
-        fmt.print_error(f"stream_project.yml already exists. Use --force to overwrite.")
+        fmt.print_error("stream_project.yml already exists. Use --force to overwrite.")
         fmt.flush()
         sys.exit(1)
 
@@ -156,7 +155,7 @@ def _init_scaffold(fmt: Any, project_path: Path, name: str, dry_run: bool) -> No
             created_files.append(f"{d}/")
 
         fmt.print(f"[green]Initialized project '{name}'[/green]")
-        fmt.print(f"  stream_project.yml")
+        fmt.print("  stream_project.yml")
         for d in SCAFFOLD_DIRS:
             fmt.print(f"  {d}/")
     else:

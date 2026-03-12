@@ -28,8 +28,8 @@ def show_resource(
 ) -> None:
     """Show detailed info about a single resource."""
     from streamt.core.dag import DAGBuilder
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
 
     fmt = make_formatter(ctx, "show")
     project_path = get_project_path(project_dir)

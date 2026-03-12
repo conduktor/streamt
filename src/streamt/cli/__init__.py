@@ -6,7 +6,20 @@ import click
 
 from streamt import __version__
 
-from .commands import apply, compile, docs, envs, init, lineage, list_cmd, plan, show, status, test, validate
+from .commands import (
+    apply,
+    compile,
+    docs,
+    envs,
+    init,
+    lineage,
+    list_cmd,
+    plan,
+    show,
+    status,
+    test,
+    validate,
+)
 
 
 @click.group()

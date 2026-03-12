@@ -151,7 +151,7 @@ class Manifest:
             f.write(self.to_json())
 
     @classmethod
-    def load(cls, path: Path) -> "Manifest":
+    def load(cls, path: Path) -> Manifest:
         """Load manifest from file."""
         with open(path) as f:
             data = json.load(f)

@@ -1,8 +1,9 @@
 """Retry decorator for transient errors."""
 
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import requests
 

@@ -1,7 +1,6 @@
 """Tests for streamt init command — scaffold mode (no infra needed)."""
 
 import json
-import os
 import tempfile
 from pathlib import Path
 

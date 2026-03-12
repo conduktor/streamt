@@ -2,9 +2,10 @@
 
 import json
 import time
+from collections.abc import Callable
 
 # Import KafkaHelper type for type hints (avoid circular import at runtime)
-from typing import TYPE_CHECKING, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Optional, TypeVar
 
 from confluent_kafka import Consumer
 

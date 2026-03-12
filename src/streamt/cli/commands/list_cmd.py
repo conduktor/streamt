@@ -23,8 +23,8 @@ def list_resources(
     environment: Optional[str],
 ) -> None:
     """List project resources (sources, models, tests, exposures)."""
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
 
     fmt = make_formatter(ctx, "list")
     project_path = get_project_path(project_dir)

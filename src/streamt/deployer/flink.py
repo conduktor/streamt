@@ -131,7 +131,7 @@ class FlinkDeployer:
         elif ssl_certificate_location:
             self._http_session.cert = ssl_certificate_location
 
-    def __enter__(self) -> "FlinkDeployer":
+    def __enter__(self) -> FlinkDeployer:
         """Enter context manager."""
         return self
 
@@ -272,10 +272,7 @@ class FlinkDeployer:
             if flink_job_name == job_name:
                 return True
             # Strategy 2: Match Flink's INSERT job naming pattern
-            for suffix in expected_suffixes:
-                if flink_job_name.endswith(suffix):
-                    return True
-            return False
+            return any(flink_job_name.endswith(suffix) for suffix in expected_suffixes)
 
         # Collect all matching jobs
         matching_jobs = []

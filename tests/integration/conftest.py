@@ -17,7 +17,7 @@ Test subset execution:
     pytest -m "kafka and not slow"  # Combine markers
 """
 
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 from confluent_kafka import Consumer, Producer
@@ -59,7 +59,7 @@ __all__ = [
 
 
 @pytest.fixture(scope="session")
-def docker_services() -> Generator[DockerComposeManager, None, None]:
+def docker_services() -> DockerComposeManager:
     """
     Session-scoped fixture that starts Docker Compose services.
 
@@ -78,7 +78,7 @@ def docker_services() -> Generator[DockerComposeManager, None, None]:
     else:
         manager.start()
 
-    yield manager
+    return manager
 
     # Optionally stop services (comment out to keep running for debugging)
     # manager.stop()

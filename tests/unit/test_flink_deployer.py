@@ -165,9 +165,8 @@ class TestFlinkDeployerSubmitSql:
         ]
         deployer._http_session.request = Mock(side_effect=responses)
 
-        with pytest.raises(RuntimeError) as exc_info:
-            with patch("time.sleep"):
-                deployer.submit_sql("SELECT foo FROM bar")
+        with pytest.raises(RuntimeError) as exc_info, patch("time.sleep"):
+            deployer.submit_sql("SELECT foo FROM bar")
 
         assert "Flink SQL execution error" in str(exc_info.value)
         deployer.close()

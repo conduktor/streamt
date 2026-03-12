@@ -82,10 +82,48 @@ target-version = ["py310"]
 
 [tool.ruff]
 line-length = 100
+target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-ignore = ["E501"]
+select = [
+    "E", "F", "I", "N", "W",  # Core: pycodestyle, pyflakes, isort, naming, warnings
+    "B",                        # Bugbear: common pitfalls
+    "S",                        # Bandit: security checks
+    "T20",                      # No print() in production code
+    "SIM",                      # Simplify: unnecessary complexity
+    "C4",                       # Comprehension flaws
+    "UP",                       # Pyupgrade: modern Python syntax
+    "RUF",                      # Ruff-specific rules
+    "PT",                       # Pytest style
+    "ERA",                      # Commented-out code
+]
+ignore = [
+    "E501",                     # Line length handled by formatter
+    "S101",                     # assert OK in tests + DSL validation
+    "S608",                     # Hardcoded SQL expected — this is a SQL compiler
+    "S110",                     # try-except-pass used intentionally in deployers
+    "S105", "S106", "S107",     # Hardcoded passwords: false positives on test fixtures
+    "UP045",                    # Optional[X] vs X | None — keep for 3.10 compat
+    "RUF012",                   # Mutable class defaults OK in dataclasses/pydantic
+    "SIM105",                   # contextlib.suppress — less readable than try/except pass
+    "SIM102",                   # Collapsible if — often clearer when nested
+    "N803",                     # Mock params like MockAdmin are intentional in tests
+    "RUF022",                   # __all__ sort order not critical
+    "S701",                     # Jinja2 autoescape — we generate SQL, not HTML
+    "RUF015",                   # next(iter(x)) vs list(x)[0] — low priority
+    "ERA001",                   # Commented-out code — acceptable during active dev
+    "SIM108",                   # Ternary vs if/else — readability preference
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S",                        # Security checks irrelevant in tests
+    "T20",                      # print() OK in tests
+    "ERA001",                   # Commented code OK in tests
+]
+"src/streamt/cli/**" = [
+    "T20",                      # CLI uses print/click.echo
+]
 
 [tool.mypy]
 python_version = "3.10"

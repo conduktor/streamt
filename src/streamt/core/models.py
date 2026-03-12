@@ -553,7 +553,7 @@ class Model(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def convert_connector_to_sink(self) -> "Model":
+    def convert_connector_to_sink(self) -> Model:
         """Convert connector dict to sink config if needed."""
         # If connector is a dict with 'type' and 'config', convert to SinkConfig
         if self.connector and isinstance(self.connector, dict):
@@ -688,13 +688,13 @@ class Model(BaseModel):
         # Default to topic for models without SQL
         return MaterializedType.TOPIC
 
-    def get_flink_config(self) -> Optional["FlinkJobConfig"]:
+    def get_flink_config(self) -> Optional[FlinkJobConfig]:
         """Get Flink config from advanced section."""
         if self.advanced:
             return self.advanced.flink
         return None
 
-    def get_topic_config(self) -> Optional["TopicConfig"]:
+    def get_topic_config(self) -> Optional[TopicConfig]:
         """Get topic config from advanced section."""
         if self.advanced:
             return self.advanced.topic
@@ -712,11 +712,11 @@ class Model(BaseModel):
             return self.advanced.connect_cluster
         return None
 
-    def get_gateway_config(self) -> Optional["ModelGatewayConfig"]:
+    def get_gateway_config(self) -> Optional[ModelGatewayConfig]:
         """Get gateway config."""
         return self.gateway
 
-    def get_sink_config(self) -> Optional["SinkConfig"]:
+    def get_sink_config(self) -> Optional[SinkConfig]:
         """Get sink config (connector dict is auto-converted to sink by model_validator)."""
         return self.sink
 

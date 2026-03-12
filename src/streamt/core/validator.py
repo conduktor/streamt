@@ -425,7 +425,7 @@ class ProjectValidator:
 
         # Detect cycles using DFS - colors: 0=white (unvisited), 1=gray (visiting), 2=black (done)
         white, gray, black = 0, 1, 2
-        color = {node: white for node in graph}
+        color = dict.fromkeys(graph, white)
         path: list[str] = []
 
         def dfs(node: str) -> Optional[list[str]]:
@@ -436,7 +436,7 @@ class ProjectValidator:
                 if color[neighbor] == gray:
                     # Found cycle
                     cycle_start = path.index(neighbor)
-                    return path[cycle_start:] + [neighbor]
+                    return [*path[cycle_start:], neighbor]
                 elif color[neighbor] == white:
                     cycle = dfs(neighbor)
                     if cycle:
@@ -697,7 +697,7 @@ class ProjectValidator:
 
         # Extract ML model names from the matches
         ml_models_used: set[str] = set()
-        for func_name, first_arg in matches:
+        for _func_name, first_arg in matches:
             # First argument is typically the model reference
             # Could be: model_name, `model_name`, or TABLE(model_name)
             clean_name = first_arg.strip('`"\'() ')

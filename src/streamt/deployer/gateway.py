@@ -115,7 +115,7 @@ class GatewayDeployer:
         self._session.auth = self.auth
         self._closed = False
 
-    def __enter__(self) -> "GatewayDeployer":
+    def __enter__(self) -> GatewayDeployer:
         """Enter context manager."""
         return self
 
@@ -149,7 +149,7 @@ class GatewayDeployer:
         except requests.ConnectionError as e:
             raise GatewayConnectionError(
                 f"Cannot connect to Gateway at {self.admin_url}. Is it running? Error: {e}"
-            )
+            ) from e
 
         if response.status_code == 401:
             raise GatewayAuthenticationError(

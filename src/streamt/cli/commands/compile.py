@@ -28,8 +28,8 @@ def compile(
 ) -> None:
     """Compile project to artifacts."""
     from streamt.compiler import Compiler
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
 
     fmt = make_formatter(ctx, "compile")

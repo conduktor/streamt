@@ -39,8 +39,8 @@ def apply(
         _make_sr_deployer,
     )
     from streamt.compiler import Compiler
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
     from streamt.deployer.planner import DeploymentPlanner
 

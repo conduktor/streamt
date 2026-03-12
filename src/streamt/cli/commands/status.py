@@ -30,8 +30,8 @@ def status(
 ) -> None:
     """Show status of deployed resources."""
     from streamt.compiler import Compiler
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.deployer.connect import ConnectDeployer
     from streamt.deployer.flink import FlinkDeployer
     from streamt.deployer.kafka import KafkaDeployer

@@ -19,14 +19,10 @@ from streamt.output import StructuredError
 def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[str]) -> None:
     """Show what would change on apply."""
     from streamt.compiler import Compiler
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
-    from streamt.deployer.connect import ConnectDeployer
-    from streamt.deployer.flink import FlinkDeployer
-    from streamt.deployer.kafka import KafkaDeployer
     from streamt.deployer.planner import DeploymentPlanner
-    from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
     fmt = make_formatter(ctx, "plan")
     project_path = get_project_path(project_dir)

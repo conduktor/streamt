@@ -230,7 +230,7 @@ class EnvironmentManager:
             with open(env_file) as f:
                 data = yaml.safe_load(f) or {}
         except yaml.YAMLError as e:
-            raise EnvironmentError(f"YAML parse error in '{env_file}': {e}")
+            raise EnvironmentError(f"YAML parse error in '{env_file}': {e}") from e
 
         # Validate environment name matches filename
         env_info = data.get("environment", {})
@@ -267,7 +267,7 @@ class EnvironmentManager:
         )
 
     def resolve_environment(
-        self, cli_env: str | None, warn_callback: callable = None
+        self, cli_env: str | None, warn_callback: callable | None = None
     ) -> tuple[EnvironmentConfig | None, list[str]]:
         """Resolve environment based on mode, CLI flag, and env var.
 

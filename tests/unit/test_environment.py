@@ -6,17 +6,14 @@ Run with: pytest tests/unit/test_environment.py -v
 Spec: docs/specs/multi-environment.md
 """
 
-import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import yaml
 from click.testing import CliRunner
 
 from streamt.cli import main
-
 
 # Default Flink config required for models with SQL transformations
 DEFAULT_FLINK_CONFIG = {

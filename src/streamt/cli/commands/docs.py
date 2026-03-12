@@ -29,8 +29,8 @@ def docs_generate(
 ) -> None:
     """Generate HTML documentation."""
     from streamt.core.dag import DAGBuilder
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.docs import generate_docs
 
     fmt = make_formatter(ctx, "docs generate")

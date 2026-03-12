@@ -8,7 +8,6 @@ from typing import Optional
 
 import click
 
-from streamt.core.errors import ErrorCode
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
 
 

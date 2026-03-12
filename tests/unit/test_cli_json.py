@@ -422,7 +422,8 @@ class TestDestructiveSafety:
 
     def test_destructive_apply_blocked_without_force(self):
         """apply with allow_destructive=false should block when plan has deletes."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from streamt.deployer.planner import DeploymentPlan
 
         runner = CliRunner()
@@ -446,7 +447,8 @@ class TestDestructiveSafety:
 
     def test_destructive_apply_proceeds_with_force(self):
         """apply with --force should proceed even when plan has deletes."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from streamt.deployer.planner import DeploymentPlan
 
         runner = CliRunner()

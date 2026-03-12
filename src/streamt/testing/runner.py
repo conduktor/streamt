@@ -290,7 +290,7 @@ class TestRunner:
         """Assert that specified columns are not null."""
         columns = config.get("columns", [])
         errors = []
-        null_counts = {col: 0 for col in columns}
+        null_counts = dict.fromkeys(columns, 0)
 
         for msg in messages:
             for col in columns:

@@ -28,8 +28,8 @@ def test(
     deploy: bool,
 ) -> None:
     """Run tests."""
-    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
     from streamt.testing import TestRunner
 

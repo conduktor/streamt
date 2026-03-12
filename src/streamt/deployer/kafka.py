@@ -91,10 +91,11 @@ class KafkaDeployer:
         """Initialize Kafka deployer."""
         config = {"bootstrap.servers": bootstrap_servers}
         config.update(kafka_config)
+        self._config = dict(config)
         self.admin = AdminClient(config)
         self._closed = False
 
-    def __enter__(self) -> "KafkaDeployer":
+    def __enter__(self) -> KafkaDeployer:
         """Enter context manager."""
         return self
 
@@ -133,7 +134,7 @@ class KafkaDeployer:
         configs = self.admin.describe_configs([config_resource])
         topic_config = {}
 
-        for resource, future in configs.items():
+        for _resource, future in configs.items():
             try:
                 config_entries = future.result(timeout=DEFAULT_TIMEOUT)
                 topic_config = {
@@ -222,7 +223,7 @@ class KafkaDeployer:
             try:
                 future.result(timeout=DEFAULT_TIMEOUT)
             except Exception as e:
-                raise RuntimeError(f"Failed to create topic '{topic}': {e}")
+                raise RuntimeError(f"Failed to create topic '{topic}': {e}") from e
 
     def update_topic(self, artifact: TopicArtifact, changes: dict) -> None:
         """Update an existing topic."""
@@ -236,7 +237,7 @@ class KafkaDeployer:
                 try:
                     future.result(timeout=DEFAULT_TIMEOUT)
                 except Exception as e:
-                    raise RuntimeError(f"Failed to increase partitions for '{topic}': {e}")
+                    raise RuntimeError(f"Failed to increase partitions for '{topic}': {e}") from e
 
         # Handle config changes using incremental_alter_configs (alter_configs is deprecated)
         config_changes = {
@@ -259,11 +260,11 @@ class KafkaDeployer:
                 incremental_configs=incremental_configs,
             )
             futures = self.admin.incremental_alter_configs([config_resource])
-            for resource, future in futures.items():
+            for _resource, future in futures.items():
                 try:
                     future.result(timeout=DEFAULT_TIMEOUT)
                 except Exception as e:
-                    raise RuntimeError(f"Failed to update config for '{artifact.name}': {e}")
+                    raise RuntimeError(f"Failed to update config for '{artifact.name}': {e}") from e
 
     def delete_topic(self, topic_name: str) -> None:
         """Delete a topic."""
@@ -273,7 +274,7 @@ class KafkaDeployer:
             try:
                 future.result(timeout=DEFAULT_TIMEOUT)
             except Exception as e:
-                raise RuntimeError(f"Failed to delete topic '{topic}': {e}")
+                raise RuntimeError(f"Failed to delete topic '{topic}': {e}") from e
 
     def apply_topic(self, artifact: TopicArtifact) -> str:
         """Apply a topic artifact. Returns action taken."""
@@ -299,7 +300,7 @@ class KafkaDeployer:
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         return [
             topic
-            for topic in metadata.topics.keys()
+            for topic in metadata.topics
             if not topic.startswith("_")  # Exclude internal topics
         ]
 
@@ -332,21 +333,9 @@ class KafkaDeployer:
         if partition_count == 0:
             return None
 
-        # Create a temporary consumer to get committed offsets
-        # Note: This is more reliable than using AdminClient for offset fetching
-        brokers = list(self.admin.list_topics().brokers.values())
-        if brokers:
-            # BrokerMetadata has host and port attributes
-            broker = brokers[0]
-            bootstrap_server = f"{broker.host}:{broker.port}"
-        else:
-            bootstrap_server = "localhost:9092"
-
-        consumer_config = {
-            "bootstrap.servers": bootstrap_server,
-            "group.id": group_id,
-            "enable.auto.commit": False,
-        }
+        consumer_config = dict(self._config)
+        consumer_config["group.id"] = group_id
+        consumer_config["enable.auto.commit"] = False
 
         try:
             # Use AdminClient to list consumer group offsets (Kafka 2.4+)
@@ -366,7 +355,7 @@ class KafkaDeployer:
             try:
                 end_offsets = {}
                 for tp in topic_partitions:
-                    low, high = consumer.get_watermark_offsets(tp, timeout=DEFAULT_TIMEOUT)
+                    _low, high = consumer.get_watermark_offsets(tp, timeout=DEFAULT_TIMEOUT)
                     end_offsets[tp.partition] = high
             finally:
                 consumer.close()
@@ -415,18 +404,9 @@ class KafkaDeployer:
         if partition_count == 0:
             return 0
 
-        # Create a temporary consumer to get watermarks
-        brokers = list(self.admin.list_topics().brokers.values())
-        if not brokers:
-            return 0
-
-        # BrokerMetadata has host and port attributes
-        broker = brokers[0]
-        consumer_config = {
-            "bootstrap.servers": f"{broker.host}:{broker.port}",
-            "group.id": "_streamt_internal_count",
-            "enable.auto.commit": False,
-        }
+        consumer_config = dict(self._config)
+        consumer_config["group.id"] = "_streamt_internal_count"
+        consumer_config["enable.auto.commit"] = False
 
         try:
             consumer = Consumer(consumer_config)

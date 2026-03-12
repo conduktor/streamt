@@ -80,7 +80,7 @@ class SchemaRegistryDeployer:
         elif ssl_certificate_location:
             self._http_session.cert = ssl_certificate_location
 
-    def __enter__(self) -> "SchemaRegistryDeployer":
+    def __enter__(self) -> SchemaRegistryDeployer:
         """Enter context manager."""
         return self
 
