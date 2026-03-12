@@ -8,6 +8,7 @@ from typing import Any, Optional
 import click
 
 from streamt.cli.helpers import (
+    close_deployers,
     get_project_path,
     handle_parse_error,
     make_connect_deployer,
@@ -59,41 +60,42 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         kafka_deployer = make_kafka_deployer(project, fmt)
         flink_deployer = make_flink_deployer(project, fmt)
         connect_deployer = make_connect_deployer(project, fmt)
+        try:
+            planner = DeploymentPlanner(
+                manifest,
+                schema_registry_deployer=sr_deployer,
+                kafka_deployer=kafka_deployer,
+                flink_deployer=flink_deployer,
+                connect_deployer=connect_deployer,
+            )
+            deployment_plan = planner.plan()
 
-        planner = DeploymentPlanner(
-            manifest,
-            schema_registry_deployer=sr_deployer,
-            kafka_deployer=kafka_deployer,
-            flink_deployer=flink_deployer,
-            connect_deployer=connect_deployer,
-        )
-        deployment_plan = planner.plan()
+            changes: list[dict[str, Any]] = []
+            for c in deployment_plan.schema_changes:
+                if c.action != "none":
+                    changes.append({"type": "schema", "name": c.subject, "action": c.action, "changes": c.changes})
+            for c in deployment_plan.topic_changes:
+                if c.action != "none":
+                    changes.append({"type": "topic", "name": c.topic, "action": c.action, "changes": c.changes})
+            for c in deployment_plan.flink_changes:
+                if c.action != "none":
+                    changes.append({"type": "flink_job", "name": c.job_name, "action": c.action})
+            for c in deployment_plan.connector_changes:
+                if c.action != "none":
+                    changes.append({"type": "connector", "name": c.connector_name, "action": c.action, "changes": c.changes})
 
-        # Build structured changes list
-        changes: list[dict[str, Any]] = []
-        for c in deployment_plan.schema_changes:
-            if c.action != "none":
-                changes.append({"type": "schema", "name": c.subject, "action": c.action, "changes": c.changes})
-        for c in deployment_plan.topic_changes:
-            if c.action != "none":
-                changes.append({"type": "topic", "name": c.topic, "action": c.action, "changes": c.changes})
-        for c in deployment_plan.flink_changes:
-            if c.action != "none":
-                changes.append({"type": "flink_job", "name": c.job_name, "action": c.action})
-        for c in deployment_plan.connector_changes:
-            if c.action != "none":
-                changes.append({"type": "connector", "name": c.connector_name, "action": c.action, "changes": c.changes})
-
-        fmt.set_data({
-            "summary": deployment_plan.summary(),
-            "creates": deployment_plan.creates,
-            "updates": deployment_plan.updates,
-            "deletes": deployment_plan.deletes,
-            "has_changes": deployment_plan.has_changes,
-            "changes": changes,
-        })
-        fmt.print(deployment_plan.details())
-        fmt.flush()
+            fmt.set_data({
+                "summary": deployment_plan.summary(),
+                "creates": deployment_plan.creates,
+                "updates": deployment_plan.updates,
+                "deletes": deployment_plan.deletes,
+                "has_changes": deployment_plan.has_changes,
+                "changes": changes,
+            })
+            fmt.print(deployment_plan.details())
+            fmt.flush()
+        finally:
+            close_deployers(sr_deployer, kafka_deployer, flink_deployer, connect_deployer)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)

@@ -33,6 +33,16 @@ def handle_parse_error(fmt: OutputFormatter, e: Exception, code: str) -> None:
     sys.exit(1)
 
 
+def close_deployers(*deployers: Any) -> None:
+    """Close all non-None deployers, ignoring errors."""
+    for d in deployers:
+        if d is not None and hasattr(d, "close"):
+            try:
+                d.close()
+            except Exception:
+                pass
+
+
 def _resolve_secret(val: Any) -> Any:
     """Resolve SecretStr to plain string for deployer constructors."""
     if val is None:

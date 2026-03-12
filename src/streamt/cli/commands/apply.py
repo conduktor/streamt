@@ -7,7 +7,16 @@ from typing import Optional
 
 import click
 
-from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
+from streamt.cli.helpers import (
+    close_deployers,
+    get_project_path,
+    handle_parse_error,
+    make_connect_deployer,
+    make_flink_deployer,
+    make_formatter,
+    make_kafka_deployer,
+    make_sr_deployer,
+)
 from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError
 
@@ -32,12 +41,6 @@ def apply(
     force: bool,
 ) -> None:
     """Deploy the project."""
-    from streamt.cli.commands.plan import (
-        _make_connect_deployer,
-        _make_flink_deployer,
-        _make_kafka_deployer,
-        _make_sr_deployer,
-    )
     from streamt.compiler import Compiler
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -98,58 +101,60 @@ def apply(
         compiler = Compiler(project)
         manifest = compiler.compile()
 
-        # Create deployers — reuse resilient helpers from plan module
-        sr = _make_sr_deployer(project, fmt)
-        kafka = _make_kafka_deployer(project, fmt)
-        flink = _make_flink_deployer(project, fmt)
-        connect = _make_connect_deployer(project, fmt)
+        # Create deployers
+        sr = make_sr_deployer(project, fmt)
+        kafka = make_kafka_deployer(project, fmt)
+        flink = make_flink_deployer(project, fmt)
+        connect = make_connect_deployer(project, fmt)
+        try:
+            planner = DeploymentPlanner(
+                manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
+                flink_deployer=flink, connect_deployer=connect,
+            )
+            deployment_plan = planner.plan()
 
-        planner = DeploymentPlanner(
-            manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
-            flink_deployer=flink, connect_deployer=connect,
-        )
-        deployment_plan = planner.plan()
+            # Destructive safety — only block if plan actually has deletes
+            if parser.env_config and not parser.env_config.safety.allow_destructive:
+                if deployment_plan.deletes > 0:
+                    env_name = parser.env_config.environment.name
+                    if not force:
+                        fmt.add_error(StructuredError(
+                            code=ErrorCode.ENVIRONMENT_ERROR,
+                            message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
+                        ))
+                        fmt.print_error(f"Destructive ops blocked for '{env_name}'. Use --force to override.")
+                        fmt.flush()
+                        sys.exit(1)
+                    fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
 
-        # Destructive safety — only block if plan actually has deletes
-        if parser.env_config and not parser.env_config.safety.allow_destructive:
-            if deployment_plan.deletes > 0:
-                env_name = parser.env_config.environment.name
-                if not force:
-                    fmt.add_error(StructuredError(
-                        code=ErrorCode.ENVIRONMENT_ERROR,
-                        message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
-                    ))
-                    fmt.print_error(f"Destructive ops blocked for '{env_name}'. Use --force to override.")
-                    fmt.flush()
-                    sys.exit(1)
-                fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
+            results = planner.apply(deployment_plan)
+            fmt.set_data(results)
 
-        results = planner.apply(deployment_plan)
-        fmt.set_data(results)
+            if results["created"]:
+                fmt.print("\n[green]Created:[/green]")
+                for item in results["created"]:
+                    fmt.print(f"  + {item}")
+            if results["updated"]:
+                fmt.print("\n[yellow]Updated:[/yellow]")
+                for item in results["updated"]:
+                    fmt.print(f"  ~ {item}")
+            if results["unchanged"]:
+                fmt.print("\n[dim]Unchanged:[/dim]")
+                for item in results["unchanged"]:
+                    fmt.print(f"  = {item}")
+            if results["errors"]:
+                fmt.set_status("error")
+                fmt.print("\n[red]Errors:[/red]")
+                for item in results["errors"]:
+                    fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=item))
+                    fmt.print_error(item)
+                fmt.flush()
+                sys.exit(1)
 
-        if results["created"]:
-            fmt.print("\n[green]Created:[/green]")
-            for item in results["created"]:
-                fmt.print(f"  + {item}")
-        if results["updated"]:
-            fmt.print("\n[yellow]Updated:[/yellow]")
-            for item in results["updated"]:
-                fmt.print(f"  ~ {item}")
-        if results["unchanged"]:
-            fmt.print("\n[dim]Unchanged:[/dim]")
-            for item in results["unchanged"]:
-                fmt.print(f"  = {item}")
-        if results["errors"]:
-            fmt.set_status("error")
-            fmt.print("\n[red]Errors:[/red]")
-            for item in results["errors"]:
-                fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=item))
-                fmt.print_error(item)
+            fmt.print("\n[green]Apply complete[/green]")
             fmt.flush()
-            sys.exit(1)
-
-        fmt.print("\n[green]Apply complete[/green]")
-        fmt.flush()
+        finally:
+            close_deployers(sr, kafka, flink, connect)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
