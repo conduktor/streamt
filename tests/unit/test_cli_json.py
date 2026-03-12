@@ -374,6 +374,95 @@ class TestConfirmEnvFlag:
             assert "does not match" in data["errors"][0]["message"]
 
 
+class TestDestructiveSafety:
+    """Tests for destructive operation safety checks."""
+
+    def _create_multi_env_project(self, tmpdir: str, with_model: bool = False) -> Path:
+        project_path = Path(tmpdir)
+        config = {"project": {"name": "test"}}
+        if with_model:
+            config["sources"] = [{"name": "raw", "topic": "raw.v1"}]
+            config["models"] = [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}]
+        with open(project_path / "stream_project.yml", "w") as f:
+            yaml.dump(config, f)
+
+        envs_dir = project_path / "environments"
+        envs_dir.mkdir()
+        with open(envs_dir / "prod.yml", "w") as f:
+            yaml.dump({
+                "environment": {"name": "prod", "description": "Production", "protected": True},
+                "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
+                "safety": {"confirm_apply": True, "allow_destructive": False},
+            }, f)
+        return project_path
+
+    def test_non_destructive_apply_succeeds_without_force(self):
+        """apply with allow_destructive=false should succeed when plan has no deletes."""
+        runner = CliRunner(mix_stderr=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_multi_env_project(tmpdir)
+            result = runner.invoke(
+                main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"]
+            )
+
+            # Should NOT fail with "Destructive ops blocked" — there are no destructive ops
+            data = json.loads(result.output)
+            if data["status"] == "error":
+                for err in data["errors"]:
+                    assert "destructive" not in err["message"].lower(), \
+                        f"Non-destructive apply should not be blocked: {err['message']}"
+
+    def test_destructive_apply_blocked_without_force(self):
+        """apply with allow_destructive=false should block when plan has deletes."""
+        from unittest.mock import patch, MagicMock
+        from streamt.deployer.planner import DeploymentPlan
+
+        runner = CliRunner(mix_stderr=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_multi_env_project(tmpdir, with_model=True)
+
+            # Mock planner to return a plan with deletes
+            mock_plan = MagicMock(spec=DeploymentPlan)
+            mock_plan.deletes = 1
+            mock_plan.has_changes = True
+
+            with patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=mock_plan):
+                result = runner.invoke(
+                    main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"]
+                )
+
+                assert result.exit_code == 1
+                data = json.loads(result.output)
+                assert data["status"] == "error"
+                assert any("destructive" in e["message"].lower() for e in data["errors"])
+
+    def test_destructive_apply_proceeds_with_force(self):
+        """apply with --force should proceed even when plan has deletes."""
+        from unittest.mock import patch, MagicMock
+        from streamt.deployer.planner import DeploymentPlan
+
+        runner = CliRunner(mix_stderr=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_multi_env_project(tmpdir, with_model=True)
+
+            mock_plan = MagicMock(spec=DeploymentPlan)
+            mock_plan.deletes = 1
+            mock_plan.has_changes = True
+
+            mock_results = {"created": [], "updated": [], "unchanged": ["topic:raw.v1"], "errors": []}
+
+            with patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=mock_plan), \
+                 patch("streamt.deployer.planner.DeploymentPlanner.apply", return_value=mock_results):
+                result = runner.invoke(
+                    main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod",
+                           "--confirm-env", "prod", "--force"]
+                )
+
+                assert result.exit_code == 0
+                data = json.loads(result.output)
+                assert data["status"] == "ok"
+
+
 class TestErrorCodes:
     """Tests for structured error codes."""
 

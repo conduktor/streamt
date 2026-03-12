@@ -86,19 +86,6 @@ def apply(
                     fmt.flush()
                     sys.exit(1)
 
-        # Destructive safety
-        if parser.env_config and not parser.env_config.safety.allow_destructive:
-            env_name = parser.env_config.environment.name
-            if not force:
-                fmt.add_error(StructuredError(
-                    code=ErrorCode.ENVIRONMENT_ERROR,
-                    message=f"Destructive ops blocked for '{env_name}'. Use --force.",
-                ))
-                fmt.print_error(f"Destructive ops blocked for '{env_name}'. Use --force to override.")
-                fmt.flush()
-                sys.exit(1)
-            fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
-
         validator = ProjectValidator(project)
         result = validator.validate()
         if not result.is_valid:
@@ -121,7 +108,23 @@ def apply(
             manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
             flink_deployer=flink, connect_deployer=connect,
         )
-        results = planner.apply()
+        deployment_plan = planner.plan()
+
+        # Destructive safety — only block if plan actually has deletes
+        if parser.env_config and not parser.env_config.safety.allow_destructive:
+            if deployment_plan.deletes > 0:
+                env_name = parser.env_config.environment.name
+                if not force:
+                    fmt.add_error(StructuredError(
+                        code=ErrorCode.ENVIRONMENT_ERROR,
+                        message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
+                    ))
+                    fmt.print_error(f"Destructive ops blocked for '{env_name}'. Use --force to override.")
+                    fmt.flush()
+                    sys.exit(1)
+                fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
+
+        results = planner.apply(deployment_plan)
         fmt.set_data(results)
 
         if results["created"]:
