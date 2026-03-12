@@ -107,7 +107,7 @@ class TestKafkaDeployerAuth:
 
     def test_make_kafka_deployer_passes_sasl(self):
         """_make_kafka_deployer passes SASL config from project."""
-        from streamt.cli.commands.plan import _make_kafka_deployer
+        from streamt.cli.helpers import make_kafka_deployer
 
         project = MagicMock()
         project.runtime.kafka = KafkaConfig(
@@ -120,7 +120,7 @@ class TestKafkaDeployerAuth:
         fmt = MagicMock()
 
         with patch("streamt.deployer.kafka.KafkaDeployer.__init__", return_value=None) as mock_init:
-            _make_kafka_deployer(project, fmt)
+            make_kafka_deployer(project, fmt)
 
             mock_init.assert_called_once()
             args, kwargs = mock_init.call_args
@@ -132,14 +132,14 @@ class TestKafkaDeployerAuth:
 
     def test_make_kafka_deployer_plain_no_auth(self):
         """_make_kafka_deployer with plain config only passes bootstrap_servers."""
-        from streamt.cli.commands.plan import _make_kafka_deployer
+        from streamt.cli.helpers import make_kafka_deployer
 
         project = MagicMock()
         project.runtime.kafka = KafkaConfig(bootstrap_servers="localhost:9092")
         fmt = MagicMock()
 
         with patch("streamt.deployer.kafka.KafkaDeployer.__init__", return_value=None) as mock_init:
-            _make_kafka_deployer(project, fmt)
+            make_kafka_deployer(project, fmt)
             mock_init.assert_called_once()
             args, kwargs = mock_init.call_args
             assert args[0] == "localhost:9092"
@@ -617,7 +617,7 @@ class TestDeployerFactoryAuthWiring:
     """Verify _make_*_deployer functions pass all auth fields."""
 
     def test_make_sr_deployer_passes_ssl(self):
-        from streamt.cli.commands.plan import _make_sr_deployer
+        from streamt.cli.helpers import make_sr_deployer
 
         project = MagicMock()
         project.runtime.schema_registry = SchemaRegistryConfig(
@@ -631,7 +631,7 @@ class TestDeployerFactoryAuthWiring:
         fmt = MagicMock()
 
         with patch("streamt.deployer.schema_registry.SchemaRegistryDeployer.__init__", return_value=None) as mock_init:
-            _make_sr_deployer(project, fmt)
+            make_sr_deployer(project, fmt)
             mock_init.assert_called_once()
             _, kwargs = mock_init.call_args
             assert kwargs["username"] == "sruser"
@@ -641,7 +641,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_key_location"] == "/certs/client.key"
 
     def test_make_flink_deployer_passes_auth(self):
-        from streamt.cli.commands.plan import _make_flink_deployer
+        from streamt.cli.helpers import make_flink_deployer
 
         project = MagicMock()
         project.runtime.flink = FlinkConfig(
@@ -662,7 +662,7 @@ class TestDeployerFactoryAuthWiring:
         fmt = MagicMock()
 
         with patch("streamt.deployer.flink.FlinkDeployer.__init__", return_value=None) as mock_init:
-            _make_flink_deployer(project, fmt)
+            make_flink_deployer(project, fmt)
             mock_init.assert_called_once()
             _, kwargs = mock_init.call_args
             assert kwargs["username"] == "fuser"
@@ -673,7 +673,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_key_location"] == "/certs/flink-client.key"
 
     def test_make_connect_deployer_passes_auth(self):
-        from streamt.cli.commands.plan import _make_connect_deployer
+        from streamt.cli.helpers import make_connect_deployer
 
         project = MagicMock()
         project.runtime.connect = ConnectConfig(
@@ -692,7 +692,7 @@ class TestDeployerFactoryAuthWiring:
         fmt = MagicMock()
 
         with patch("streamt.deployer.connect.ConnectDeployer.__init__", return_value=None) as mock_init:
-            _make_connect_deployer(project, fmt)
+            make_connect_deployer(project, fmt)
             mock_init.assert_called_once()
             _, kwargs = mock_init.call_args
             assert kwargs["username"] == "cuser"
@@ -702,7 +702,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_key_location"] == "/certs/connect-client.key"
 
     def test_make_kafka_deployer_passes_mtls(self):
-        from streamt.cli.commands.plan import _make_kafka_deployer
+        from streamt.cli.helpers import make_kafka_deployer
 
         project = MagicMock()
         project.runtime.kafka = KafkaConfig(
@@ -716,7 +716,7 @@ class TestDeployerFactoryAuthWiring:
         fmt = MagicMock()
 
         with patch("streamt.deployer.kafka.KafkaDeployer.__init__", return_value=None) as mock_init:
-            _make_kafka_deployer(project, fmt)
+            make_kafka_deployer(project, fmt)
             mock_init.assert_called_once()
             args, kwargs = mock_init.call_args
             assert args[0] == "broker:9093"

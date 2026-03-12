@@ -8,16 +8,17 @@ from typing import Any, Optional
 
 import click
 
-from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
+from streamt.cli.helpers import (
+    get_project_path,
+    handle_parse_error,
+    make_connect_deployer,
+    make_flink_deployer,
+    make_formatter,
+    make_kafka_deployer,
+    make_sr_deployer,
+)
 from streamt.core.errors import ErrorCode
 from streamt.output import get_output_format_from_context
-
-
-def _resolve_secret(val):
-    """Resolve SecretStr to plain string for deployer constructors."""
-    if val is None:
-        return None
-    return val.get_secret_value() if hasattr(val, "get_secret_value") else val
 
 
 @click.command()
@@ -39,10 +40,6 @@ def status(
     from streamt.compiler import Compiler
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
-    from streamt.deployer.connect import ConnectDeployer
-    from streamt.deployer.flink import FlinkDeployer
-    from streamt.deployer.kafka import KafkaDeployer
-    from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
     fmt = make_formatter(ctx, "status")
     project_path = get_project_path(project_dir)
@@ -70,17 +67,9 @@ def status(
         if manifest.artifacts.get("schemas"):
             if is_text:
                 fmt.print("\n[cyan]Schemas:[/cyan]")
-            if project.runtime.schema_registry:
+            sd = make_sr_deployer(project, fmt)
+            if sd:
                 try:
-                    sr = project.runtime.schema_registry
-                    sd = SchemaRegistryDeployer(
-                        sr.url,
-                        username=sr.username,
-                        password=_resolve_secret(sr.password),
-                        ssl_ca_location=sr.ssl_ca_location,
-                        ssl_certificate_location=sr.ssl_certificate_location,
-                        ssl_key_location=sr.ssl_key_location,
-                    )
                     for s in manifest.artifacts["schemas"]:
                         if not matches(s["subject"]):
                             continue
@@ -103,65 +92,52 @@ def status(
         # Topics
         if is_text:
             fmt.print("\n[cyan]Topics:[/cyan]")
-        try:
-            confluent_config = project.runtime.kafka.to_confluent_config()
-            bootstrap = confluent_config.pop("bootstrap.servers")
-            kd = KafkaDeployer(bootstrap, **confluent_config)
-            for t in manifest.artifacts.get("topics", []):
-                if not matches(t["name"]):
-                    continue
-                state = kd.get_topic_state(t["name"])
-                entry: dict[str, Any] = {"name": t["name"], "exists": state.exists,
-                         "partitions": state.partitions if state.exists else None,
-                         "replication_factor": state.replication_factor if state.exists else None}
-                if lag and state.exists:
-                    entry["message_count"] = kd.get_topic_message_count(t["name"])
-                data["topics"].append(entry)
+        kd = make_kafka_deployer(project, fmt)
+        if kd:
+            try:
+                for t in manifest.artifacts.get("topics", []):
+                    if not matches(t["name"]):
+                        continue
+                    state = kd.get_topic_state(t["name"])
+                    entry: dict[str, Any] = {"name": t["name"], "exists": state.exists,
+                             "partitions": state.partitions if state.exists else None,
+                             "replication_factor": state.replication_factor if state.exists else None}
+                    if lag and state.exists:
+                        entry["message_count"] = kd.get_topic_message_count(t["name"])
+                    data["topics"].append(entry)
+                    if is_text:
+                        if state.exists:
+                            line = f"  [green]OK[/green] {t['name']} (partitions: {state.partitions}, rf: {state.replication_factor})"
+                            if "message_count" in entry:
+                                line += f" [dim]~{entry['message_count']} msgs[/dim]"
+                            fmt.print(line)
+                        else:
+                            fmt.print(f"  [red]MISSING[/red] {t['name']}")
+            except Exception as e:
                 if is_text:
-                    if state.exists:
-                        line = f"  [green]OK[/green] {t['name']} (partitions: {state.partitions}, rf: {state.replication_factor})"
-                        if "message_count" in entry:
-                            line += f" [dim]~{entry['message_count']} msgs[/dim]"
-                        fmt.print(line)
-                    else:
-                        fmt.print(f"  [red]MISSING[/red] {t['name']}")
-        except Exception as e:
-            if is_text:
-                fmt.print(f"  [yellow]Cannot connect to Kafka: {e}[/yellow]")
+                    fmt.print(f"  [yellow]Cannot connect to Kafka: {e}[/yellow]")
 
         # Flink jobs
         if manifest.artifacts.get("flink_jobs"):
             if is_text:
                 fmt.print("\n[cyan]Flink Jobs:[/cyan]")
-            if project.runtime.flink and project.runtime.flink.clusters:
+            fd = make_flink_deployer(project, fmt)
+            if fd:
                 try:
-                    default = project.runtime.flink.default
-                    if default and default in project.runtime.flink.clusters:
-                        cfg = project.runtime.flink.clusters[default]
-                        if cfg.rest_url:
-                            fd = FlinkDeployer(
-                                cfg.rest_url,
-                                username=cfg.username,
-                                password=_resolve_secret(cfg.password),
-                                api_key=_resolve_secret(cfg.api_key),
-                                ssl_ca_location=cfg.ssl_ca_location,
-                                ssl_certificate_location=cfg.ssl_certificate_location,
-                                ssl_key_location=cfg.ssl_key_location,
-                            )
-                            for j in manifest.artifacts["flink_jobs"]:
-                                if not matches(j["name"]):
-                                    continue
-                                state = fd.get_job_state(j["name"])
-                                entry = {"name": j["name"], "exists": state.exists,
-                                         "job_id": state.job_id if state.exists else None,
-                                         "status": state.status if state.exists else None}
-                                data["flink_jobs"].append(entry)
-                                if is_text:
-                                    if state.exists:
-                                        color = "green" if state.status == "RUNNING" else "yellow"
-                                        fmt.print(f"  [{color}]{state.status}[/{color}] {j['name']}")
-                                    else:
-                                        fmt.print(f"  [red]NOT FOUND[/red] {j['name']}")
+                    for j in manifest.artifacts["flink_jobs"]:
+                        if not matches(j["name"]):
+                            continue
+                        state = fd.get_job_state(j["name"])
+                        entry = {"name": j["name"], "exists": state.exists,
+                                 "job_id": state.job_id if state.exists else None,
+                                 "status": state.status if state.exists else None}
+                        data["flink_jobs"].append(entry)
+                        if is_text:
+                            if state.exists:
+                                color = "green" if state.status == "RUNNING" else "yellow"
+                                fmt.print(f"  [{color}]{state.status}[/{color}] {j['name']}")
+                            else:
+                                fmt.print(f"  [red]NOT FOUND[/red] {j['name']}")
                 except Exception as e:
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Flink: {e}[/yellow]")
@@ -172,32 +148,22 @@ def status(
         if manifest.artifacts.get("connectors"):
             if is_text:
                 fmt.print("\n[cyan]Connectors:[/cyan]")
-            if project.runtime.connect and project.runtime.connect.clusters:
+            cd = make_connect_deployer(project, fmt)
+            if cd:
                 try:
-                    default = project.runtime.connect.default
-                    if default and default in project.runtime.connect.clusters:
-                        cfg = project.runtime.connect.clusters[default]
-                        cd = ConnectDeployer(
-                            cfg.rest_url,
-                            username=cfg.username,
-                            password=_resolve_secret(cfg.password),
-                            ssl_ca_location=cfg.ssl_ca_location,
-                            ssl_certificate_location=cfg.ssl_certificate_location,
-                            ssl_key_location=cfg.ssl_key_location,
-                        )
-                        for c in manifest.artifacts["connectors"]:
-                            if not matches(c["name"]):
-                                continue
-                            state = cd.get_connector_state(c["name"])
-                            entry = {"name": c["name"], "exists": state.exists,
-                                     "status": state.status if state.exists else None}
-                            data["connectors"].append(entry)
-                            if is_text:
-                                if state.exists:
-                                    color = "green" if state.status == "RUNNING" else "yellow"
-                                    fmt.print(f"  [{color}]{state.status}[/{color}] {c['name']}")
-                                else:
-                                    fmt.print(f"  [red]NOT FOUND[/red] {c['name']}")
+                    for c in manifest.artifacts["connectors"]:
+                        if not matches(c["name"]):
+                            continue
+                        state = cd.get_connector_state(c["name"])
+                        entry = {"name": c["name"], "exists": state.exists,
+                                 "status": state.status if state.exists else None}
+                        data["connectors"].append(entry)
+                        if is_text:
+                            if state.exists:
+                                color = "green" if state.status == "RUNNING" else "yellow"
+                                fmt.print(f"  [{color}]{state.status}[/{color}] {c['name']}")
+                            else:
+                                fmt.print(f"  [red]NOT FOUND[/red] {c['name']}")
                 except Exception as e:
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Connect: {e}[/yellow]")

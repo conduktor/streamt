@@ -7,7 +7,15 @@ from typing import Any, Optional
 
 import click
 
-from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
+from streamt.cli.helpers import (
+    get_project_path,
+    handle_parse_error,
+    make_connect_deployer,
+    make_flink_deployer,
+    make_formatter,
+    make_kafka_deployer,
+    make_sr_deployer,
+)
 from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError
 
@@ -47,10 +55,10 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         manifest = compiler.compile(dry_run=True)
 
         # Create deployers
-        sr_deployer = _make_sr_deployer(project, fmt)
-        kafka_deployer = _make_kafka_deployer(project, fmt)
-        flink_deployer = _make_flink_deployer(project, fmt)
-        connect_deployer = _make_connect_deployer(project, fmt)
+        sr_deployer = make_sr_deployer(project, fmt)
+        kafka_deployer = make_kafka_deployer(project, fmt)
+        flink_deployer = make_flink_deployer(project, fmt)
+        connect_deployer = make_connect_deployer(project, fmt)
 
         planner = DeploymentPlanner(
             manifest,
@@ -91,80 +99,3 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
 
 
-def _resolve_secret(val):
-    """Resolve SecretStr to plain string for deployer constructors."""
-    if val is None:
-        return None
-    return val.get_secret_value() if hasattr(val, "get_secret_value") else val
-
-
-def _make_sr_deployer(project: Any, fmt: Any) -> Any:
-    from streamt.deployer.schema_registry import SchemaRegistryDeployer
-    if project.runtime.schema_registry:
-        try:
-            sr = project.runtime.schema_registry
-            return SchemaRegistryDeployer(
-                sr.url,
-                username=sr.username,
-                password=_resolve_secret(sr.password),
-                ssl_ca_location=sr.ssl_ca_location,
-                ssl_certificate_location=sr.ssl_certificate_location,
-                ssl_key_location=sr.ssl_key_location,
-            )
-        except Exception as e:
-            fmt.print_warning(f"Cannot connect to Schema Registry: {e}")
-    return None
-
-
-def _make_kafka_deployer(project: Any, fmt: Any) -> Any:
-    from streamt.deployer.kafka import KafkaDeployer
-    try:
-        confluent_config = project.runtime.kafka.to_confluent_config()
-        bootstrap = confluent_config.pop("bootstrap.servers")
-        return KafkaDeployer(bootstrap, **confluent_config)
-    except Exception as e:
-        fmt.print_warning(f"Cannot connect to Kafka: {e}")
-    return None
-
-
-def _make_flink_deployer(project: Any, fmt: Any) -> Any:
-    from streamt.deployer.flink import FlinkDeployer
-    if project.runtime.flink and project.runtime.flink.clusters:
-        try:
-            default = project.runtime.flink.default
-            if default and default in project.runtime.flink.clusters:
-                cfg = project.runtime.flink.clusters[default]
-                if cfg.rest_url:
-                    return FlinkDeployer(
-                        rest_url=cfg.rest_url,
-                        sql_gateway_url=cfg.sql_gateway_url,
-                        username=cfg.username,
-                        password=_resolve_secret(cfg.password),
-                        api_key=_resolve_secret(cfg.api_key),
-                        ssl_ca_location=cfg.ssl_ca_location,
-                        ssl_certificate_location=cfg.ssl_certificate_location,
-                        ssl_key_location=cfg.ssl_key_location,
-                    )
-        except Exception as e:
-            fmt.print_warning(f"Cannot connect to Flink: {e}")
-    return None
-
-
-def _make_connect_deployer(project: Any, fmt: Any) -> Any:
-    from streamt.deployer.connect import ConnectDeployer
-    if project.runtime.connect and project.runtime.connect.clusters:
-        try:
-            default = project.runtime.connect.default
-            if default and default in project.runtime.connect.clusters:
-                cfg = project.runtime.connect.clusters[default]
-                return ConnectDeployer(
-                    cfg.rest_url,
-                    username=cfg.username,
-                    password=_resolve_secret(cfg.password),
-                    ssl_ca_location=cfg.ssl_ca_location,
-                    ssl_certificate_location=cfg.ssl_certificate_location,
-                    ssl_key_location=cfg.ssl_key_location,
-                )
-        except Exception as e:
-            fmt.print_warning(f"Cannot connect to Connect: {e}")
-    return None
