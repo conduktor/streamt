@@ -1,10 +1,12 @@
 # Docker Compose override for auth/SSL integration tests.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.auth.yml up kafka schema-registry schema-registry-auth -d
+# Usage: docker compose -f docker-compose.yml -f docker-compose.auth.yml up kafka schema-registry schema-registry-auth flink-auth connect-auth -d
 #
 # Overrides:
 #   - kafka: Replaces with Confluent CP image + SASL_PLAINTEXT listener on port 9094.
 # Adds:
 #   - schema-registry-auth: Schema Registry behind nginx basic auth on port 8085
+#   - flink-auth: Flink REST API behind nginx basic auth on port 8086
+#   - connect-auth: Connect REST API behind nginx basic auth on port 8087
 
 services:
   kafka:
@@ -58,6 +60,44 @@ services:
       - ./tests/fixtures/sr-htpasswd:/etc/nginx/.htpasswd:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "-u", "sruser:srpass", "http://localhost:80/subjects"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # nginx reverse proxy adding basic auth in front of Flink REST API
+  flink-auth:
+    image: nginx:alpine
+    hostname: flink-auth
+    container_name: streamt-flink-auth
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    ports:
+      - "8086:80"
+    volumes:
+      - ./tests/fixtures/nginx-flink-auth.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./tests/fixtures/flink-htpasswd:/etc/nginx/.htpasswd:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-u", "flinkuser:flinkpass", "http://localhost:80/config"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # nginx reverse proxy adding basic auth in front of Connect REST API
+  connect-auth:
+    image: nginx:alpine
+    hostname: connect-auth
+    container_name: streamt-connect-auth
+    depends_on:
+      connect:
+        condition: service_healthy
+    ports:
+      - "8087:80"
+    volumes:
+      - ./tests/fixtures/nginx-connect-auth.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./tests/fixtures/connect-htpasswd:/etc/nginx/.htpasswd:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-u", "connectuser:connectpass", "http://localhost:80/connectors"]
       interval: 5s
       timeout: 3s
       retries: 10

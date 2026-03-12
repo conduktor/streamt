@@ -25,6 +25,14 @@ SR_AUTH_URL = "http://localhost:8085"
 SR_AUTH_USER = "sruser"
 SR_AUTH_PASS = "srpass"
 
+FLINK_AUTH_URL = "http://localhost:8086"
+FLINK_AUTH_USER = "flinkuser"
+FLINK_AUTH_PASS = "flinkpass"
+
+CONNECT_AUTH_URL = "http://localhost:8087"
+CONNECT_AUTH_USER = "connectuser"
+CONNECT_AUTH_PASS = "connectpass"
+
 
 def _kafka_sasl_available() -> bool:
     """Check if SASL Kafka is reachable."""
@@ -58,14 +66,50 @@ def _sr_auth_available() -> bool:
         return False
 
 
+def _flink_auth_available() -> bool:
+    """Check if auth-protected Flink REST is reachable."""
+    try:
+        resp = requests.get(
+            f"{FLINK_AUTH_URL}/config",
+            auth=(FLINK_AUTH_USER, FLINK_AUTH_PASS),
+            timeout=3,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _connect_auth_available() -> bool:
+    """Check if auth-protected Connect REST is reachable."""
+    try:
+        resp = requests.get(
+            f"{CONNECT_AUTH_URL}/connectors",
+            auth=(CONNECT_AUTH_USER, CONNECT_AUTH_PASS),
+            timeout=3,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 kafka_sasl_available = pytest.mark.skipif(
     not _kafka_sasl_available(),
-    reason="Kafka SASL not available (run: docker compose -f docker-compose.yml -f docker-compose.auth.yml up kafka-sasl -d)",
+    reason="Kafka SASL not available (run: docker compose -f docker-compose.yml -f docker-compose.auth.yml up kafka -d)",
 )
 
 sr_auth_available = pytest.mark.skipif(
     not _sr_auth_available(),
     reason="Schema Registry auth not available (run: docker compose -f docker-compose.yml -f docker-compose.auth.yml up schema-registry-auth -d)",
+)
+
+flink_auth_available = pytest.mark.skipif(
+    not _flink_auth_available(),
+    reason="Flink auth not available (run: docker compose -f docker-compose.yml -f docker-compose.auth.yml up flink-auth -d)",
+)
+
+connect_auth_available = pytest.mark.skipif(
+    not _connect_auth_available(),
+    reason="Connect auth not available (run: docker compose -f docker-compose.yml -f docker-compose.auth.yml up connect-auth -d)",
 )
 
 
@@ -260,3 +304,165 @@ class TestSchemaRegistryAuthIntegration:
 
         subjects = deployer.list_subjects()
         assert isinstance(subjects, list)
+
+
+# ---------------------------------------------------------------------------
+# Flink REST basic auth integration tests
+# ---------------------------------------------------------------------------
+
+@flink_auth_available
+class TestFlinkAuthIntegration:
+    """Verify FlinkDeployer works with basic auth via nginx proxy."""
+
+    def _make_deployer(self):
+        from streamt.deployer.flink import FlinkDeployer
+
+        return FlinkDeployer(
+            rest_url=FLINK_AUTH_URL,
+            username=FLINK_AUTH_USER,
+            password=FLINK_AUTH_PASS,
+        )
+
+    def test_check_connection(self):
+        """FlinkDeployer can connect with basic auth."""
+        deployer = self._make_deployer()
+        try:
+            assert deployer.check_connection() is True
+        finally:
+            deployer.close()
+
+    def test_list_jobs(self):
+        """FlinkDeployer can list jobs with basic auth."""
+        deployer = self._make_deployer()
+        try:
+            jobs = deployer.list_jobs()
+            assert isinstance(jobs, list)
+        finally:
+            deployer.close()
+
+    def test_wrong_password_fails(self):
+        """FlinkDeployer with wrong password gets 401."""
+        from streamt.deployer.flink import FlinkDeployer
+
+        deployer = FlinkDeployer(
+            rest_url=FLINK_AUTH_URL,
+            username=FLINK_AUTH_USER,
+            password="wrong-password",
+        )
+        try:
+            assert deployer.check_connection() is False
+        finally:
+            deployer.close()
+
+    def test_no_auth_fails(self):
+        """FlinkDeployer without auth gets 401."""
+        from streamt.deployer.flink import FlinkDeployer
+
+        deployer = FlinkDeployer(rest_url=FLINK_AUTH_URL)
+        try:
+            assert deployer.check_connection() is False
+        finally:
+            deployer.close()
+
+    def test_yaml_to_deployer_roundtrip(self):
+        """Full path: YAML config → FlinkClusterConfig → deployer → list_jobs."""
+        from streamt.core.models import FlinkClusterConfig
+        from streamt.deployer.flink import FlinkDeployer
+
+        cfg = FlinkClusterConfig(
+            rest_url=FLINK_AUTH_URL,
+            username=FLINK_AUTH_USER,
+            password=FLINK_AUTH_PASS,
+        )
+
+        deployer = FlinkDeployer(
+            rest_url=cfg.rest_url,
+            username=cfg.username,
+            password=cfg.password.get_secret_value() if cfg.password else None,
+        )
+        try:
+            jobs = deployer.list_jobs()
+            assert isinstance(jobs, list)
+        finally:
+            deployer.close()
+
+
+# ---------------------------------------------------------------------------
+# Connect REST basic auth integration tests
+# ---------------------------------------------------------------------------
+
+@connect_auth_available
+class TestConnectAuthIntegration:
+    """Verify ConnectDeployer works with basic auth via nginx proxy."""
+
+    def _make_deployer(self):
+        from streamt.deployer.connect import ConnectDeployer
+
+        return ConnectDeployer(
+            CONNECT_AUTH_URL,
+            username=CONNECT_AUTH_USER,
+            password=CONNECT_AUTH_PASS,
+        )
+
+    def test_check_connection(self):
+        """ConnectDeployer can connect with basic auth."""
+        deployer = self._make_deployer()
+        try:
+            assert deployer.check_connection() is True
+        finally:
+            deployer.close()
+
+    def test_list_connectors(self):
+        """ConnectDeployer can list connectors with basic auth."""
+        deployer = self._make_deployer()
+        try:
+            connectors = deployer.list_connectors()
+            assert isinstance(connectors, list)
+        finally:
+            deployer.close()
+
+    def test_wrong_password_fails(self):
+        """ConnectDeployer with wrong password gets 401."""
+        from streamt.deployer.connect import ConnectDeployer
+
+        deployer = ConnectDeployer(
+            CONNECT_AUTH_URL,
+            username=CONNECT_AUTH_USER,
+            password="wrong-password",
+        )
+        try:
+            assert deployer.check_connection() is False
+        finally:
+            deployer.close()
+
+    def test_no_auth_fails(self):
+        """ConnectDeployer without auth gets 401."""
+        from streamt.deployer.connect import ConnectDeployer
+
+        deployer = ConnectDeployer(CONNECT_AUTH_URL)
+        try:
+            assert deployer.check_connection() is False
+        finally:
+            deployer.close()
+
+    def test_yaml_to_deployer_roundtrip(self):
+        """Full path: YAML config → ConnectClusterConfig → deployer → list_connectors."""
+        from streamt.core.models import ConnectClusterConfig
+        from streamt.deployer.connect import ConnectDeployer
+
+        cfg = ConnectClusterConfig(
+            rest_url=CONNECT_AUTH_URL,
+            username=CONNECT_AUTH_USER,
+            password=CONNECT_AUTH_PASS,
+        )
+
+        deployer = ConnectDeployer(
+            cfg.rest_url,
+            username=cfg.username,
+            password=cfg.password.get_secret_value() if cfg.password else None,
+        )
+        try:
+            connectors = deployer.list_connectors()
+            assert isinstance(connectors, list)
+        finally:
+            deployer.close()
