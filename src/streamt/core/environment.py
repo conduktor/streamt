@@ -331,22 +331,24 @@ class EnvironmentManager:
         return environments
 
 
+_SECRET_FIELD_NAMES = {
+    "password", "sasl_password", "ssl_key_password", "api_key", "api_secret",
+    "secret", "token", "credential",
+}
+
+
 def mask_secrets(value: Any, secret_keys: set[str] | None = None) -> Any:
     """Recursively mask secret values in a dictionary.
 
-    Keys containing 'password', 'secret', 'key', 'token', 'credential'
-    will have their values replaced with '****'.
+    Only exact field names in the secret set are masked. File path fields
+    like ssl_key_location are NOT masked.
     """
     if secret_keys is None:
-        secret_keys = {"password", "secret", "key", "token", "credential", "api_key", "api_secret"}
-
-    def is_secret_key(key: str) -> bool:
-        key_lower = key.lower()
-        return any(s in key_lower for s in secret_keys)
+        secret_keys = _SECRET_FIELD_NAMES
 
     if isinstance(value, dict):
         return {
-            k: "****" if is_secret_key(k) and isinstance(v, str) else mask_secrets(v, secret_keys)
+            k: "****" if k.lower() in secret_keys and isinstance(v, str) else mask_secrets(v, secret_keys)
             for k, v in value.items()
         }
     elif isinstance(value, list):
