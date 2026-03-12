@@ -104,7 +104,7 @@ class TestCLI:
             output_dir = Path(tmpdir) / "my-output"
 
             result = runner.invoke(
-                main, ["compile", "-p", str(project_path), "-o", str(output_dir)]
+                main, ["compile", "-p", str(project_path), "--output-dir", str(output_dir)]
             )
 
             assert result.exit_code == 0

@@ -196,12 +196,21 @@ Type 'prod' to confirm: _
 ```bash
 # Without --confirm: fails
 $ streamt apply --env prod
-ERROR: 'prod' is a protected environment. Use --confirm flag in non-interactive mode.
+ERROR: 'prod' is a protected environment. Use --confirm or --confirm-env in CI.
 
 # With --confirm: proceeds
 $ streamt apply --env prod --confirm
 WARNING: Deploying to protected environment 'prod'
 Applying changes...
+
+# With --confirm-env (recommended for agents/CI — verifies env name matches):
+$ streamt apply --env prod --confirm-env prod
+WARNING: Deploying to protected environment 'prod'
+Applying changes...
+
+# Wrong name is rejected:
+$ streamt apply --env prod --confirm-env staging
+ERROR: --confirm-env 'staging' does not match 'prod'
 ```
 
 ## Destructive Safety
@@ -303,8 +312,23 @@ jobs:
         run: |
           streamt validate --env prod
           streamt plan --env prod
-          # --confirm required for protected environments in CI
-          streamt apply --env prod --confirm
+          # --confirm-env verifies the environment name matches (safer for CI)
+          streamt apply --env prod --confirm-env prod
+```
+
+### Agent/LLM Automation
+
+For programmatic use by LLM agents or automation tools, use `--output json` for structured output:
+
+```bash
+# Structured JSON output from any command
+streamt -o json validate --env staging
+streamt -o json plan --env prod
+streamt -o json list models
+streamt -o json show model order_metrics
+
+# Deploy with name verification and JSON output
+streamt -o json apply --env prod --confirm-env prod
 ```
 
 ## Best Practices

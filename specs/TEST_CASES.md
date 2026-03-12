@@ -464,7 +464,7 @@ SELECT
 
 ### TC-COMP-008: Compilation avec output custom
 
-**When** `streamt compile --output ./my-output/`
+**When** `streamt compile --output-dir ./my-output/`
 
 **Then**
 - Fichiers générés dans `./my-output/` au lieu de `./generated/`
@@ -1239,6 +1239,50 @@ models:
 
 ---
 
+## 10. CLI Structured Output & Introspection
+
+### TC-CLI-001: JSON output envelope
+
+**When** `streamt -o json validate`
+**Then** stdout contains valid JSON with keys: `status`, `command`, `data`, `errors`, `warnings`
+
+### TC-CLI-002: JSON error codes
+
+**When** `streamt -o json validate` on project with invalid source ref
+**Then** `errors[0].code` starts with `E` (e.g. `E101_SOURCE_NOT_FOUND`)
+
+### TC-CLI-003: List resources
+
+**When** `streamt -o json list models`
+**Then** `data.resource_type == "models"`, `data.count` matches model count, `data.items` is list
+
+### TC-CLI-004: Show resource detail
+
+**When** `streamt -o json show model <name>`
+**Then** `data.materialized`, `data.upstream`, `data.downstream` are populated
+
+### TC-CLI-005: Show not found
+
+**When** `streamt -o json show model nonexistent`
+**Then** exit code 1, `errors[0].code == "E102_MODEL_NOT_FOUND"`, `errors[0].suggestion` lists available models
+
+### TC-CLI-006: --confirm-env matching
+
+**When** `streamt apply --env prod --confirm-env prod` on protected env
+**Then** confirmation is accepted, apply proceeds
+
+### TC-CLI-007: --confirm-env mismatch
+
+**When** `streamt apply --env prod --confirm-env staging`
+**Then** exit code 1, error message "does not match"
+
+### TC-CLI-008: compile --output-dir
+
+**When** `streamt compile --output-dir ./my-output/`
+**Then** artifacts generated in `./my-output/`
+
+---
+
 ## Matrice de couverture
 
 | Fonctionnalité | Tests |
@@ -1261,3 +1305,4 @@ models:
 | Security masking | TC-SEC-001, TC-SEC-002 |
 | Security access | TC-SEC-003, TC-SEC-004 |
 | Error handling | TC-ERR-001 to TC-ERR-010 |
+| CLI output & introspection | TC-CLI-001 to TC-CLI-008 |

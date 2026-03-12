@@ -218,6 +218,22 @@ my-streaming-project/
     └── events_test.yml     # Test definitions
 ```
 
+## Bonus: Inspect Your Pipeline
+
+Use `list` and `show` to explore what you've built:
+
+```bash
+# List all models
+streamt list models
+
+# Show details of a specific model
+streamt show model events_clean
+
+# Get JSON output (for scripting or LLM agents)
+streamt -o json list sources
+streamt -o json show model events_clean
+```
+
 ## What's Next?
 
 Congratulations! You've created your first streaming pipeline with streamt.
@@ -226,3 +242,4 @@ Congratulations! You've created your first streaming pipeline with streamt.
 - [Learn about concepts](../concepts/overview.md) — Understand sources, models, tests
 - [Explore materializations](../reference/materializations.md) — Topics, Flink jobs, sinks
 - [See examples](../examples/payments.md) — Real-world pipeline examples
+- [CLI Reference](../reference/cli.md) — All commands and options

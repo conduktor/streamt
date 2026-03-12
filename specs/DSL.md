@@ -716,33 +716,44 @@ Available in SQL blocks:
 
 ```bash
 # Validate project syntax
-stream validate
+streamt validate
 
 # Show the DAG
-stream lineage
-stream lineage --model card_payments_enriched  # focus on one model
+streamt lineage
+streamt lineage --model card_payments_enriched  # focus on one model
 
 # Compile without deploying
-stream compile
-stream compile --output ./generated/
-stream compile --dry-run  # just show what would be generated
+streamt compile
+streamt compile --output-dir ./generated/
+streamt compile --dry-run  # just show what would be generated
 
 # Show what would change (like terraform plan)
-stream plan
+streamt plan
 
 # Deploy everything
-stream apply
-stream apply --target card_payments_clean  # deploy single model
-stream apply --select "tag:payments"       # deploy by tag
+streamt apply
+streamt apply --target card_payments_clean  # deploy single model
+streamt apply --select "tag:payments"       # deploy by tag
 
 # Run tests
-stream test
-stream test --model card_payments_clean
-stream test --type sample                   # only sample tests
+streamt test
+streamt test --model card_payments_clean
+streamt test --type sample                   # only sample tests
 
 # Check status of deployed resources
-stream status
+streamt status
 
-# Teardown
-stream destroy --target payments_to_snowflake
+# Inspect resources
+streamt list sources                        # list all sources
+streamt list models                         # list all models
+streamt show model card_payments_enriched   # show model details
+
+# Environment management
+streamt envs list                           # list environments
+streamt envs show prod                      # show resolved config
+
+# Structured JSON output (for agents/CI)
+streamt -o json validate
+streamt -o json list models
+streamt -o json show model card_payments_enriched
 ```

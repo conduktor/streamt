@@ -15,14 +15,47 @@ These options are available for all commands:
 streamt [OPTIONS] COMMAND [ARGS]
 
 Options:
-  --project-dir PATH    Path to project directory (default: current)
-  --env ENV             Target environment (for multi-env mode)
+  --output, -o FORMAT   Output format: text (default) or json
   --version            Show version and exit
   --help               Show help message and exit
 ```
 
 !!! info "Environment Selection"
     In multi-environment mode, specify the target environment with `--env` or the `STREAMT_ENV` variable. The CLI flag takes precedence over the environment variable.
+
+### Structured JSON Output
+
+Use `--output json` (or `-o json`) to get machine-readable output from any command. All JSON responses follow a consistent envelope:
+
+```json
+{
+  "status": "ok",
+  "command": "validate",
+  "data": { ... },
+  "errors": [],
+  "warnings": []
+}
+```
+
+On error, `status` is `"error"` and `errors` contains structured entries with machine-readable codes:
+
+```json
+{
+  "status": "error",
+  "command": "validate",
+  "data": {},
+  "errors": [
+    {
+      "code": "E101_SOURCE_NOT_FOUND",
+      "message": "Source 'orders' not found",
+      "suggestion": "Available: events, payments"
+    }
+  ],
+  "warnings": []
+}
+```
+
+This makes streamt suitable for LLM agents, CI/CD pipelines, and programmatic integrations.
 
 ## Commands
 
@@ -96,7 +129,7 @@ streamt compile [OPTIONS]
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
-| `--output PATH` | Output directory (default: `generated/`) |
+| `--output-dir PATH` | Output directory (default: `generated/`) |
 | `--dry-run` | Show what would be generated without writing |
 
 **Examples:**
@@ -109,7 +142,7 @@ streamt compile
 streamt compile --env prod
 
 # Custom output directory
-streamt compile --output ./build
+streamt compile --output-dir ./build
 
 # Preview without writing files
 streamt compile --dry-run
@@ -199,8 +232,8 @@ streamt apply [OPTIONS]
 | `--target MODEL` | Deploy only specific model |
 | `--select SELECTOR` | Filter by tag or selector |
 | `--dry-run` | Show what would be deployed |
-| `--auto-approve` | Skip confirmation prompt |
-| `--confirm` | Confirm deployment to protected environments (required in CI/CD) |
+| `--confirm` | Skip confirmation prompt for protected environments |
+| `--confirm-env ENV` | Non-interactive confirm: pass environment name to verify (for agents/CI) |
 | `--force` | Allow destructive operations in protected environments |
 
 **Examples:**
@@ -215,6 +248,9 @@ streamt apply --env dev
 # Deploy to protected environment (CI/CD)
 streamt apply --env prod --confirm
 
+# Non-interactive confirm with name verification (agents/CI)
+streamt apply --env prod --confirm-env prod
+
 # Override destructive safety (use with caution)
 streamt apply --env prod --confirm --force
 
@@ -223,13 +259,13 @@ streamt apply --target order_metrics
 
 # Deploy by tag
 streamt apply --select tag:critical
-
-# Auto-approve (CI/CD)
-streamt apply --auto-approve
 ```
 
 !!! warning "Protected Environments"
-    When deploying to a protected environment, you must confirm interactively (by typing the environment name) or use `--confirm` in CI/CD. If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
+    When deploying to a protected environment, you must confirm interactively (by typing the environment name), use `--confirm`, or use `--confirm-env ENV` (which also verifies the environment name matches). If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
+
+!!! tip "LLM/Agent Usage"
+    Use `--confirm-env ENV` instead of `--confirm` for programmatic deployments. It provides an extra safety check by verifying the environment name matches, preventing accidental deployments to the wrong environment.
 
 **Output:**
 
@@ -445,6 +481,115 @@ Summary: Topics: 2 OK, 0 missing | Jobs: 1 running, 0 other
 
 ---
 
+### list
+
+List project resources by type.
+
+```bash
+streamt list RESOURCE_TYPE [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Values |
+|----------|--------|
+| `RESOURCE_TYPE` | `sources`, `models`, `tests`, `exposures` |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# List all sources
+streamt list sources
+
+# List models with JSON output
+streamt -o json list models
+
+# List tests for a specific environment
+streamt list tests --env prod
+```
+
+**JSON Output:**
+
+```json
+{
+  "status": "ok",
+  "command": "list",
+  "data": {
+    "resource_type": "models",
+    "count": 3,
+    "items": [
+      {"name": "orders_clean", "materialized": "virtual_topic", "upstream": ["orders_raw"]},
+      {"name": "order_metrics", "materialized": "flink", "upstream": ["orders_clean"]}
+    ]
+  }
+}
+```
+
+---
+
+### show
+
+Show detailed information about a single resource.
+
+```bash
+streamt show RESOURCE_TYPE NAME [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Values |
+|----------|--------|
+| `RESOURCE_TYPE` | `source`, `model`, `test`, `exposure` |
+| `NAME` | Resource name |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# Show source details
+streamt show source orders_raw
+
+# Show model with JSON output (for agents)
+streamt -o json show model order_metrics
+
+# Show test details
+streamt show test orders_quality
+```
+
+**JSON Output (model):**
+
+```json
+{
+  "status": "ok",
+  "command": "show",
+  "data": {
+    "resource_type": "model",
+    "name": "order_metrics",
+    "materialized": "flink",
+    "upstream": ["orders_clean"],
+    "downstream": ["ops_dashboard"],
+    "sql": "SELECT ...",
+    "flink": {"parallelism": 4, "state_ttl_ms": 3600000},
+    "topic": {"partitions": 12}
+  }
+}
+```
+
+---
+
 ### docs
 
 Generate project documentation.
@@ -582,10 +727,25 @@ See [Multi-Environment Support](../guides/multi-environment.md) for details.
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | General error |
-| 2 | Validation error |
-| 3 | Deployment error |
-| 4 | Test failure |
+| 1 | Error (validation, deployment, or runtime) |
+
+### Structured Error Codes
+
+When using `--output json`, errors include machine-readable codes. These codes follow a taxonomy for programmatic handling:
+
+| Code | Meaning |
+|------|---------|
+| `E101_SOURCE_NOT_FOUND` | Referenced source does not exist |
+| `E102_MODEL_NOT_FOUND` | Referenced model does not exist |
+| `E103_DUPLICATE_NAME` | Duplicate resource name |
+| `E104_CYCLE_DETECTED` | Circular dependency in DAG |
+| `E105_INVALID_REF` | Invalid `ref()` or `source()` reference |
+| `E201_MISSING_CONFIG` | Required configuration is missing |
+| `E202_INVALID_VALUE` | Configuration value is invalid |
+| `E203_ENVIRONMENT_ERROR` | Environment configuration error |
+| `E301_SCHEMA_MISMATCH` | Schema compatibility error |
+| `E401_DEPLOY_FAILED` | Deployment operation failed |
+| `E501_PARSE_ERROR` | YAML/SQL parsing error |
 
 ## Examples
 
@@ -595,14 +755,14 @@ See [Multi-Environment Support](../guides/multi-environment.md) for details.
 #!/bin/bash
 set -e
 
-# Validate
-streamt validate --strict
+# Validate (JSON output for parsing)
+streamt -o json validate --strict
 
 # Plan and show diff
 streamt plan
 
-# Apply (auto-approve in CI)
-streamt apply --auto-approve
+# Apply
+streamt apply --confirm
 
 # Run tests
 streamt test
@@ -619,13 +779,24 @@ streamt validate --all-envs --strict
 
 # Deploy to staging
 streamt plan --env staging
-streamt apply --env staging --auto-approve
+streamt apply --env staging
 streamt test --env staging
 
-# Deploy to production (protected)
+# Deploy to production (protected, with name verification)
 streamt plan --env prod
-streamt apply --env prod --confirm --auto-approve
+streamt apply --env prod --confirm-env prod
 streamt test --env prod
+```
+
+### Agent/LLM Automation
+
+```bash
+# All commands support structured JSON output
+streamt -o json list models
+streamt -o json show model order_metrics
+streamt -o json validate
+streamt -o json plan --env staging
+streamt -o json apply --env prod --confirm-env prod
 ```
 
 ### Development Workflow

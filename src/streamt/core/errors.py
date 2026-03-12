@@ -2,9 +2,10 @@
 
 This module provides error message formatting that teaches users how to fix issues.
 Each error includes:
-- What went wrong
-- Why it matters
-- How to fix it
+- What went wrong (message)
+- Machine-readable code (for LLM agents and CI/CD)
+- Why it matters (explanation)
+- How to fix it (suggestion)
 - Link to documentation
 """
 
@@ -15,12 +16,58 @@ from typing import Optional
 DOCS_BASE_URL = "https://streamt.dev/docs"
 
 
+# =============================================================================
+# Error Codes — machine-readable identifiers for every error type
+# =============================================================================
+
+class ErrorCode:
+    """Machine-readable error codes for structured output."""
+
+    # Validation errors (E1xx)
+    SOURCE_NOT_FOUND = "E101_SOURCE_NOT_FOUND"
+    MODEL_NOT_FOUND = "E102_MODEL_NOT_FOUND"
+    DUPLICATE_NAME = "E103_DUPLICATE_NAME"
+    CYCLE_DETECTED = "E104_CYCLE_DETECTED"
+    JINJA_SYNTAX_ERROR = "E105_JINJA_SYNTAX_ERROR"
+    ACCESS_DENIED = "E106_ACCESS_DENIED"
+    TEST_MODEL_NOT_FOUND = "E107_TEST_MODEL_NOT_FOUND"
+    EXPOSURE_MODEL_NOT_FOUND = "E108_EXPOSURE_MODEL_NOT_FOUND"
+    EXPOSURE_SOURCE_NOT_FOUND = "E109_EXPOSURE_SOURCE_NOT_FOUND"
+    EXPOSURE_DEPENDENCY_NOT_FOUND = "E110_EXPOSURE_DEPENDENCY_NOT_FOUND"
+
+    # Configuration errors (E2xx)
+    GATEWAY_REQUIRED = "E201_GATEWAY_REQUIRED"
+    FLINK_REQUIRED = "E202_FLINK_REQUIRED"
+    CONFLUENT_FLINK_REQUIRED = "E203_CONFLUENT_FLINK_REQUIRED"
+    MISSING_SINK_CONFIG = "E204_MISSING_SINK_CONFIG"
+    CONNECT_REQUIRED = "E205_CONNECT_REQUIRED"
+    SQL_GATEWAY_NOT_CONFIGURED = "E206_SQL_GATEWAY_NOT_CONFIGURED"
+    CONTINUOUS_TEST_WITHOUT_FLINK = "E207_CONTINUOUS_TEST_WITHOUT_FLINK"
+
+    # State/TTL errors (E3xx)
+    INVALID_STATE_TTL = "E301_INVALID_STATE_TTL"
+
+    # Deployment errors (E4xx)
+    CANNOT_REDUCE_PARTITIONS = "E401_CANNOT_REDUCE_PARTITIONS"
+    SCHEMA_INCOMPATIBLE = "E402_SCHEMA_INCOMPATIBLE"
+    FLINK_SQL_ERROR = "E403_FLINK_SQL_ERROR"
+
+    # Warnings (W1xx)
+    STATE_TTL_RECOMMENDED = "W101_STATE_TTL_RECOMMENDED"
+
+    # Parse errors (E5xx)
+    PARSE_ERROR = "E501_PARSE_ERROR"
+    ENV_VAR_ERROR = "E502_ENV_VAR_ERROR"
+    ENVIRONMENT_ERROR = "E503_ENVIRONMENT_ERROR"
+
+
 def format_error(
     title: str,
     explanation: str,
     suggestion: Optional[str] = None,
     example: Optional[str] = None,
     docs_path: Optional[str] = None,
+    code: Optional[str] = None,
 ) -> str:
     """Format a rich error message.
 
@@ -30,6 +77,7 @@ def format_error(
         suggestion: How to fix it (optional)
         example: Code example showing the fix (optional)
         docs_path: Path to docs page, e.g., "concepts/sources" (optional)
+        code: Machine-readable error code (optional)
 
     Returns:
         Formatted error message string
@@ -48,6 +96,33 @@ def format_error(
         parts.extend(["", f"Learn more: {DOCS_BASE_URL}/{docs_path}"])
 
     return "\n".join(parts)
+
+
+def structured_error(
+    code: str,
+    title: str,
+    explanation: str,
+    suggestion: Optional[str] = None,
+    docs_path: Optional[str] = None,
+    location: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    """Build a structured error dict for JSON output.
+
+    Returns:
+        Dict with code, message, suggestion, docs_url, location.
+    """
+    result: dict[str, Optional[str]] = {
+        "code": code,
+        "message": title,
+    }
+    if location:
+        result["location"] = location
+    if suggestion:
+        # Strip multi-line formatting for JSON
+        result["suggestion"] = suggestion.split("\n")[0] if suggestion else None
+    if docs_path:
+        result["docs_url"] = f"{DOCS_BASE_URL}/{docs_path}"
+    return result
 
 
 def suggest_similar(name: str, available: list[str], noun: str = "name") -> str:
@@ -94,6 +169,7 @@ def source_not_found(
     suggestion = suggest_similar(source_name, available_sources, "source")
 
     return format_error(
+        code=ErrorCode.SOURCE_NOT_FOUND,
         title=f"Source '{source_name}' not found",
         explanation=f"Model '{model_name}' references source '{source_name}' in its SQL, "
         f"but no source with that name is defined.",
@@ -114,6 +190,7 @@ def model_not_found(
     suggestion = suggest_similar(model_name, available_models, "model")
 
     return format_error(
+        code=ErrorCode.MODEL_NOT_FOUND,
         title=f"Model '{model_name}' not found",
         explanation=f"Model '{referencing_model}' references model '{model_name}' via ref(), "
         f"but no model with that name is defined.",
@@ -125,6 +202,7 @@ def model_not_found(
 def gateway_required(model_name: str) -> str:
     """Error when virtual_topic is used without Gateway config."""
     return format_error(
+        code=ErrorCode.GATEWAY_REQUIRED,
         title=f"Gateway configuration required for '{model_name}'",
         explanation=f"Model '{model_name}' uses materialization 'virtual_topic', which requires "
         f"Conduktor Gateway to be configured. Virtual topics are read-time filters "
@@ -143,6 +221,7 @@ def gateway_required(model_name: str) -> str:
 def flink_required(model_name: str) -> str:
     """Error when flink materialization is used without Flink config."""
     return format_error(
+        code=ErrorCode.FLINK_REQUIRED,
         title=f"Flink configuration required for '{model_name}'",
         explanation=f"Model '{model_name}' uses materialization 'flink', which requires "
         f"a Flink cluster to be configured for SQL job execution.",
@@ -161,6 +240,7 @@ def flink_required(model_name: str) -> str:
 def confluent_flink_required(model_name: str, function_name: str) -> str:
     """Error when Confluent-specific functions are used without Confluent Flink."""
     return format_error(
+        code=ErrorCode.CONFLUENT_FLINK_REQUIRED,
         title=f"Confluent Flink required for '{function_name}' in '{model_name}'",
         explanation=f"Model '{model_name}' uses '{function_name}' which is only available "
         f"in Confluent Cloud for Apache Flink. This function is not available in "
@@ -181,6 +261,7 @@ def confluent_flink_required(model_name: str, function_name: str) -> str:
 def missing_sink_config(model_name: str) -> str:
     """Error when sink materialization is missing sink config."""
     return format_error(
+        code=ErrorCode.MISSING_SINK_CONFIG,
         title=f"Sink configuration required for '{model_name}'",
         explanation=f"Model '{model_name}' uses materialization 'sink', which requires "
         f"a sink configuration specifying the connector type and settings.",
@@ -203,6 +284,7 @@ def missing_sink_config(model_name: str) -> str:
 def connect_required(model_name: str) -> str:
     """Error when sink materialization is used without Connect config."""
     return format_error(
+        code=ErrorCode.CONNECT_REQUIRED,
         title=f"Kafka Connect configuration required for '{model_name}'",
         explanation=f"Model '{model_name}' uses materialization 'sink', which requires "
         f"Kafka Connect to be configured for connector deployment.",
@@ -237,6 +319,7 @@ def jinja_syntax_error(model_name: str, error: str, sql: Optional[str] = None) -
             sql_snippet += "\n    ..."
 
     return format_error(
+        code=ErrorCode.JINJA_SYNTAX_ERROR,
         title=f"Jinja syntax error in model '{model_name}'",
         explanation=explanation + line_info + sql_snippet,
         suggestion="Common issues:\n"
@@ -260,6 +343,7 @@ def duplicate_name(
         explanation += "\n\nFound in:\n" + "\n".join(f"  - {loc}" for loc in locations)
 
     return format_error(
+        code=ErrorCode.DUPLICATE_NAME,
         title=f"Duplicate {entity_type} name '{name}'",
         explanation=explanation,
         suggestion=f"Rename one of the {entity_type}s to have a unique name.",
@@ -271,6 +355,7 @@ def cycle_detected(cycle: list[str]) -> str:
     cycle_str = " -> ".join(cycle)
 
     return format_error(
+        code=ErrorCode.CYCLE_DETECTED,
         title="Circular dependency detected",
         explanation=f"Your models form a cycle: {cycle_str}\n\n"
         "Each model in this chain depends on the next, creating an infinite loop.",
@@ -285,6 +370,7 @@ def cycle_detected(cycle: list[str]) -> str:
 def continuous_test_without_flink(test_name: str) -> str:
     """Error when continuous test is defined without Flink config."""
     return format_error(
+        code=ErrorCode.CONTINUOUS_TEST_WITHOUT_FLINK,
         title=f"Flink required for continuous test '{test_name}'",
         explanation=f"Test '{test_name}' is a continuous test that runs as a Flink job. "
         "Continuous tests monitor data quality in real-time by running SQL assertions "
@@ -308,6 +394,7 @@ def test_model_not_found(test_name: str, model_name: str, available_models: list
     suggestion = suggest_similar(model_name, available_models, "model")
 
     return format_error(
+        code=ErrorCode.TEST_MODEL_NOT_FOUND,
         title=f"Model '{model_name}' not found for test '{test_name}'",
         explanation=f"Test '{test_name}' references model '{model_name}', "
         f"but no model with that name is defined.",
@@ -325,6 +412,7 @@ def exposure_model_not_found(
     suggestion = suggest_similar(model_name, available_models, "model")
 
     return format_error(
+        code=ErrorCode.EXPOSURE_MODEL_NOT_FOUND,
         title=f"Model '{model_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' references model '{model_name}', "
         f"but no model with that name is defined.",
@@ -342,6 +430,7 @@ def exposure_source_not_found(
     suggestion = suggest_similar(source_name, available_sources, "source")
 
     return format_error(
+        code=ErrorCode.EXPOSURE_SOURCE_NOT_FOUND,
         title=f"Source '{source_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' produces source '{source_name}', "
         f"but no source with that name is defined.",
@@ -360,6 +449,7 @@ def exposure_dependency_not_found(
     suggestion = suggest_similar(dependency_name, available, dependency_type)
 
     return format_error(
+        code=ErrorCode.EXPOSURE_DEPENDENCY_NOT_FOUND,
         title=f"{dependency_type.capitalize()} '{dependency_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' depends on {dependency_type} '{dependency_name}', "
         f"but no {dependency_type} with that name is defined.",
@@ -375,6 +465,7 @@ def access_denied(
 ) -> str:
     """Error when a model tries to reference a private model from another group."""
     return format_error(
+        code=ErrorCode.ACCESS_DENIED,
         title=f"Access denied: '{referencing_model}' cannot reference '{target_model}'",
         explanation=f"Model '{target_model}' has access set to 'private' and belongs to group '{target_group}'. "
         f"Only models within the same group can reference it.\n\n"
@@ -405,6 +496,7 @@ def invalid_state_ttl(
 ) -> str:
     """Error when state TTL has an invalid value."""
     return format_error(
+        code=ErrorCode.INVALID_STATE_TTL,
         title=f"Invalid state TTL for model '{model_name}'",
         explanation=f"The state_ttl_ms value of {ttl_value} is invalid: {reason}\n\n"
         "State TTL controls how long Flink keeps state entries before expiring them. "
@@ -428,6 +520,7 @@ def state_ttl_recommended(
 ) -> str:
     """Warning when stateful operation lacks TTL configuration."""
     return format_error(
+        code=ErrorCode.STATE_TTL_RECOMMENDED,
         title=f"Consider adding state TTL for model '{model_name}'",
         explanation=f"Model '{model_name}' uses a {operation} operation which maintains state. "
         "Without state TTL, this state will grow unbounded and may eventually "
@@ -454,6 +547,7 @@ def cannot_reduce_partitions(
 ) -> str:
     """Error when trying to reduce partition count."""
     return format_error(
+        code=ErrorCode.CANNOT_REDUCE_PARTITIONS,
         title=f"Cannot reduce partitions for topic '{topic_name}'",
         explanation=f"You're trying to change partitions from {current} to {desired}, "
         "but Kafka does not support reducing the number of partitions.\n\n"
@@ -480,6 +574,7 @@ def schema_incompatible(
         )
 
     return format_error(
+        code=ErrorCode.SCHEMA_INCOMPATIBLE,
         title=f"Schema incompatible for subject '{subject}'",
         explanation=f"The new schema is not compatible with the existing schema "
         f"under '{compatibility_mode}' compatibility mode.{changes_str}",
@@ -533,6 +628,7 @@ def flink_sql_error(error_msg: str, sql_snippet: Optional[str] = None) -> str:
         sql_info = f"\n\nSQL:\n    {sql_snippet[:200]}..."
 
     return format_error(
+        code=ErrorCode.FLINK_SQL_ERROR,
         title="Flink SQL execution error",
         explanation=f"{error_msg}{sql_info}",
         suggestion=suggestion,
@@ -543,6 +639,7 @@ def flink_sql_error(error_msg: str, sql_snippet: Optional[str] = None) -> str:
 def sql_gateway_not_configured() -> str:
     """Error when SQL Gateway URL is missing."""
     return format_error(
+        code=ErrorCode.SQL_GATEWAY_NOT_CONFIGURED,
         title="SQL Gateway URL not configured",
         explanation="Flink SQL execution requires the SQL Gateway URL to be set. "
         "The REST URL is for job management, but SQL submission needs the SQL Gateway.",

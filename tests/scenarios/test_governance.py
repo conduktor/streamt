@@ -936,37 +936,22 @@ class TestComplianceAndAudit:
                     {
                         "name": "user_pii",
                         "description": "User PII - short retention",
-
                         "tags": ["pii"],
-                        "topic": {
-                            "config": {
-                                "retention.ms": "7776000000",  # 90 days
-                            },
-                        },
+                        "advanced": {"topic": {"config": {"retention.ms": "7776000000"}}},
                         "sql": "SELECT user_id, email, name FROM {{ source('events') }}",
                     },
                     {
                         "name": "financial_records",
                         "description": "Financial records - long retention",
-
                         "tags": ["financial"],
-                        "topic": {
-                            "config": {
-                                "retention.ms": "-1",  # Infinite (rely on external archival)
-                            },
-                        },
+                        "advanced": {"topic": {"config": {"retention.ms": "-1"}}},
                         "sql": "SELECT txn_id, amount, timestamp FROM {{ source('events') }}",
                     },
                     {
                         "name": "operational_metrics",
                         "description": "Operational metrics - default retention",
-
                         "tags": ["operational"],
-                        "topic": {
-                            "config": {
-                                "retention.ms": "31536000000",  # 1 year
-                            },
-                        },
+                        "advanced": {"topic": {"config": {"retention.ms": "31536000000"}}},
                         "sql": "SELECT metric_name, value FROM {{ source('events') }}",
                     },
                 ],

@@ -44,6 +44,7 @@ That's it! The model is automatically materialized as a topic or Flink job based
 | 🛡️ **Governance** | Enforce naming conventions, partitions, tests |
 | 📊 **Testing** | Schema, sample, and continuous tests |
 | 🔄 **Plan/Apply** | Review changes before deployment |
+| 🤖 **Agent-Friendly** | Structured JSON output for LLM/CI integration |
 | 📖 **Documentation** | Auto-generated docs with lineage diagrams |
 
 ## How It Works
@@ -156,6 +157,15 @@ streamt test
 
 # View lineage
 streamt lineage
+
+# Inspect resources
+streamt list models
+streamt show model order_metrics
+
+# Structured JSON output (for agents/CI)
+streamt -o json validate
+streamt -o json list sources
+streamt -o json show model order_metrics
 ```
 
 ## Multi-Environment Support
@@ -214,7 +224,8 @@ export STREAMT_ENV=prod
 streamt validate
 
 # Protected environment apply
-streamt apply --env prod --confirm  # Required for protected envs in CI
+streamt apply --env prod --confirm              # Interactive or CI
+streamt apply --env prod --confirm-env prod     # Non-interactive (agents/CI)
 
 # Override destructive safety
 streamt apply --env prod --confirm --force
