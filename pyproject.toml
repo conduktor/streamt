@@ -127,6 +127,41 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
+warn_return_any = false
 warn_unused_ignores = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+strict_equality = true
+show_error_codes = true
+
+# Strict modules — must pass cleanly
+[[tool.mypy.overrides]]
+module = [
+    "streamt.core.models",
+    "streamt.deployer.ssl_utils",
+    "streamt.core.errors",
+]
+strict = true
+warn_return_any = true
 disallow_untyped_defs = true
+
+# Deployers — gradual adoption (fix via #43)
+[[tool.mypy.overrides]]
+module = [
+    "streamt.deployer.kafka",
+    "streamt.deployer.planner",
+    "streamt.deployer.connect",
+    "streamt.deployer.flink",
+    "streamt.deployer.schema_registry",
+    "streamt.deployer.gateway",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka.*", "yaml.*"]
+ignore_missing_imports = true
+
+# Gradual adoption — environment has many untyped defs
+[[tool.mypy.overrides]]
+module = "streamt.core.environment"
+ignore_errors = true

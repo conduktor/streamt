@@ -13,13 +13,13 @@ from urllib3.util.ssl_ import create_urllib3_context
 class SSLAdapter(HTTPAdapter):
     """HTTPAdapter that uses a custom ssl.SSLContext (supports key passwords)."""
 
-    def __init__(self, ssl_context: ssl.SSLContext, **kwargs):
+    def __init__(self, ssl_context: ssl.SSLContext, **kwargs: object) -> None:
         self._ssl_context = ssl_context
-        super().__init__(**kwargs)
+        super().__init__(**kwargs)  # type: ignore[arg-type]
 
-    def init_poolmanager(self, *args, **kwargs):
+    def init_poolmanager(self, *args: object, **kwargs: object) -> None:
         kwargs["ssl_context"] = self._ssl_context
-        return super().init_poolmanager(*args, **kwargs)
+        super().init_poolmanager(*args, **kwargs)  # type: ignore[no-untyped-call]
 
 
 def configure_session_ssl(
