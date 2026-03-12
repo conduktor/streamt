@@ -59,6 +59,56 @@ This makes streamt suitable for LLM agents, CI/CD pipelines, and programmatic in
 
 ## Commands
 
+### init
+
+Initialize a new streamt project.
+
+```bash
+streamt init [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Directory to initialize (default: current) |
+| `--project-name NAME` | Project name (default: directory name) |
+| `--force` | Overwrite existing project files |
+| `--discover` | Discover sources from existing Kafka infrastructure |
+| `--kafka SERVERS` | Kafka bootstrap servers (required with `--discover`) |
+| `--schema-registry URL` | Schema Registry URL (extracts column definitions) |
+| `--include PATTERN` | Include only topics matching glob pattern |
+| `--exclude PATTERN` | Exclude topics matching glob pattern |
+| `--dry-run` | Show what would be created without writing |
+
+**Scaffold mode** (default):
+
+```bash
+# Create empty project skeleton
+streamt init
+
+# Custom name and directory
+streamt init --project-dir ./my-pipeline --project-name payments
+```
+
+**Discover mode** (from existing Kafka):
+
+```bash
+# Discover topics
+streamt init --discover --kafka localhost:9092
+
+# With Schema Registry (extracts columns from Avro schemas)
+streamt init --discover --kafka localhost:9092 --schema-registry http://localhost:8081
+
+# Filter topics
+streamt init --discover --kafka localhost:9092 --include "orders.*"
+
+# Preview without writing
+streamt init --discover --kafka localhost:9092 --dry-run
+```
+
+---
+
 ### validate
 
 Validate project configuration, syntax, and governance rules.

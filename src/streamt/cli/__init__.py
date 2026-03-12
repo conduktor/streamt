@@ -6,7 +6,7 @@ import click
 
 from streamt import __version__
 
-from .commands import apply, compile, docs, envs, lineage, list_cmd, plan, show, status, test, validate
+from .commands import apply, compile, docs, envs, init, lineage, list_cmd, plan, show, status, test, validate
 
 
 @click.group()
@@ -42,3 +42,4 @@ main.add_command(list_cmd.list_resources, name="list")
 main.add_command(show.show_resource, name="show")
 main.add_command(docs.docs)
 main.add_command(envs.envs)
+main.add_command(init.init)

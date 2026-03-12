@@ -24,14 +24,18 @@ docker compose ps
 
 ## 2. Create Your Project
 
-Create a new directory for your streamt project:
-
 ```bash
 mkdir my-streaming-project
 cd my-streaming-project
+streamt init
 ```
 
-Create the main configuration file:
+This creates `stream_project.yml`, `sources/`, `models/`, and `tests/` directories.
+
+!!! tip "Already have Kafka topics?"
+    Use `streamt init --discover --kafka localhost:9092` to auto-generate sources from existing topics. Add `--schema-registry http://localhost:8081` to extract column definitions from Avro schemas.
+
+Edit the generated configuration file:
 
 ```yaml title="stream_project.yml"
 project:

@@ -107,6 +107,14 @@ pip install streamt
 
 ### Create a Project
 
+```bash
+# Scaffold an empty project
+streamt init
+
+# Or discover from existing Kafka infrastructure
+streamt init --discover --kafka localhost:9092 --schema-registry http://localhost:8081
+```
+
 ```yaml
 # stream_project.yml
 project:
