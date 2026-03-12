@@ -179,6 +179,7 @@ class SchemaRegistryConfig(BaseModel):
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
+    ssl_key_password: Optional[SecretStr] = None
 
 
 class FlinkClusterConfig(BaseModel):
@@ -195,6 +196,7 @@ class FlinkClusterConfig(BaseModel):
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
+    ssl_key_password: Optional[SecretStr] = None
 
 
 class FlinkConfig(BaseModel):
@@ -213,6 +215,7 @@ class ConnectClusterConfig(BaseModel):
     ssl_ca_location: Optional[str] = None
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
+    ssl_key_password: Optional[SecretStr] = None
 
 
 class ConnectConfig(BaseModel):

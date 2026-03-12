@@ -103,19 +103,11 @@ class FlinkDeployer:
         ssl_ca_location: Optional[str] = None,
         ssl_certificate_location: Optional[str] = None,
         ssl_key_location: Optional[str] = None,
+        ssl_key_password: Optional[str] = None,
     ) -> None:
-        """Initialize Flink deployer.
+        """Initialize Flink deployer."""
+        from streamt.deployer.ssl_utils import configure_session_ssl
 
-        Args:
-            rest_url: Flink REST API URL (for job management: /jobs, /overview)
-            sql_gateway_url: Flink SQL Gateway URL (for SQL execution: /v1/sessions)
-            username: Basic auth username
-            password: Basic auth password
-            api_key: Bearer token (e.g. Confluent Cloud API key)
-            ssl_ca_location: Path to CA certificate for SSL verification
-            ssl_certificate_location: Path to client certificate for mTLS
-            ssl_key_location: Path to client key for mTLS
-        """
         self.rest_url = rest_url.rstrip("/")
         self.sql_gateway_url = sql_gateway_url.rstrip("/") if sql_gateway_url else None
         self.session_id: Optional[str] = None
@@ -124,12 +116,13 @@ class FlinkDeployer:
             self._http_session.auth = (username, password)
         if api_key:
             self._http_session.headers["Authorization"] = f"Bearer {api_key}"
-        if ssl_ca_location:
-            self._http_session.verify = ssl_ca_location
-        if ssl_certificate_location and ssl_key_location:
-            self._http_session.cert = (ssl_certificate_location, ssl_key_location)
-        elif ssl_certificate_location:
-            self._http_session.cert = ssl_certificate_location
+        configure_session_ssl(
+            self._http_session,
+            ssl_ca_location=ssl_ca_location,
+            ssl_certificate_location=ssl_certificate_location,
+            ssl_key_location=ssl_key_location,
+            ssl_key_password=ssl_key_password,
+        )
 
     def __enter__(self) -> FlinkDeployer:
         """Enter context manager."""

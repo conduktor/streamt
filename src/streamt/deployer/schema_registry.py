@@ -64,8 +64,11 @@ class SchemaRegistryDeployer:
         ssl_ca_location: Optional[str] = None,
         ssl_certificate_location: Optional[str] = None,
         ssl_key_location: Optional[str] = None,
+        ssl_key_password: Optional[str] = None,
     ) -> None:
         """Initialize Schema Registry deployer."""
+        from streamt.deployer.ssl_utils import configure_session_ssl
+
         self.url = url.rstrip("/")
         self.auth = (username, password) if username and password else None
         self.headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
@@ -73,12 +76,13 @@ class SchemaRegistryDeployer:
         self._http_session.headers.update(self.headers)
         if self.auth:
             self._http_session.auth = self.auth
-        if ssl_ca_location:
-            self._http_session.verify = ssl_ca_location
-        if ssl_certificate_location and ssl_key_location:
-            self._http_session.cert = (ssl_certificate_location, ssl_key_location)
-        elif ssl_certificate_location:
-            self._http_session.cert = ssl_certificate_location
+        configure_session_ssl(
+            self._http_session,
+            ssl_ca_location=ssl_ca_location,
+            ssl_certificate_location=ssl_certificate_location,
+            ssl_key_location=ssl_key_location,
+            ssl_key_password=ssl_key_password,
+        )
 
     def __enter__(self) -> SchemaRegistryDeployer:
         """Enter context manager."""

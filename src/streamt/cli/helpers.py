@@ -116,6 +116,7 @@ def make_sr_deployer(project: Any, fmt: OutputFormatter) -> Any:
                 ssl_ca_location=sr.ssl_ca_location,
                 ssl_certificate_location=sr.ssl_certificate_location,
                 ssl_key_location=sr.ssl_key_location,
+                ssl_key_password=_resolve_secret(sr.ssl_key_password),
             )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Schema Registry")
@@ -140,6 +141,7 @@ def make_flink_deployer(project: Any, fmt: OutputFormatter) -> Any:
                         ssl_ca_location=cfg.ssl_ca_location,
                         ssl_certificate_location=cfg.ssl_certificate_location,
                         ssl_key_location=cfg.ssl_key_location,
+                        ssl_key_password=_resolve_secret(cfg.ssl_key_password),
                     )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Flink")
@@ -161,6 +163,7 @@ def make_connect_deployer(project: Any, fmt: OutputFormatter) -> Any:
                     ssl_ca_location=cfg.ssl_ca_location,
                     ssl_certificate_location=cfg.ssl_certificate_location,
                     ssl_key_location=cfg.ssl_key_location,
+                    ssl_key_password=_resolve_secret(cfg.ssl_key_password),
                 )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Kafka Connect")
