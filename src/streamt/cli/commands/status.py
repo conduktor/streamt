@@ -14,6 +14,7 @@ from streamt.cli.helpers import (
     make_connect_deployer,
     make_flink_deployer,
     make_formatter,
+    make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
 )
@@ -61,6 +62,7 @@ def status(
         data: dict[str, Any] = {
             "project": project.project.name,
             "schemas": [], "topics": [], "flink_jobs": [], "connectors": [],
+            "gateway_rules": [],
         }
 
         # Schemas
@@ -169,6 +171,33 @@ def status(
                         fmt.print(f"  [yellow]Cannot connect to Connect: {e}[/yellow]")
             elif is_text:
                 fmt.print("  [yellow]No Connect configured[/yellow]")
+
+        # Gateway rules
+        if manifest.artifacts.get("gateway_rules"):
+            if is_text:
+                fmt.print("\n[cyan]Gateway Rules:[/cyan]")
+            gd = make_gateway_deployer(project, fmt)
+            if gd:
+                try:
+                    for r in manifest.artifacts["gateway_rules"]:
+                        if not matches(r["name"]):
+                            continue
+                        alias = gd.get_alias_topic(r["virtualTopic"])
+                        exists = alias is not None
+                        entry = {"name": r["name"], "exists": exists,
+                                 "virtual_topic": r["virtualTopic"],
+                                 "physical_topic": r["physicalTopic"]}
+                        data["gateway_rules"].append(entry)
+                        if is_text:
+                            if exists:
+                                fmt.print(f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']})")
+                            else:
+                                fmt.print(f"  [red]MISSING[/red] {r['name']}")
+                except Exception as e:
+                    if is_text:
+                        fmt.print(f"  [yellow]Cannot connect to Gateway: {e}[/yellow]")
+            elif is_text:
+                fmt.print("  [yellow]No Gateway configured[/yellow]")
 
         fmt.set_data(data)
 

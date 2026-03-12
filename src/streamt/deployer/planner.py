@@ -8,6 +8,7 @@ from typing import Optional
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
+from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
 
@@ -20,6 +21,7 @@ class DeploymentPlan:
     topic_changes: list[TopicChange] = field(default_factory=list)
     flink_changes: list[FlinkJobChange] = field(default_factory=list)
     connector_changes: list[ConnectorChange] = field(default_factory=list)
+    gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -29,6 +31,7 @@ class DeploymentPlan:
             or any(c.action != "none" for c in self.topic_changes)
             or any(c.action != "none" for c in self.flink_changes)
             or any(c.action != "none" for c in self.connector_changes)
+            or any(c.action != "none" for c in self.gateway_changes)
         )
 
     @property
@@ -39,6 +42,7 @@ class DeploymentPlan:
             + sum(1 for c in self.topic_changes if c.action == "create")
             + sum(1 for c in self.flink_changes if c.action == "submit")
             + sum(1 for c in self.connector_changes if c.action == "create")
+            + sum(1 for c in self.gateway_changes if c.action == "create")
         )
 
     @property
@@ -48,6 +52,7 @@ class DeploymentPlan:
             sum(1 for c in self.schema_changes if c.action == "update")
             + sum(1 for c in self.topic_changes if c.action == "update")
             + sum(1 for c in self.connector_changes if c.action == "update")
+            + sum(1 for c in self.gateway_changes if c.action == "update")
         )
 
     @property
@@ -58,6 +63,7 @@ class DeploymentPlan:
             + sum(1 for c in self.topic_changes if c.action == "delete")
             + sum(1 for c in self.flink_changes if c.action == "cancel")
             + sum(1 for c in self.connector_changes if c.action == "delete")
+            + sum(1 for c in self.gateway_changes if c.action == "delete")
         )
 
     def summary(self) -> str:
@@ -112,6 +118,16 @@ class DeploymentPlan:
             elif change.action == "delete":
                 lines.append(f"- connector: {change.connector_name}")
 
+        for change in self.gateway_changes:
+            if change.action == "create":
+                lines.append(f"+ gateway_rule: {change.name}")
+            elif change.action == "update":
+                lines.append(f"~ gateway_rule: {change.name}")
+                for key, val in (change.changes or {}).items():
+                    lines.append(f"    {key}: {val['from']} -> {val['to']}")
+            elif change.action == "delete":
+                lines.append(f"- gateway_rule: {change.name}")
+
         if not self.has_changes:
             lines.append("No changes detected.")
 
@@ -128,6 +144,7 @@ class DeploymentPlanner:
         kafka_deployer: Optional[KafkaDeployer] = None,
         flink_deployer: Optional[FlinkDeployer] = None,
         connect_deployer: Optional[ConnectDeployer] = None,
+        gateway_deployer: Optional[GatewayDeployer] = None,
     ) -> None:
         """Initialize deployment planner."""
         self.manifest = manifest
@@ -135,6 +152,7 @@ class DeploymentPlanner:
         self.kafka_deployer = kafka_deployer
         self.flink_deployer = flink_deployer
         self.connect_deployer = connect_deployer
+        self.gateway_deployer = gateway_deployer
 
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
@@ -189,6 +207,20 @@ class DeploymentPlanner:
                 )
                 change = self.connect_deployer.plan_connector(artifact)
                 plan.connector_changes.append(change)
+
+        # Plan gateway rules
+        if self.gateway_deployer:
+            from streamt.compiler.manifest import GatewayRuleArtifact
+
+            for rule_data in self.manifest.artifacts.get("gateway_rules", []):
+                artifact = GatewayRuleArtifact(
+                    name=rule_data["name"],
+                    virtual_topic=rule_data["virtualTopic"],
+                    physical_topic=rule_data["physicalTopic"],
+                    interceptors=rule_data.get("interceptors", []),
+                )
+                change = self.gateway_deployer.plan(artifact)
+                plan.gateway_changes.append(change)
 
         return plan
 
@@ -262,5 +294,20 @@ class DeploymentPlanner:
                             results["unchanged"].append(f"connector:{change.connector_name}")
                     except Exception as e:
                         results["errors"].append(f"connector:{change.connector_name}: {e}")
+
+        # Apply gateway rules
+        if self.gateway_deployer:
+            for change in plan.gateway_changes:
+                if change.action in ["create", "update"] and change.desired:
+                    try:
+                        result = self.gateway_deployer.apply(change.desired)
+                        if result == "created":
+                            results["created"].append(f"gateway_rule:{change.name}")
+                        elif result == "updated":
+                            results["updated"].append(f"gateway_rule:{change.name}")
+                        else:
+                            results["unchanged"].append(f"gateway_rule:{change.name}")
+                    except Exception as e:
+                        results["errors"].append(f"gateway_rule:{change.name}: {e}")
 
         return results

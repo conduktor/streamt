@@ -14,6 +14,7 @@ from streamt.cli.helpers import (
     make_connect_deployer,
     make_flink_deployer,
     make_formatter,
+    make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
 )
@@ -60,6 +61,7 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         kafka_deployer = make_kafka_deployer(project, fmt)
         flink_deployer = make_flink_deployer(project, fmt)
         connect_deployer = make_connect_deployer(project, fmt)
+        gateway_deployer = make_gateway_deployer(project, fmt)
         try:
             planner = DeploymentPlanner(
                 manifest,
@@ -67,6 +69,7 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
                 kafka_deployer=kafka_deployer,
                 flink_deployer=flink_deployer,
                 connect_deployer=connect_deployer,
+                gateway_deployer=gateway_deployer,
             )
             deployment_plan = planner.plan()
 
@@ -83,6 +86,9 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
             for c in deployment_plan.connector_changes:
                 if c.action != "none":
                     changes.append({"type": "connector", "name": c.connector_name, "action": c.action, "changes": c.changes})
+            for c in deployment_plan.gateway_changes:
+                if c.action != "none":
+                    changes.append({"type": "gateway_rule", "name": c.name, "action": c.action, "changes": c.changes})
 
             fmt.set_data({
                 "summary": deployment_plan.summary(),
@@ -95,7 +101,7 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
             fmt.print(deployment_plan.details())
             fmt.flush()
         finally:
-            close_deployers(sr_deployer, kafka_deployer, flink_deployer, connect_deployer)
+            close_deployers(sr_deployer, kafka_deployer, flink_deployer, connect_deployer, gateway_deployer)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)

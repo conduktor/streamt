@@ -14,6 +14,7 @@ from streamt.cli.helpers import (
     make_connect_deployer,
     make_flink_deployer,
     make_formatter,
+    make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
 )
@@ -106,10 +107,12 @@ def apply(
         kafka = make_kafka_deployer(project, fmt)
         flink = make_flink_deployer(project, fmt)
         connect = make_connect_deployer(project, fmt)
+        gateway = make_gateway_deployer(project, fmt)
         try:
             planner = DeploymentPlanner(
                 manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
                 flink_deployer=flink, connect_deployer=connect,
+                gateway_deployer=gateway,
             )
             deployment_plan = planner.plan()
 
@@ -154,7 +157,7 @@ def apply(
             fmt.print("\n[green]Apply complete[/green]")
             fmt.flush()
         finally:
-            close_deployers(sr, kafka, flink, connect)
+            close_deployers(sr, kafka, flink, connect, gateway)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
