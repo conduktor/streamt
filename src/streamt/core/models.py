@@ -94,11 +94,14 @@ class Severity(str, Enum):
 # ============================================================================
 
 
+_VALID_SECURITY_PROTOCOLS = {"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"}
+_VALID_SASL_MECHANISMS = {"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "OAUTHBEARER", "GSSAPI"}
+
+
 class KafkaConfig(BaseModel):
     """Kafka cluster configuration."""
 
     bootstrap_servers: str
-    # Internal bootstrap servers for Flink/Connect running in Docker
     bootstrap_servers_internal: Optional[str] = None
     security_protocol: Optional[str] = None
     sasl_mechanism: Optional[str] = None
@@ -108,6 +111,40 @@ class KafkaConfig(BaseModel):
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
     ssl_key_password: Optional[SecretStr] = None
+
+    @field_validator("security_protocol", mode="before")
+    @classmethod
+    def validate_security_protocol(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        upper = v.upper()
+        if upper not in _VALID_SECURITY_PROTOCOLS:
+            raise ValueError(
+                f"security_protocol must be one of {sorted(_VALID_SECURITY_PROTOCOLS)}, got '{v}'"
+            )
+        return upper
+
+    @field_validator("sasl_mechanism", mode="before")
+    @classmethod
+    def validate_sasl_mechanism(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        upper = v.upper()
+        if upper not in _VALID_SASL_MECHANISMS:
+            raise ValueError(
+                f"sasl_mechanism must be one of {sorted(_VALID_SASL_MECHANISMS)}, got '{v}'"
+            )
+        return upper
+
+    @model_validator(mode="after")
+    def validate_sasl_requires_protocol(self) -> KafkaConfig:
+        if self.sasl_mechanism and self.security_protocol:
+            if "SASL" not in self.security_protocol:
+                raise ValueError(
+                    f"sasl_mechanism='{self.sasl_mechanism}' requires a SASL security protocol "
+                    f"(SASL_SSL or SASL_PLAINTEXT), got '{self.security_protocol}'"
+                )
+        return self
 
     def to_confluent_config(self) -> dict[str, str]:
         """Return confluent_kafka config dict with only non-None values.
