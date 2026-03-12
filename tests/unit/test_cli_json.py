@@ -10,6 +10,14 @@ from click.testing import CliRunner
 from streamt.cli import main
 
 
+def parse_json_output(output: str) -> dict:
+    """Extract JSON object from CLI output that may have stderr text mixed in."""
+    idx = output.find("{")
+    if idx == -1:
+        raise ValueError(f"No JSON found in output: {output!r}")
+    return json.loads(output[idx:])
+
+
 class TestJSONOutput:
     """Tests for --output json on all commands."""
 
@@ -43,7 +51,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "ok"
             assert data["command"] == "validate"
             assert data["data"]["valid"] is True
@@ -53,7 +61,7 @@ class TestJSONOutput:
 
     def test_validate_json_invalid(self):
         """validate --output json returns errors on failure."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
                 "project": {"name": "test"},
@@ -64,7 +72,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
 
             assert result.exit_code == 1
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "error"
             assert len(data["errors"]) > 0
             assert "code" in data["errors"][0]
@@ -79,7 +87,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "compile", "-p", tmpdir, "--dry-run"])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["command"] == "compile"
             assert data["data"]["dry_run"] is True
             assert "counts" in data["data"]
@@ -95,7 +103,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "test", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["command"] == "test"
             assert data["data"]["passed"] == 1
             assert data["data"]["failed"] == 0
@@ -115,7 +123,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "test", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["total"] == 0
 
     # -- lineage --output json --
@@ -128,7 +136,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "lineage", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["command"] == "lineage"
             assert "nodes" in data["data"]
             assert "edges" in data["data"]
@@ -144,7 +152,7 @@ class TestJSONOutput:
             result = runner.invoke(main, ["-o", "json", "envs", "list", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["mode"] == "single"
 
 
@@ -173,7 +181,7 @@ class TestListCommand:
             result = runner.invoke(main, ["-o", "json", "list", "sources", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["resource_type"] == "sources"
             assert data["data"]["count"] == 2
             names = [i["name"] for i in data["data"]["items"]]
@@ -196,7 +204,7 @@ class TestListCommand:
             result = runner.invoke(main, ["-o", "json", "list", "models", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["count"] == 1
             model = data["data"]["items"][0]
             assert model["name"] == "clean"
@@ -220,7 +228,7 @@ class TestListCommand:
             result = runner.invoke(main, ["-o", "json", "list", "tests", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["items"][0]["type"] == "schema"
 
     def test_list_text_mode(self):
@@ -275,7 +283,7 @@ class TestShowCommand:
             result = runner.invoke(main, ["-o", "json", "show", "source", "raw", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["topic"] == "raw.v1"
             assert data["data"]["description"] == "Raw events"
             assert "clean" in data["data"]["downstream"]
@@ -288,7 +296,7 @@ class TestShowCommand:
             result = runner.invoke(main, ["-o", "json", "show", "model", "clean", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["materialized"] == "virtual_topic"
             assert "raw" in data["data"]["upstream"]
             assert "agg" in data["data"]["downstream"]
@@ -302,7 +310,7 @@ class TestShowCommand:
             result = runner.invoke(main, ["-o", "json", "show", "model", "agg", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["materialized"] == "flink"
 
     def test_show_test_json(self):
@@ -313,19 +321,19 @@ class TestShowCommand:
             result = runner.invoke(main, ["-o", "json", "show", "test", "t1", "-p", tmpdir])
 
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["data"]["model"] == "clean"
             assert data["data"]["type"] == "schema"
 
     def test_show_not_found(self):
         """show returns error when resource doesn't exist."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_project(tmpdir, self._full_config())
             result = runner.invoke(main, ["-o", "json", "show", "model", "nonexistent", "-p", tmpdir])
 
             assert result.exit_code == 1
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "error"
             assert data["errors"][0]["code"] == "E102_MODEL_NOT_FOUND"
 
@@ -361,7 +369,7 @@ class TestConfirmEnvFlag:
 
     def test_confirm_env_wrong_name(self):
         """--confirm-env with wrong name fails."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir)
             result = runner.invoke(
@@ -369,7 +377,7 @@ class TestConfirmEnvFlag:
             )
 
             assert result.exit_code == 1
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "error"
             assert "does not match" in data["errors"][0]["message"]
 
@@ -398,7 +406,7 @@ class TestDestructiveSafety:
 
     def test_non_destructive_apply_succeeds_without_force(self):
         """apply with allow_destructive=false should succeed when plan has no deletes."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir)
             result = runner.invoke(
@@ -406,7 +414,7 @@ class TestDestructiveSafety:
             )
 
             # Should NOT fail with "Destructive ops blocked" — there are no destructive ops
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             if data["status"] == "error":
                 for err in data["errors"]:
                     assert "destructive" not in err["message"].lower(), \
@@ -417,7 +425,7 @@ class TestDestructiveSafety:
         from unittest.mock import patch, MagicMock
         from streamt.deployer.planner import DeploymentPlan
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir, with_model=True)
 
@@ -432,7 +440,7 @@ class TestDestructiveSafety:
                 )
 
                 assert result.exit_code == 1
-                data = json.loads(result.output)
+                data = parse_json_output(result.output)
                 assert data["status"] == "error"
                 assert any("destructive" in e["message"].lower() for e in data["errors"])
 
@@ -441,7 +449,7 @@ class TestDestructiveSafety:
         from unittest.mock import patch, MagicMock
         from streamt.deployer.planner import DeploymentPlan
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir, with_model=True)
 
@@ -459,7 +467,7 @@ class TestDestructiveSafety:
                 )
 
                 assert result.exit_code == 0
-                data = json.loads(result.output)
+                data = parse_json_output(result.output)
                 assert data["status"] == "ok"
 
 
@@ -468,7 +476,7 @@ class TestErrorCodes:
 
     def test_error_codes_in_json(self):
         """Errors in JSON output include machine-readable codes."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir)
             with open(project_path / "stream_project.yml", "w") as f:
@@ -481,7 +489,7 @@ class TestErrorCodes:
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
 
             assert result.exit_code == 1
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "error"
             # Error should have a code starting with E
             for err in data["errors"]:
@@ -489,12 +497,12 @@ class TestErrorCodes:
 
     def test_missing_project_json(self):
         """Missing project file gives structured error in JSON mode."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
 
             assert result.exit_code == 1
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
             assert data["status"] == "error"
             assert len(data["errors"]) > 0
 
@@ -514,7 +522,7 @@ class TestOutputEnvelope:
                 }, f)
 
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
-            data = json.loads(result.output)
+            data = parse_json_output(result.output)
 
             assert "status" in data
             assert "command" in data
