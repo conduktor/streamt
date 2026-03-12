@@ -148,6 +148,28 @@ def make_flink_deployer(project: Any, fmt: OutputFormatter) -> Any:
     return None
 
 
+def make_gateway_deployer(project: Any, fmt: OutputFormatter) -> Any:
+    """Create GatewayDeployer from project config. Returns None on failure."""
+    from streamt.deployer.gateway import GatewayDeployer
+    if project.runtime.conduktor and project.runtime.conduktor.gateway:
+        try:
+            gw = project.runtime.conduktor.gateway
+            if gw.admin_url:
+                return GatewayDeployer(
+                    gw.admin_url,
+                    username=gw.username,
+                    password=_resolve_secret(gw.password),
+                    virtual_cluster=gw.virtual_cluster,
+                    ssl_ca_location=gw.ssl_ca_location,
+                    ssl_certificate_location=gw.ssl_certificate_location,
+                    ssl_key_location=gw.ssl_key_location,
+                    ssl_key_password=_resolve_secret(gw.ssl_key_password),
+                )
+        except Exception as e:
+            _warn_deployer_error(fmt, e, "Conduktor Gateway")
+    return None
+
+
 def make_connect_deployer(project: Any, fmt: OutputFormatter) -> Any:
     """Create ConnectDeployer from project config. Returns None on failure."""
     from streamt.deployer.connect import ConnectDeployer

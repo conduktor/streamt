@@ -10,6 +10,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 
 from streamt.compiler.manifest import GatewayRuleArtifact
+from streamt.deployer.ssl_utils import configure_session_ssl
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,10 @@ class GatewayDeployer:
         username: Optional[str] = None,
         password: Optional[str] = None,
         virtual_cluster: Optional[str] = None,
+        ssl_ca_location: Optional[str] = None,
+        ssl_certificate_location: Optional[str] = None,
+        ssl_key_location: Optional[str] = None,
+        ssl_key_password: Optional[str] = None,
     ) -> None:
         """Initialize Gateway deployer."""
         self.admin_url = admin_url.rstrip("/")
@@ -106,6 +111,13 @@ class GatewayDeployer:
         self.virtual_cluster = virtual_cluster
         self._session = requests.Session()
         self._session.auth = self.auth
+        configure_session_ssl(
+            self._session,
+            ssl_ca_location=ssl_ca_location,
+            ssl_certificate_location=ssl_certificate_location,
+            ssl_key_location=ssl_key_location,
+            ssl_key_password=ssl_key_password,
+        )
         self._closed = False
 
     def __enter__(self) -> GatewayDeployer:

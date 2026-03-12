@@ -160,6 +160,14 @@ class GatewayConfig(BaseModel):
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     virtual_cluster: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
+    ssl_certificate_location: Optional[str] = None
+    ssl_key_location: Optional[str] = None
+    ssl_key_password: Optional[SecretStr] = None
+
+    _check_ssl_paths = field_validator(
+        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+    )(_validate_ssl_path)
 
 
 class ConsoleConfig(BaseModel):
