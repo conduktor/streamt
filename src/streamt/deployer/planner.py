@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
@@ -326,16 +326,16 @@ class DeploymentPlanner:
 
     def _apply_resource_changes(
         self,
-        results: dict[str, Any],
-        deployer: Optional[Any],
-        changes: list[Any],
+        results: dict[str, object],
+        deployer: Optional[object],
+        changes: list[object],
         *,
         upsert_actions: tuple[str, ...],
-        label_fn: Callable[[Any], str],
-        apply_fn: Callable[[Any], str],
+        label_fn: Callable[[object], str],
+        apply_fn: Callable[[object], str],
         create_verb: str,
         delete_action: str = "delete",
-        delete_fn: Optional[Callable[[Any], None]] = None,
+        delete_fn: Optional[Callable[[object], None]] = None,
     ) -> None:
         """Apply a homogeneous list of resource changes, recording outcomes into results."""
         if not deployer:

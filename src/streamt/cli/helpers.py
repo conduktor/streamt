@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import click
 
@@ -134,7 +134,7 @@ def check_required_deployers(
     return ok
 
 
-def _try_create_deployer(create_fn: Callable, fmt: OutputFormatter, service: str) -> Optional[Any]:
+def _try_create_deployer(create_fn: Callable, fmt: OutputFormatter, service: str) -> Optional[object]:
     """Run create_fn(), warn on failure, return None on exception."""
     try:
         return create_fn()
