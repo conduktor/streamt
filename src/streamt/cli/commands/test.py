@@ -36,6 +36,9 @@ def test(
     fmt = make_formatter(ctx, "test")
     project_path = get_project_path(project_dir)
 
+    if deploy:
+        fmt.print_warning("--deploy is not yet implemented; running tests locally only")
+
     try:
         parser = ProjectParser(
             project_path, environment=environment,

@@ -425,7 +425,7 @@ class Model(BaseModel):
 
     @field_validator("sql")
     @classmethod
-    def sql_required_for_non_sink(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
+    def sql_required_for_non_sink(cls, v: Optional[str], _info: ValidationInfo) -> Optional[str]:
         """Validate that SQL is provided for non-sink models."""
         # Note: This validation is relaxed - sink models may not need SQL
         return v

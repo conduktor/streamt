@@ -51,6 +51,11 @@ def apply(
     fmt = make_formatter(ctx, "apply")
     project_path = get_project_path(project_dir)
 
+    if target:
+        fmt.print_warning(f"--target '{target}' filtering is not yet implemented; deploying all models")
+    if select:
+        fmt.print_warning(f"--select '{select}' filtering is not yet implemented; deploying all models")
+
     try:
         parser = ProjectParser(
             project_path, environment=environment,

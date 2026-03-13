@@ -85,7 +85,8 @@ def format_error(
     Returns:
         Formatted error message string
     """
-    parts = [title, "", explanation]
+    header = f"[{code}] {title}" if code else title
+    parts = [header, "", explanation]
 
     if suggestion:
         parts.extend(["", suggestion])
@@ -117,6 +118,7 @@ def structured_error(
     result: dict[str, Optional[str]] = {
         "code": code,
         "message": title,
+        "explanation": explanation,
     }
     if location:
         result["location"] = location

@@ -181,6 +181,16 @@ def _init_discover(
     force: bool,
 ) -> None:
     """Discover existing infrastructure and generate project."""
+    project_file = project_path / "stream_project.yml"
+    if project_file.exists() and not force:
+        fmt.add_error(StructuredError(
+            code=ErrorCode.ENVIRONMENT_ERROR,
+            message=f"Project already exists at {project_path}. Use --force to overwrite.",
+        ))
+        fmt.print_error(f"Project already exists at {project_path}. Use --force to overwrite.")
+        fmt.flush()
+        sys.exit(1)
+
     if not kafka:
         fmt.add_error(StructuredError(
             code=ErrorCode.MISSING_CONFIG,

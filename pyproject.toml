@@ -97,6 +97,7 @@ select = [
     "PT",                       # Pytest style
     "ERA",                      # Commented-out code
     "TID251",                   # Banned APIs (typing.Any)
+    "ARG",                      # Unused function arguments
 ]
 ignore = [
     "E501",                     # Line length handled by formatter
@@ -122,6 +123,7 @@ ignore = [
     "T20",                      # print() OK in tests
     "ERA001",                   # Commented code OK in tests
     "TID251",                   # Any OK in tests (MagicMock, fixtures)
+    "ARG",                      # Unused args common in fixtures/mocks
 ]
 "src/streamt/cli/**" = [
     "T20",                      # CLI uses print/click.echo

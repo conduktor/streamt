@@ -267,7 +267,7 @@ class EnvironmentManager:
         )
 
     def resolve_environment(
-        self, cli_env: str | None, warn_callback: callable | None = None
+        self, cli_env: str | None,
     ) -> tuple[EnvironmentConfig | None, list[str]]:
         """Resolve environment based on mode, CLI flag, and env var.
 

@@ -36,6 +36,12 @@ def lineage(
 
     fmt = make_formatter(ctx, "lineage")
     project_path = get_project_path(project_dir)
+
+    if upstream:
+        fmt.print_warning("--upstream filtering is not yet implemented; showing full lineage")
+    if downstream:
+        fmt.print_warning("--downstream filtering is not yet implemented; showing full lineage")
+
     effective_format = output_format or get_output_format_from_context(ctx)
 
     try:

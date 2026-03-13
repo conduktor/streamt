@@ -66,7 +66,7 @@ class ProjectParser:
         """
         self.project_path = project_path.resolve()
         self.environment = environment
-        self.warn_callback = warn_callback or (lambda x: None)
+        self.warn_callback = warn_callback or (lambda _: None)
 
         # Environment manager for multi-env support
         self.env_manager = EnvironmentManager(self.project_path)
@@ -80,7 +80,7 @@ class ProjectParser:
         """Setup environment variables and load environment config."""
         # Resolve environment (handles mode detection, env var loading, etc.)
         self.env_config, self.warnings = self.env_manager.resolve_environment(
-            self.environment, self.warn_callback
+            self.environment,
         )
 
         # Emit warnings

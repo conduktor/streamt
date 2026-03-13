@@ -35,6 +35,11 @@ def validate(
     fmt = make_formatter(ctx, "validate")
     project_path = get_project_path(project_dir)
 
+    if check_schemas:
+        fmt.print_warning("--check-schemas is not yet implemented; skipping registry validation")
+    if target_model:
+        fmt.print_warning(f"--model '{target_model}' filtering is not yet implemented; validating all models")
+
     def validate_single_env(env_name: Optional[str]) -> dict[str, object]:
         """Validate a single environment. Returns result dict."""
         result_data: dict[str, object] = {"environment": env_name, "valid": False}
