@@ -308,8 +308,13 @@ class TestGroup10RegexpReplaceOnTypedColumns:
         )
         assert cols[0][1] == "STRING"
 
-    def test_masking_should_preserve_original_type(self):
-        pytest.xfail("REGEXP_REPLACE always returns STRING, masking changes column type")
+    def test_masking_changes_type_to_string(self):
+        """REGEXP_REPLACE masking legitimately changes the column type to STRING.
+
+        The SQL output IS a string (e.g. '****') — reporting BIGINT would
+        produce invalid DDL.  For type-preserving masking, use the 'null'
+        method (NULLIF) instead.
+        """
         cols = _infer_via_compiler(
             sources=[
                 Source(name="src", topic="src_topic", columns=[
@@ -318,6 +323,21 @@ class TestGroup10RegexpReplaceOnTypedColumns:
             ],
             model_sql=(
                 "SELECT REGEXP_REPLACE(CAST(id AS STRING), '\\d', '*') AS id "
+                "FROM {{ source('src') }}"
+            ),
+        )
+        assert cols[0][1] == "STRING"
+
+    def test_nullif_masking_preserves_original_type(self):
+        """NULLIF masking preserves the original column type."""
+        cols = _infer_via_compiler(
+            sources=[
+                Source(name="src", topic="src_topic", columns=[
+                    ColumnDefinition(name="id", type="BIGINT"),
+                ])
+            ],
+            model_sql=(
+                "SELECT NULLIF(id, id) AS id "
                 "FROM {{ source('src') }}"
             ),
         )

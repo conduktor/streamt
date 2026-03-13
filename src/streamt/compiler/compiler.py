@@ -11,6 +11,7 @@ from typing import Optional
 from jinja2 import BaseLoader, Environment
 
 from streamt.compiler.flink_ddl import kafka_with_properties
+from streamt.compiler.masking import build_mask_expression
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -589,16 +590,18 @@ WHERE {condition}""")
 
         # Apply masking functions if needed
         if model.security and model.security.policies:
+            schema = self._build_source_schema(model)
             for policy in model.security.policies:
                 if "mask" in policy:
                     mask_config = policy["mask"]
                     column = mask_config["column"]
                     method = mask_config["method"]
-                    mask_fn = self._get_flink_mask_function(method)
+                    col_type = schema.get(column, "STRING")
+                    mask_expr = build_mask_expression(column, method, col_type)
                     # Replace column reference with masked version
                     transformed_sql = re.sub(
                         rf"\b{column}\b",
-                        f"{mask_fn}({column}) AS {column}",
+                        f"{mask_expr} AS {column}",
                         transformed_sql,
                         count=1,
                     )
@@ -796,9 +799,6 @@ WHERE {condition}""")
         )
         return sql.strip()
 
-    def _get_flink_mask_function(self, method: str) -> str:
-        """Get Flink masking function for a method."""
-        return {"hash": "MD5", "redact": "REGEXP_REPLACE", "partial": "REGEXP_REPLACE", "null": "NULLIF"}.get(method, "MD5")
 
     def _get_source_topic(self, model: Model) -> Optional[str]:
         """Get the source topic for a model."""

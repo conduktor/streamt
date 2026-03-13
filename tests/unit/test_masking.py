@@ -1,0 +1,144 @@
+"""Tests for type-preserving masking expressions."""
+
+from __future__ import annotations
+
+import pytest
+
+from streamt.compiler.masking import build_mask_expression
+from streamt.compiler.compiler import Compiler
+from streamt.core.models import (
+    ColumnDefinition,
+    KafkaConfig,
+    Model,
+    SecurityPolicies,
+    ProjectInfo,
+    RuntimeConfig,
+    Source,
+    StreamtProject,
+    FlinkConfig,
+    FlinkClusterConfig,
+)
+
+
+class TestBuildMaskExpression:
+    """Unit tests for build_mask_expression."""
+
+    # --- String types: use standard mask functions ---
+
+    def test_hash_on_string_uses_md5(self):
+        assert build_mask_expression("name", "hash", "STRING") == "MD5(name)"
+
+    def test_redact_on_string_uses_regexp_replace(self):
+        assert build_mask_expression("name", "redact", "STRING") == "REGEXP_REPLACE(name)"
+
+    def test_partial_on_string_uses_regexp_replace(self):
+        assert build_mask_expression("name", "partial", "STRING") == "REGEXP_REPLACE(name)"
+
+    def test_null_on_string_casts_null(self):
+        assert build_mask_expression("name", "null", "STRING") == "CAST(NULL AS STRING)"
+
+    def test_hash_on_varchar(self):
+        assert build_mask_expression("name", "hash", "VARCHAR(100)") == "MD5(name)"
+
+    # --- Non-string types: type-preserving ---
+
+    def test_hash_on_bigint_uses_hash_code(self):
+        result = build_mask_expression("id", "hash", "BIGINT")
+        assert result == "CAST(ABS(HASH_CODE(CAST(id AS STRING))) AS BIGINT)"
+
+    def test_hash_on_decimal(self):
+        result = build_mask_expression("amount", "hash", "DECIMAL(10,2)")
+        assert result == "CAST(ABS(HASH_CODE(CAST(amount AS STRING))) AS DECIMAL(10,2))"
+
+    def test_redact_on_bigint_nulls(self):
+        result = build_mask_expression("id", "redact", "BIGINT")
+        assert result == "CAST(NULL AS BIGINT)"
+
+    def test_partial_on_int_nulls(self):
+        result = build_mask_expression("count", "partial", "INT")
+        assert result == "CAST(NULL AS INT)"
+
+    def test_null_on_bigint(self):
+        result = build_mask_expression("id", "null", "BIGINT")
+        assert result == "CAST(NULL AS BIGINT)"
+
+    def test_null_on_timestamp(self):
+        result = build_mask_expression("ts", "null", "TIMESTAMP(3)")
+        assert result == "CAST(NULL AS TIMESTAMP(3))"
+
+    def test_redact_on_boolean_nulls(self):
+        result = build_mask_expression("active", "redact", "BOOLEAN")
+        assert result == "CAST(NULL AS BOOLEAN)"
+
+
+class TestCompilerMaskingTypePreservation:
+    """Integration: compiler-generated DDL preserves types under masking."""
+
+    def _compile_model(self, sources, model):
+        project = StreamtProject(
+            project=ProjectInfo(name="test"),
+            runtime=RuntimeConfig(
+                kafka=KafkaConfig(bootstrap_servers="localhost:9092"),
+                flink=FlinkConfig(
+                    default="local",
+                    clusters={"local": FlinkClusterConfig(
+                        rest_url="http://localhost:8081",
+                        sql_gateway_url="http://localhost:8083",
+                    )},
+                ),
+            ),
+            sources=sources,
+            models=[model],
+        )
+        compiler = Compiler(project)
+        manifest = compiler.compile()
+        # Find the Flink job artifact for this model
+        for job in manifest.artifacts.get("flink_jobs", []):
+            if model.name in str(job.get("name", "")):
+                return str(job.get("sql", ""))
+        return ""
+
+    def test_hash_mask_on_bigint_preserves_type_in_ddl(self):
+        source = Source(
+            name="orders",
+            topic="orders_topic",
+            columns=[
+                ColumnDefinition(name="order_id", type="BIGINT"),
+                ColumnDefinition(name="amount", type="DECIMAL(10,2)"),
+            ],
+        )
+        model = Model(
+            name="masked_orders",
+            sql='SELECT order_id, amount FROM {{ source("orders") }}',
+            materialized="flink",
+        )
+        model.security = SecurityPolicies(
+            policies=[{"mask": {"column": "order_id", "method": "hash"}}]
+        )
+        sql = self._compile_model([source], model)
+        # The DDL should still have BIGINT for order_id, not STRING
+        assert "`order_id` BIGINT" in sql
+        # The INSERT should use HASH_CODE, not MD5
+        assert "HASH_CODE" in sql
+        assert "MD5" not in sql
+
+    def test_hash_mask_on_string_uses_md5(self):
+        source = Source(
+            name="users",
+            topic="users_topic",
+            columns=[
+                ColumnDefinition(name="user_id", type="BIGINT"),
+                ColumnDefinition(name="email", type="STRING"),
+            ],
+        )
+        model = Model(
+            name="masked_users",
+            sql='SELECT user_id, email FROM {{ source("users") }}',
+            materialized="flink",
+        )
+        model.security = SecurityPolicies(
+            policies=[{"mask": {"column": "email", "method": "hash"}}]
+        )
+        sql = self._compile_model([source], model)
+        assert "MD5(email)" in sql
+        assert "`email` STRING" in sql
