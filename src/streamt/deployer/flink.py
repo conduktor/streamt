@@ -118,13 +118,12 @@ class FlinkDeployer:
         statement_timeout: Optional[int] = None,
     ) -> None:
         """Initialize Flink deployer."""
-        from streamt.deployer.ssl_utils import configure_session_ssl
-
         if not rest_url or not rest_url.startswith(("http://", "https://")):
             raise ValueError(f"Invalid Flink REST URL: {rest_url!r} — must start with http:// or https://")
-        self.rest_url = rest_url.rstrip("/")
         if sql_gateway_url and not sql_gateway_url.startswith(("http://", "https://")):
             raise ValueError(f"Invalid SQL Gateway URL: {sql_gateway_url!r} — must start with http:// or https://")
+
+        self.rest_url = rest_url.rstrip("/")
         self.sql_gateway_url = sql_gateway_url.rstrip("/") if sql_gateway_url else None
         self.version = version
         self.environment = environment
@@ -136,18 +135,37 @@ class FlinkDeployer:
         self._state_dir = state_dir
         self._sql_hashes: dict[str, str] = {}
         self._load_hashes()
-        self._http_session = requests.Session()
+        self._http_session = self._configure_http_session(
+            username, password, api_key,
+            ssl_ca_location, ssl_certificate_location, ssl_key_location, ssl_key_password,
+        )
+
+    @staticmethod
+    def _configure_http_session(
+        username: Optional[str],
+        password: Optional[str],
+        api_key: Optional[str],
+        ssl_ca_location: Optional[str],
+        ssl_certificate_location: Optional[str],
+        ssl_key_location: Optional[str],
+        ssl_key_password: Optional[str],
+    ) -> requests.Session:
+        """Build and return a configured requests Session."""
+        from streamt.deployer.ssl_utils import configure_session_ssl
+
+        session = requests.Session()
         if username and password:
-            self._http_session.auth = (username, password)
+            session.auth = (username, password)
         if api_key:
-            self._http_session.headers["Authorization"] = f"Bearer {api_key}"
+            session.headers["Authorization"] = f"Bearer {api_key}"
         configure_session_ssl(
-            self._http_session,
+            session,
             ssl_ca_location=ssl_ca_location,
             ssl_certificate_location=ssl_certificate_location,
             ssl_key_location=ssl_key_location,
             ssl_key_password=ssl_key_password,
         )
+        return session
 
     def __enter__(self) -> FlinkDeployer:
         """Enter context manager."""
