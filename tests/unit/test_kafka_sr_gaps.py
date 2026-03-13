@@ -210,8 +210,7 @@ class TestConfigStringComparison:
             assert change.action == "update"
 
     def test_boolean_case_mismatch_false_positive(self, deployer):
-        """Kafka returns 'true', artifact has True -> str(True)='True' != 'true'."""
-        pytest.xfail("str(True)='True' != 'true' false positive -- task #82")
+        """Kafka returns 'true', artifact has True -> should match (case-insensitive)."""
 
         with patch.object(deployer, "get_topic_state") as mock_state:
             mock_state.return_value = TopicState(

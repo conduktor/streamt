@@ -252,46 +252,46 @@ class TestFlinkSessionCleanup:
 class TestStatusJsonErrorReporting:
     """status -o json should include error info when deployers fail."""
 
-    def test_json_mode_includes_connection_error(self):
-        pytest.xfail("JSON mode swallows errors -- task #78")
-
+    def test_json_mode_includes_connection_error(self, tmp_path):
         from click.testing import CliRunner
 
         from streamt.cli import main
 
         runner = CliRunner()
 
-        with patch("streamt.cli.commands.status.ProjectParser") as mock_parser, \
-             patch("streamt.cli.commands.status.Compiler") as mock_compiler, \
-             patch("streamt.cli.commands.status.make_kafka_deployer") as mock_kd, \
+        project = MagicMock()
+        project.project.name = "test"
+        project.runtime.schema_registry = None
+        project.runtime.flink = None
+        project.runtime.connect = None
+        project.runtime.conduktor = None
+
+        manifest = MagicMock()
+        manifest.artifacts = {
+            "topics": [{"name": "events", "partitions": 3, "replication_factor": 1}],
+        }
+
+        kd = MagicMock()
+        kd.get_topic_state.side_effect = Exception("Connection refused to localhost:9092")
+        kd.close = MagicMock()
+
+        with patch("streamt.core.parser.ProjectParser") as mock_parser, \
+             patch("streamt.compiler.Compiler") as mock_compiler, \
+             patch("streamt.cli.commands.status.make_kafka_deployer", return_value=kd), \
              patch("streamt.cli.commands.status.make_sr_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_flink_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_connect_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_gateway_deployer", return_value=None):
 
-            project = MagicMock()
-            project.project.name = "test"
-            project.runtime.schema_registry = None
-            project.runtime.flink = None
-            project.runtime.connect = None
-            project.runtime.conduktor = None
             mock_parser.return_value.parse.return_value = project
-
-            manifest = MagicMock()
-            manifest.artifacts = {
-                "topics": [{"name": "events", "partitions": 3, "replication_factor": 1}],
-            }
             mock_compiler.return_value.compile.return_value = manifest
 
-            kd = MagicMock()
-            kd.get_topic_state.side_effect = Exception("Connection refused to localhost:9092")
-            mock_kd.return_value = kd
-
-            result = runner.invoke(main, ["-o", "json", "status", "-p", "/tmp/test"])
+            result = runner.invoke(main, ["-o", "json", "status", "-p", str(tmp_path)])
             output = result.output.strip()
-            assert output
+            assert output, f"No output. Exit code: {result.exit_code}, exception: {result.exception}"
             data = json.loads(output)
-            assert "errors" in data or "error" in str(data).lower()
+            assert data["errors"]
+            assert data["status"] == "error"
 
 
 # ===========================================================================

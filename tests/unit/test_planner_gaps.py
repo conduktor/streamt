@@ -73,7 +73,6 @@ class TestPlannerDeleteDetection:
 
     def test_orphan_topic_detected_as_delete(self):
         """Manifest has NO topics, Kafka has 'orphan_topic'."""
-        pytest.xfail("planner doesn't detect deletions -- task #62")
 
         kafka = _mock_kafka()
         kafka.list_topics.return_value = ["orphan_topic"]
@@ -86,7 +85,6 @@ class TestPlannerDeleteDetection:
 
     def test_orphan_schema_detected_as_delete(self):
         """Manifest has NO schemas, SR has 'orphan-value'."""
-        pytest.xfail("planner doesn't detect deletions -- task #62")
 
         sr = _mock_sr()
         sr.list_subjects.return_value = ["orphan-value"]
@@ -99,7 +97,6 @@ class TestPlannerDeleteDetection:
 
     def test_orphan_connector_detected_as_delete(self):
         """Manifest has NO connectors, Connect has 'orphan-sink'."""
-        pytest.xfail("planner doesn't detect deletions -- task #62")
 
         connect = _mock_connect()
         connect.list_connectors.return_value = ["orphan-sink"]

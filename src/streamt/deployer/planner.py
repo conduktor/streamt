@@ -237,7 +237,54 @@ class DeploymentPlanner:
                 except KeyError as e:
                     logger.error("Malformed gateway_rule artifact, missing key %s: %s", e, rule_data)
 
+        # Detect orphaned resources (exist in cluster but not in manifest)
+        self._detect_orphans(plan)
+
         return plan
+
+    def _detect_orphans(self, plan: DeploymentPlan) -> None:
+        """Detect resources in the cluster that are absent from the manifest."""
+        # Orphaned schemas
+        if self.schema_registry_deployer:
+            desired_subjects = {
+                s["subject"] for s in self.manifest.artifacts.get("schemas", []) if "subject" in s
+            }
+            try:
+                for subject in self.schema_registry_deployer.list_subjects():
+                    if subject not in desired_subjects:
+                        plan.schema_changes.append(
+                            SchemaChange(subject=subject, action="delete")
+                        )
+            except Exception as e:
+                logger.error("Failed to list subjects for orphan detection: %s", e)
+
+        # Orphaned topics
+        if self.kafka_deployer:
+            desired_topics = {
+                t["name"] for t in self.manifest.artifacts.get("topics", []) if "name" in t
+            }
+            try:
+                for topic in self.kafka_deployer.list_topics():
+                    if topic not in desired_topics:
+                        plan.topic_changes.append(
+                            TopicChange(topic=topic, action="delete")
+                        )
+            except Exception as e:
+                logger.error("Failed to list topics for orphan detection: %s", e)
+
+        # Orphaned connectors
+        if self.connect_deployer:
+            desired_connectors = {
+                c["name"] for c in self.manifest.artifacts.get("connectors", []) if "name" in c
+            }
+            try:
+                for connector in self.connect_deployer.list_connectors():
+                    if connector not in desired_connectors:
+                        plan.connector_changes.append(
+                            ConnectorChange(connector_name=connector, action="delete")
+                        )
+            except Exception as e:
+                logger.error("Failed to list connectors for orphan detection: %s", e)
 
     def apply(self, plan: Optional[DeploymentPlan] = None) -> dict[str, list[str]]:
         """Apply a deployment plan."""
@@ -247,13 +294,13 @@ class DeploymentPlanner:
         results: dict[str, list[str]] = {
             "created": [],
             "updated": [],
+            "deleted": [],
             "unchanged": [],
             "errors": [],
         }
 
         # Apply schemas first (before topics that may use them)
         if self.schema_registry_deployer:
-
             for change in plan.schema_changes:
                 if change.action in ["register", "update"] and change.desired:
                     try:
@@ -264,6 +311,12 @@ class DeploymentPlanner:
                             results["updated"].append(f"schema:{change.subject}")
                         else:
                             results["unchanged"].append(f"schema:{change.subject}")
+                    except Exception as e:
+                        results["errors"].append(f"schema:{change.subject}: {e}")
+                elif change.action == "delete":
+                    try:
+                        self.schema_registry_deployer.delete_subject(change.subject)
+                        results["deleted"].append(f"schema:{change.subject}")
                     except Exception as e:
                         results["errors"].append(f"schema:{change.subject}: {e}")
 
@@ -281,6 +334,12 @@ class DeploymentPlanner:
                             results["unchanged"].append(f"topic:{change.topic}")
                     except Exception as e:
                         results["errors"].append(f"topic:{change.topic}: {e}")
+                elif change.action == "delete":
+                    try:
+                        self.kafka_deployer.delete_topic(change.topic)
+                        results["deleted"].append(f"topic:{change.topic}")
+                    except Exception as e:
+                        results["errors"].append(f"topic:{change.topic}: {e}")
 
         # Apply Flink jobs
         if self.flink_deployer:
@@ -292,6 +351,12 @@ class DeploymentPlanner:
                             results["created"].append(f"flink_job:{change.job_name}")
                         else:
                             results["unchanged"].append(f"flink_job:{change.job_name}")
+                    except Exception as e:
+                        results["errors"].append(f"flink_job:{change.job_name}: {e}")
+                elif change.action == "cancel" and change.current and change.current.job_id:
+                    try:
+                        self.flink_deployer.cancel_job(change.current.job_id)
+                        results["deleted"].append(f"flink_job:{change.job_name}")
                     except Exception as e:
                         results["errors"].append(f"flink_job:{change.job_name}: {e}")
 
@@ -309,6 +374,12 @@ class DeploymentPlanner:
                             results["unchanged"].append(f"connector:{change.connector_name}")
                     except Exception as e:
                         results["errors"].append(f"connector:{change.connector_name}: {e}")
+                elif change.action == "delete":
+                    try:
+                        self.connect_deployer.delete_connector(change.connector_name)
+                        results["deleted"].append(f"connector:{change.connector_name}")
+                    except Exception as e:
+                        results["errors"].append(f"connector:{change.connector_name}: {e}")
 
         # Apply gateway rules
         if self.gateway_deployer:
@@ -322,6 +393,12 @@ class DeploymentPlanner:
                             results["updated"].append(f"gateway_rule:{change.name}")
                         else:
                             results["unchanged"].append(f"gateway_rule:{change.name}")
+                    except Exception as e:
+                        results["errors"].append(f"gateway_rule:{change.name}: {e}")
+                elif change.action == "delete":
+                    try:
+                        self.gateway_deployer.delete(change.name)
+                        results["deleted"].append(f"gateway_rule:{change.name}")
                     except Exception as e:
                         results["errors"].append(f"gateway_rule:{change.name}: {e}")
 

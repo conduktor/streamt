@@ -187,7 +187,7 @@ class KafkaDeployer:
         for key, value in artifact.config.items():
             current_value = current.config.get(key)
             # Compare as strings, but handle None explicitly
-            if current_value is None or str(current_value) != str(value):
+            if current_value is None or str(current_value).lower() != str(value).lower():
                 changes[f"config.{key}"] = {
                     "from": current_value,
                     "to": value,

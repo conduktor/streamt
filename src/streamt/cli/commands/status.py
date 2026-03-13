@@ -20,7 +20,7 @@ from streamt.cli.helpers import (
     make_sr_deployer,
 )
 from streamt.core.errors import ErrorCode
-from streamt.output import get_output_format_from_context
+from streamt.output import StructuredError, get_output_format_from_context
 
 
 @click.command()
@@ -89,6 +89,7 @@ def status(
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {s['subject']}")
                 except Exception as e:
+                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Schema Registry: {e}"))
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Schema Registry: {e}[/yellow]")
             elif is_text:
@@ -120,6 +121,7 @@ def status(
                         else:
                             fmt.print(f"  [red]MISSING[/red] {t['name']}")
             except Exception as e:
+                fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Kafka: {e}"))
                 if is_text:
                     fmt.print(f"  [yellow]Cannot connect to Kafka: {e}[/yellow]")
 
@@ -146,6 +148,7 @@ def status(
                             else:
                                 fmt.print(f"  [red]NOT FOUND[/red] {j['name']}")
                 except Exception as e:
+                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Flink: {e}"))
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Flink: {e}[/yellow]")
             elif is_text:
@@ -173,6 +176,7 @@ def status(
                             else:
                                 fmt.print(f"  [red]NOT FOUND[/red] {c['name']}")
                 except Exception as e:
+                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Connect: {e}"))
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Connect: {e}[/yellow]")
             elif is_text:
@@ -201,6 +205,7 @@ def status(
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {r['name']}")
                 except Exception as e:
+                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Gateway: {e}"))
                     if is_text:
                         fmt.print(f"  [yellow]Cannot connect to Gateway: {e}[/yellow]")
             elif is_text:
