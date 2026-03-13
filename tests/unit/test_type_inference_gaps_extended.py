@@ -417,7 +417,6 @@ class TestCrossCuttingScenarios:
         assert m["div_bi"] == "DOUBLE"
 
     def test_select_star_from_subquery(self):
-        pytest.xfail("SELECT * + subquery propagation both broken")
         cols = _infer(
             "SELECT * FROM (SELECT id, name FROM users) sub",
             {"id": "INT", "name": "STRING"},
@@ -425,7 +424,6 @@ class TestCrossCuttingScenarios:
         assert len(cols) == 2
 
     def test_full_pipeline_select_star_with_typed_schema(self):
-        pytest.xfail("SELECT * returns empty AND schema gen ignores types")
         sources = [
             Source(name="events", topic="events_topic", columns=[
                 ColumnDefinition(name="event_id", type="BIGINT"),

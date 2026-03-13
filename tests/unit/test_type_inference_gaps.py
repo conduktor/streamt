@@ -116,7 +116,6 @@ class TestGroup1SelectStarPropagation:
 
     def test_select_star_from_join_should_propagate(self):
         """SELECT * from JOIN should propagate columns from both sources."""
-        pytest.xfail("SELECT * does not propagate in JOINs")
         cols = _infer_via_compiler(
             sources=[
                 Source(name="orders", topic="orders_topic", columns=[
@@ -199,35 +198,20 @@ class TestGroup2DecimalPrecision:
 # ===================================================================
 
 class TestGroup3SubqueryTypeInference:
-    """Columns from subqueries are resolved against the outer schema context
-    which is empty -- inner expression types are not propagated.
-    """
+    """Subquery and CTE columns are propagated to the outer query."""
 
-    def test_subquery_count_resolves_to_string_currently(self):
-        """cnt from inner COUNT(*) resolves to STRING in outer SELECT."""
-        cols = _infer("SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t) sub")
-        assert cols == [("cnt", "STRING")]
-
-    def test_subquery_count_should_resolve_to_bigint(self):
-        """cnt from inner COUNT(*) should be BIGINT."""
-        pytest.xfail("Subquery columns not propagated to outer query")
+    def test_subquery_count_resolves_to_bigint(self):
+        """cnt from inner COUNT(*) resolves to BIGINT."""
         cols = _infer("SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t) sub")
         assert cols == [("cnt", "BIGINT")]
 
-    def test_subquery_literal_resolves_to_string_currently(self):
-        """x from inner ``SELECT 42 as x`` resolves to STRING in outer SELECT."""
-        cols = _infer("SELECT x FROM (SELECT 42 as x) sub")
-        assert cols == [("x", "STRING")]
-
-    def test_subquery_literal_should_resolve_to_int(self):
-        """x from inner ``SELECT 42 as x`` should be INT."""
-        pytest.xfail("Subquery columns not propagated to outer query")
+    def test_subquery_literal_resolves_to_int(self):
+        """x from inner ``SELECT 42 as x`` resolves to INT."""
         cols = _infer("SELECT x FROM (SELECT 42 as x) sub")
         assert cols == [("x", "INT")]
 
-    def test_subquery_with_arithmetic_should_propagate(self):
-        """Computed columns in subqueries should carry their inferred type."""
-        pytest.xfail("Subquery expression types not propagated")
+    def test_subquery_with_arithmetic_propagates(self):
+        """Computed columns in subqueries carry their inferred type."""
         cols = _infer(
             "SELECT doubled FROM (SELECT amount * 2 AS doubled FROM t) sub",
             {"amount": "DOUBLE"},
@@ -235,8 +219,7 @@ class TestGroup3SubqueryTypeInference:
         assert cols == [("doubled", "DOUBLE")]
 
     def test_nested_subquery_type_propagation(self):
-        """Types should propagate through multiple subquery levels."""
-        pytest.xfail("Nested subquery types not propagated")
+        """Types propagate through multiple subquery levels."""
         cols = _infer(
             "SELECT total FROM ("
             "  SELECT cnt AS total FROM ("
@@ -246,17 +229,16 @@ class TestGroup3SubqueryTypeInference:
         )
         assert cols == [("total", "BIGINT")]
 
-    def test_subquery_with_schema_context_still_fails(self):
-        """Even with a schema context, subquery inner types are not visible."""
+    def test_subquery_with_schema_context(self):
+        """Schema context flows into subquery for column resolution."""
         cols = _infer(
             "SELECT doubled FROM (SELECT amount * 2 AS doubled FROM t) sub",
             {"amount": "DOUBLE"},
         )
-        assert cols == [("doubled", "STRING")]
+        assert cols == [("doubled", "DOUBLE")]
 
     def test_cte_type_propagation(self):
-        """CTE columns should carry their inferred types to the outer query."""
-        pytest.xfail("CTE column types not propagated to outer query")
+        """CTE columns carry their inferred types to the outer query."""
         cols = _infer(
             "WITH agg AS ("
             "  SELECT category, COUNT(*) AS cnt, SUM(amount) AS total FROM t"

@@ -15,6 +15,7 @@ import sqlglot
 from sqlglot import exp
 
 from streamt.compiler.flink_dialect import FlinkDialect, get_flink_function_type
+from streamt.compiler.scope import _enrich_schema_from_scope
 
 if TYPE_CHECKING:
     from streamt.core.models import Model
@@ -70,17 +71,22 @@ class TypeInferenceMixin:
                     return []
                 parsed = select
 
+            # Enrich schema with CTE and subquery column types
+            schema_context = _enrich_schema_from_scope(self, parsed, dict(schema_context))
+
             columns = []
             for expr in parsed.expressions:
                 # Handle SELECT * — expand all schema columns
                 if isinstance(expr, exp.Star):
                     for col_name, col_type in schema_context.items():
-                        columns.append((col_name, col_type))
+                        if "." not in col_name:
+                            columns.append((col_name, col_type))
                     continue
                 # Handle table.* (qualified star)
                 if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
                     for col_name, col_type in schema_context.items():
-                        columns.append((col_name, col_type))
+                        if "." not in col_name:
+                            columns.append((col_name, col_type))
                     continue
                 col_name = self._get_expression_alias(expr)
                 col_type = self._infer_expression_type(expr, schema_context)
