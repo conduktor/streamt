@@ -111,9 +111,22 @@ def status(
                              "replication_factor": state.replication_factor if state.exists else None}
                     if lag and state.exists:
                         entry["message_count"] = kd.get_topic_message_count(t["name"])
+                    # Check for drift between desired and actual state
+                    drift: list[str] = []
+                    if state.exists:
+                        desired_p = t.get("partitions")
+                        desired_rf = t.get("replication_factor")
+                        if desired_p is not None and state.partitions != desired_p:
+                            drift.append(f"partitions: {state.partitions} (expected {desired_p})")
+                        if desired_rf is not None and state.replication_factor != desired_rf:
+                            drift.append(f"rf: {state.replication_factor} (expected {desired_rf})")
+                    if drift:
+                        entry["drift"] = drift
                     data["topics"].append(entry)
                     if is_text:
-                        if state.exists:
+                        if state.exists and drift:
+                            fmt.print(f"  [yellow]DRIFT[/yellow] {t['name']} - {', '.join(drift)}")
+                        elif state.exists:
                             line = f"  [green]OK[/green] {t['name']} (partitions: {state.partitions}, rf: {state.replication_factor})"
                             if "message_count" in entry:
                                 line += f" [dim]~{entry['message_count']} msgs[/dim]"

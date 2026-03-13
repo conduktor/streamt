@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -109,7 +110,17 @@ class SchemaRegistryDeployer:
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
         url = f"{self.url}{path}"
-        response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+        last_err: Optional[requests.ConnectionError] = None
+        for attempt in range(3):
+            try:
+                response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+                break
+            except requests.ConnectionError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        else:
+            raise last_err  # type: ignore[misc]
         if not_found_ok and response.status_code == 404:
             return None
         response.raise_for_status()

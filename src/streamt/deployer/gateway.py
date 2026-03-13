@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -147,18 +148,25 @@ class GatewayDeployer:
         """
         url = f"{self.admin_url}/gateway/v2{endpoint}"
 
-        try:
-            response = self._session.request(
-                method=method,
-                url=url,
-                json=json,
-                params=params,
-                timeout=DEFAULT_TIMEOUT,
-            )
-        except requests.ConnectionError as e:
+        last_err: Optional[requests.ConnectionError] = None
+        for attempt in range(3):
+            try:
+                response = self._session.request(
+                    method=method,
+                    url=url,
+                    json=json,
+                    params=params,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                break
+            except requests.ConnectionError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        else:
             raise GatewayConnectionError(
-                f"Cannot connect to Gateway at {self.admin_url}. Is it running? Error: {e}"
-            ) from e
+                f"Cannot connect to Gateway at {self.admin_url}. Is it running? Error: {last_err}"
+            ) from last_err
 
         if response.status_code == 401:
             raise GatewayAuthenticationError(

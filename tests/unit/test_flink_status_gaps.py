@@ -101,45 +101,44 @@ class TestFlinkJobSqlChangeDetection:
 class TestStatusDesiredState:
     """Status should compare actual vs desired state, not just existence."""
 
-    def test_topic_partition_drift_should_warn(self):
+    def test_topic_partition_drift_should_warn(self, tmp_path):
         """Topic has 3 partitions, manifest says 6 -> should show DRIFT."""
-        pytest.xfail("status only checks existence -- task #98")
-
         from click.testing import CliRunner
 
         from streamt.cli import main
 
         runner = CliRunner()
 
-        with patch("streamt.cli.commands.status.ProjectParser") as mock_parser, \
-             patch("streamt.cli.commands.status.Compiler") as mock_compiler, \
-             patch("streamt.cli.commands.status.make_kafka_deployer") as mock_kd, \
+        project = MagicMock()
+        project.project.name = "test"
+        project.runtime.schema_registry = None
+        project.runtime.flink = None
+        project.runtime.connect = None
+        project.runtime.conduktor = None
+
+        manifest = MagicMock()
+        manifest.artifacts = {
+            "topics": [{"name": "events", "partitions": 6, "replication_factor": 1}],
+        }
+
+        kd = MagicMock()
+        kd.get_topic_state.return_value = TopicState(
+            name="events", exists=True, partitions=3, replication_factor=1,
+        )
+        kd.close = MagicMock()
+
+        with patch("streamt.core.parser.ProjectParser") as mock_parser, \
+             patch("streamt.compiler.Compiler") as mock_compiler, \
+             patch("streamt.cli.commands.status.make_kafka_deployer", return_value=kd), \
              patch("streamt.cli.commands.status.make_sr_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_flink_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_connect_deployer", return_value=None), \
              patch("streamt.cli.commands.status.make_gateway_deployer", return_value=None):
 
-            project = MagicMock()
-            project.project.name = "test"
-            project.runtime.schema_registry = None
-            project.runtime.flink = None
-            project.runtime.connect = None
-            project.runtime.conduktor = None
             mock_parser.return_value.parse.return_value = project
-
-            manifest = MagicMock()
-            manifest.artifacts = {
-                "topics": [{"name": "events", "partitions": 6, "replication_factor": 1}],
-            }
             mock_compiler.return_value.compile.return_value = manifest
 
-            kd = MagicMock()
-            kd.get_topic_state.return_value = TopicState(
-                name="events", exists=True, partitions=3, replication_factor=1,
-            )
-            mock_kd.return_value = kd
-
-            result = runner.invoke(main, ["status", "-p", "/tmp/test"])
+            result = runner.invoke(main, ["status", "-p", str(tmp_path)])
             assert "DRIFT" in result.output or "mismatch" in result.output.lower()
 
 
@@ -151,10 +150,8 @@ class TestStatusDesiredState:
 class TestRetryLogic:
     """Deployer HTTP requests should retry transient failures."""
 
-    def test_gateway_no_retry_on_transient_failure(self):
-        """Gateway _request fails once then would succeed -- no retry."""
-        pytest.xfail("no retry logic in deployers -- task #79")
-
+    def test_gateway_retries_transient_failure(self):
+        """Gateway _request retries on ConnectionError then succeeds."""
         deployer = GatewayDeployer.__new__(GatewayDeployer)
         deployer.admin_url = "http://gw:8888"
         deployer.auth = None
@@ -169,13 +166,12 @@ class TestRetryLogic:
             requests.ConnectionError("refused"),
             ok,
         ]
-        result = deployer._request("GET", "/interceptor")
+        with patch("streamt.deployer.gateway.time.sleep"):
+            result = deployer._request("GET", "/interceptor")
         assert result == []
 
-    def test_sr_no_retry_on_transient_failure(self):
-        """Schema Registry _request fails once then would succeed."""
-        pytest.xfail("no retry logic in deployers -- task #79")
-
+    def test_sr_retries_transient_failure(self):
+        """Schema Registry _request retries on ConnectionError then succeeds."""
         deployer = SchemaRegistryDeployer.__new__(SchemaRegistryDeployer)
         deployer.url = "http://localhost:8081"
         deployer.auth = None
@@ -190,7 +186,8 @@ class TestRetryLogic:
             requests.ConnectionError("Temporary"),
             ok,
         ]
-        assert deployer.list_subjects() == ["subject1"]
+        with patch("streamt.deployer.schema_registry.time.sleep"):
+            assert deployer.list_subjects() == ["subject1"]
 
 
 # ===========================================================================
