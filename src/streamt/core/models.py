@@ -436,8 +436,9 @@ class Model(BaseModel):
         # If connector is a dict with 'type' and 'config', convert to SinkConfig
         if self.connector and isinstance(self.connector, dict):
             if "type" in self.connector:
-                connector_type = self.connector["type"]
-                connector_config = self.connector.get("config", {})
+                connector_type = str(self.connector["type"])
+                raw_config = self.connector.get("config", {})
+                connector_config: dict[str, object] = dict(raw_config) if isinstance(raw_config, dict) else {}
                 self.sink = SinkConfig(connector=connector_type, config=connector_config)
                 # Clear connector dict after conversion
                 self.connector = None
