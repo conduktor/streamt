@@ -9,6 +9,7 @@ from typing import Any, Optional
 import click
 
 from streamt.cli.helpers import (
+    close_deployers,
     get_project_path,
     handle_parse_error,
     make_connect_deployer,
@@ -50,6 +51,7 @@ def status(
     def matches(name: str) -> bool:
         return not filter_pattern or fnmatch.fnmatch(name, filter_pattern)
 
+    deployers_to_close: list[Any] = []
     try:
         parser = ProjectParser(
             project_path, environment=environment,
@@ -71,6 +73,7 @@ def status(
                 fmt.print("\n[cyan]Schemas:[/cyan]")
             sd = make_sr_deployer(project, fmt)
             if sd:
+                deployers_to_close.append(sd)
                 try:
                     for s in manifest.artifacts["schemas"]:
                         if not matches(s["subject"]):
@@ -96,6 +99,7 @@ def status(
             fmt.print("\n[cyan]Topics:[/cyan]")
         kd = make_kafka_deployer(project, fmt)
         if kd:
+            deployers_to_close.append(kd)
             try:
                 for t in manifest.artifacts.get("topics", []):
                     if not matches(t["name"]):
@@ -125,6 +129,7 @@ def status(
                 fmt.print("\n[cyan]Flink Jobs:[/cyan]")
             fd = make_flink_deployer(project, fmt)
             if fd:
+                deployers_to_close.append(fd)
                 try:
                     for j in manifest.artifacts["flink_jobs"]:
                         if not matches(j["name"]):
@@ -152,6 +157,7 @@ def status(
                 fmt.print("\n[cyan]Connectors:[/cyan]")
             cd = make_connect_deployer(project, fmt)
             if cd:
+                deployers_to_close.append(cd)
                 try:
                     for c in manifest.artifacts["connectors"]:
                         if not matches(c["name"]):
@@ -178,6 +184,7 @@ def status(
                 fmt.print("\n[cyan]Gateway Rules:[/cyan]")
             gd = make_gateway_deployer(project, fmt)
             if gd:
+                deployers_to_close.append(gd)
                 try:
                     for r in manifest.artifacts["gateway_rules"]:
                         if not matches(r["name"]):
@@ -222,3 +229,5 @@ def status(
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    finally:
+        close_deployers(*deployers_to_close)

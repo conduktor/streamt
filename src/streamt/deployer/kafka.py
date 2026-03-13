@@ -125,9 +125,9 @@ class KafkaDeployer:
 
         # Get replication factor from first partition
         rf = None
-        if topic_metadata.partitions:
-            first_partition = list(topic_metadata.partitions.values())[0]
-            rf = len(first_partition.replicas)
+        partition_values = list(topic_metadata.partitions.values()) if topic_metadata.partitions else []
+        if partition_values:
+            rf = len(partition_values[0].replicas)
 
         # Get topic config
         config_resource = ConfigResource(ResourceType.TOPIC, topic_name)
@@ -183,13 +183,21 @@ class KafkaDeployer:
                     ),
                 }
 
-        # Check config changes
+        # Check config changes (desired keys)
         for key, value in artifact.config.items():
             current_value = current.config.get(key)
-            if str(current_value) != str(value):
+            # Compare as strings, but handle None explicitly
+            if current_value is None or str(current_value) != str(value):
                 changes[f"config.{key}"] = {
                     "from": current_value,
                     "to": value,
+                }
+        # Detect removed config keys
+        for key in current.config:
+            if key not in artifact.config:
+                changes[f"config.{key}"] = {
+                    "from": current.config[key],
+                    "to": None,
                 }
 
         if changes:

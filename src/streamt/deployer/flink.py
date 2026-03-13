@@ -302,57 +302,59 @@ class FlinkDeployer:
         statements = _split_sql_statements(sql)
 
         results = []
-        for statement in statements:
-            # Submit statement
-            response = self._request(
-                "POST",
-                f"/v1/sessions/{session_id}/statements",
-                use_sql_gateway=True,
-                json={"statement": statement},
-            )
-            operation_handle = response.get("operationHandle")
-
-            if not operation_handle:
-                raise RuntimeError(f"No operationHandle returned for statement: {statement[:50]}...")
-
-            # Poll for completion
-            poll_interval = 0.5
-            elapsed = 0.0
-
-            while elapsed < statement_timeout:
-                status_response = self._request(
-                    "GET",
-                    f"/v1/sessions/{session_id}/operations/{operation_handle}/status",
+        try:
+            for statement in statements:
+                # Submit statement
+                response = self._request(
+                    "POST",
+                    f"/v1/sessions/{session_id}/statements",
                     use_sql_gateway=True,
+                    json={"statement": statement},
                 )
-                status = status_response.get("status")
+                operation_handle = response.get("operationHandle")
 
-                if status == "FINISHED":
-                    results.append({"status": "FINISHED", "statement": statement[:100]})
-                    break
-                elif status == "ERROR":
-                    # Get error details - try result endpoint first
-                    error_msg = status_response.get("error")
-                    if not error_msg:
-                        # Flink SQL Gateway returns errors in result endpoint (often as 500)
-                        try:
-                            result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
-                            result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
-                            result_data = result_resp.json()
-                            error_list = result_data.get("errors", [])
-                            error_msg = " ".join(error_list) if error_list else "Unknown error"
-                        except Exception as e:
-                            error_msg = f"Unknown error (failed to fetch details: {e})"
-                    # Use rich error message with suggestions
-                    raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
-                elif status in ("RUNNING", "PENDING"):
-                    time.sleep(poll_interval)
-                    elapsed += poll_interval
-                else:
-                    raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
+                if not operation_handle:
+                    raise RuntimeError(f"No operationHandle returned for statement: {statement[:50]}...")
 
-            if elapsed >= statement_timeout:
-                raise RuntimeError(f"Timeout waiting for statement: {statement[:50]}...")
+                # Poll for completion
+                poll_interval = 0.5
+                elapsed = 0.0
+
+                while elapsed < statement_timeout:
+                    status_response = self._request(
+                        "GET",
+                        f"/v1/sessions/{session_id}/operations/{operation_handle}/status",
+                        use_sql_gateway=True,
+                    )
+                    status = status_response.get("status")
+
+                    if status == "FINISHED":
+                        results.append({"status": "FINISHED", "statement": statement[:100]})
+                        break
+                    elif status == "ERROR":
+                        # Get error details - try result endpoint first
+                        error_msg = status_response.get("error")
+                        if not error_msg:
+                            try:
+                                result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
+                                result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
+                                result_data = result_resp.json()
+                                error_list = result_data.get("errors", [])
+                                error_msg = " ".join(error_list) if error_list else "Unknown error"
+                            except Exception as e:
+                                error_msg = f"Unknown error (failed to fetch details: {e})"
+                        raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
+                    elif status in ("RUNNING", "PENDING"):
+                        time.sleep(poll_interval)
+                        elapsed += poll_interval
+                    else:
+                        raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
+
+                if elapsed >= statement_timeout:
+                    raise RuntimeError(f"Timeout waiting for statement: {statement[:50]}...")
+        except Exception:
+            self.close_session()
+            raise
 
         return {"results": results}
 

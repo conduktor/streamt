@@ -34,13 +34,15 @@ def handle_parse_error(fmt: OutputFormatter, e: Exception, code: str) -> None:
 
 
 def close_deployers(*deployers: Any) -> None:
-    """Close all non-None deployers, ignoring errors."""
+    """Close all non-None deployers, logging errors."""
+    import logging
+    logger = logging.getLogger(__name__)
     for d in deployers:
         if d is not None and hasattr(d, "close"):
             try:
                 d.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to close deployer %s: %s", type(d).__name__, e)
 
 
 def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:

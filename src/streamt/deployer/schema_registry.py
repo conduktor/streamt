@@ -273,18 +273,23 @@ class SchemaRegistryDeployer:
         change = self.plan_schema(artifact)
 
         if change.action == "register":
+            # Set compatibility before registration to allow schema evolution
+            if artifact.compatibility:
+                self.set_compatibility(artifact.subject, artifact.compatibility)
             self.register_schema(
                 artifact.subject,
                 artifact.schema,
                 artifact.schema_type,
             )
-            if artifact.compatibility:
-                self.set_compatibility(artifact.subject, artifact.compatibility)
             return "registered"
 
         elif change.action == "update":
             if change.changes and "schema_incompatible" in change.changes:
                 raise RuntimeError(change.changes["schema_incompatible"]["message"])
+
+            # Set compatibility before registration to allow breaking changes
+            if change.changes and "compatibility" in change.changes:
+                self.set_compatibility(artifact.subject, artifact.compatibility)
 
             if change.changes and "schema" in change.changes:
                 self.register_schema(
@@ -292,9 +297,6 @@ class SchemaRegistryDeployer:
                     artifact.schema,
                     artifact.schema_type,
                 )
-
-            if change.changes and "compatibility" in change.changes:
-                self.set_compatibility(artifact.subject, artifact.compatibility)
 
             return "updated"
 

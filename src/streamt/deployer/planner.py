@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
@@ -163,64 +166,76 @@ class DeploymentPlanner:
             from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
             for schema_data in self.manifest.artifacts.get("schemas", []):
-                artifact = SRArtifact(
-                    subject=schema_data["subject"],
-                    schema=schema_data["schema"],
-                    schema_type=schema_data.get("schema_type", "AVRO"),
-                    compatibility=schema_data.get("compatibility"),
-                )
-                change = self.schema_registry_deployer.plan_schema(artifact)
-                plan.schema_changes.append(change)
+                try:
+                    artifact = SRArtifact(
+                        subject=schema_data["subject"],
+                        schema=schema_data["schema"],
+                        schema_type=schema_data.get("schema_type", "AVRO"),
+                        compatibility=schema_data.get("compatibility"),
+                    )
+                    change = self.schema_registry_deployer.plan_schema(artifact)
+                    plan.schema_changes.append(change)
+                except KeyError as e:
+                    logger.error("Malformed schema artifact, missing key %s: %s", e, schema_data)
 
         # Plan topics
         if self.kafka_deployer:
             from streamt.compiler.manifest import TopicArtifact
 
             for topic_data in self.manifest.artifacts.get("topics", []):
-                artifact = TopicArtifact(**topic_data)
-                change = self.kafka_deployer.plan_topic(artifact)
-                plan.topic_changes.append(change)
+                try:
+                    artifact = TopicArtifact(**topic_data)
+                    change = self.kafka_deployer.plan_topic(artifact)
+                    plan.topic_changes.append(change)
+                except (KeyError, TypeError) as e:
+                    logger.error("Malformed topic artifact: %s in %s", e, topic_data)
 
         # Plan Flink jobs
         if self.flink_deployer:
             from streamt.compiler.manifest import FlinkJobArtifact
 
             for job_data in self.manifest.artifacts.get("flink_jobs", []):
-                artifact = FlinkJobArtifact(**job_data)
-                change = self.flink_deployer.plan_job(artifact)
-                plan.flink_changes.append(change)
+                try:
+                    artifact = FlinkJobArtifact(**job_data)
+                    change = self.flink_deployer.plan_job(artifact)
+                    plan.flink_changes.append(change)
+                except (KeyError, TypeError) as e:
+                    logger.error("Malformed flink_job artifact: %s in %s", e, job_data)
 
         # Plan connectors
         if self.connect_deployer:
             from streamt.compiler.manifest import ConnectorArtifact
 
             for conn_data in self.manifest.artifacts.get("connectors", []):
-                artifact = ConnectorArtifact(
-                    name=conn_data["name"],
-                    connector_class=conn_data["config"].get("connector.class", ""),
-                    topics=conn_data["config"].get("topics", "").split(","),
-                    config={
-                        k: v
-                        for k, v in conn_data["config"].items()
-                        if k not in ["name", "connector.class", "topics"]
-                    },
-                )
-                change = self.connect_deployer.plan_connector(artifact)
-                plan.connector_changes.append(change)
+                try:
+                    cfg = conn_data.get("config", {})
+                    artifact = ConnectorArtifact(
+                        name=conn_data["name"],
+                        connector_class=cfg.get("connector.class", ""),
+                        topics=cfg.get("topics", "").split(","),
+                        config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
+                    )
+                    change = self.connect_deployer.plan_connector(artifact)
+                    plan.connector_changes.append(change)
+                except KeyError as e:
+                    logger.error("Malformed connector artifact, missing key %s: %s", e, conn_data)
 
         # Plan gateway rules
         if self.gateway_deployer:
             from streamt.compiler.manifest import GatewayRuleArtifact
 
             for rule_data in self.manifest.artifacts.get("gateway_rules", []):
-                artifact = GatewayRuleArtifact(
-                    name=rule_data["name"],
-                    virtual_topic=rule_data["virtualTopic"],
-                    physical_topic=rule_data["physicalTopic"],
-                    interceptors=rule_data.get("interceptors", []),
-                )
-                change = self.gateway_deployer.plan(artifact)
-                plan.gateway_changes.append(change)
+                try:
+                    artifact = GatewayRuleArtifact(
+                        name=rule_data["name"],
+                        virtual_topic=rule_data["virtualTopic"],
+                        physical_topic=rule_data["physicalTopic"],
+                        interceptors=rule_data.get("interceptors", []),
+                    )
+                    change = self.gateway_deployer.plan(artifact)
+                    plan.gateway_changes.append(change)
+                except KeyError as e:
+                    logger.error("Malformed gateway_rule artifact, missing key %s: %s", e, rule_data)
 
         return plan
 

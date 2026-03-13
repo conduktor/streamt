@@ -41,8 +41,6 @@ class TestTopicConfigRemovedKeys:
     def test_removed_config_key_detected(self, deployer):
         """Current has {retention.ms, cleanup.policy}. Desired has only
         {retention.ms}. Should detect cleanup.policy removal."""
-        pytest.xfail("removed config keys not detected -- task #73")
-
         with patch.object(deployer, "get_topic_state") as mock_state:
             mock_state.return_value = TopicState(
                 name="events", exists=True, partitions=3, replication_factor=1,
@@ -136,8 +134,6 @@ class TestSchemaCompatibilityOrder:
     def test_compatibility_set_before_registration(self):
         """Subject has BACKWARD. Artifact wants NONE + schema update.
         set_compatibility('NONE') must precede register_schema()."""
-        pytest.xfail("apply_schema sets compatibility AFTER registration -- task #71")
-
         deployer = SchemaRegistryDeployer.__new__(SchemaRegistryDeployer)
         deployer.url = "http://localhost:8081"
         deployer.auth = None
@@ -200,9 +196,7 @@ class TestConfigStringComparison:
 
     def test_none_string_vs_none_value_false_negative(self, deployer):
         """Current absent (None), desired literal 'None'.
-        str(None) == 'None' causes false negative."""
-        pytest.xfail("str(None) == 'None' causes false negative -- task #82")
-
+        Now correctly detected as a change."""
         with patch.object(deployer, "get_topic_state") as mock_state:
             mock_state.return_value = TopicState(
                 name="e", exists=True, partitions=3, replication_factor=1,
