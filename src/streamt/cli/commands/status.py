@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -51,7 +51,7 @@ def status(
     def matches(name: str) -> bool:
         return not filter_pattern or fnmatch.fnmatch(name, filter_pattern)
 
-    deployers_to_close: list[Any] = []
+    deployers_to_close: list[object] = []
     try:
         parser = ProjectParser(
             project_path, environment=environment,
@@ -61,7 +61,7 @@ def status(
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
 
-        data: dict[str, Any] = {
+        data: dict[str, object] = {
             "project": project.project.name,
             "schemas": [], "topics": [], "flink_jobs": [], "connectors": [],
             "gateway_rules": [],
@@ -105,7 +105,7 @@ def status(
                     if not matches(t["name"]):
                         continue
                     state = kd.get_topic_state(t["name"])
-                    entry: dict[str, Any] = {"name": t["name"], "exists": state.exists,
+                    entry: dict[str, object] = {"name": t["name"], "exists": state.exists,
                              "partitions": state.partitions if state.exists else None,
                              "replication_factor": state.replication_factor if state.exists else None}
                     if lag and state.exists:

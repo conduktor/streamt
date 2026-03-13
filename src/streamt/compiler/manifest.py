@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass
@@ -16,9 +16,9 @@ class TopicArtifact:
     name: str
     partitions: int
     replication_factor: int
-    config: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, object] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "partitions": self.partitions,
@@ -39,7 +39,7 @@ class FlinkJobArtifact:
     state_backend: Optional[str] = None
     state_ttl_ms: Optional[int] = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "sql": self.sql,
@@ -58,10 +58,10 @@ class ConnectorArtifact:
     name: str
     connector_class: str
     topics: list[str]
-    config: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, object] = field(default_factory=dict)
     cluster: Optional[str] = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "connector_class": self.connector_class,
@@ -83,9 +83,9 @@ class GatewayRuleArtifact:
     name: str
     virtual_topic: str
     physical_topic: str
-    interceptors: list[dict[str, Any]] = field(default_factory=list)
+    interceptors: list[dict[str, object]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "virtualTopic": self.virtual_topic,
@@ -99,11 +99,11 @@ class SchemaArtifact:
     """Compiled schema artifact."""
 
     subject: str
-    schema: dict[str, Any]
+    schema: dict[str, object]
     schema_type: str = "AVRO"  # AVRO, JSON, PROTOBUF
     compatibility: Optional[str] = None  # BACKWARD, FORWARD, FULL, NONE
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "subject": self.subject,
             "schema": self.schema,
@@ -121,14 +121,14 @@ class Manifest:
     compiled_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
-    sources: list[dict[str, Any]] = field(default_factory=list)
-    models: list[dict[str, Any]] = field(default_factory=list)
-    tests: list[dict[str, Any]] = field(default_factory=list)
-    exposures: list[dict[str, Any]] = field(default_factory=list)
-    dag: dict[str, Any] = field(default_factory=dict)
-    artifacts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    sources: list[dict[str, object]] = field(default_factory=list)
+    models: list[dict[str, object]] = field(default_factory=list)
+    tests: list[dict[str, object]] = field(default_factory=list)
+    exposures: list[dict[str, object]] = field(default_factory=list)
+    dag: dict[str, object] = field(default_factory=dict)
+    artifacts: dict[str, list[dict[str, object]]] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "version": self.version,
             "project": self.project_name,

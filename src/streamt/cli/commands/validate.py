@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -35,9 +35,9 @@ def validate(
     fmt = make_formatter(ctx, "validate")
     project_path = get_project_path(project_dir)
 
-    def validate_single_env(env_name: Optional[str]) -> dict[str, Any]:
+    def validate_single_env(env_name: Optional[str]) -> dict[str, object]:
         """Validate a single environment. Returns result dict."""
-        result_data: dict[str, Any] = {"environment": env_name, "valid": False}
+        result_data: dict[str, object] = {"environment": env_name, "valid": False}
 
         try:
             parser = ProjectParser(
@@ -49,9 +49,9 @@ def validate(
             validator = ProjectValidator(project)
             result = validator.validate()
 
-            warns: list[dict[str, Any]] = []
+            warns: list[dict[str, object]] = []
             for warning in result.warnings:
-                w: dict[str, Any] = {"message": warning.message}
+                w: dict[str, object] = {"message": warning.message}
                 if warning.location:
                     w["location"] = warning.location
                 warns.append(w)
@@ -63,9 +63,9 @@ def validate(
                     fmt.print(f"  Location: {warning.location}")
 
             if result.errors:
-                errs: list[dict[str, Any]] = []
+                errs: list[dict[str, object]] = []
                 for error in result.errors:
-                    e: dict[str, Any] = {"message": error.message}
+                    e: dict[str, object] = {"message": error.message}
                     if error.location:
                         e["location"] = error.location
                     errs.append(e)

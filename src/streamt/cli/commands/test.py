@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -69,10 +69,10 @@ def test(
 
         passed = 0
         failed = 0
-        test_results: list[dict[str, Any]] = []
+        test_results: list[dict[str, object]] = []
 
         for test_result in results:
-            tr: dict[str, Any] = {"name": test_result["name"], "status": test_result["status"]}
+            tr: dict[str, object] = {"name": test_result["name"], "status": test_result["status"]}
             if test_result["status"] == "passed":
                 fmt.print(f"[green]PASS[/green]: {test_result['name']}")
                 passed += 1

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 import click
 from rich.console import Console
@@ -26,8 +26,8 @@ class StructuredError:
     suggestion: Optional[str] = None
     docs_url: Optional[str] = None
 
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"code": self.code, "message": self.message}
+    def to_dict(self) -> dict[str, object]:
+        d: dict[str, object] = {"code": self.code, "message": self.message}
         if self.location:
             d["location"] = self.location
         if self.suggestion:
@@ -45,8 +45,8 @@ class StructuredWarning:
     message: str
     location: Optional[str] = None
 
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"code": self.code, "message": self.message}
+    def to_dict(self) -> dict[str, object]:
+        d: dict[str, object] = {"code": self.code, "message": self.message}
         if self.location:
             d["location"] = self.location
         return d
@@ -58,11 +58,11 @@ class CommandResult:
 
     status: str = "ok"  # "ok" or "error"
     command: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, object] = field(default_factory=dict)
     errors: list[StructuredError] = field(default_factory=list)
     warnings: list[StructuredWarning] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "status": self.status,
             "command": self.command,
@@ -92,7 +92,7 @@ class OutputFormatter:
         """Set the command name for the result envelope."""
         self._result.command = command
 
-    def set_data(self, data: dict[str, Any]) -> None:
+    def set_data(self, data: dict[str, object]) -> None:
         """Set the data payload."""
         self._result.data = data
 

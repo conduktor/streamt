@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
@@ -308,7 +308,7 @@ class TopicConfig(BaseModel):
     name: Optional[str] = None
     partitions: Optional[int] = None
     replication_factor: Optional[int] = None
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, object] = Field(default_factory=dict)
 
 
 class FlinkJobConfig(BaseModel):
@@ -324,7 +324,7 @@ class SinkConfig(BaseModel):
     """Sink connector configuration."""
 
     connector: str
-    config: dict[str, Any] = Field(default_factory=dict)
+    config: dict[str, object] = Field(default_factory=dict)
 
 
 class MaskPolicy(BaseModel):
@@ -352,7 +352,7 @@ class SecurityPolicies(BaseModel):
     """Security policies for a model."""
 
     classification: dict[str, Classification] = Field(default_factory=dict)
-    policies: list[dict[str, Any]] = Field(default_factory=list)
+    policies: list[dict[str, object]] = Field(default_factory=list)
 
 
 class FromRef(BaseModel):
@@ -401,7 +401,7 @@ class Model(BaseModel):
     security: Optional[SecurityPolicies] = None
 
     # Optional: connector config (for sinks)
-    connector: Optional[dict[str, Any]] = None
+    connector: Optional[dict[str, object]] = None
     sink: Optional[SinkConfig] = None
 
     # Optional: Gateway config (for virtual topics)
@@ -621,7 +621,7 @@ class AcceptedValuesAssertion(BaseModel):
     """Accepted values assertion."""
 
     column: str
-    values: list[Any]
+    values: list[object]
 
 
 class AcceptedTypesAssertion(BaseModel):
@@ -683,7 +683,7 @@ class CustomSqlAssertion(BaseModel):
     """Custom SQL assertion."""
 
     sql: str
-    expect: Any
+    expect: object
 
 
 class AlertAction(BaseModel):
@@ -706,7 +706,7 @@ class OnFailure(BaseModel):
     """On failure configuration."""
 
     severity: Severity = Severity.ERROR
-    actions: list[dict[str, Any]] = Field(default_factory=list)
+    actions: list[dict[str, object]] = Field(default_factory=list)
 
 
 class DataTest(BaseModel):
@@ -715,7 +715,7 @@ class DataTest(BaseModel):
     name: str
     model: str
     type: DataTestType
-    assertions: list[dict[str, Any]] = Field(default_factory=list)
+    assertions: list[dict[str, object]] = Field(default_factory=list)
     sample_size: Optional[int] = None
     flink_cluster: Optional[str] = None
     on_failure: Optional[OnFailure] = None
@@ -781,7 +781,7 @@ class Exposure(BaseModel):
     access: Optional[AccessConfig] = None
     freshness: Optional[FreshnessConfig] = None
     schedule: Optional[str] = None
-    data_requirements: Optional[dict[str, Any]] = None
+    data_requirements: Optional[dict[str, object]] = None
 
 
 # ============================================================================

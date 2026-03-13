@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 
@@ -98,8 +98,8 @@ class ConnectDeployer:
         method: str,
         endpoint: str,
         timeout: int = DEFAULT_TIMEOUT,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> object:
         """Make a request to Connect REST API. Returns parsed JSON.
 
         Raises on HTTP errors.

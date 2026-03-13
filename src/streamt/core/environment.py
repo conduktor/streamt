@@ -13,7 +13,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import yaml
 from dotenv import dotenv_values
@@ -109,9 +109,9 @@ class EnvironmentConfig:
     """Complete environment configuration."""
 
     environment: EnvironmentInfo
-    runtime: dict[str, Any]
+    runtime: dict[str, object]
     safety: SafetyConfig = field(default_factory=SafetyConfig)
-    raw_data: dict[str, Any] = field(default_factory=dict)
+    raw_data: dict[str, object] = field(default_factory=dict)
 
 
 class EnvironmentManager:
@@ -308,7 +308,7 @@ class EnvironmentManager:
         env_config = self.load_environment(effective_env)
         return env_config, warnings
 
-    def check_project_runtime_warning(self, project_data: dict[str, Any]) -> str | None:
+    def check_project_runtime_warning(self, project_data: dict[str, object]) -> str | None:
         """Check if project has runtime: in multi-env mode (should warn)."""
         if self.mode == "multi" and "runtime" in project_data:
             return "runtime: in stream_project.yml is ignored in multi-environment mode"
@@ -337,7 +337,7 @@ _SECRET_FIELD_NAMES = {
 }
 
 
-def mask_secrets(value: Any, secret_keys: set[str] | None = None) -> Any:
+def mask_secrets(value: object, secret_keys: set[str] | None = None) -> object:
     """Recursively mask secret values in a dictionary.
 
     Only exact field names in the secret set are masked. File path fields

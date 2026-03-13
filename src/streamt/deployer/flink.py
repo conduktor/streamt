@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 
@@ -156,8 +156,8 @@ class FlinkDeployer:
         endpoint: str,
         use_sql_gateway: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> object:
         """Make a request to Flink API. Returns parsed JSON.
 
         Raises on HTTP errors.

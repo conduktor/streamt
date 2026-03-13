@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -56,7 +56,7 @@ def compile(
         manifest = compiler.compile(dry_run=dry_run)
 
         artifacts = manifest.artifacts
-        data: dict[str, Any] = {
+        data: dict[str, object] = {
             "dry_run": dry_run,
             "artifacts": {
                 "topics": [t["name"] for t in artifacts.get("topics", [])],

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -35,7 +35,7 @@ def list_resources(
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
-        items: list[dict[str, Any]] = []
+        items: list[dict[str, object]] = []
 
         if resource_type == "sources":
             for s in project.sources:

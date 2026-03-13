@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -43,8 +43,8 @@ class InterceptorState:
     name: str
     exists: bool
     plugin_class: Optional[str] = None
-    config: Optional[dict[str, Any]] = None
-    scope: Optional[dict[str, Any]] = None
+    config: Optional[dict[str, object]] = None
+    scope: Optional[dict[str, object]] = None
 
 
 @dataclass
@@ -65,7 +65,7 @@ class GatewayRuleChange:
     current_alias: Optional[AliasTopicState] = None
     current_interceptors: Optional[list[InterceptorState]] = None
     desired: Optional[GatewayRuleArtifact] = None
-    changes: Optional[dict[str, Any]] = None
+    changes: Optional[dict[str, object]] = None
 
 
 # Mapping from streamt interceptor types to Gateway plugin classes
@@ -137,10 +137,10 @@ class GatewayDeployer:
         self,
         method: str,
         endpoint: str,
-        json: Optional[dict[str, Any]] = None,
+        json: Optional[dict[str, object]] = None,
         params: Optional[dict[str, str]] = None,
         not_found_ok: bool = False,
-    ) -> Any:
+    ) -> object:
         """Make an authenticated request to the Gateway API. Returns parsed JSON.
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
@@ -189,12 +189,12 @@ class GatewayDeployer:
     # Interceptors
     # -------------------------------------------------------------------------
 
-    def list_interceptors(self) -> list[dict[str, Any]]:
+    def list_interceptors(self) -> list[dict[str, object]]:
         """List all interceptors."""
         data = self._request("GET", "/interceptor")
         return data if isinstance(data, list) else []
 
-    def get_interceptor(self, name: str) -> Optional[dict[str, Any]]:
+    def get_interceptor(self, name: str) -> Optional[dict[str, object]]:
         """Get a specific interceptor by name."""
         interceptors = self.list_interceptors()
         for interceptor in interceptors:
@@ -208,10 +208,10 @@ class GatewayDeployer:
         self,
         name: str,
         plugin_class: str,
-        config: dict[str, Any],
+        config: dict[str, object],
         vcluster: Optional[str] = None,
         priority: int = 100,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Create or update an interceptor using Gateway v2 API.
 
         Args:
@@ -225,19 +225,19 @@ class GatewayDeployer:
             The created/updated interceptor configuration
         """
         # Build scope
-        scope: dict[str, Any] = {}
+        scope: dict[str, object] = {}
         if vcluster:
             scope["vCluster"] = vcluster
         elif self.virtual_cluster:
             scope["vCluster"] = self.virtual_cluster
 
         # Build metadata
-        metadata: dict[str, Any] = {"name": name}
+        metadata: dict[str, object] = {"name": name}
         if scope:
             metadata["scope"] = scope
 
         # Build v2 API payload
-        payload: dict[str, Any] = {
+        payload: dict[str, object] = {
             "kind": "Interceptor",
             "apiVersion": "gateway/v2",
             "metadata": metadata,
@@ -264,12 +264,12 @@ class GatewayDeployer:
     # Alias Topics
     # -------------------------------------------------------------------------
 
-    def list_alias_topics(self) -> list[dict[str, Any]]:
+    def list_alias_topics(self) -> list[dict[str, object]]:
         """List all alias topic mappings."""
         data = self._request("GET", "/alias-topic")
         return data if isinstance(data, list) else []
 
-    def get_alias_topic(self, name: str) -> Optional[dict[str, Any]]:
+    def get_alias_topic(self, name: str) -> Optional[dict[str, object]]:
         """Get a specific alias topic by name."""
         aliases = self.list_alias_topics()
         for alias in aliases:
@@ -284,7 +284,7 @@ class GatewayDeployer:
         name: str,
         physical_topic: str,
         vcluster: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Create or update an alias topic mapping using Gateway v2 API.
 
         Args:
@@ -296,14 +296,14 @@ class GatewayDeployer:
             The created/updated alias configuration
         """
         # Build metadata
-        metadata: dict[str, Any] = {"name": name}
+        metadata: dict[str, object] = {"name": name}
         if vcluster:
             metadata["vCluster"] = vcluster
         elif self.virtual_cluster:
             metadata["vCluster"] = self.virtual_cluster
 
         # Build v2 API payload
-        payload: dict[str, Any] = {
+        payload: dict[str, object] = {
             "kind": "AliasTopic",
             "apiVersion": "gateway/v2",
             "metadata": metadata,
@@ -319,7 +319,7 @@ class GatewayDeployer:
     def delete_alias_topic(self, name: str, vcluster: Optional[str] = None) -> bool:
         """Delete an alias topic by name using request body (Gateway v2 format)."""
         # Gateway v2 uses DELETE with body, not path parameter
-        body: dict[str, Any] = {"name": name}
+        body: dict[str, object] = {"name": name}
         if vcluster:
             body["vCluster"] = vcluster
         elif self.virtual_cluster:
@@ -407,9 +407,9 @@ class GatewayDeployer:
     def _build_plugin_config(
         self,
         interceptor_type: str,
-        config: dict[str, Any],
+        config: dict[str, object],
         artifact: GatewayRuleArtifact,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Build plugin-specific configuration."""
         if interceptor_type == "filter":
             # VirtualSqlTopicPlugin config (Gateway v2)
@@ -481,7 +481,7 @@ class GatewayDeployer:
             alias_state.get("spec", {}).get("physicalName")
             or alias_state.get("physicalName")
         )
-        changes: dict[str, Any] = {}
+        changes: dict[str, object] = {}
         if current_physical != artifact.physical_topic:
             changes["physical_topic"] = {"from": current_physical, "to": artifact.physical_topic}
 
@@ -528,7 +528,7 @@ class GatewayDeployer:
             desired=artifact,
         )
 
-    def list_rules(self) -> list[dict[str, Any]]:
+    def list_rules(self) -> list[dict[str, object]]:
         """List all gateway rules (alias topics with their interceptors)."""
         aliases = self.list_alias_topics()
         interceptors = self.list_interceptors()

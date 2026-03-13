@@ -6,7 +6,6 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import yaml
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
@@ -140,7 +139,7 @@ class ProjectParser:
                 return candidate
         return None
 
-    def _load_yaml(self, path: Path) -> dict[str, Any]:
+    def _load_yaml(self, path: Path) -> dict[str, object]:
         """Load and parse a YAML file."""
         try:
             with open(path) as f:
@@ -149,7 +148,7 @@ class ProjectParser:
         except yaml.YAMLError as e:
             raise ParseError(f"YAML parse error in '{path}': {e}") from e
 
-    def _resolve_env_vars(self, value: Any) -> Any:
+    def _resolve_env_vars(self, value: object) -> object:
         """Recursively resolve environment variables in a value."""
         if isinstance(value, str):
             return self._resolve_env_var_string(value)
@@ -171,7 +170,7 @@ class ProjectParser:
 
         return self.ENV_VAR_PATTERN.sub(replace, value)
 
-    def _check_env_vars(self, value: Any) -> list[str]:
+    def _check_env_vars(self, value: object) -> list[str]:
         """Check which environment variables are used but not set."""
         missing = []
         if isinstance(value, str):
@@ -187,13 +186,13 @@ class ProjectParser:
                 missing.extend(self._check_env_vars(v))
         return missing
 
-    def _parse_project_info(self, data: dict[str, Any]) -> ProjectInfo:
+    def _parse_project_info(self, data: dict[str, object]) -> ProjectInfo:
         """Parse project info section."""
         if "project" not in data:
             raise ParseError("Missing 'project' section in stream_project.yml")
         return ProjectInfo(**data["project"])
 
-    def _parse_runtime(self, data: dict[str, Any]) -> RuntimeConfig:
+    def _parse_runtime(self, data: dict[str, object]) -> RuntimeConfig:
         """Parse runtime configuration.
 
         In multi-env mode, runtime comes from the environment file.
@@ -233,19 +232,19 @@ class ProjectParser:
         resolved = self._resolve_env_vars(runtime_data)
         return RuntimeConfig(**resolved)
 
-    def _parse_defaults(self, data: dict[str, Any]) -> Defaults | None:
+    def _parse_defaults(self, data: dict[str, object]) -> Defaults | None:
         """Parse defaults section."""
         if "defaults" not in data:
             return None
         return Defaults(**data["defaults"])
 
-    def _parse_rules(self, data: dict[str, Any]) -> Rules | None:
+    def _parse_rules(self, data: dict[str, object]) -> Rules | None:
         """Parse rules section."""
         if "rules" not in data:
             return None
         return Rules(**data["rules"])
 
-    def _parse_sources(self, data: dict[str, Any]) -> list[Source]:
+    def _parse_sources(self, data: dict[str, object]) -> list[Source]:
         """Parse sources from project file and sources/ directory."""
         sources = []
 
@@ -271,7 +270,7 @@ class ProjectParser:
 
         return sources
 
-    def _parse_models(self, data: dict[str, Any]) -> list[Model]:
+    def _parse_models(self, data: dict[str, object]) -> list[Model]:
         """Parse models from project file and models/ directory."""
         models = []
 
@@ -297,7 +296,7 @@ class ProjectParser:
 
         return models
 
-    def _parse_tests(self, data: dict[str, Any]) -> list[DataTest]:
+    def _parse_tests(self, data: dict[str, object]) -> list[DataTest]:
         """Parse tests from project file and tests/ directory."""
         tests = []
 
@@ -323,7 +322,7 @@ class ProjectParser:
 
         return tests
 
-    def _parse_exposures(self, data: dict[str, Any]) -> list[Exposure]:
+    def _parse_exposures(self, data: dict[str, object]) -> list[Exposure]:
         """Parse exposures from project file and exposures/ directory."""
         exposures = []
 

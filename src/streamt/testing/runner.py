@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from streamt.core.models import DataTest, DataTestType, StreamtProject
 
@@ -25,7 +25,7 @@ class TestRunner:
         self.project = project
         self._consumer = None
 
-    def run(self, tests: list[DataTest]) -> list[dict[str, Any]]:
+    def run(self, tests: list[DataTest]) -> list[dict[str, object]]:
         """Run a list of tests."""
         results = []
 
@@ -47,7 +47,7 @@ class TestRunner:
 
         return results
 
-    def _run_schema_test(self, test: DataTest) -> dict[str, Any]:
+    def _run_schema_test(self, test: DataTest) -> dict[str, object]:
         """Run a schema test.
 
         Schema tests validate that the data conforms to expected types
@@ -100,7 +100,7 @@ class TestRunner:
             "message": "Schema validation passed (structural check only)",
         }
 
-    def _run_sample_test(self, test: DataTest) -> dict[str, Any]:
+    def _run_sample_test(self, test: DataTest) -> dict[str, object]:
         """Run a sample test by consuming messages from Kafka."""
         errors = []
         warnings = []
@@ -178,7 +178,7 @@ class TestRunner:
             "warnings": warnings if warnings else None,
         }
 
-    def _run_continuous_test(self, test: DataTest) -> dict[str, Any]:
+    def _run_continuous_test(self, test: DataTest) -> dict[str, object]:
         """Check status of a continuous test (deployed as Flink job)."""
         from streamt.deployer.flink import FlinkDeployer
 
@@ -275,7 +275,7 @@ class TestRunner:
 
     def _run_assertion(
         self, assertion_type: str, config: dict, messages: list[dict]
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Run a single assertion against sampled messages."""
         if assertion_type == "not_null":
             return self._assert_not_null(config, messages)
@@ -291,7 +291,7 @@ class TestRunner:
                 "warnings": [f"Unknown assertion type '{assertion_type}' - skipped"],
             }
 
-    def _assert_not_null(self, config: dict, messages: list[dict]) -> dict[str, Any]:
+    def _assert_not_null(self, config: dict, messages: list[dict]) -> dict[str, object]:
         """Assert that specified columns are not null."""
         columns = config.get("columns", [])
         errors = []
@@ -312,7 +312,7 @@ class TestRunner:
 
     def _assert_accepted_values(
         self, config: dict, messages: list[dict]
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Assert that a column only contains accepted values."""
         column = config.get("column")
         accepted = set(config.get("values", []))
@@ -334,7 +334,7 @@ class TestRunner:
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_range(self, config: dict, messages: list[dict]) -> dict[str, Any]:
+    def _assert_range(self, config: dict, messages: list[dict]) -> dict[str, object]:
         """Assert that a column's values fall within a range."""
         column = config.get("column")
         min_val = config.get("min")
@@ -366,7 +366,7 @@ class TestRunner:
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_unique_key(self, config: dict, messages: list[dict]) -> dict[str, Any]:
+    def _assert_unique_key(self, config: dict, messages: list[dict]) -> dict[str, object]:
         """Assert that a key is unique within the sample."""
         key = config.get("key")
         tolerance = config.get("tolerance", 0.0)

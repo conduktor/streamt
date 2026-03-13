@@ -6,14 +6,14 @@ import fnmatch
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import click
 import yaml
 
 from streamt.cli.helpers import make_formatter
 from streamt.core.errors import ErrorCode
-from streamt.output import StructuredError
+from streamt.output import OutputFormatter, StructuredError
 
 INTERNAL_TOPIC_PREFIXES = ("__", "_schemas", "_confluent", "_streamt-connect-")
 
@@ -42,7 +42,7 @@ def _is_internal_topic(topic: str) -> bool:
     return any(topic.startswith(p) for p in INTERNAL_TOPIC_PREFIXES)
 
 
-def _avro_type_to_flink(avro_type: Any) -> str:
+def _avro_type_to_flink(avro_type: object) -> str:
     """Convert Avro type to Flink SQL type string."""
     if isinstance(avro_type, dict):
         logical = avro_type.get("logicalType")
@@ -135,7 +135,7 @@ def init(
         _init_scaffold(fmt, project_path, name, dry_run)
 
 
-def _init_scaffold(fmt: Any, project_path: Path, name: str, dry_run: bool) -> None:
+def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run: bool) -> None:
     """Create an empty project scaffold."""
     created_files = []
 
@@ -170,7 +170,7 @@ def _init_scaffold(fmt: Any, project_path: Path, name: str, dry_run: bool) -> No
 
 
 def _init_discover(
-    fmt: Any,
+    fmt: OutputFormatter,
     project_path: Path,
     name: str,
     kafka: Optional[str],
@@ -232,7 +232,7 @@ def _init_discover(
         state = kafka_deployer.get_topic_state(topic)
         source_name = _sanitize_name(topic)
 
-        source_def: dict[str, Any] = {
+        source_def: dict[str, object] = {
             "name": source_name,
             "topic": topic,
             "description": f"Discovered from Kafka ({state.partitions} partitions)",
@@ -269,7 +269,7 @@ def _init_discover(
         project_path.mkdir(parents=True, exist_ok=True)
 
         # Write stream_project.yml
-        config: dict[str, Any] = {
+        config: dict[str, object] = {
             "project": {"name": name, "version": "1.0.0"},
             "runtime": {"kafka": {"bootstrap_servers": kafka}},
         }

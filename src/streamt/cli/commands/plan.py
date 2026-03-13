@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -73,7 +73,7 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
             )
             deployment_plan = planner.plan()
 
-            changes: list[dict[str, Any]] = []
+            changes: list[dict[str, object]] = []
             for c in deployment_plan.schema_changes:
                 if c.action != "none":
                     changes.append({"type": "schema", "name": c.subject, "action": c.action, "changes": c.changes})

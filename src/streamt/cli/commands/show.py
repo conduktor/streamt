@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
 from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
+from streamt.core.dag import DAG
 from streamt.core.errors import ErrorCode
-from streamt.output import StructuredError
+from streamt.core.models import StreamtProject
+from streamt.output import OutputFormatter, StructuredError
 
 
 @click.command("show")
@@ -43,7 +45,7 @@ def show_resource(
         dag_builder = DAGBuilder(project)
         dag = dag_builder.build()
 
-        data: dict[str, Any] = {"resource_type": resource_type, "name": name}
+        data: dict[str, object] = {"resource_type": resource_type, "name": name}
 
         if resource_type == "source":
             _show_source(project, dag, name, data, fmt)
@@ -61,7 +63,7 @@ def show_resource(
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
 
 
-def _not_found(fmt: Any, code: str, resource_type: str, name: str, available: list[str]) -> None:
+def _not_found(fmt: OutputFormatter, code: str, resource_type: str, name: str, available: list[str]) -> None:
     """Emit not-found error and exit."""
     fmt.add_error(StructuredError(
         code=code, message=f"{resource_type.capitalize()} '{name}' not found",
@@ -72,7 +74,7 @@ def _not_found(fmt: Any, code: str, resource_type: str, name: str, available: li
     sys.exit(1)
 
 
-def _show_source(project: Any, dag: Any, name: str, data: dict, fmt: Any) -> None:
+def _show_source(project: StreamtProject, dag: DAG, name: str, data: dict[str, object], fmt: OutputFormatter) -> None:
     source = project.get_source(name)
     if not source:
         _not_found(fmt, ErrorCode.SOURCE_NOT_FOUND, "source", name, [s.name for s in project.sources])
@@ -101,7 +103,7 @@ def _show_source(project: Any, dag: Any, name: str, data: dict, fmt: Any) -> Non
         fmt.print(f"  Downstream: {', '.join(sorted(node.downstream))}")
 
 
-def _show_model(project: Any, dag: Any, name: str, data: dict, fmt: Any) -> None:
+def _show_model(project: StreamtProject, dag: DAG, name: str, data: dict[str, object], fmt: OutputFormatter) -> None:
     model = project.get_model(name)
     if not model:
         _not_found(fmt, ErrorCode.MODEL_NOT_FOUND, "model", name, [m.name for m in project.models])
@@ -150,7 +152,7 @@ def _show_model(project: Any, dag: Any, name: str, data: dict, fmt: Any) -> None
         fmt.print(f"  SQL: {snippet}{'...' if len(model.sql.strip()) > 120 else ''}")
 
 
-def _show_test(project: Any, name: str, data: dict, fmt: Any) -> None:
+def _show_test(project: StreamtProject, name: str, data: dict[str, object], fmt: OutputFormatter) -> None:
     test_obj = project.get_test(name)
     if not test_obj:
         _not_found(fmt, ErrorCode.TEST_MODEL_NOT_FOUND, "test", name, [t.name for t in project.tests])
@@ -167,7 +169,7 @@ def _show_test(project: Any, name: str, data: dict, fmt: Any) -> None:
     fmt.print(f"  Assertions: {len(test_obj.assertions)}")
 
 
-def _show_exposure(project: Any, name: str, data: dict, fmt: Any) -> None:
+def _show_exposure(project: StreamtProject, name: str, data: dict[str, object], fmt: OutputFormatter) -> None:
     exposure = project.get_exposure(name)
     if not exposure:
         _not_found(fmt, ErrorCode.EXPOSURE_MODEL_NOT_FOUND, "exposure", name, [e.name for e in project.exposures])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 
@@ -27,7 +27,7 @@ class SchemaState:
     exists: bool
     version: Optional[int] = None
     schema_id: Optional[int] = None
-    schema: Optional[dict[str, Any]] = None
+    schema: Optional[dict[str, object]] = None
     schema_type: Optional[str] = None
     compatibility: Optional[str] = None
 
@@ -40,7 +40,7 @@ class SchemaChange:
     action: str  # register, update, delete, none
     current: Optional[SchemaState] = None
     desired: Optional[SchemaArtifact] = None
-    changes: Optional[dict[str, Any]] = None
+    changes: Optional[dict[str, object]] = None
 
     def __post_init__(self) -> None:
         if self.changes is None:
@@ -102,8 +102,8 @@ class SchemaRegistryDeployer:
         path: str,
         timeout: int = DEFAULT_TIMEOUT,
         not_found_ok: bool = False,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> object:
         """Make a request to Schema Registry. Returns parsed JSON.
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
@@ -157,7 +157,7 @@ class SchemaRegistryDeployer:
     def register_schema(
         self,
         subject: str,
-        schema: dict[str, Any],
+        schema: dict[str, object],
         schema_type: str = "AVRO",
     ) -> int:
         """Register a schema and return the schema ID."""
@@ -175,7 +175,7 @@ class SchemaRegistryDeployer:
     def check_compatibility(
         self,
         subject: str,
-        schema: dict[str, Any],
+        schema: dict[str, object],
         schema_type: str = "AVRO",
     ) -> bool:
         """Check if a schema is compatible with existing versions."""
@@ -214,7 +214,7 @@ class SchemaRegistryDeployer:
             )
 
         # Check for changes
-        changes: dict[str, Any] = {}
+        changes: dict[str, object] = {}
 
         # Compare schemas (normalize for comparison)
         current_schema_str = json.dumps(current.schema, sort_keys=True)
@@ -306,7 +306,7 @@ class SchemaRegistryDeployer:
         """Alias for apply_schema."""
         return self.apply_schema(artifact)
 
-    def compute_diff(self, artifact: SchemaArtifact) -> dict[str, Any]:
+    def compute_diff(self, artifact: SchemaArtifact) -> dict[str, object]:
         """Compute diff between current and desired state."""
         change = self.plan_schema(artifact)
         return change.changes or {}

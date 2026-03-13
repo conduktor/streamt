@@ -6,14 +6,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

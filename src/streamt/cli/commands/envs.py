@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
@@ -41,11 +41,11 @@ def envs_list(ctx: click.Context, project_dir: Optional[str]) -> None:
         fmt.flush()
         return
 
-    env_list: list[dict[str, Any]] = []
+    env_list: list[dict[str, object]] = []
     for env_name in environments:
         try:
             env_config = env_manager.load_environment(env_name)
-            entry: dict[str, Any] = {
+            entry: dict[str, object] = {
                 "name": env_name,
                 "description": env_config.environment.description,
                 "protected": env_config.environment.protected,
@@ -87,7 +87,7 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
         env_config = env_manager.load_environment(name)
         masked_runtime = mask_secrets(env_config.runtime)
 
-        data: dict[str, Any] = {
+        data: dict[str, object] = {
             "name": env_config.environment.name,
             "description": env_config.environment.description,
             "protected": env_config.environment.protected,
