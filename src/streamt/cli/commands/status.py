@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import fnmatch
 import json
-from typing import Optional
+from contextlib import contextmanager
+from typing import Generator, Optional
 
 import click
 
@@ -20,7 +21,18 @@ from streamt.cli.helpers import (
     make_sr_deployer,
 )
 from streamt.core.errors import ErrorCode
-from streamt.output import StructuredError, get_output_format_from_context
+from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
+
+
+@contextmanager
+def _deployer_section(fmt: OutputFormatter, is_text: bool, service: str) -> Generator[None, None, None]:
+    """Catch and report deployer errors uniformly across status sections."""
+    try:
+        yield
+    except Exception as e:
+        fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"{service}: {e}"))
+        if is_text:
+            fmt.print(f"  [yellow]Cannot connect to {service}: {e}[/yellow]")
 
 
 @click.command()
@@ -74,7 +86,7 @@ def status(
             sd = make_sr_deployer(project, fmt)
             if sd:
                 deployers_to_close.append(sd)
-                try:
+                with _deployer_section(fmt, is_text, "Schema Registry"):
                     for s in manifest.artifacts["schemas"]:
                         if not matches(s["subject"]):
                             continue
@@ -88,10 +100,6 @@ def status(
                                 fmt.print(f"  [green]OK[/green] {s['subject']} (v{state.version}, {state.schema_type})")
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {s['subject']}")
-                except Exception as e:
-                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Schema Registry: {e}"))
-                    if is_text:
-                        fmt.print(f"  [yellow]Cannot connect to Schema Registry: {e}[/yellow]")
             elif is_text:
                 fmt.print("  [yellow]No Schema Registry configured[/yellow]")
 
@@ -101,7 +109,7 @@ def status(
         kd = make_kafka_deployer(project, fmt)
         if kd:
             deployers_to_close.append(kd)
-            try:
+            with _deployer_section(fmt, is_text, "Kafka"):
                 for t in manifest.artifacts.get("topics", []):
                     if not matches(t["name"]):
                         continue
@@ -111,7 +119,6 @@ def status(
                              "replication_factor": state.replication_factor if state.exists else None}
                     if lag and state.exists:
                         entry["message_count"] = kd.get_topic_message_count(t["name"])
-                    # Check for drift between desired and actual state
                     drifts: list[dict[str, object]] = []
                     if state.exists:
                         desired_p = t.get("partitions")
@@ -139,10 +146,6 @@ def status(
                             fmt.print(line)
                         else:
                             fmt.print(f"  [red]MISSING[/red] {t['name']}")
-            except Exception as e:
-                fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Kafka: {e}"))
-                if is_text:
-                    fmt.print(f"  [yellow]Cannot connect to Kafka: {e}[/yellow]")
 
         # Flink jobs
         if manifest.artifacts.get("flink_jobs"):
@@ -151,7 +154,7 @@ def status(
             fd = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
             if fd:
                 deployers_to_close.append(fd)
-                try:
+                with _deployer_section(fmt, is_text, "Flink"):
                     for j in manifest.artifacts["flink_jobs"]:
                         if not matches(j["name"]):
                             continue
@@ -166,10 +169,6 @@ def status(
                                 fmt.print(f"  [{color}]{state.status}[/{color}] {j['name']}")
                             else:
                                 fmt.print(f"  [red]NOT FOUND[/red] {j['name']}")
-                except Exception as e:
-                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Flink: {e}"))
-                    if is_text:
-                        fmt.print(f"  [yellow]Cannot connect to Flink: {e}[/yellow]")
             elif is_text:
                 fmt.print("  [yellow]No Flink configured[/yellow]")
 
@@ -180,7 +179,7 @@ def status(
             cd = make_connect_deployer(project, fmt)
             if cd:
                 deployers_to_close.append(cd)
-                try:
+                with _deployer_section(fmt, is_text, "Connect"):
                     for c in manifest.artifacts["connectors"]:
                         if not matches(c["name"]):
                             continue
@@ -194,10 +193,6 @@ def status(
                                 fmt.print(f"  [{color}]{state.status}[/{color}] {c['name']}")
                             else:
                                 fmt.print(f"  [red]NOT FOUND[/red] {c['name']}")
-                except Exception as e:
-                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Connect: {e}"))
-                    if is_text:
-                        fmt.print(f"  [yellow]Cannot connect to Connect: {e}[/yellow]")
             elif is_text:
                 fmt.print("  [yellow]No Connect configured[/yellow]")
 
@@ -208,7 +203,7 @@ def status(
             gd = make_gateway_deployer(project, fmt)
             if gd:
                 deployers_to_close.append(gd)
-                try:
+                with _deployer_section(fmt, is_text, "Gateway"):
                     for r in manifest.artifacts["gateway_rules"]:
                         if not matches(r["name"]):
                             continue
@@ -219,14 +214,12 @@ def status(
                             "virtual_topic": r["virtualTopic"],
                             "physical_topic": r["physicalTopic"],
                         }
-                        # Check interceptors
                         desired_interceptors = r.get("interceptors", [])
                         if exists and desired_interceptors:
-                            found = 0
-                            for ic in desired_interceptors:
-                                ic_name = ic.get("name", "")
-                                if ic_name and gd.get_interceptor(ic_name):
-                                    found += 1
+                            found = sum(
+                                1 for ic in desired_interceptors
+                                if ic.get("name") and gd.get_interceptor(ic["name"])
+                            )
                             entry["interceptors_desired"] = len(desired_interceptors)
                             entry["interceptors_found"] = found
                         data["gateway_rules"].append(entry)
@@ -238,10 +231,6 @@ def status(
                                 fmt.print(f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']}{ic_info})")
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {r['name']}")
-                except Exception as e:
-                    fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Gateway: {e}"))
-                    if is_text:
-                        fmt.print(f"  [yellow]Cannot connect to Gateway: {e}[/yellow]")
             elif is_text:
                 fmt.print("  [yellow]No Gateway configured[/yellow]")
 
