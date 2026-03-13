@@ -112,20 +112,26 @@ def status(
                     if lag and state.exists:
                         entry["message_count"] = kd.get_topic_message_count(t["name"])
                     # Check for drift between desired and actual state
-                    drift: list[str] = []
+                    drifts: list[dict[str, object]] = []
                     if state.exists:
                         desired_p = t.get("partitions")
                         desired_rf = t.get("replication_factor")
                         if desired_p is not None and state.partitions != desired_p:
-                            drift.append(f"partitions: {state.partitions} (expected {desired_p})")
+                            drifts.append({"field": "partitions", "actual": state.partitions, "desired": desired_p})
                         if desired_rf is not None and state.replication_factor != desired_rf:
-                            drift.append(f"rf: {state.replication_factor} (expected {desired_rf})")
-                    if drift:
-                        entry["drift"] = drift
+                            drifts.append({"field": "replication_factor", "actual": state.replication_factor, "desired": desired_rf})
+                    if drifts:
+                        entry["status"] = "DRIFT"
+                        entry["drifts"] = drifts
+                    elif state.exists:
+                        entry["status"] = "OK"
+                    else:
+                        entry["status"] = "MISSING"
                     data["topics"].append(entry)
                     if is_text:
-                        if state.exists and drift:
-                            fmt.print(f"  [yellow]DRIFT[/yellow] {t['name']} - {', '.join(drift)}")
+                        if state.exists and drifts:
+                            drift_parts = [f"{d['field']}: {d['actual']} → {d['desired']}" for d in drifts]
+                            fmt.print(f"  [yellow]DRIFT[/yellow] {t['name']}  {', '.join(drift_parts)}")
                         elif state.exists:
                             line = f"  [green]OK[/green] {t['name']} (partitions: {state.partitions}, rf: {state.replication_factor})"
                             if "message_count" in entry:
@@ -142,7 +148,7 @@ def status(
         if manifest.artifacts.get("flink_jobs"):
             if is_text:
                 fmt.print("\n[cyan]Flink Jobs:[/cyan]")
-            fd = make_flink_deployer(project, fmt)
+            fd = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
             if fd:
                 deployers_to_close.append(fd)
                 try:

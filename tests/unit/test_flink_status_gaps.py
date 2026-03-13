@@ -28,6 +28,58 @@ from streamt.deployer.schema_registry import SchemaRegistryDeployer
 # ===========================================================================
 
 
+class TestFlinkHashPersistence:
+    """SQL hashes should persist across deployer instances."""
+
+    def test_hashes_persist_across_instances(self, tmp_path):
+        state_dir = tmp_path / ".streamt"
+        d1 = FlinkDeployer.__new__(FlinkDeployer)
+        d1.rest_url = "http://localhost:8082"
+        d1.sql_gateway_url = None
+        d1._http_session = MagicMock()
+        d1._state_dir = state_dir
+        d1._sql_hashes = {}
+        d1._load_hashes()
+        d1.set_sql_hash("job1", "SELECT id FROM source")
+
+        # New instance should load the saved hash
+        d2 = FlinkDeployer.__new__(FlinkDeployer)
+        d2.rest_url = "http://localhost:8082"
+        d2.sql_gateway_url = None
+        d2._http_session = MagicMock()
+        d2._state_dir = state_dir
+        d2._sql_hashes = {}
+        d2._load_hashes()
+        assert d2._sql_hashes == d1._sql_hashes
+
+    def test_missing_state_dir_starts_empty(self, tmp_path):
+        state_dir = tmp_path / "nonexistent" / ".streamt"
+        d = FlinkDeployer.__new__(FlinkDeployer)
+        d._state_dir = state_dir
+        d._sql_hashes = {}
+        d._load_hashes()
+        assert d._sql_hashes == {}
+
+    def test_corrupt_file_starts_empty(self, tmp_path):
+        state_dir = tmp_path / ".streamt"
+        state_dir.mkdir()
+        (state_dir / "flink_hashes.json").write_text("NOT VALID JSON{{{")
+
+        d = FlinkDeployer.__new__(FlinkDeployer)
+        d._state_dir = state_dir
+        d._sql_hashes = {}
+        d._load_hashes()
+        assert d._sql_hashes == {}
+
+    def test_no_state_dir_skips_persistence(self):
+        d = FlinkDeployer.__new__(FlinkDeployer)
+        d._state_dir = None
+        d._sql_hashes = {}
+        d._load_hashes()  # No error
+        d._save_hashes()  # No error
+        assert d._sql_hashes == {}
+
+
 class TestFlinkJobSqlChangeDetection:
     """plan_job() should detect when a RUNNING job's SQL has changed."""
 
@@ -37,6 +89,7 @@ class TestFlinkJobSqlChangeDetection:
         d.rest_url = "http://localhost:8082"
         d.sql_gateway_url = None
         d._http_session = MagicMock()
+        d._state_dir = None
         d._sql_hashes = {}
         return d
 
@@ -152,7 +205,8 @@ class TestStatusDesiredState:
             mock_compiler.return_value.compile.return_value = manifest
 
             result = runner.invoke(main, ["status", "-p", str(tmp_path)])
-            assert "DRIFT" in result.output or "mismatch" in result.output.lower()
+            assert "DRIFT" in result.output
+            assert "partitions: 3 → 6" in result.output
 
 
 # ===========================================================================

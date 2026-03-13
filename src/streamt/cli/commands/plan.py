@@ -59,7 +59,7 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         # Create deployers
         sr_deployer = make_sr_deployer(project, fmt)
         kafka_deployer = make_kafka_deployer(project, fmt)
-        flink_deployer = make_flink_deployer(project, fmt)
+        flink_deployer = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
         connect_deployer = make_connect_deployer(project, fmt)
         gateway_deployer = make_gateway_deployer(project, fmt)
         try:

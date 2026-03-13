@@ -110,7 +110,7 @@ def apply(
         # Create deployers
         sr = make_sr_deployer(project, fmt)
         kafka = make_kafka_deployer(project, fmt)
-        flink = make_flink_deployer(project, fmt)
+        flink = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
         connect = make_connect_deployer(project, fmt)
         gateway = make_gateway_deployer(project, fmt)
         try:

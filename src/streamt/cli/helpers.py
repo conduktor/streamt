@@ -133,7 +133,11 @@ def make_sr_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[
     return None
 
 
-def make_flink_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[FlinkDeployer]:
+def make_flink_deployer(
+    project: StreamtProject,
+    fmt: OutputFormatter,
+    state_dir: Optional[Path] = None,
+) -> Optional[FlinkDeployer]:
     """Create FlinkDeployer from project config. Returns None on failure."""
     from streamt.deployer.flink import FlinkDeployer
     if project.runtime.flink and project.runtime.flink.clusters:
@@ -154,6 +158,7 @@ def make_flink_deployer(project: StreamtProject, fmt: OutputFormatter) -> Option
                         ssl_key_password=_resolve_secret(cfg.ssl_key_password),
                         version=cfg.version,
                         environment=cfg.environment,
+                        state_dir=state_dir,
                     )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Flink")

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import logging
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -107,6 +110,7 @@ class FlinkDeployer:
         ssl_key_password: Optional[str] = None,
         version: Optional[str] = None,
         environment: Optional[str] = None,
+        state_dir: Optional[Path] = None,
     ) -> None:
         """Initialize Flink deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
@@ -116,7 +120,9 @@ class FlinkDeployer:
         self.version = version
         self.environment = environment
         self.session_id: Optional[str] = None
+        self._state_dir = state_dir
         self._sql_hashes: dict[str, str] = {}
+        self._load_hashes()
         self._http_session = requests.Session()
         if username and password:
             self._http_session.auth = (username, password)
@@ -399,9 +405,49 @@ class FlinkDeployer:
         """Compute a short hash of SQL for change detection."""
         return hashlib.sha256(sql.encode()).hexdigest()[:16]
 
+    @property
+    def _hashes_file(self) -> Optional[Path]:
+        """Path to the hashes persistence file, or None if no state_dir."""
+        if self._state_dir is None:
+            return None
+        return self._state_dir / "flink_hashes.json"
+
+    def _load_hashes(self) -> None:
+        """Load SQL hashes from state file if available."""
+        path = self._hashes_file
+        if path is None or not path.exists():
+            return
+        try:
+            data = _json.loads(path.read_text())
+            if isinstance(data, dict):
+                self._sql_hashes.update(data)
+        except Exception:
+            logger.warning("Corrupt state file %s — starting with empty hashes", path)
+
+    def _save_hashes(self) -> None:
+        """Persist SQL hashes to state file (atomic write)."""
+        path = self._hashes_file
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, suffix=".tmp", delete=False,
+        )
+        try:
+            _json.dump(self._sql_hashes, fd)
+            fd.close()
+            Path(fd.name).replace(path)
+        except Exception:
+            logger.debug("Failed to save hashes to %s", path)
+            try:
+                Path(fd.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def set_sql_hash(self, job_name: str, sql: str) -> None:
         """Record the SQL hash for a job (used to seed state from a prior deploy)."""
         self._sql_hashes[job_name] = self._sql_hash(sql)
+        self._save_hashes()
 
     def plan_job(self, artifact: FlinkJobArtifact) -> FlinkJobChange:
         """Plan changes for a Flink job."""
@@ -455,6 +501,7 @@ class FlinkDeployer:
         if change.action == "submit":
             self.submit_sql(artifact.sql)
             self._sql_hashes[artifact.name] = self._sql_hash(artifact.sql)
+            self._save_hashes()
             return "submitted"
         elif change.action == "update":
             # Cancel the running job, then re-submit with new SQL
@@ -462,6 +509,7 @@ class FlinkDeployer:
                 self.cancel_job(change.current.job_id)
             self.submit_sql(artifact.sql)
             self._sql_hashes[artifact.name] = self._sql_hash(artifact.sql)
+            self._save_hashes()
             return "submitted"
         elif change.action == "cancel":
             if change.current and change.current.job_id:
