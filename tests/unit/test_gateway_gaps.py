@@ -29,6 +29,7 @@ class TestGatewayInterceptorChangeDetection:
     def deployer(self):
         d = GatewayDeployer.__new__(GatewayDeployer)
         d.admin_url = "http://gw:8888"
+        d._api_base = "/gateway/v2"
         d.auth = None
         d.virtual_cluster = None
         d._session = MagicMock()
@@ -116,6 +117,7 @@ class TestGatewayInterceptorOrphaning:
     def deployer(self):
         d = GatewayDeployer.__new__(GatewayDeployer)
         d.admin_url = "http://gw:8888"
+        d._api_base = "/gateway/v2"
         d.auth = None
         d.virtual_cluster = None
         d._session = MagicMock()
@@ -173,6 +175,7 @@ class TestGatewayPartialFailure:
     def deployer(self):
         d = GatewayDeployer.__new__(GatewayDeployer)
         d.admin_url = "http://gw:8888"
+        d._api_base = "/gateway/v2"
         d.auth = None
         d.virtual_cluster = None
         d._session = MagicMock()
@@ -209,6 +212,7 @@ class TestGatewayApplyHappyPath:
     def deployer(self):
         d = GatewayDeployer.__new__(GatewayDeployer)
         d.admin_url = "http://gw:8888"
+        d._api_base = "/gateway/v2"
         d.auth = None
         d.virtual_cluster = None
         d._session = MagicMock()

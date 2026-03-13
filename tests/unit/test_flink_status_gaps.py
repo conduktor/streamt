@@ -167,6 +167,7 @@ class TestRetryLogic:
         """Gateway _request retries on ConnectionError then succeeds."""
         deployer = GatewayDeployer.__new__(GatewayDeployer)
         deployer.admin_url = "http://gw:8888"
+        deployer._api_base = "/gateway/v2"
         deployer.auth = None
         deployer.virtual_cluster = None
         deployer._session = MagicMock()

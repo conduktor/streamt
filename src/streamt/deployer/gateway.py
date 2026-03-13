@@ -105,9 +105,11 @@ class GatewayDeployer:
         ssl_certificate_location: Optional[str] = None,
         ssl_key_location: Optional[str] = None,
         ssl_key_password: Optional[str] = None,
+        api_version: str = "v2",
     ) -> None:
         """Initialize Gateway deployer."""
         self.admin_url = admin_url.rstrip("/")
+        self._api_base = f"/gateway/{api_version}"
         self.auth = HTTPBasicAuth(username, password) if username and password else None
         self.virtual_cluster = virtual_cluster
         self._session = requests.Session()
@@ -146,7 +148,7 @@ class GatewayDeployer:
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
-        url = f"{self.admin_url}/gateway/v2{endpoint}"
+        url = f"{self.admin_url}{self._api_base}{endpoint}"
 
         last_err: Optional[requests.ConnectionError] = None
         for attempt in range(3):
