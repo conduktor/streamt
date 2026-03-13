@@ -100,7 +100,7 @@ class ConnectDeployer:
         endpoint: str,
         timeout: int = DEFAULT_TIMEOUT,
         **kwargs: object,
-    ) -> object:
+    ) -> dict | list | None:
         """Make a request to Connect REST API. Returns parsed JSON.
 
         Raises on HTTP errors.

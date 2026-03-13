@@ -141,7 +141,7 @@ class GatewayDeployer:
         json: Optional[dict[str, object]] = None,
         params: Optional[dict[str, str]] = None,
         not_found_ok: bool = False,
-    ) -> object:
+    ) -> dict | list | None:
         """Make an authenticated request to the Gateway API. Returns parsed JSON.
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.

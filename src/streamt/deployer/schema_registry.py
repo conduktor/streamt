@@ -104,7 +104,7 @@ class SchemaRegistryDeployer:
         timeout: int = DEFAULT_TIMEOUT,
         not_found_ok: bool = False,
         **kwargs: object,
-    ) -> object:
+    ) -> dict | list | None:
         """Make a request to Schema Registry. Returns parsed JSON.
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.

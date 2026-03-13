@@ -161,7 +161,7 @@ class FlinkDeployer:
         use_sql_gateway: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
         **kwargs: object,
-    ) -> object:
+    ) -> dict | list | None:
         """Make a request to Flink API. Returns parsed JSON.
 
         Raises on HTTP errors.
