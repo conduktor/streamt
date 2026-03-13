@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import click
 
@@ -134,36 +134,46 @@ def check_required_deployers(
     return ok
 
 
+def _try_create_deployer(create_fn: Callable, fmt: OutputFormatter, service: str) -> Optional[Any]:
+    """Run create_fn(), warn on failure, return None on exception."""
+    try:
+        return create_fn()
+    except Exception as e:
+        _warn_deployer_error(fmt, e, service)
+    return None
+
+
 def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[KafkaDeployer]:
     """Create KafkaDeployer from project config. Returns None on failure."""
     from streamt.deployer.kafka import KafkaDeployer
-    try:
-        confluent_config = project.runtime.kafka.to_confluent_config()
-        bootstrap = confluent_config.pop("bootstrap.servers")
-        return KafkaDeployer(bootstrap, **confluent_config)
-    except Exception as e:
-        _warn_deployer_error(fmt, e, "Kafka")
-    return None
+
+    def _create() -> KafkaDeployer:
+        cfg = project.runtime.kafka.to_confluent_config()
+        bootstrap = cfg.pop("bootstrap.servers")
+        return KafkaDeployer(bootstrap, **cfg)
+
+    return _try_create_deployer(_create, fmt, "Kafka")
 
 
 def make_sr_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[SchemaRegistryDeployer]:
     """Create SchemaRegistryDeployer from project config. Returns None on failure."""
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
-    if project.runtime.schema_registry:
-        try:
-            sr = project.runtime.schema_registry
-            return SchemaRegistryDeployer(
-                sr.url,
-                username=sr.username,
-                password=_resolve_secret(sr.password),
-                ssl_ca_location=sr.ssl_ca_location,
-                ssl_certificate_location=sr.ssl_certificate_location,
-                ssl_key_location=sr.ssl_key_location,
-                ssl_key_password=_resolve_secret(sr.ssl_key_password),
-            )
-        except Exception as e:
-            _warn_deployer_error(fmt, e, "Schema Registry")
-    return None
+    if not project.runtime.schema_registry:
+        return None
+    sr = project.runtime.schema_registry
+
+    def _create() -> SchemaRegistryDeployer:
+        return SchemaRegistryDeployer(
+            sr.url,
+            username=sr.username,
+            password=_resolve_secret(sr.password),
+            ssl_ca_location=sr.ssl_ca_location,
+            ssl_certificate_location=sr.ssl_certificate_location,
+            ssl_key_location=sr.ssl_key_location,
+            ssl_key_password=_resolve_secret(sr.ssl_key_password),
+        )
+
+    return _try_create_deployer(_create, fmt, "Schema Registry")
 
 
 def make_flink_deployer(
@@ -173,73 +183,80 @@ def make_flink_deployer(
 ) -> Optional[FlinkDeployer]:
     """Create FlinkDeployer from project config. Returns None on failure."""
     from streamt.deployer.flink import FlinkDeployer
-    if project.runtime.flink and project.runtime.flink.clusters:
-        try:
-            default = project.runtime.flink.default
-            if default and default in project.runtime.flink.clusters:
-                cfg = project.runtime.flink.clusters[default]
-                if cfg.rest_url:
-                    return FlinkDeployer(
-                        rest_url=cfg.rest_url,
-                        sql_gateway_url=cfg.sql_gateway_url,
-                        username=cfg.username,
-                        password=_resolve_secret(cfg.password),
-                        api_key=_resolve_secret(cfg.api_key),
-                        ssl_ca_location=cfg.ssl_ca_location,
-                        ssl_certificate_location=cfg.ssl_certificate_location,
-                        ssl_key_location=cfg.ssl_key_location,
-                        ssl_key_password=_resolve_secret(cfg.ssl_key_password),
-                        version=cfg.version,
-                        environment=cfg.environment,
-                        state_dir=state_dir,
-                        timeout=cfg.timeout,
-                        retries=cfg.retries,
-                        statement_timeout=cfg.statement_timeout,
-                    )
-        except Exception as e:
-            _warn_deployer_error(fmt, e, "Flink")
-    return None
+    if not (project.runtime.flink and project.runtime.flink.clusters):
+        return None
+    default = project.runtime.flink.default
+    if not (default and default in project.runtime.flink.clusters):
+        return None
+    cfg = project.runtime.flink.clusters[default]
+    if not cfg.rest_url:
+        return None
+
+    def _create() -> FlinkDeployer:
+        return FlinkDeployer(
+            rest_url=cfg.rest_url,
+            sql_gateway_url=cfg.sql_gateway_url,
+            username=cfg.username,
+            password=_resolve_secret(cfg.password),
+            api_key=_resolve_secret(cfg.api_key),
+            ssl_ca_location=cfg.ssl_ca_location,
+            ssl_certificate_location=cfg.ssl_certificate_location,
+            ssl_key_location=cfg.ssl_key_location,
+            ssl_key_password=_resolve_secret(cfg.ssl_key_password),
+            version=cfg.version,
+            environment=cfg.environment,
+            state_dir=state_dir,
+            timeout=cfg.timeout,
+            retries=cfg.retries,
+            statement_timeout=cfg.statement_timeout,
+        )
+
+    return _try_create_deployer(_create, fmt, "Flink")
 
 
 def make_gateway_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[GatewayDeployer]:
     """Create GatewayDeployer from project config. Returns None on failure."""
     from streamt.deployer.gateway import GatewayDeployer
-    if project.runtime.conduktor and project.runtime.conduktor.gateway:
-        try:
-            gw = project.runtime.conduktor.gateway
-            if gw.admin_url:
-                return GatewayDeployer(
-                    gw.admin_url,
-                    username=gw.username,
-                    password=_resolve_secret(gw.password),
-                    virtual_cluster=gw.virtual_cluster,
-                    ssl_ca_location=gw.ssl_ca_location,
-                    ssl_certificate_location=gw.ssl_certificate_location,
-                    ssl_key_location=gw.ssl_key_location,
-                    ssl_key_password=_resolve_secret(gw.ssl_key_password),
-                )
-        except Exception as e:
-            _warn_deployer_error(fmt, e, "Conduktor Gateway")
-    return None
+    if not (project.runtime.conduktor and project.runtime.conduktor.gateway):
+        return None
+    gw = project.runtime.conduktor.gateway
+    if not gw.admin_url:
+        return None
+
+    def _create() -> GatewayDeployer:
+        return GatewayDeployer(
+            gw.admin_url,
+            username=gw.username,
+            password=_resolve_secret(gw.password),
+            virtual_cluster=gw.virtual_cluster,
+            ssl_ca_location=gw.ssl_ca_location,
+            ssl_certificate_location=gw.ssl_certificate_location,
+            ssl_key_location=gw.ssl_key_location,
+            ssl_key_password=_resolve_secret(gw.ssl_key_password),
+        )
+
+    return _try_create_deployer(_create, fmt, "Conduktor Gateway")
 
 
 def make_connect_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[ConnectDeployer]:
     """Create ConnectDeployer from project config. Returns None on failure."""
     from streamt.deployer.connect import ConnectDeployer
-    if project.runtime.connect and project.runtime.connect.clusters:
-        try:
-            default = project.runtime.connect.default
-            if default and default in project.runtime.connect.clusters:
-                cfg = project.runtime.connect.clusters[default]
-                return ConnectDeployer(
-                    cfg.rest_url,
-                    username=cfg.username,
-                    password=_resolve_secret(cfg.password),
-                    ssl_ca_location=cfg.ssl_ca_location,
-                    ssl_certificate_location=cfg.ssl_certificate_location,
-                    ssl_key_location=cfg.ssl_key_location,
-                    ssl_key_password=_resolve_secret(cfg.ssl_key_password),
-                )
-        except Exception as e:
-            _warn_deployer_error(fmt, e, "Kafka Connect")
-    return None
+    if not (project.runtime.connect and project.runtime.connect.clusters):
+        return None
+    default = project.runtime.connect.default
+    if not (default and default in project.runtime.connect.clusters):
+        return None
+    cfg = project.runtime.connect.clusters[default]
+
+    def _create() -> ConnectDeployer:
+        return ConnectDeployer(
+            cfg.rest_url,
+            username=cfg.username,
+            password=_resolve_secret(cfg.password),
+            ssl_ca_location=cfg.ssl_ca_location,
+            ssl_certificate_location=cfg.ssl_certificate_location,
+            ssl_key_location=cfg.ssl_key_location,
+            ssl_key_password=_resolve_secret(cfg.ssl_key_password),
+        )
+
+    return _try_create_deployer(_create, fmt, "Kafka Connect")
