@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Optional
 
 import click
 
@@ -44,6 +45,7 @@ def handle_parse_error(fmt: OutputFormatter, e: Exception, code: str) -> None:
 def close_deployers(*deployers: object) -> None:
     """Close all non-None deployers, logging errors."""
     import logging
+
     logger = logging.getLogger(__name__)
     for d in deployers:
         if d is not None and hasattr(d, "close"):
@@ -68,7 +70,9 @@ def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
         )
 
     # Auth errors (HTTP 401/403 or SASL failures)
-    if any(kw in msg for kw in ("401", "403", "unauthorized", "forbidden", "authentication", "sasl")):
+    if any(
+        kw in msg for kw in ("401", "403", "unauthorized", "forbidden", "authentication", "sasl")
+    ):
         return (
             ErrorCode.AUTH_FAILED,
             f"Authentication failed for {service}: {e}. "
@@ -76,7 +80,16 @@ def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
         )
 
     # Connection refused / unreachable
-    if any(kw in msg for kw in ("connection refused", "connect timeout", "name or service not known", "no route", "unreachable")):
+    if any(
+        kw in msg
+        for kw in (
+            "connection refused",
+            "connect timeout",
+            "name or service not known",
+            "no route",
+            "unreachable",
+        )
+    ):
         return (
             ErrorCode.CONNECTION_REFUSED,
             f"Cannot reach {service}: {e}. Check that the URL/bootstrap_servers is correct and the service is running.",
@@ -102,12 +115,12 @@ def _resolve_secret(val: object) -> object:
 
 
 def check_required_deployers(
-    project: "StreamtProject",
-    kafka_deployer: Optional["KafkaDeployer"],
-    sr_deployer: Optional["SchemaRegistryDeployer"],
-    flink_deployer: Optional["FlinkDeployer"],
-    connect_deployer: Optional["ConnectDeployer"],
-    gateway_deployer: Optional["GatewayDeployer"],
+    project: StreamtProject,
+    kafka_deployer: Optional[KafkaDeployer],
+    sr_deployer: Optional[SchemaRegistryDeployer],
+    flink_deployer: Optional[FlinkDeployer],
+    connect_deployer: Optional[ConnectDeployer],
+    gateway_deployer: Optional[GatewayDeployer],
     fmt: OutputFormatter,
 ) -> bool:
     """Return False (with errors in fmt) if any configured deployer failed to connect."""
@@ -118,23 +131,37 @@ def check_required_deployers(
         (bool(rt.kafka), kafka_deployer, "Kafka"),
         (bool(rt.schema_registry), sr_deployer, "Schema Registry"),
         (bool(rt.flink and getattr(rt.flink, "clusters", None)), flink_deployer, "Flink"),
-        (bool(rt.connect and getattr(rt.connect, "clusters", None)), connect_deployer, "Kafka Connect"),
-        (bool(rt.conduktor and getattr(rt.conduktor, "gateway", None)), gateway_deployer, "Conduktor Gateway"),
+        (
+            bool(rt.connect and getattr(rt.connect, "clusters", None)),
+            connect_deployer,
+            "Kafka Connect",
+        ),
+        (
+            bool(rt.conduktor and getattr(rt.conduktor, "gateway", None)),
+            gateway_deployer,
+            "Conduktor Gateway",
+        ),
     ]
 
     ok = True
     for is_configured, deployer, name in checks:
         if is_configured and deployer is None:
-            fmt.add_error(StructuredError(
-                code=ErrorCode.CONNECTION_REFUSED,
-                message=f"{name} is configured but unreachable. Cannot proceed.",
-            ))
-            fmt.print_error(f"{name} is configured but unreachable. Cannot proceed with plan/apply.")
+            fmt.add_error(
+                StructuredError(
+                    code=ErrorCode.CONNECTION_REFUSED,
+                    message=f"{name} is configured but unreachable. Cannot proceed.",
+                )
+            )
+            fmt.print_error(
+                f"{name} is configured but unreachable. Cannot proceed with plan/apply."
+            )
             ok = False
     return ok
 
 
-def _try_create_deployer(create_fn: Callable, fmt: OutputFormatter, service: str) -> Optional[object]:
+def _try_create_deployer(
+    create_fn: Callable, fmt: OutputFormatter, service: str
+) -> Optional[object]:
     """Run create_fn(), warn on failure, return None on exception."""
     try:
         return create_fn()
@@ -155,9 +182,12 @@ def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Option
     return _try_create_deployer(_create, fmt, "Kafka")
 
 
-def make_sr_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[SchemaRegistryDeployer]:
+def make_sr_deployer(
+    project: StreamtProject, fmt: OutputFormatter
+) -> Optional[SchemaRegistryDeployer]:
     """Create SchemaRegistryDeployer from project config. Returns None on failure."""
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
+
     if not project.runtime.schema_registry:
         return None
     sr = project.runtime.schema_registry
@@ -183,6 +213,7 @@ def make_flink_deployer(
 ) -> Optional[FlinkDeployer]:
     """Create FlinkDeployer from project config. Returns None on failure."""
     from streamt.deployer.flink import FlinkDeployer
+
     if not (project.runtime.flink and project.runtime.flink.clusters):
         return None
     default = project.runtime.flink.default
@@ -214,9 +245,12 @@ def make_flink_deployer(
     return _try_create_deployer(_create, fmt, "Flink")
 
 
-def make_gateway_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[GatewayDeployer]:
+def make_gateway_deployer(
+    project: StreamtProject, fmt: OutputFormatter
+) -> Optional[GatewayDeployer]:
     """Create GatewayDeployer from project config. Returns None on failure."""
     from streamt.deployer.gateway import GatewayDeployer
+
     if not (project.runtime.conduktor and project.runtime.conduktor.gateway):
         return None
     gw = project.runtime.conduktor.gateway
@@ -238,9 +272,12 @@ def make_gateway_deployer(project: StreamtProject, fmt: OutputFormatter) -> Opti
     return _try_create_deployer(_create, fmt, "Conduktor Gateway")
 
 
-def make_connect_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[ConnectDeployer]:
+def make_connect_deployer(
+    project: StreamtProject, fmt: OutputFormatter
+) -> Optional[ConnectDeployer]:
     """Create ConnectDeployer from project config. Returns None on failure."""
     from streamt.deployer.connect import ConnectDeployer
+
     if not (project.runtime.connect and project.runtime.connect.clusters):
         return None
     default = project.runtime.connect.default

@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
 from streamt.core.models import (
@@ -19,7 +18,7 @@ from streamt.core.models import (
     StreamtProject,
 )
 from streamt.core.parser import ProjectParser
-from streamt.core.type_checker import ColumnTypeChecker, TypeCheckResult
+from streamt.core.type_checker import ColumnTypeChecker
 from streamt.core.validator import ProjectValidator
 
 
@@ -103,7 +102,7 @@ class TestColumnTypeChecker:
         src_b = _source("users", [("user_id", "BIGINT")])
         model = _model(
             "joined",
-            'SELECT orders.order_id, users.user_id '
+            "SELECT orders.order_id, users.user_id "
             'FROM {{ source("orders") }} JOIN {{ source("users") }} ON 1=1',
         )
         project = _project([src_a, src_b], [model])
@@ -179,7 +178,7 @@ class TestEdgeCases:
         src = _source("orders", [("order_id", "BIGINT"), ("status", "STRING")])
         model = _model(
             "filtered",
-            'SELECT order_id FROM {{ source("orders") }} WHERE bad_status = \'active\'',
+            "SELECT order_id FROM {{ source(\"orders\") }} WHERE bad_status = 'active'",
         )
         project = _project([src], [model])
         checker = ColumnTypeChecker(project)
@@ -191,10 +190,10 @@ class TestEdgeCases:
         src_b = _source("users", [("user_id", "BIGINT"), ("name", "STRING")])
         model = _model(
             "joined",
-            'SELECT orders.order_id, users.name '
+            "SELECT orders.order_id, users.name "
             'FROM {{ source("orders") }} AS orders '
             'JOIN {{ source("users") }} AS users '
-            'ON orders.user_id = users.user_id',
+            "ON orders.user_id = users.user_id",
         )
         project = _project([src_a, src_b], [model])
         checker = ColumnTypeChecker(project)
@@ -307,9 +306,7 @@ class TestValidatorIntegration:
             project = self._create_project(tmpdir, config)
             validator = ProjectValidator(project)
             result = validator.validate()
-            column_warnings = [
-                w for w in result.warnings if "COLUMN_TYPE_CHECK" in w.code
-            ]
+            column_warnings = [w for w in result.warnings if "COLUMN_TYPE_CHECK" in w.code]
             assert len(column_warnings) >= 1
             assert "bad_col" in column_warnings[0].message
 
@@ -337,7 +334,5 @@ class TestValidatorIntegration:
             project = self._create_project(tmpdir, config)
             validator = ProjectValidator(project)
             result = validator.validate()
-            column_warnings = [
-                w for w in result.warnings if "COLUMN_TYPE_CHECK" in w.code
-            ]
+            column_warnings = [w for w in result.warnings if "COLUMN_TYPE_CHECK" in w.code]
             assert column_warnings == []

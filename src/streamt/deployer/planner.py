@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
@@ -241,7 +242,11 @@ class DeploymentPlanner:
                         name=conn_data["name"],
                         connector_class=cfg.get("connector.class", ""),
                         topics=cfg.get("topics", "").split(","),
-                        config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
+                        config={
+                            k: v
+                            for k, v in cfg.items()
+                            if k not in ["name", "connector.class", "topics"]
+                        },
                     )
                     change = self.connect_deployer.plan_connector(artifact)
                     plan.connector_changes.append(change)
@@ -264,7 +269,9 @@ class DeploymentPlanner:
                     change = self.gateway_deployer.plan(artifact)
                     plan.gateway_changes.append(change)
                 except KeyError as e:
-                    logger.error("Malformed gateway_rule artifact, missing key %s: %s", e, rule_data)
+                    logger.error(
+                        "Malformed gateway_rule artifact, missing key %s: %s", e, rule_data
+                    )
 
         # Detect orphaned resources (exist in cluster but not in manifest)
         self._detect_orphans(plan, planned_subjects, planned_topics, planned_connectors)
@@ -289,9 +296,7 @@ class DeploymentPlanner:
             try:
                 for subject in self.schema_registry_deployer.list_subjects():
                     if subject not in planned_subjects:
-                        plan.schema_changes.append(
-                            SchemaChange(subject=subject, action="delete")
-                        )
+                        plan.schema_changes.append(SchemaChange(subject=subject, action="delete"))
             except Exception as e:
                 logger.error("Failed to list subjects for orphan detection: %s", e)
 
@@ -300,9 +305,7 @@ class DeploymentPlanner:
             try:
                 for topic in self.kafka_deployer.list_topics():
                     if topic not in planned_topics:
-                        plan.topic_changes.append(
-                            TopicChange(topic=topic, action="delete")
-                        )
+                        plan.topic_changes.append(TopicChange(topic=topic, action="delete"))
             except Exception as e:
                 logger.error("Failed to list topics for orphan detection: %s", e)
 
@@ -371,7 +374,9 @@ class DeploymentPlanner:
         # Apply schemas first (before topics that may use them)
         sr = self.schema_registry_deployer
         self._apply_resource_changes(
-            results, sr, plan.schema_changes,
+            results,
+            sr,
+            plan.schema_changes,
             upsert_actions=("register", "update"),
             label_fn=lambda c: f"schema:{c.subject}",
             apply_fn=lambda desired: sr.apply_schema(desired),  # type: ignore[union-attr]
@@ -381,7 +386,9 @@ class DeploymentPlanner:
 
         kd = self.kafka_deployer
         self._apply_resource_changes(
-            results, kd, plan.topic_changes,
+            results,
+            kd,
+            plan.topic_changes,
             upsert_actions=("create", "update"),
             label_fn=lambda c: f"topic:{c.topic}",
             apply_fn=lambda desired: kd.apply_topic(desired),  # type: ignore[union-attr]
@@ -397,7 +404,9 @@ class DeploymentPlanner:
                     try:
                         result = self.flink_deployer.apply_job(change.desired)
                         if result == "submitted":
-                            results["updated" if change.action == "update" else "created"].append(label)
+                            results["updated" if change.action == "update" else "created"].append(
+                                label
+                            )
                         else:
                             results["unchanged"].append(label)
                     except Exception as e:
@@ -411,7 +420,9 @@ class DeploymentPlanner:
 
         cd = self.connect_deployer
         self._apply_resource_changes(
-            results, cd, plan.connector_changes,
+            results,
+            cd,
+            plan.connector_changes,
             upsert_actions=("create", "update"),
             label_fn=lambda c: f"connector:{c.connector_name}",
             apply_fn=lambda desired: cd.apply_connector(desired),  # type: ignore[union-attr]
@@ -421,7 +432,9 @@ class DeploymentPlanner:
 
         gd = self.gateway_deployer
         self._apply_resource_changes(
-            results, gd, plan.gateway_changes,
+            results,
+            gd,
+            plan.gateway_changes,
             upsert_actions=("create", "update"),
             label_fn=lambda c: f"gateway_rule:{c.name}",
             apply_fn=lambda desired: gd.apply(desired),  # type: ignore[union-attr]
@@ -431,7 +444,9 @@ class DeploymentPlanner:
 
         results["summary"] = {
             "total": sum(len(v) for v in results.values() if isinstance(v, list)),
-            "succeeded": len(results["created"]) + len(results["updated"]) + len(results["deleted"]),
+            "succeeded": len(results["created"])
+            + len(results["updated"])
+            + len(results["deleted"]),
             "failed": len(results["errors"]),
             "unchanged": len(results["unchanged"]),
         }

@@ -1,22 +1,21 @@
 """Tests for BUG-011 (pre-flight connectivity) and BUG-021 (DDL credential redaction)."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 # ============================================================
 # BUG-011: Pre-flight connectivity check
 # ============================================================
+
 
 class TestPreflightConnectivityPlan:
     """plan command should fail early when a configured deployer is unavailable."""
 
     def test_plan_fails_when_kafka_unavailable(self, tmp_path):
         from click.testing import CliRunner
+
         from streamt.cli import main
 
         runner = CliRunner()
@@ -31,14 +30,15 @@ class TestPreflightConnectivityPlan:
         manifest = MagicMock()
         manifest.artifacts = {}
 
-        with patch("streamt.core.parser.ProjectParser") as mock_parser, \
-             patch("streamt.compiler.Compiler") as mock_compiler, \
-             patch("streamt.cli.commands.plan.make_kafka_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_sr_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_flink_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_connect_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_gateway_deployer", return_value=None):
-
+        with (
+            patch("streamt.core.parser.ProjectParser") as mock_parser,
+            patch("streamt.compiler.Compiler") as mock_compiler,
+            patch("streamt.cli.commands.plan.make_kafka_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_sr_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_flink_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_connect_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_gateway_deployer", return_value=None),
+        ):
             mock_parser.return_value.parse.return_value = project
             mock_compiler.return_value.compile.return_value = manifest
 
@@ -48,6 +48,7 @@ class TestPreflightConnectivityPlan:
     def test_plan_succeeds_when_optional_sr_unavailable(self, tmp_path):
         """SR deployer is optional — plan should proceed if kafka is up."""
         from click.testing import CliRunner
+
         from streamt.cli import main
         from streamt.deployer.planner import DeploymentPlan
 
@@ -66,15 +67,16 @@ class TestPreflightConnectivityPlan:
         mock_kafka = MagicMock()
         empty_plan = DeploymentPlan()
 
-        with patch("streamt.core.parser.ProjectParser") as mock_parser, \
-             patch("streamt.compiler.Compiler") as mock_compiler, \
-             patch("streamt.cli.commands.plan.make_kafka_deployer", return_value=mock_kafka), \
-             patch("streamt.cli.commands.plan.make_sr_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_flink_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_connect_deployer", return_value=None), \
-             patch("streamt.cli.commands.plan.make_gateway_deployer", return_value=None), \
-             patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=empty_plan):
-
+        with (
+            patch("streamt.core.parser.ProjectParser") as mock_parser,
+            patch("streamt.compiler.Compiler") as mock_compiler,
+            patch("streamt.cli.commands.plan.make_kafka_deployer", return_value=mock_kafka),
+            patch("streamt.cli.commands.plan.make_sr_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_flink_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_connect_deployer", return_value=None),
+            patch("streamt.cli.commands.plan.make_gateway_deployer", return_value=None),
+            patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=empty_plan),
+        ):
             mock_parser.return_value.parse.return_value = project
             mock_compiler.return_value.compile.return_value = manifest
 
@@ -87,6 +89,7 @@ class TestPreflightConnectivityApply:
 
     def test_apply_fails_when_kafka_unavailable(self, tmp_path):
         from click.testing import CliRunner
+
         from streamt.cli import main
 
         runner = CliRunner()
@@ -101,14 +104,15 @@ class TestPreflightConnectivityApply:
         manifest = MagicMock()
         manifest.artifacts = {}
 
-        with patch("streamt.core.parser.ProjectParser") as mock_parser, \
-             patch("streamt.compiler.Compiler") as mock_compiler, \
-             patch("streamt.cli.commands.apply.make_kafka_deployer", return_value=None), \
-             patch("streamt.cli.commands.apply.make_sr_deployer", return_value=None), \
-             patch("streamt.cli.commands.apply.make_flink_deployer", return_value=None), \
-             patch("streamt.cli.commands.apply.make_connect_deployer", return_value=None), \
-             patch("streamt.cli.commands.apply.make_gateway_deployer", return_value=None):
-
+        with (
+            patch("streamt.core.parser.ProjectParser") as mock_parser,
+            patch("streamt.compiler.Compiler") as mock_compiler,
+            patch("streamt.cli.commands.apply.make_kafka_deployer", return_value=None),
+            patch("streamt.cli.commands.apply.make_sr_deployer", return_value=None),
+            patch("streamt.cli.commands.apply.make_flink_deployer", return_value=None),
+            patch("streamt.cli.commands.apply.make_connect_deployer", return_value=None),
+            patch("streamt.cli.commands.apply.make_gateway_deployer", return_value=None),
+        ):
             mock_parser.return_value.parse.return_value = project
             mock_compiler.return_value.compile.return_value = manifest
 
@@ -119,7 +123,9 @@ class TestPreflightConnectivityApply:
 class TestCheckRequiredDeployers:
     """Unit tests for the check_required_deployers helper."""
 
-    def _make_project(self, has_kafka=True, has_sr=False, has_flink=False, has_connect=False, has_gateway=False):
+    def _make_project(
+        self, has_kafka=True, has_sr=False, has_flink=False, has_connect=False, has_gateway=False
+    ):
         project = MagicMock()
         project.runtime.kafka = MagicMock() if has_kafka else None
         project.runtime.schema_registry = MagicMock() if has_sr else None
@@ -137,6 +143,7 @@ class TestCheckRequiredDeployers:
     def test_kafka_required_returns_false_when_none(self):
         from streamt.cli.helpers import check_required_deployers
         from streamt.output import OutputFormatter
+
         fmt = OutputFormatter("text")
         project = self._make_project(has_kafka=True)
         result = check_required_deployers(project, None, None, None, None, None, fmt)
@@ -145,6 +152,7 @@ class TestCheckRequiredDeployers:
     def test_kafka_ok_returns_true(self):
         from streamt.cli.helpers import check_required_deployers
         from streamt.output import OutputFormatter
+
         fmt = OutputFormatter("text")
         project = self._make_project(has_kafka=True)
         result = check_required_deployers(project, MagicMock(), None, None, None, None, fmt)
@@ -153,6 +161,7 @@ class TestCheckRequiredDeployers:
     def test_sr_configured_but_none_returns_false(self):
         from streamt.cli.helpers import check_required_deployers
         from streamt.output import OutputFormatter
+
         fmt = OutputFormatter("text")
         project = self._make_project(has_kafka=True, has_sr=True)
         result = check_required_deployers(project, MagicMock(), None, None, None, None, fmt)
@@ -161,6 +170,7 @@ class TestCheckRequiredDeployers:
     def test_sr_not_configured_and_none_returns_true(self):
         from streamt.cli.helpers import check_required_deployers
         from streamt.output import OutputFormatter
+
         fmt = OutputFormatter("text")
         project = self._make_project(has_kafka=True, has_sr=False)
         result = check_required_deployers(project, MagicMock(), None, None, None, None, fmt)
@@ -169,6 +179,7 @@ class TestCheckRequiredDeployers:
     def test_flink_configured_but_none_returns_false(self):
         from streamt.cli.helpers import check_required_deployers
         from streamt.output import OutputFormatter
+
         fmt = OutputFormatter("text")
         project = self._make_project(has_kafka=True, has_flink=True)
         result = check_required_deployers(project, MagicMock(), None, None, None, None, fmt)
@@ -178,6 +189,7 @@ class TestCheckRequiredDeployers:
 # ============================================================
 # BUG-021: DDL credential redaction in manifest
 # ============================================================
+
 
 class TestDDLCredentialRedaction:
     """Credentials in Flink DDL SQL must be redacted when saved to disk."""
@@ -190,13 +202,11 @@ class TestDDLCredentialRedaction:
             "    'connector' = 'kafka',\n"
             "    'properties.sasl.jaas.config' = "
             "'org.apache.kafka.common.security.plain.PlainLoginModule required "
-            "username=\"admin\" password=\"s3cr3t\";'\n"
+            'username="admin" password="s3cr3t";\'\n'
             ")"
         )
         manifest = Manifest(version="1.0.0", project_name="test")
-        manifest.artifacts = {
-            "flink_jobs": [{"name": "job1", "sql": sql_with_creds}]
-        }
+        manifest.artifacts = {"flink_jobs": [{"name": "job1", "sql": sql_with_creds}]}
 
         path = tmp_path / "manifest.json"
         manifest.save(path)
@@ -216,9 +226,7 @@ class TestDDLCredentialRedaction:
             ")"
         )
         manifest = Manifest(version="1.0.0", project_name="test")
-        manifest.artifacts = {
-            "flink_jobs": [{"name": "job1", "sql": sql_with_creds}]
-        }
+        manifest.artifacts = {"flink_jobs": [{"name": "job1", "sql": sql_with_creds}]}
 
         path = tmp_path / "manifest.json"
         manifest.save(path)
@@ -234,13 +242,11 @@ class TestDDLCredentialRedaction:
         original_sql = (
             "CREATE TABLE t (id INT) WITH (\n"
             "    'properties.sasl.jaas.config' = "
-            "'PlainLoginModule required username=\"u\" password=\"p\";'\n"
+            '\'PlainLoginModule required username="u" password="p";\'\n'
             ")"
         )
         manifest = Manifest(version="1.0.0", project_name="test")
-        manifest.artifacts = {
-            "flink_jobs": [{"name": "job1", "sql": original_sql}]
-        }
+        manifest.artifacts = {"flink_jobs": [{"name": "job1", "sql": original_sql}]}
 
         path = tmp_path / "manifest.json"
         manifest.save(path)
@@ -253,15 +259,10 @@ class TestDDLCredentialRedaction:
         from streamt.compiler.manifest import Manifest
 
         clean_sql = (
-            "CREATE TABLE t (id INT) WITH (\n"
-            "    'connector' = 'kafka',\n"
-            "    'topic' = 'events'\n"
-            ")"
+            "CREATE TABLE t (id INT) WITH (\n    'connector' = 'kafka',\n    'topic' = 'events'\n)"
         )
         manifest = Manifest(version="1.0.0", project_name="test")
-        manifest.artifacts = {
-            "flink_jobs": [{"name": "job1", "sql": clean_sql}]
-        }
+        manifest.artifacts = {"flink_jobs": [{"name": "job1", "sql": clean_sql}]}
 
         path = tmp_path / "manifest.json"
         manifest.save(path)
@@ -276,7 +277,7 @@ class TestDDLCredentialRedaction:
 
         sql = (
             "'properties.sasl.jaas.config' = 'PlainLoginModule required "
-            "username=\"u\" password=\"secret\";'\n"
+            'username="u" password="secret";\'\n'
             "'properties.ssl.key.password' = 'keypass'"
         )
         result = redact_ddl_credentials(sql)

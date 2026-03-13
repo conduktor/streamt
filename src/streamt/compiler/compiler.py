@@ -11,7 +11,6 @@ from typing import Optional
 from jinja2 import BaseLoader, Environment
 
 from streamt.compiler.flink_ddl import kafka_with_properties
-from streamt.compiler.masking import apply_masking_to_sql
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -20,6 +19,7 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.compiler.masking import apply_masking_to_sql
 from streamt.compiler.type_inference import TypeInferenceMixin
 from streamt.core.dag import DAGBuilder
 from streamt.core.models import (
@@ -71,7 +71,9 @@ class Compiler(TypeInferenceMixin):
         self.jinja_env = Environment(loader=BaseLoader())
 
         self._topic_defaults = self._get_topic_defaults()
-        self._udf_types: dict[str, str] = {udf.name.upper(): udf.return_type for udf in project.udfs}
+        self._udf_types: dict[str, str] = {
+            udf.name.upper(): udf.return_type for udf in project.udfs
+        }
 
         # Artifacts
         self.schemas: list[SchemaArtifact] = []
@@ -86,7 +88,11 @@ class Compiler(TypeInferenceMixin):
         if self.project.defaults and self.project.defaults.topic:
             return self.project.defaults.topic
         # Then check defaults.models.topic
-        if self.project.defaults and self.project.defaults.models and self.project.defaults.models.topic:
+        if (
+            self.project.defaults
+            and self.project.defaults.models
+            and self.project.defaults.models.topic
+        ):
             return self.project.defaults.models.topic
         # Return sensible defaults (1/1 works everywhere including local dev)
         return TopicDefaults()
@@ -158,13 +164,25 @@ class Compiler(TypeInferenceMixin):
     def _flink_type_to_avro(flink_type: str) -> str | dict:
         """Map a Flink SQL type to its Avro equivalent."""
         base = flink_type.split("(")[0].upper()
-        simple = {"STRING": "string", "VARCHAR": "string", "CHAR": "string", "BOOLEAN": "boolean",
-                  "TINYINT": "int", "SMALLINT": "int", "INT": "int", "INTEGER": "int",
-                  "BIGINT": "long", "FLOAT": "float", "DOUBLE": "double", "BYTES": "bytes"}
+        simple = {
+            "STRING": "string",
+            "VARCHAR": "string",
+            "CHAR": "string",
+            "BOOLEAN": "boolean",
+            "TINYINT": "int",
+            "SMALLINT": "int",
+            "INT": "int",
+            "INTEGER": "int",
+            "BIGINT": "long",
+            "FLOAT": "float",
+            "DOUBLE": "double",
+            "BYTES": "bytes",
+        }
         if base in simple:
             return simple[base]
         if base in ("DECIMAL", "NUMERIC"):
             import re
+
             m = re.match(r"(?:DECIMAL|NUMERIC)\((\d+),\s*(\d+)\)", flink_type, re.IGNORECASE)
             p, s = (int(m.group(1)), int(m.group(2))) if m else (38, 18)
             return {"type": "bytes", "logicalType": "decimal", "precision": p, "scale": s}
@@ -184,12 +202,14 @@ class Compiler(TypeInferenceMixin):
         fields = []
         for col in source.columns:
             avro_type = self._flink_type_to_avro(col.type) if col.type else "string"
-            fields.append({
-                "name": col.name,
-                "type": ["null", avro_type],
-                "default": None,
-                "doc": col.description or "",
-            })
+            fields.append(
+                {
+                    "name": col.name,
+                    "type": ["null", avro_type],
+                    "default": None,
+                    "doc": col.description or "",
+                }
+            )
 
         return {
             "type": "record",
@@ -204,10 +224,7 @@ class Compiler(TypeInferenceMixin):
 
         # Handle VIRTUAL_TOPIC fallback to FLINK when Gateway is not available
         if materialized == MaterializedType.VIRTUAL_TOPIC:
-            has_gateway = (
-                self.project.runtime.conduktor
-                and self.project.runtime.conduktor.gateway
-            )
+            has_gateway = self.project.runtime.conduktor and self.project.runtime.conduktor.gateway
             is_explicit_virtual_topic = model.gateway and model.gateway.virtual_topic
 
             if not has_gateway and not is_explicit_virtual_topic:
@@ -227,8 +244,12 @@ class Compiler(TypeInferenceMixin):
         """Compile a topic model (creates real Kafka topic)."""
         tc = model.get_topic_config()
         topic_name = tc.name if tc and tc.name else model.name
-        partitions = (tc.partitions if tc and tc.partitions else None) or self._topic_defaults.partitions
-        replication_factor = (tc.replication_factor if tc and tc.replication_factor else None) or self._topic_defaults.replication_factor
+        partitions = (
+            tc.partitions if tc and tc.partitions else None
+        ) or self._topic_defaults.partitions
+        replication_factor = (
+            tc.replication_factor if tc and tc.replication_factor else None
+        ) or self._topic_defaults.replication_factor
         config = tc.config if tc else {}
 
         self.topics.append(
@@ -300,8 +321,12 @@ class Compiler(TypeInferenceMixin):
         # Create output topic
         tc = model.get_topic_config()
         topic_name = tc.name if tc and tc.name else model.name
-        partitions = (tc.partitions if tc and tc.partitions else None) or self._topic_defaults.partitions
-        replication_factor = (tc.replication_factor if tc and tc.replication_factor else None) or self._topic_defaults.replication_factor
+        partitions = (
+            tc.partitions if tc and tc.partitions else None
+        ) or self._topic_defaults.partitions
+        replication_factor = (
+            tc.replication_factor if tc and tc.replication_factor else None
+        ) or self._topic_defaults.replication_factor
         config = tc.config if tc else {}
 
         self.topics.append(
@@ -321,10 +346,18 @@ class Compiler(TypeInferenceMixin):
                 name=model.name,
                 sql=flink_sql,
                 cluster=model.get_flink_cluster(),
-                parallelism=model.get_flink_config().parallelism if model.get_flink_config() else None,
-                checkpoint_interval_ms=model.get_flink_config().checkpoint_interval_ms if model.get_flink_config() else None,
-                state_backend=model.get_flink_config().state_backend if model.get_flink_config() else None,
-                state_ttl_ms=model.get_flink_config().state_ttl_ms if model.get_flink_config() else None,
+                parallelism=model.get_flink_config().parallelism
+                if model.get_flink_config()
+                else None,
+                checkpoint_interval_ms=model.get_flink_config().checkpoint_interval_ms
+                if model.get_flink_config()
+                else None,
+                state_backend=model.get_flink_config().state_backend
+                if model.get_flink_config()
+                else None,
+                state_ttl_ms=model.get_flink_config().state_ttl_ms
+                if model.get_flink_config()
+                else None,
             )
         )
 
@@ -404,7 +437,11 @@ class Compiler(TypeInferenceMixin):
             topic_name = source.topic
             columns = [col.name for col in source.columns] if source.columns else []
         else:
-            topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
+            topic_name = (
+                model.get_topic_config().name
+                if model.get_topic_config() and model.get_topic_config().name
+                else model.name
+            )
             # Extract columns from model's SQL
             columns = self._extract_select_columns(model.sql or "")
 
@@ -464,13 +501,19 @@ class Compiler(TypeInferenceMixin):
 
         # Source table (model output)
         kafka = self.project.runtime.kafka
-        src_with = kafka_with_properties(kafka, source_topic, bootstrap, {"scan.startup.mode": "latest-offset"})
-        sql_parts.append(f"CREATE TABLE IF NOT EXISTS test_source_{test.name} (\n    {columns_ddl}\n) {src_with};")
+        src_with = kafka_with_properties(
+            kafka, source_topic, bootstrap, {"scan.startup.mode": "latest-offset"}
+        )
+        sql_parts.append(
+            f"CREATE TABLE IF NOT EXISTS test_source_{test.name} (\n    {columns_ddl}\n) {src_with};"
+        )
 
         # Failures sink table
         fail_cols = "`test_name` STRING,\n    `violation_type` STRING,\n    `violation_details` STRING,\n    `record` STRING,\n    `detected_at` TIMESTAMP(3)"
         fail_with = kafka_with_properties(kafka, "_streamt_test_failures", bootstrap)
-        sql_parts.append(f"CREATE TABLE IF NOT EXISTS test_failures_{test.name} (\n    {fail_cols}\n) {fail_with};")
+        sql_parts.append(
+            f"CREATE TABLE IF NOT EXISTS test_failures_{test.name} (\n    {fail_cols}\n) {fail_with};"
+        )
 
         # Build WHERE clause from assertions
         # Each tuple: (condition_sql, violation_type, column_name)
@@ -482,9 +525,7 @@ class Compiler(TypeInferenceMixin):
             if assertion_type == "not_null":
                 for col in config.get("columns", []):
                     if col in columns:
-                        violation_conditions.append(
-                            (f"`{col}` IS NULL", f"not_null:{col}", col)
-                        )
+                        violation_conditions.append((f"`{col}` IS NULL", f"not_null:{col}", col))
 
             elif assertion_type == "accepted_values":
                 col = config.get("column")
@@ -518,8 +559,11 @@ class Compiler(TypeInferenceMixin):
                         type_cast = self._get_type_cast_expression(expected_type)
                         if type_cast:
                             violation_conditions.append(
-                                (f"TRY_CAST(`{col}` AS {type_cast}) IS NULL AND `{col}` IS NOT NULL",
-                                 f"accepted_types:{col}", col)
+                                (
+                                    f"TRY_CAST(`{col}` AS {type_cast}) IS NULL AND `{col}` IS NOT NULL",
+                                    f"accepted_types:{col}",
+                                    col,
+                                )
                             )
 
             elif assertion_type == "custom_sql":
@@ -529,9 +573,7 @@ class Compiler(TypeInferenceMixin):
                 detail_column = config.get("detail_column", columns[0] if columns else "_raw")
 
                 if where_clause and detail_column in columns:
-                    violation_conditions.append(
-                        (where_clause, f"custom_sql:{name}", detail_column)
-                    )
+                    violation_conditions.append((where_clause, f"custom_sql:{name}", detail_column))
 
         # Generate INSERT statement for each violation type
         if violation_conditions:
@@ -547,8 +589,7 @@ FROM test_source_{test.name}
 WHERE {condition}""")
 
             sql_parts.append(
-                f"INSERT INTO test_failures_{test.name}\n"
-                + "\nUNION ALL\n".join(union_parts) + ";"
+                f"INSERT INTO test_failures_{test.name}\n" + "\nUNION ALL\n".join(union_parts) + ";"
             )
 
         return "\n\n".join(sql_parts)
@@ -641,7 +682,9 @@ WHERE {condition}""")
         columns = ",\n    ".join(column_lines)
 
         kafka = self.project.runtime.kafka
-        with_clause = kafka_with_properties(kafka, source.topic, bootstrap, {"scan.startup.mode": "earliest-offset"})
+        with_clause = kafka_with_properties(
+            kafka, source.topic, bootstrap, {"scan.startup.mode": "earliest-offset"}
+        )
         return f"CREATE TABLE IF NOT EXISTS {alias} (\n    {columns}\n) {with_clause};"
 
     def _generate_flink_set_statements(self, model: Model) -> str:
@@ -651,7 +694,9 @@ WHERE {condition}""")
         if model.get_flink_config():
             # Parallelism
             if model.get_flink_config().parallelism:
-                statements.append(f"SET 'parallelism.default' = '{model.get_flink_config().parallelism}';")
+                statements.append(
+                    f"SET 'parallelism.default' = '{model.get_flink_config().parallelism}';"
+                )
 
             # State TTL (table.exec.state.ttl)
             if model.get_flink_config().state_ttl_ms:
@@ -698,12 +743,16 @@ WHERE {condition}""")
         # Pass the model to enable schema resolution from source definitions
         columns_with_types = self._extract_select_columns_with_types(model.sql or "", model=model)
         if columns_with_types:
-            columns_ddl = ",\n    ".join(f"`{col}` {col_type}" for col, col_type in columns_with_types)
+            columns_ddl = ",\n    ".join(
+                f"`{col}` {col_type}" for col, col_type in columns_with_types
+            )
         else:
             columns_ddl = "`_raw` STRING"
 
         kafka = self.project.runtime.kafka
-        with_clause = kafka_with_properties(kafka, topic_name, bootstrap, {"scan.startup.mode": "earliest-offset"})
+        with_clause = kafka_with_properties(
+            kafka, topic_name, bootstrap, {"scan.startup.mode": "earliest-offset"}
+        )
         return f"CREATE TABLE IF NOT EXISTS {alias} (\n    {columns_ddl}\n) {with_clause};"
 
     def _topic_to_table_name(self, topic_name: str) -> str:
@@ -720,7 +769,9 @@ WHERE {condition}""")
         # Pass the model to enable schema resolution from source definitions
         columns_with_types = self._extract_select_columns_with_types(model.sql or "", model=model)
         if columns_with_types:
-            columns_ddl = ",\n    ".join(f"`{col}` {col_type}" for col, col_type in columns_with_types)
+            columns_ddl = ",\n    ".join(
+                f"`{col}` {col_type}" for col, col_type in columns_with_types
+            )
         else:
             columns_ddl = "`_raw` STRING"
 
@@ -791,7 +842,6 @@ WHERE {condition}""")
             sql,
         )
         return sql.strip()
-
 
     def _get_source_topic(self, model: Model) -> Optional[str]:
         """Get the source topic for a model."""
@@ -939,8 +989,7 @@ WHERE {condition}""")
         """Reject names containing path separators or dotdot sequences."""
         if "/" in name or "\\" in name or ".." in name:
             raise ValueError(
-                f"Unsafe {resource_type} name {name!r}: "
-                "names may not contain '/', '\\', or '..'"
+                f"Unsafe {resource_type} name {name!r}: names may not contain '/', '\\', or '..'"
             )
         return name
 

@@ -10,9 +10,6 @@ This module handles:
 from __future__ import annotations
 
 import logging
-
-logger = logging.getLogger(__name__)
-
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,6 +18,8 @@ from typing import Literal
 
 import yaml
 from dotenv import dotenv_values
+
+logger = logging.getLogger(__name__)
 
 
 class EnvironmentError(Exception):
@@ -36,9 +35,7 @@ class EnvironmentNotFoundError(EnvironmentError):
         self.env_name = env_name
         self.available = available
         available_str = ", ".join(sorted(available)) if available else "none"
-        super().__init__(
-            f"Environment '{env_name}' not found. Available: {available_str}"
-        )
+        super().__init__(f"Environment '{env_name}' not found. Available: {available_str}")
 
 
 class NoEnvironmentSpecifiedError(EnvironmentError):
@@ -164,9 +161,7 @@ class EnvironmentManager:
         if ".." in env_name or "/" in env_name or "\\" in env_name:
             raise InvalidEnvironmentNameError(env_name)
 
-    def get_effective_environment(
-        self, cli_flag: str | None, env_var: str | None
-    ) -> str | None:
+    def get_effective_environment(self, cli_flag: str | None, env_var: str | None) -> str | None:
         """Get effective environment name from CLI flag or env var.
 
         CLI flag takes precedence over environment variable.
@@ -271,7 +266,8 @@ class EnvironmentManager:
         )
 
     def resolve_environment(
-        self, cli_env: str | None,
+        self,
+        cli_env: str | None,
     ) -> tuple[EnvironmentConfig | None, list[str]]:
         """Resolve environment based on mode, CLI flag, and env var.
 
@@ -290,9 +286,7 @@ class EnvironmentManager:
             if cli_env:
                 raise NoEnvironmentsConfiguredError()
             if env_var:
-                warnings.append(
-                    f"STREAMT_ENV='{env_var}' ignored in single-environment mode"
-                )
+                warnings.append(f"STREAMT_ENV='{env_var}' ignored in single-environment mode")
             # Apply base .env only
             self.apply_env_vars(None)
             return None, warnings
@@ -335,8 +329,14 @@ class EnvironmentManager:
 
 
 _SECRET_FIELD_NAMES = {
-    "password", "sasl_password", "ssl_key_password", "api_key", "api_secret",
-    "secret", "token", "credential",
+    "password",
+    "sasl_password",
+    "ssl_key_password",
+    "api_key",
+    "api_secret",
+    "secret",
+    "token",
+    "credential",
 }
 
 
@@ -351,7 +351,9 @@ def mask_secrets(value: object, secret_keys: set[str] | None = None) -> object:
 
     if isinstance(value, dict):
         return {
-            k: "****" if k.lower() in secret_keys and isinstance(v, str) else mask_secrets(v, secret_keys)
+            k: "****"
+            if k.lower() in secret_keys and isinstance(v, str)
+            else mask_secrets(v, secret_keys)
             for k, v in value.items()
         }
     elif isinstance(value, list):

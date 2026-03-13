@@ -1,20 +1,20 @@
 """Tests for reliability fixes from Antithesis Reliability Audit."""
+
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 
 from streamt.core.errors import ErrorCode
-
 
 # ============================================================
 # BUG-007: ErrorCode.MISSING_CONFIG must exist
 # ============================================================
+
 
 class TestMissingErrorCodes:
     def test_missing_config_error_code_exists(self):
@@ -30,9 +30,11 @@ class TestMissingErrorCodes:
 # BUG-003: Consumer leak in get_topic_message_count
 # ============================================================
 
+
 class TestConsumerLeak:
     def test_consumer_closed_on_success(self):
         from streamt.deployer.kafka import KafkaDeployer
+
         deployer = KafkaDeployer.__new__(KafkaDeployer)
         deployer._check_closed = MagicMock()
         mock_consumer = MagicMock()
@@ -54,6 +56,7 @@ class TestConsumerLeak:
 
     def test_consumer_closed_on_exception(self):
         from streamt.deployer.kafka import KafkaDeployer
+
         deployer = KafkaDeployer.__new__(KafkaDeployer)
         deployer._check_closed = MagicMock()
         mock_consumer = MagicMock()
@@ -79,9 +82,11 @@ class TestConsumerLeak:
 # BUG-005 + BUG-006: fsync + file locking in hash persistence
 # ============================================================
 
+
 class TestHashPersistenceDurability:
     def test_fsync_called_before_rename(self, tmp_path):
         from streamt.deployer.flink import FlinkDeployer
+
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer._state_dir = tmp_path / ".streamt"
         deployer._sql_hashes = {"job1": "abc123"}
@@ -103,6 +108,7 @@ class TestHashPersistenceDurability:
 
     def test_file_locking_used_on_save(self, tmp_path):
         from streamt.deployer.flink import FlinkDeployer
+
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer._state_dir = tmp_path / ".streamt"
         deployer._sql_hashes = {"job2": "xyz"}
@@ -118,12 +124,14 @@ class TestHashPersistenceDurability:
             deployer._save_hashes()
 
         import fcntl
+
         assert fcntl.LOCK_EX in flock_calls
         assert fcntl.LOCK_UN in flock_calls
 
     def test_concurrent_save_merges_entries(self, tmp_path):
         """Two instances writing different jobs must not clobber each other."""
         from streamt.deployer.flink import FlinkDeployer
+
         state_dir = tmp_path / ".streamt"
 
         d1 = FlinkDeployer.__new__(FlinkDeployer)
@@ -145,9 +153,13 @@ class TestHashPersistenceDurability:
 # BUG-001: Cancel+resubmit recovery
 # ============================================================
 
+
 class TestCancelResubmitRecovery:
     def _make_flink(self):
-        from streamt.deployer.flink import FlinkDeployer, FlinkJobArtifact, FlinkJobChange, FlinkJobState
+        from streamt.deployer.flink import (
+            FlinkDeployer,
+        )
+
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer.rest_url = "http://localhost:8082"
         deployer.sql_gateway_url = None
@@ -163,6 +175,7 @@ class TestCancelResubmitRecovery:
     def test_resubmit_failure_clears_hash_and_logs_critical(self):
         """If resubmit fails after cancel, hash cleared and CRITICAL logged."""
         from streamt.deployer.flink import FlinkJobArtifact, FlinkJobChange, FlinkJobState
+
         deployer = self._make_flink()
 
         artifact = FlinkJobArtifact(name="my_job", sql="SELECT 1")
@@ -173,13 +186,15 @@ class TestCancelResubmitRecovery:
             desired=artifact,
         )
 
-        with patch.object(deployer, "plan_job", return_value=change), \
-             patch.object(deployer, "cancel_job"), \
-             patch.object(deployer, "submit_sql", side_effect=RuntimeError("SQL Gateway down")), \
-             patch.object(deployer, "_save_hashes"), \
-             patch("streamt.deployer.flink.logger") as mock_logger:
-            with pytest.raises(RuntimeError, match="SQL Gateway down"):
-                deployer.apply_job(artifact)
+        with (
+            patch.object(deployer, "plan_job", return_value=change),
+            patch.object(deployer, "cancel_job"),
+            patch.object(deployer, "submit_sql", side_effect=RuntimeError("SQL Gateway down")),
+            patch.object(deployer, "_save_hashes"),
+            patch("streamt.deployer.flink.logger") as mock_logger,
+            pytest.raises(RuntimeError, match="SQL Gateway down"),
+        ):
+            deployer.apply_job(artifact)
 
         # Hash must be cleared so next plan sees a missing job
         assert "my_job" not in deployer._sql_hashes
@@ -189,6 +204,7 @@ class TestCancelResubmitRecovery:
     def test_successful_resubmit_saves_new_hash(self):
         """Successful resubmit should save the new SQL hash."""
         from streamt.deployer.flink import FlinkJobArtifact, FlinkJobChange, FlinkJobState
+
         deployer = self._make_flink()
 
         artifact = FlinkJobArtifact(name="my_job", sql="SELECT 2")
@@ -199,10 +215,12 @@ class TestCancelResubmitRecovery:
             desired=artifact,
         )
 
-        with patch.object(deployer, "plan_job", return_value=change), \
-             patch.object(deployer, "cancel_job"), \
-             patch.object(deployer, "submit_sql"), \
-             patch.object(deployer, "_save_hashes"):
+        with (
+            patch.object(deployer, "plan_job", return_value=change),
+            patch.object(deployer, "cancel_job"),
+            patch.object(deployer, "submit_sql"),
+            patch.object(deployer, "_save_hashes"),
+        ):
             result = deployer.apply_job(artifact)
 
         assert result == "submitted"
@@ -213,9 +231,11 @@ class TestCancelResubmitRecovery:
 # BUG-015: Closed-state guards for Connect, SR, Flink
 # ============================================================
 
+
 class TestClosedGuards:
     def test_connect_deployer_raises_when_closed(self):
         from streamt.deployer.connect import ConnectDeployer
+
         deployer = ConnectDeployer(rest_url="http://localhost:8083")
         deployer.close()
         with pytest.raises(RuntimeError, match="ConnectDeployer is closed"):
@@ -223,6 +243,7 @@ class TestClosedGuards:
 
     def test_schema_registry_raises_when_closed(self):
         from streamt.deployer.schema_registry import SchemaRegistryDeployer
+
         deployer = SchemaRegistryDeployer(url="http://localhost:8081")
         deployer.close()
         with pytest.raises(RuntimeError, match="SchemaRegistryDeployer is closed"):
@@ -230,6 +251,7 @@ class TestClosedGuards:
 
     def test_flink_raises_when_closed(self):
         from streamt.deployer.flink import FlinkDeployer
+
         deployer = FlinkDeployer(rest_url="http://localhost:8082")
         deployer.close()
         with pytest.raises(RuntimeError, match="FlinkDeployer is closed"):
@@ -240,10 +262,12 @@ class TestClosedGuards:
 # BUG-019: Wall-clock polling timeout
 # ============================================================
 
+
 class TestWallClockPolling:
     def test_polling_uses_monotonic_time(self, tmp_path):
         """Ensure time.monotonic() controls the deadline, not accumulated sleep."""
         from streamt.deployer.flink import FlinkDeployer
+
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer.rest_url = "http://localhost:8082"
         deployer.sql_gateway_url = "http://localhost:8084"
@@ -255,6 +279,7 @@ class TestWallClockPolling:
         deployer._statement_timeout = 5
 
         call_count = 0
+
         # Return PENDING forever to force timeout via wall-clock
         def mock_request(method, endpoint, **kwargs):
             nonlocal call_count
@@ -265,20 +290,29 @@ class TestWallClockPolling:
                 return {"status": "PENDING"}
             return {}
 
-        with patch.object(deployer, "_request", side_effect=mock_request), \
-             patch("time.sleep"), \
-             patch("time.monotonic", side_effect=[
-                 0.0,   # deadline = 0.0 + 5 = 5.0
-                 0.5, 1.0, 2.0, 4.0,  # loop iterations
-                 5.1,   # deadline exceeded
-             ]):
-            with pytest.raises(RuntimeError, match="Timeout"):
-                deployer.submit_sql("SELECT 1")
+        with (
+            patch.object(deployer, "_request", side_effect=mock_request),
+            patch("time.sleep"),
+            patch(
+                "time.monotonic",
+                side_effect=[
+                    0.0,  # deadline = 0.0 + 5 = 5.0
+                    0.5,
+                    1.0,
+                    2.0,
+                    4.0,  # loop iterations
+                    5.1,  # deadline exceeded
+                ],
+            ),
+            pytest.raises(RuntimeError, match="Timeout"),
+        ):
+            deployer.submit_sql("SELECT 1")
 
 
 # ============================================================
 # BUG-020: Atomic manifest write
 # ============================================================
+
 
 class TestAtomicManifestWrite:
     def test_save_uses_atomic_rename(self, tmp_path):
@@ -324,9 +358,11 @@ class TestAtomicManifestWrite:
 # BUG-023: URL credential sanitization
 # ============================================================
 
+
 class TestUrlSanitization:
     def test_url_credentials_stripped(self):
         from streamt.deployer.planner import _sanitize_error
+
         msg = "Connection failed: http://admin:s3cr3t@broker:8081/path"
         result = _sanitize_error(msg)
         assert "s3cr3t" not in result
@@ -335,12 +371,14 @@ class TestUrlSanitization:
 
     def test_password_in_url_stripped(self):
         from streamt.deployer.planner import _sanitize_error
+
         msg = "Failed: https://user:P@ssw0rd!@host/api"
         result = _sanitize_error(msg)
         assert "P@ssw0rd!" not in result
 
     def test_safe_message_unchanged(self):
         from streamt.deployer.planner import _sanitize_error
+
         msg = "Connection to localhost:9092 failed after 3 retries"
         assert _sanitize_error(msg) == msg
 
@@ -349,28 +387,32 @@ class TestUrlSanitization:
 # PATH-001: Path traversal in compiler output
 # ============================================================
 
+
 class TestPathTraversal:
     def test_dotdot_in_name_raises(self):
-        from streamt.compiler.compiler import Manifest
         from streamt.compiler.compiler import Compiler
+
         compiler = Compiler.__new__(Compiler)
         with pytest.raises(ValueError, match="Unsafe"):
             compiler._safe_filename("../../../etc/passwd", "topic")
 
     def test_slash_in_name_raises(self):
         from streamt.compiler.compiler import Compiler
+
         compiler = Compiler.__new__(Compiler)
         with pytest.raises(ValueError, match="Unsafe"):
             compiler._safe_filename("sub/dir/name", "schema subject")
 
     def test_backslash_in_name_raises(self):
         from streamt.compiler.compiler import Compiler
+
         compiler = Compiler.__new__(Compiler)
         with pytest.raises(ValueError, match="Unsafe"):
             compiler._safe_filename("sub\\dir", "connector")
 
     def test_normal_name_passes(self):
         from streamt.compiler.compiler import Compiler
+
         compiler = Compiler.__new__(Compiler)
         assert compiler._safe_filename("orders_v2", "topic") == "orders_v2"
         assert compiler._safe_filename("my-schema.value", "schema") == "my-schema.value"
@@ -380,11 +422,16 @@ class TestPathTraversal:
 # BUG-013: Schema compatibility order (register before set_compat)
 # ============================================================
 
+
 class TestSchemaCompatibilityOrderNew:
     def test_new_subject_registers_before_setting_compat(self):
         """On new subject registration, schema must be registered
         BEFORE compatibility is set (validates content first)."""
-        from streamt.deployer.schema_registry import SchemaArtifact, SchemaChange, SchemaRegistryDeployer
+        from streamt.deployer.schema_registry import (
+            SchemaArtifact,
+            SchemaChange,
+            SchemaRegistryDeployer,
+        )
 
         deployer = SchemaRegistryDeployer.__new__(SchemaRegistryDeployer)
         deployer.url = "http://localhost:8081"
@@ -396,11 +443,19 @@ class TestSchemaCompatibilityOrderNew:
         call_order = []
         change = SchemaChange(subject="orders-value", action="register", changes=None)
 
-        with patch.object(deployer, "plan_schema", return_value=change), \
-             patch.object(deployer, "register_schema",
-                          side_effect=lambda *a, **k: call_order.append("register")), \
-             patch.object(deployer, "set_compatibility",
-                          side_effect=lambda *a, **k: call_order.append("set_compat")):
+        with (
+            patch.object(deployer, "plan_schema", return_value=change),
+            patch.object(
+                deployer,
+                "register_schema",
+                side_effect=lambda *a, **k: call_order.append("register"),
+            ),
+            patch.object(
+                deployer,
+                "set_compatibility",
+                side_effect=lambda *a, **k: call_order.append("set_compat"),
+            ),
+        ):
             artifact = SchemaArtifact(
                 subject="orders-value",
                 schema={"type": "record", "name": "Orders", "fields": []},

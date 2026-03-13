@@ -10,8 +10,6 @@ Groups 1-5 live here. Groups 6-10 + schema gen + cross-cutting are in
 
 from __future__ import annotations
 
-import pytest
-
 from streamt.compiler.compiler import Compiler
 from streamt.compiler.type_inference import TypeInferenceMixin
 from streamt.core.models import (
@@ -27,6 +25,7 @@ from streamt.core.models import (
 # ---------------------------------------------------------------------------
 # Helpers (shared contract with _extended module)
 # ---------------------------------------------------------------------------
+
 
 class StubTypeInference(TypeInferenceMixin):
     """Minimal host satisfying the mixin contract."""
@@ -70,6 +69,7 @@ def _infer_via_compiler(
 # GROUP 1: Schema context propagation (SELECT *)
 # ===================================================================
 
+
 class TestGroup1SelectStarPropagation:
     """SELECT * should expand source columns from the schema context.
     Currently returns [] because Star is not handled by _get_expression_alias.
@@ -102,10 +102,14 @@ class TestGroup1SelectStarPropagation:
         """Full-stack SELECT * propagates source columns through Compiler."""
         cols = _infer_via_compiler(
             sources=[
-                Source(name="src", topic="src_topic", columns=[
-                    ColumnDefinition(name="id", type="BIGINT"),
-                    ColumnDefinition(name="name", type="STRING"),
-                ])
+                Source(
+                    name="src",
+                    topic="src_topic",
+                    columns=[
+                        ColumnDefinition(name="id", type="BIGINT"),
+                        ColumnDefinition(name="name", type="STRING"),
+                    ],
+                )
             ],
             model_sql="SELECT * FROM {{ source('src') }}",
         )
@@ -118,14 +122,22 @@ class TestGroup1SelectStarPropagation:
         """SELECT * from JOIN should propagate columns from both sources."""
         cols = _infer_via_compiler(
             sources=[
-                Source(name="orders", topic="orders_topic", columns=[
-                    ColumnDefinition(name="order_id", type="BIGINT"),
-                    ColumnDefinition(name="customer_id", type="INT"),
-                ]),
-                Source(name="customers", topic="customers_topic", columns=[
-                    ColumnDefinition(name="customer_id", type="INT"),
-                    ColumnDefinition(name="name", type="STRING"),
-                ]),
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="order_id", type="BIGINT"),
+                        ColumnDefinition(name="customer_id", type="INT"),
+                    ],
+                ),
+                Source(
+                    name="customers",
+                    topic="customers_topic",
+                    columns=[
+                        ColumnDefinition(name="customer_id", type="INT"),
+                        ColumnDefinition(name="name", type="STRING"),
+                    ],
+                ),
             ],
             model_sql=(
                 "SELECT * FROM {{ source('orders') }} o "
@@ -138,6 +150,7 @@ class TestGroup1SelectStarPropagation:
 # ===================================================================
 # GROUP 2: DECIMAL precision preservation
 # ===================================================================
+
 
 class TestGroup2DecimalPrecision:
     """DECIMAL(p,s) should be preserved through expressions."""
@@ -197,6 +210,7 @@ class TestGroup2DecimalPrecision:
 # GROUP 3: Subquery type inference
 # ===================================================================
 
+
 class TestGroup3SubqueryTypeInference:
     """Subquery and CTE columns are propagated to the outer query."""
 
@@ -255,6 +269,7 @@ class TestGroup3SubqueryTypeInference:
 # ===================================================================
 # GROUP 4: CASE / COALESCE type widening
 # ===================================================================
+
 
 class TestGroup4CaseCoalesceTypeWidening:
     """CASE and COALESCE should widen types across branches."""
@@ -322,6 +337,7 @@ class TestGroup4CaseCoalesceTypeWidening:
 # GROUP 5: Qualified column names in JOINs
 # ===================================================================
 
+
 class TestGroup5QualifiedColumnNamesInJoins:
     """Column references like ``a.id`` resolve by name only (ignoring table
     qualifier), so they work when the flat schema has the column name.
@@ -360,12 +376,20 @@ class TestGroup5QualifiedColumnNamesInJoins:
     def test_different_types_same_name_should_resolve_per_table(self):
         cols = _infer_via_compiler(
             sources=[
-                Source(name="orders", topic="orders_topic", columns=[
-                    ColumnDefinition(name="id", type="INT"),
-                ]),
-                Source(name="payments", topic="payments_topic", columns=[
-                    ColumnDefinition(name="id", type="BIGINT"),
-                ]),
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="id", type="INT"),
+                    ],
+                ),
+                Source(
+                    name="payments",
+                    topic="payments_topic",
+                    columns=[
+                        ColumnDefinition(name="id", type="BIGINT"),
+                    ],
+                ),
             ],
             model_sql=(
                 "SELECT o.id AS order_id, p.id AS payment_id "
@@ -380,12 +404,20 @@ class TestGroup5QualifiedColumnNamesInJoins:
     def test_same_column_name_different_types_amount(self):
         cols = _infer_via_compiler(
             sources=[
-                Source(name="orders", topic="orders_topic", columns=[
-                    ColumnDefinition(name="amount", type="DECIMAL(10,2)"),
-                ]),
-                Source(name="refunds", topic="refunds_topic", columns=[
-                    ColumnDefinition(name="amount", type="DOUBLE"),
-                ]),
+                Source(
+                    name="orders",
+                    topic="orders_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DECIMAL(10,2)"),
+                    ],
+                ),
+                Source(
+                    name="refunds",
+                    topic="refunds_topic",
+                    columns=[
+                        ColumnDefinition(name="amount", type="DOUBLE"),
+                    ],
+                ),
             ],
             model_sql=(
                 "SELECT o.amount AS order_amount, r.amount AS refund_amount "

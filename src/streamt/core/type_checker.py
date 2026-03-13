@@ -5,11 +5,11 @@ from __future__ import annotations
 import difflib
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from streamt.compiler.type_inference import TypeInferenceMixin
-from streamt.core.models import Model, Source, StreamtProject
+from streamt.core.models import Model, StreamtProject
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +126,10 @@ class ColumnTypeChecker:
         schema = self._inference._build_source_schema(model)
 
         try:
-            inferred = self._inference._extract_select_columns_with_types(
-                model.sql, schema_context=schema, model=model,
+            self._inference._extract_select_columns_with_types(
+                model.sql,
+                schema_context=schema,
+                model=model,
             )
         except Exception:
             logger.debug("Type inference failed for model '%s', skipping column checks", model.name)
@@ -145,13 +147,15 @@ class ColumnTypeChecker:
             for col_name in referenced:
                 if col_name not in declared:
                     suggestion = _suggest_similar(col_name, list(declared))
-                    results.append(TypeCheckResult(
-                        column=col_name,
-                        issue="missing_column",
-                        model=model.name,
-                        source_or_model=f"source '{source_name}'",
-                        suggestion=suggestion,
-                    ))
+                    results.append(
+                        TypeCheckResult(
+                            column=col_name,
+                            issue="missing_column",
+                            model=model.name,
+                            source_or_model=f"source '{source_name}'",
+                            suggestion=suggestion,
+                        )
+                    )
         return results
 
     def _check_missing_ref_columns(self, model: Model) -> list[TypeCheckResult]:
@@ -178,13 +182,15 @@ class ColumnTypeChecker:
             for col_name in referenced:
                 if col_name not in upstream_names:
                     suggestion = _suggest_similar(col_name, list(upstream_names))
-                    results.append(TypeCheckResult(
-                        column=col_name,
-                        issue="missing_column",
-                        model=model.name,
-                        source_or_model=f"model '{ref_name}'",
-                        suggestion=suggestion,
-                    ))
+                    results.append(
+                        TypeCheckResult(
+                            column=col_name,
+                            issue="missing_column",
+                            model=model.name,
+                            source_or_model=f"model '{ref_name}'",
+                            suggestion=suggestion,
+                        )
+                    )
         return results
 
     def _get_model_output_columns(self, model: Model) -> list[tuple[str, str]]:
@@ -203,7 +209,9 @@ class ColumnTypeChecker:
         try:
             schema = self._inference._build_source_schema(model)
             cols = self._inference._extract_select_columns_with_types(
-                model.sql, schema_context=schema, model=model,
+                model.sql,
+                schema_context=schema,
+                model=model,
             )
             self._inferred_columns[model.name] = cols
             return cols
@@ -212,7 +220,10 @@ class ColumnTypeChecker:
             return []
 
     def _extract_source_column_refs(
-        self, sql: str, table_name: str, schema: dict[str, str],
+        self,
+        sql: str,
+        table_name: str,
+        _schema: dict[str, str],
     ) -> set[str]:
         """Extract column names referenced in SQL from a specific source/model.
 
@@ -249,8 +260,15 @@ class ColumnTypeChecker:
             if col.table and col.table.lower() != table_name.lower():
                 continue
             # Skip virtual columns
-            if col_name.upper() in ("$ROWTIME", "ROWTIME", "$PROCTIME", "PROCTIME",
-                                     "WINDOW_START", "WINDOW_END", "WINDOW_TIME"):
+            if col_name.upper() in (
+                "$ROWTIME",
+                "ROWTIME",
+                "$PROCTIME",
+                "PROCTIME",
+                "WINDOW_START",
+                "WINDOW_END",
+                "WINDOW_TIME",
+            ):
                 continue
             referenced.add(col_name)
 

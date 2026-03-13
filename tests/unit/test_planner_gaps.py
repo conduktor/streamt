@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from streamt.compiler.manifest import (
     FlinkJobArtifact,
     GatewayRuleArtifact,
@@ -127,7 +125,9 @@ class TestPlannerPartialFailure:
         ]
 
         schemas = [
-            SchemaArtifact(subject=f"s{i}-value", schema={"type": "record", "name": f"S{i}", "fields": []})
+            SchemaArtifact(
+                subject=f"s{i}-value", schema={"type": "record", "name": f"S{i}", "fields": []}
+            )
             for i in range(1, 4)
         ]
         plan = DeploymentPlan(
@@ -153,9 +153,7 @@ class TestPlannerPartialFailure:
             TopicArtifact(name="t2", partitions=3, replication_factor=1),
         ]
         plan = DeploymentPlan(
-            topic_changes=[
-                TopicChange(topic=t.name, action="create", desired=t) for t in topics
-            ],
+            topic_changes=[TopicChange(topic=t.name, action="create", desired=t) for t in topics],
         )
 
         planner = DeploymentPlanner(_manifest(), kafka_deployer=kafka)
@@ -174,23 +172,36 @@ class TestPlannerPartialFailure:
         flink.apply_job.return_value = "submitted"
 
         plan = DeploymentPlan(
-            schema_changes=[SchemaChange(
-                subject="s-value", action="register",
-                desired=SchemaArtifact(subject="s-value", schema={"type": "record", "name": "S", "fields": []}),
-            )],
-            topic_changes=[TopicChange(
-                topic="t", action="create",
-                desired=TopicArtifact(name="t", partitions=1, replication_factor=1),
-            )],
-            flink_changes=[FlinkJobChange(
-                job_name="j", action="submit",
-                desired=FlinkJobArtifact(name="j", sql="SELECT 1"),
-            )],
+            schema_changes=[
+                SchemaChange(
+                    subject="s-value",
+                    action="register",
+                    desired=SchemaArtifact(
+                        subject="s-value", schema={"type": "record", "name": "S", "fields": []}
+                    ),
+                )
+            ],
+            topic_changes=[
+                TopicChange(
+                    topic="t",
+                    action="create",
+                    desired=TopicArtifact(name="t", partitions=1, replication_factor=1),
+                )
+            ],
+            flink_changes=[
+                FlinkJobChange(
+                    job_name="j",
+                    action="submit",
+                    desired=FlinkJobArtifact(name="j", sql="SELECT 1"),
+                )
+            ],
         )
 
         planner = DeploymentPlanner(
-            _manifest(), schema_registry_deployer=sr,
-            kafka_deployer=kafka, flink_deployer=flink,
+            _manifest(),
+            schema_registry_deployer=sr,
+            kafka_deployer=kafka,
+            flink_deployer=flink,
         )
         results = planner.apply(plan)
 
@@ -221,7 +232,6 @@ class TestPlannerPartialFailure:
 
 
 class TestDeploymentPlanProperties:
-
     def test_empty_plan_has_no_changes(self):
         p = DeploymentPlan()
         assert not p.has_changes
@@ -238,7 +248,10 @@ class TestDeploymentPlanProperties:
 
     def test_creates_counted(self):
         p = DeploymentPlan(
-            topic_changes=[TopicChange(topic="t1", action="create"), TopicChange(topic="t2", action="create")],
+            topic_changes=[
+                TopicChange(topic="t1", action="create"),
+                TopicChange(topic="t2", action="create"),
+            ],
             schema_changes=[SchemaChange(subject="s1", action="register")],
         )
         assert p.creates == 3
@@ -280,7 +293,6 @@ class TestDeploymentPlanProperties:
 
 
 class TestPlannerDelegation:
-
     def test_no_deployers_returns_empty(self):
         plan = DeploymentPlanner(_manifest()).plan()
         assert not plan.has_changes
@@ -288,11 +300,14 @@ class TestPlannerDelegation:
     def test_delegates_to_kafka(self):
         kafka = _mock_kafka()
         kafka.plan_topic.return_value = TopicChange(
-            topic="e", action="create",
+            topic="e",
+            action="create",
             desired=TopicArtifact(name="e", partitions=3, replication_factor=1),
         )
         plan = DeploymentPlanner(
-            _manifest(topics=[{"name": "e", "partitions": 3, "replication_factor": 1, "config": {}}]),
+            _manifest(
+                topics=[{"name": "e", "partitions": 3, "replication_factor": 1, "config": {}}]
+            ),
             kafka_deployer=kafka,
         ).plan()
         assert len(plan.topic_changes) == 1
@@ -301,8 +316,11 @@ class TestPlannerDelegation:
     def test_delegates_to_sr(self):
         sr = _mock_sr()
         sr.plan_schema.return_value = SchemaChange(
-            subject="e-value", action="register",
-            desired=SchemaArtifact(subject="e-value", schema={"type": "record", "name": "E", "fields": []}),
+            subject="e-value",
+            action="register",
+            desired=SchemaArtifact(
+                subject="e-value", schema={"type": "record", "name": "E", "fields": []}
+            ),
         )
         plan = DeploymentPlanner(
             _manifest(schemas=[{"subject": "e-value", "schema": {}, "schema_type": "AVRO"}]),
@@ -313,7 +331,8 @@ class TestPlannerDelegation:
     def test_delegates_to_flink(self):
         flink = _mock_flink()
         flink.plan_job.return_value = FlinkJobChange(
-            job_name="p", action="submit",
+            job_name="p",
+            action="submit",
             desired=FlinkJobArtifact(name="p", sql="SELECT 1"),
         )
         plan = DeploymentPlanner(
@@ -325,18 +344,22 @@ class TestPlannerDelegation:
     def test_delegates_to_gateway(self):
         gw = _mock_gw()
         gw.plan.return_value = GatewayRuleChange(
-            name="r1", action="create",
+            name="r1",
+            action="create",
             desired=GatewayRuleArtifact(name="r1", virtual_topic="vt", physical_topic="pt"),
         )
         plan = DeploymentPlanner(
-            _manifest(gateway_rules=[{"name": "r1", "virtualTopic": "vt", "physicalTopic": "pt", "interceptors": []}]),
+            _manifest(
+                gateway_rules=[
+                    {"name": "r1", "virtualTopic": "vt", "physicalTopic": "pt", "interceptors": []}
+                ]
+            ),
             gateway_deployer=gw,
         ).plan()
         assert plan.gateway_changes[0].action == "create"
 
 
 class TestPlannerApplyRouting:
-
     def test_skips_none_actions(self):
         kafka = _mock_kafka()
         plan = DeploymentPlan(topic_changes=[TopicChange(topic="t1", action="none")])
@@ -347,7 +370,9 @@ class TestPlannerApplyRouting:
         kafka = _mock_kafka()
         kafka.plan_topic.return_value = TopicChange(topic="t1", action="none")
         DeploymentPlanner(
-            _manifest(topics=[{"name": "t1", "partitions": 1, "replication_factor": 1, "config": {}}]),
+            _manifest(
+                topics=[{"name": "t1", "partitions": 1, "replication_factor": 1, "config": {}}]
+            ),
             kafka_deployer=kafka,
         ).apply()
         kafka.plan_topic.assert_called_once()
@@ -355,19 +380,31 @@ class TestPlannerApplyRouting:
     def test_unchanged_routed_correctly(self):
         kafka = _mock_kafka()
         kafka.apply_topic.return_value = "unchanged"
-        plan = DeploymentPlan(topic_changes=[TopicChange(
-            topic="t1", action="update",
-            desired=TopicArtifact(name="t1", partitions=3, replication_factor=1),
-        )])
+        plan = DeploymentPlan(
+            topic_changes=[
+                TopicChange(
+                    topic="t1",
+                    action="update",
+                    desired=TopicArtifact(name="t1", partitions=3, replication_factor=1),
+                )
+            ]
+        )
         results = DeploymentPlanner(_manifest(), kafka_deployer=kafka).apply(plan)
         assert "topic:t1" in results["unchanged"]
 
     def test_updated_schema_routed_correctly(self):
         sr = _mock_sr()
         sr.apply_schema.return_value = "updated"
-        plan = DeploymentPlan(schema_changes=[SchemaChange(
-            subject="s-value", action="update",
-            desired=SchemaArtifact(subject="s-value", schema={"type": "record", "name": "S", "fields": []}),
-        )])
+        plan = DeploymentPlan(
+            schema_changes=[
+                SchemaChange(
+                    subject="s-value",
+                    action="update",
+                    desired=SchemaArtifact(
+                        subject="s-value", schema={"type": "record", "name": "S", "fields": []}
+                    ),
+                )
+            ]
+        )
         results = DeploymentPlanner(_manifest(), schema_registry_deployer=sr).apply(plan)
         assert "schema:s-value" in results["updated"]

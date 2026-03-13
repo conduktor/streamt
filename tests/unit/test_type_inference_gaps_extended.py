@@ -6,8 +6,6 @@ Groups 1-5 live in ``test_type_inference_gaps.py``.
 
 from __future__ import annotations
 
-import pytest
-
 from streamt.compiler.compiler import Compiler
 from streamt.compiler.type_inference import TypeInferenceMixin
 from streamt.core.models import (
@@ -25,9 +23,11 @@ from streamt.core.models import (
 # Helpers (same contract as the main gaps module)
 # ---------------------------------------------------------------------------
 
+
 class StubTypeInference(TypeInferenceMixin):
     def _build_source_schema(self, model):
         return {}
+
     _current_model = None
 
 
@@ -58,6 +58,7 @@ def _infer_via_compiler(sources: list[Source], model_sql: str) -> list[tuple[str
 # ===================================================================
 # GROUP 6: Literal types
 # ===================================================================
+
 
 class TestGroup6LiteralTypes:
     """Literal values should infer to appropriate types."""
@@ -112,8 +113,8 @@ class TestGroup6LiteralTypes:
 # GROUP 7: Aggregate precision
 # ===================================================================
 
-class TestGroup7AggregatePrecision:
 
+class TestGroup7AggregatePrecision:
     def test_sum_int_returns_bigint(self):
         cols = _infer("SELECT SUM(int_col) AS total FROM t", {"int_col": "INT"})
         assert cols[0][1] == "BIGINT"
@@ -191,8 +192,8 @@ class TestGroup7AggregatePrecision:
 # GROUP 8: UDF return types
 # ===================================================================
 
-class TestGroup8UDFReturnTypes:
 
+class TestGroup8UDFReturnTypes:
     def test_unknown_udf_returns_string(self):
         cols = _infer("SELECT MY_CUSTOM_UDF(x) AS result FROM t", {"x": "INT"})
         assert cols[0][1] == "STRING"
@@ -213,7 +214,8 @@ class TestGroup8UDFReturnTypes:
         stub = StubTypeInference()
         stub._udf_types = {"MY_CUSTOM_UDF": "BIGINT"}
         cols = stub._extract_select_columns_with_types(
-            "SELECT MY_CUSTOM_UDF(x) AS result FROM t", schema_context={"x": "INT"},
+            "SELECT MY_CUSTOM_UDF(x) AS result FROM t",
+            schema_context={"x": "INT"},
         )
         assert cols[0][1] == "BIGINT"
 
@@ -221,15 +223,22 @@ class TestGroup8UDFReturnTypes:
         stub = StubTypeInference()
         stub._udf_types = {"MY_FUNC": "DOUBLE"}
         cols = stub._extract_select_columns_with_types(
-            "SELECT my_func(x) AS result FROM t", schema_context={"x": "INT"},
+            "SELECT my_func(x) AS result FROM t",
+            schema_context={"x": "INT"},
         )
         assert cols[0][1] == "DOUBLE"
 
     def test_udf_via_compiler_project_config(self):
         project = _project(
-            sources=[Source(name="src", topic="src_topic", columns=[
-                ColumnDefinition(name="x", type="INT"),
-            ])],
+            sources=[
+                Source(
+                    name="src",
+                    topic="src_topic",
+                    columns=[
+                        ColumnDefinition(name="x", type="INT"),
+                    ],
+                )
+            ],
             models=[Model(name="m", sql="SELECT MY_AGG(x) AS result FROM {{ source('src') }}")],
         )
         project.udfs = [UDFDeclaration(name="MY_AGG", return_type="BIGINT")]
@@ -243,8 +252,8 @@ class TestGroup8UDFReturnTypes:
 # GROUP 9: Timestamp precision
 # ===================================================================
 
-class TestGroup9TimestampPrecision:
 
+class TestGroup9TimestampPrecision:
     def test_current_timestamp_returns_ltz3(self):
         cols = _infer("SELECT CURRENT_TIMESTAMP AS ts FROM t")
         assert cols[0][1] == "TIMESTAMP_LTZ(3)"
@@ -285,8 +294,8 @@ class TestGroup9TimestampPrecision:
 # GROUP 10: REGEXP_REPLACE on typed columns
 # ===================================================================
 
-class TestGroup10RegexpReplaceOnTypedColumns:
 
+class TestGroup10RegexpReplaceOnTypedColumns:
     def test_regexp_replace_on_bigint_returns_string(self):
         cols = _infer(
             "SELECT REGEXP_REPLACE(amount, '[0-9]', 'X') AS masked FROM t",
@@ -317,9 +326,13 @@ class TestGroup10RegexpReplaceOnTypedColumns:
         """
         cols = _infer_via_compiler(
             sources=[
-                Source(name="src", topic="src_topic", columns=[
-                    ColumnDefinition(name="id", type="BIGINT"),
-                ])
+                Source(
+                    name="src",
+                    topic="src_topic",
+                    columns=[
+                        ColumnDefinition(name="id", type="BIGINT"),
+                    ],
+                )
             ],
             model_sql=(
                 "SELECT REGEXP_REPLACE(CAST(id AS STRING), '\\d', '*') AS id "
@@ -332,14 +345,15 @@ class TestGroup10RegexpReplaceOnTypedColumns:
         """NULLIF masking preserves the original column type."""
         cols = _infer_via_compiler(
             sources=[
-                Source(name="src", topic="src_topic", columns=[
-                    ColumnDefinition(name="id", type="BIGINT"),
-                ])
+                Source(
+                    name="src",
+                    topic="src_topic",
+                    columns=[
+                        ColumnDefinition(name="id", type="BIGINT"),
+                    ],
+                )
             ],
-            model_sql=(
-                "SELECT NULLIF(id, id) AS id "
-                "FROM {{ source('src') }}"
-            ),
+            model_sql=("SELECT NULLIF(id, id) AS id FROM {{ source('src') }}"),
         )
         assert cols[0][1] == "BIGINT"
 
@@ -354,6 +368,7 @@ class TestGroup10RegexpReplaceOnTypedColumns:
 # ===================================================================
 # Schema generation: Avro type mapping
 # ===================================================================
+
 
 class TestSchemaGenerationColumnTypes:
     """_generate_schema_from_columns hardcodes all Avro fields to
@@ -406,12 +421,14 @@ class TestSchemaGenerationColumnTypes:
         assert inner.get("scale") == 2
 
     def test_multiple_columns_typed_correctly(self):
-        schema = self._schema_for([
-            ColumnDefinition(name="id", type="BIGINT"),
-            ColumnDefinition(name="amount", type="DOUBLE"),
-            ColumnDefinition(name="active", type="BOOLEAN"),
-            ColumnDefinition(name="name", type="STRING"),
-        ])
+        schema = self._schema_for(
+            [
+                ColumnDefinition(name="id", type="BIGINT"),
+                ColumnDefinition(name="amount", type="DOUBLE"),
+                ColumnDefinition(name="active", type="BOOLEAN"),
+                ColumnDefinition(name="name", type="STRING"),
+            ]
+        )
         types = {f["name"]: f["type"] for f in schema["fields"]}
         assert types["id"] == ["null", "long"]
         assert types["amount"] == ["null", "double"]
@@ -423,8 +440,8 @@ class TestSchemaGenerationColumnTypes:
 # Cross-cutting scenarios
 # ===================================================================
 
-class TestCrossCuttingScenarios:
 
+class TestCrossCuttingScenarios:
     def test_realistic_aggregation_query(self):
         cols = _infer(
             "SELECT "
@@ -470,12 +487,16 @@ class TestCrossCuttingScenarios:
 
     def test_full_pipeline_select_star_with_typed_schema(self):
         sources = [
-            Source(name="events", topic="events_topic", columns=[
-                ColumnDefinition(name="event_id", type="BIGINT"),
-                ColumnDefinition(name="amount", type="DECIMAL(10,2)"),
-                ColumnDefinition(name="created_at", type="TIMESTAMP(3)"),
-                ColumnDefinition(name="is_valid", type="BOOLEAN"),
-            ])
+            Source(
+                name="events",
+                topic="events_topic",
+                columns=[
+                    ColumnDefinition(name="event_id", type="BIGINT"),
+                    ColumnDefinition(name="amount", type="DECIMAL(10,2)"),
+                    ColumnDefinition(name="created_at", type="TIMESTAMP(3)"),
+                    ColumnDefinition(name="is_valid", type="BOOLEAN"),
+                ],
+            )
         ]
         project = _project(
             sources=sources,
@@ -542,8 +563,7 @@ class TestCrossCuttingScenarios:
 
     def test_nested_case_with_aggregates(self):
         cols = _infer(
-            "SELECT CASE WHEN COUNT(*) > 10 THEN SUM(amount) ELSE 0 END "
-            "AS conditional_sum FROM t",
+            "SELECT CASE WHEN COUNT(*) > 10 THEN SUM(amount) ELSE 0 END AS conditional_sum FROM t",
             {"amount": "DOUBLE"},
         )
         # SUM(DOUBLE) is DOUBLE, 0 literal is INT, merge(DOUBLE, INT) -> DOUBLE

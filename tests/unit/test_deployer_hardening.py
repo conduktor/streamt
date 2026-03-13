@@ -6,17 +6,16 @@ error sanitization, JSON parse resilience.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 import requests
 
+from streamt.deployer.connect import ConnectDeployer
 from streamt.deployer.flink import FlinkDeployer
 from streamt.deployer.gateway import GatewayDeployer
-from streamt.deployer.schema_registry import SchemaRegistryDeployer
-from streamt.deployer.connect import ConnectDeployer
 from streamt.deployer.planner import _sanitize_error
-
+from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
 # ===================================================================
 # URL Validation
@@ -24,7 +23,6 @@ from streamt.deployer.planner import _sanitize_error
 
 
 class TestUrlValidation:
-
     def test_flink_rejects_empty_url(self):
         with pytest.raises(ValueError, match="Invalid Flink REST URL"):
             FlinkDeployer(rest_url="")
@@ -60,14 +58,11 @@ class TestUrlValidation:
 
 
 class TestRetryOnTimeout:
-
     def test_flink_retries_on_timeout(self):
         deployer = FlinkDeployer(rest_url="http://localhost:8082")
-        ok = Mock(status_code=200, content=b'[]', json=Mock(return_value=[]))
+        ok = Mock(status_code=200, content=b"[]", json=Mock(return_value=[]))
         ok.raise_for_status = Mock()
-        deployer._http_session.request = Mock(
-            side_effect=[requests.Timeout("timed out"), ok]
-        )
+        deployer._http_session.request = Mock(side_effect=[requests.Timeout("timed out"), ok])
         with patch("streamt.deployer.flink.time.sleep"):
             result = deployer._request("GET", "/jobs/overview")
         assert result == []
@@ -78,9 +73,7 @@ class TestRetryOnTimeout:
         deployer = SchemaRegistryDeployer(url="http://localhost:8081")
         ok = Mock(status_code=200, json=Mock(return_value=["s1"]))
         ok.raise_for_status = Mock()
-        deployer._http_session.request = Mock(
-            side_effect=[requests.Timeout("timed out"), ok]
-        )
+        deployer._http_session.request = Mock(side_effect=[requests.Timeout("timed out"), ok])
         with patch("streamt.deployer.schema_registry.time.sleep"):
             assert deployer.list_subjects() == ["s1"]
 
@@ -91,11 +84,10 @@ class TestRetryOnTimeout:
 
 
 class TestRetryOnServerError:
-
     def test_flink_retries_on_503(self):
         deployer = FlinkDeployer(rest_url="http://localhost:8082")
-        err_resp = Mock(status_code=503, content=b'Service Unavailable')
-        ok_resp = Mock(status_code=200, content=b'[]', json=Mock(return_value=[]))
+        err_resp = Mock(status_code=503, content=b"Service Unavailable")
+        ok_resp = Mock(status_code=200, content=b"[]", json=Mock(return_value=[]))
         ok_resp.raise_for_status = Mock()
         deployer._http_session.request = Mock(side_effect=[err_resp, ok_resp])
         with patch("streamt.deployer.flink.time.sleep"):
@@ -111,7 +103,6 @@ class TestRetryOnServerError:
 
 
 class TestGatewayClosedGuard:
-
     def test_request_after_close_raises(self):
         deployer = GatewayDeployer(admin_url="http://localhost:8888")
         deployer.close()
@@ -125,7 +116,6 @@ class TestGatewayClosedGuard:
 
 
 class TestErrorSanitization:
-
     def test_strips_password(self):
         assert "***" in _sanitize_error("Connection failed password=s3cret host=db")
         assert "s3cret" not in _sanitize_error("Connection failed password=s3cret host=db")
@@ -149,17 +139,18 @@ class TestErrorSanitization:
 
 
 class TestJsonParseResilience:
-
     def test_sr_handles_malformed_schema_json(self):
         deployer = SchemaRegistryDeployer(url="http://localhost:8081")
         resp = Mock(
             status_code=200,
-            json=Mock(return_value={
-                "schema": "NOT VALID JSON{{{",
-                "version": 1,
-                "id": 42,
-                "schemaType": "AVRO",
-            }),
+            json=Mock(
+                return_value={
+                    "schema": "NOT VALID JSON{{{",
+                    "version": 1,
+                    "id": 42,
+                    "schemaType": "AVRO",
+                }
+            ),
         )
         resp.raise_for_status = Mock()
         deployer._http_session.request = Mock(return_value=resp)
@@ -174,7 +165,6 @@ class TestJsonParseResilience:
 
 
 class TestConfigurableTimeouts:
-
     def test_flink_custom_timeout(self):
         deployer = FlinkDeployer(rest_url="http://localhost:8082", timeout=5)
         assert deployer._timeout == 5

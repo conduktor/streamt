@@ -119,9 +119,13 @@ class FlinkDeployer:
     ) -> None:
         """Initialize Flink deployer."""
         if not rest_url or not rest_url.startswith(("http://", "https://")):
-            raise ValueError(f"Invalid Flink REST URL: {rest_url!r} — must start with http:// or https://")
+            raise ValueError(
+                f"Invalid Flink REST URL: {rest_url!r} — must start with http:// or https://"
+            )
         if sql_gateway_url and not sql_gateway_url.startswith(("http://", "https://")):
-            raise ValueError(f"Invalid SQL Gateway URL: {sql_gateway_url!r} — must start with http:// or https://")
+            raise ValueError(
+                f"Invalid SQL Gateway URL: {sql_gateway_url!r} — must start with http:// or https://"
+            )
 
         self.rest_url = rest_url.rstrip("/")
         self.sql_gateway_url = sql_gateway_url.rstrip("/") if sql_gateway_url else None
@@ -136,8 +140,13 @@ class FlinkDeployer:
         self._sql_hashes: dict[str, str] = {}
         self._load_hashes()
         self._http_session = self._configure_http_session(
-            username, password, api_key,
-            ssl_ca_location, ssl_certificate_location, ssl_key_location, ssl_key_password,
+            username,
+            password,
+            api_key,
+            ssl_ca_location,
+            ssl_certificate_location,
+            ssl_key_location,
+            ssl_key_password,
         )
 
     @staticmethod
@@ -219,9 +228,15 @@ class FlinkDeployer:
         last_err: Optional[Exception] = None
         for attempt in range(self._retries):
             try:
-                response = self._http_session.request(method, url, timeout=effective_timeout, **kwargs)
+                response = self._http_session.request(
+                    method, url, timeout=effective_timeout, **kwargs
+                )
                 status_code = getattr(response, "status_code", 200)
-                if isinstance(status_code, int) and status_code >= 500 and attempt < self._retries - 1:
+                if (
+                    isinstance(status_code, int)
+                    and status_code >= 500
+                    and attempt < self._retries - 1
+                ):
                     last_err = requests.HTTPError(response=response)
                     time.sleep(0.5 * (attempt + 1))
                     continue
@@ -259,9 +274,7 @@ class FlinkDeployer:
             json={},
         )
         if not isinstance(response, dict) or "sessionHandle" not in response:
-            raise RuntimeError(
-                f"SQL Gateway did not return a sessionHandle. Response: {response}"
-            )
+            raise RuntimeError(f"SQL Gateway did not return a sessionHandle. Response: {response}")
         self.session_id = response["sessionHandle"]
         return self.session_id
 
@@ -362,7 +375,9 @@ class FlinkDeployer:
             status=best_match.get("state") or best_match.get("status"),
         )
 
-    def _poll_statement(self, session_id: str, operation_handle: str, statement: str, timeout: int) -> None:
+    def _poll_statement(
+        self, session_id: str, operation_handle: str, statement: str, timeout: int
+    ) -> None:
         """Poll a submitted statement until FINISHED or raise on ERROR/timeout.
 
         Uses exponential backoff (0.5 s → 5 s cap) with a wall-clock deadline.
@@ -427,10 +442,14 @@ class FlinkDeployer:
                     json={"statement": statement},
                 )
                 if not isinstance(response, dict):
-                    raise RuntimeError(f"Unexpected response type for statement: {statement[:50]}...")
+                    raise RuntimeError(
+                        f"Unexpected response type for statement: {statement[:50]}..."
+                    )
                 operation_handle = response.get("operationHandle")
                 if not operation_handle:
-                    raise RuntimeError(f"No operationHandle returned for statement: {statement[:50]}...")
+                    raise RuntimeError(
+                        f"No operationHandle returned for statement: {statement[:50]}..."
+                    )
 
                 self._poll_statement(session_id, operation_handle, statement, statement_timeout)
                 results.append({"status": "FINISHED", "statement": statement[:100]})
@@ -475,37 +494,41 @@ class FlinkDeployer:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = path.with_suffix(".lock")
-        lock_fd = open(lock_path, "w")
-        try:
+        with open(lock_path, "w") as lock_fd:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            # Re-read on-disk state under the lock and merge
-            on_disk: dict[str, str] = {}
-            if path.exists():
-                try:
-                    data = _json.loads(path.read_text())
-                    if isinstance(data, dict):
-                        on_disk = data
-                except Exception:
-                    pass
-            merged = {**on_disk, **self._sql_hashes}
-            fd = tempfile.NamedTemporaryFile(
-                mode="w", dir=path.parent, suffix=".tmp", delete=False,
-            )
             try:
-                _json.dump(merged, fd)
-                fd.flush()
-                os.fsync(fd.fileno())
-                fd.close()
-                Path(fd.name).replace(path)
-            except Exception as e:
-                logger.warning("Failed to save hashes to %s: %s", path, e)
+                # Re-read on-disk state under the lock and merge
+                on_disk: dict[str, str] = {}
+                if path.exists():
+                    try:
+                        data = _json.loads(path.read_text())
+                        if isinstance(data, dict):
+                            on_disk = data
+                    except Exception:
+                        pass
+                merged = {**on_disk, **self._sql_hashes}
+                tmp_name = None
                 try:
-                    Path(fd.name).unlink(missing_ok=True)
-                except Exception:
-                    pass
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        dir=path.parent,
+                        suffix=".tmp",
+                        delete=False,
+                    ) as fd:
+                        tmp_name = fd.name
+                        _json.dump(merged, fd)
+                        fd.flush()
+                        os.fsync(fd.fileno())
+                    Path(tmp_name).replace(path)
+                except Exception as e:
+                    logger.warning("Failed to save hashes to %s: %s", path, e)
+                    if tmp_name:
+                        try:
+                            Path(tmp_name).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
     def set_sql_hash(self, job_name: str, sql: str) -> None:
         """Record the SQL hash for a job (used to seed state from a prior deploy)."""

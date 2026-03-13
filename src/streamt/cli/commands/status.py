@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 import json
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Optional
 
 import click
 
@@ -25,7 +26,9 @@ from streamt.output import OutputFormatter, StructuredError, get_output_format_f
 
 
 @contextmanager
-def _deployer_section(fmt: OutputFormatter, is_text: bool, service: str) -> Generator[None, None, None]:
+def _deployer_section(
+    fmt: OutputFormatter, is_text: bool, service: str
+) -> Generator[None, None, None]:
     """Catch and report deployer errors uniformly across status sections."""
     try:
         yield
@@ -37,10 +40,20 @@ def _deployer_section(fmt: OutputFormatter, is_text: bool, service: str) -> Gene
 
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
-@click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
+@click.option(
+    "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
+)
 @click.option("--lag", is_flag=True, help="Show consumer lag for topics")
-@click.option("--format", "output_format", type=click.Choice(["text", "json"]), default=None, help="Output format (overrides global --output)")
-@click.option("--filter", "filter_pattern", type=str, help="Filter resources by name pattern (glob-style)")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default=None,
+    help="Output format (overrides global --output)",
+)
+@click.option(
+    "--filter", "filter_pattern", type=str, help="Filter resources by name pattern (glob-style)"
+)
 @click.pass_context
 def status(
     ctx: click.Context,
@@ -66,7 +79,8 @@ def status(
     deployers_to_close: list[object] = []
     try:
         parser = ProjectParser(
-            project_path, environment=environment,
+            project_path,
+            environment=environment,
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
@@ -75,7 +89,10 @@ def status(
 
         data: dict[str, object] = {
             "project": project.project.name,
-            "schemas": [], "topics": [], "flink_jobs": [], "connectors": [],
+            "schemas": [],
+            "topics": [],
+            "flink_jobs": [],
+            "connectors": [],
             "gateway_rules": [],
         }
 
@@ -91,13 +108,18 @@ def status(
                         if not matches(s["subject"]):
                             continue
                         state = sd.get_schema_state(s["subject"])
-                        entry = {"subject": s["subject"], "exists": state.exists,
-                                 "version": state.version if state.exists else None,
-                                 "schema_type": state.schema_type if state.exists else None}
+                        entry = {
+                            "subject": s["subject"],
+                            "exists": state.exists,
+                            "version": state.version if state.exists else None,
+                            "schema_type": state.schema_type if state.exists else None,
+                        }
                         data["schemas"].append(entry)
                         if is_text:
                             if state.exists:
-                                fmt.print(f"  [green]OK[/green] {s['subject']} (v{state.version}, {state.schema_type})")
+                                fmt.print(
+                                    f"  [green]OK[/green] {s['subject']} (v{state.version}, {state.schema_type})"
+                                )
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {s['subject']}")
             elif is_text:
@@ -114,9 +136,12 @@ def status(
                     if not matches(t["name"]):
                         continue
                     state = kd.get_topic_state(t["name"])
-                    entry: dict[str, object] = {"name": t["name"], "exists": state.exists,
-                             "partitions": state.partitions if state.exists else None,
-                             "replication_factor": state.replication_factor if state.exists else None}
+                    entry: dict[str, object] = {
+                        "name": t["name"],
+                        "exists": state.exists,
+                        "partitions": state.partitions if state.exists else None,
+                        "replication_factor": state.replication_factor if state.exists else None,
+                    }
                     if lag and state.exists:
                         entry["message_count"] = kd.get_topic_message_count(t["name"])
                     drifts: list[dict[str, object]] = []
@@ -124,9 +149,21 @@ def status(
                         desired_p = t.get("partitions")
                         desired_rf = t.get("replication_factor")
                         if desired_p is not None and state.partitions != desired_p:
-                            drifts.append({"field": "partitions", "actual": state.partitions, "desired": desired_p})
+                            drifts.append(
+                                {
+                                    "field": "partitions",
+                                    "actual": state.partitions,
+                                    "desired": desired_p,
+                                }
+                            )
                         if desired_rf is not None and state.replication_factor != desired_rf:
-                            drifts.append({"field": "replication_factor", "actual": state.replication_factor, "desired": desired_rf})
+                            drifts.append(
+                                {
+                                    "field": "replication_factor",
+                                    "actual": state.replication_factor,
+                                    "desired": desired_rf,
+                                }
+                            )
                     if drifts:
                         entry["status"] = "DRIFT"
                         entry["drifts"] = drifts
@@ -137,8 +174,12 @@ def status(
                     data["topics"].append(entry)
                     if is_text:
                         if state.exists and drifts:
-                            drift_parts = [f"{d['field']}: {d['actual']} → {d['desired']}" for d in drifts]
-                            fmt.print(f"  [yellow]DRIFT[/yellow] {t['name']}  {', '.join(drift_parts)}")
+                            drift_parts = [
+                                f"{d['field']}: {d['actual']} → {d['desired']}" for d in drifts
+                            ]
+                            fmt.print(
+                                f"  [yellow]DRIFT[/yellow] {t['name']}  {', '.join(drift_parts)}"
+                            )
                         elif state.exists:
                             line = f"  [green]OK[/green] {t['name']} (partitions: {state.partitions}, rf: {state.replication_factor})"
                             if "message_count" in entry:
@@ -159,9 +200,12 @@ def status(
                         if not matches(j["name"]):
                             continue
                         state = fd.get_job_state(j["name"])
-                        entry = {"name": j["name"], "exists": state.exists,
-                                 "job_id": state.job_id if state.exists else None,
-                                 "status": state.status if state.exists else None}
+                        entry = {
+                            "name": j["name"],
+                            "exists": state.exists,
+                            "job_id": state.job_id if state.exists else None,
+                            "status": state.status if state.exists else None,
+                        }
                         data["flink_jobs"].append(entry)
                         if is_text:
                             if state.exists:
@@ -184,8 +228,11 @@ def status(
                         if not matches(c["name"]):
                             continue
                         state = cd.get_connector_state(c["name"])
-                        entry = {"name": c["name"], "exists": state.exists,
-                                 "status": state.status if state.exists else None}
+                        entry = {
+                            "name": c["name"],
+                            "exists": state.exists,
+                            "status": state.status if state.exists else None,
+                        }
                         data["connectors"].append(entry)
                         if is_text:
                             if state.exists:
@@ -210,14 +257,16 @@ def status(
                         alias = gd.get_alias_topic(r["virtualTopic"])
                         exists = alias is not None
                         entry: dict[str, object] = {
-                            "name": r["name"], "exists": exists,
+                            "name": r["name"],
+                            "exists": exists,
                             "virtual_topic": r["virtualTopic"],
                             "physical_topic": r["physicalTopic"],
                         }
                         desired_interceptors = r.get("interceptors", [])
                         if exists and desired_interceptors:
                             found = sum(
-                                1 for ic in desired_interceptors
+                                1
+                                for ic in desired_interceptors
                                 if ic.get("name") and gd.get_interceptor(ic["name"])
                             )
                             entry["interceptors_desired"] = len(desired_interceptors)
@@ -228,7 +277,9 @@ def status(
                                 ic_info = ""
                                 if "interceptors_found" in entry:
                                     ic_info = f", interceptors: {entry['interceptors_found']}/{entry['interceptors_desired']}"
-                                fmt.print(f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']}{ic_info})")
+                                fmt.print(
+                                    f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']}{ic_info})"
+                                )
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {r['name']}")
             elif is_text:
@@ -241,7 +292,9 @@ def status(
             healthy = sum(1 for t in data["topics"] if t["exists"])
             missing_t = sum(1 for t in data["topics"] if not t["exists"])
             running = sum(1 for j in data["flink_jobs"] if j.get("status") == "RUNNING")
-            other = sum(1 for j in data["flink_jobs"] if j.get("status") and j["status"] != "RUNNING")
+            other = sum(
+                1 for j in data["flink_jobs"] if j.get("status") and j["status"] != "RUNNING"
+            )
             parts = []
             if data["topics"]:
                 parts.append(f"Topics: {healthy} OK, {missing_t} missing")

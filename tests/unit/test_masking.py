@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import pytest
-
-from streamt.compiler.masking import apply_masking_to_sql, build_mask_expression
 from streamt.compiler.compiler import Compiler
+from streamt.compiler.masking import apply_masking_to_sql, build_mask_expression
 from streamt.core.models import (
     ColumnDefinition,
+    FlinkClusterConfig,
+    FlinkConfig,
     KafkaConfig,
     Model,
-    SecurityPolicies,
     ProjectInfo,
     RuntimeConfig,
+    SecurityPolicies,
     Source,
     StreamtProject,
-    FlinkConfig,
-    FlinkClusterConfig,
 )
 
 
@@ -145,10 +143,12 @@ class TestCompilerMaskingTypePreservation:
                 kafka=KafkaConfig(bootstrap_servers="localhost:9092"),
                 flink=FlinkConfig(
                     default="local",
-                    clusters={"local": FlinkClusterConfig(
-                        rest_url="http://localhost:8081",
-                        sql_gateway_url="http://localhost:8083",
-                    )},
+                    clusters={
+                        "local": FlinkClusterConfig(
+                            rest_url="http://localhost:8081",
+                            sql_gateway_url="http://localhost:8083",
+                        )
+                    },
                 ),
             ),
             sources=sources,

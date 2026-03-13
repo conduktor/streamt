@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -20,6 +21,8 @@ from streamt.core.models import (
     TopicRules,
 )
 from streamt.core.parser import ProjectParser
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationLevel(str, Enum):
@@ -166,7 +169,7 @@ class ProjectValidator:
     def _validate_model(self, model: Model) -> None:
         """Validate a single model."""
         # Check SQL has FROM clause (required for streaming)
-        if model.sql and not re.search(r'\bFROM\b', model.sql, re.IGNORECASE):
+        if model.sql and not re.search(r"\bFROM\b", model.sql, re.IGNORECASE):
             self.result.add_error(
                 "SQL_NO_FROM",
                 f"Model '{model.name}' SQL has no FROM clause. "
@@ -392,7 +395,9 @@ class ProjectValidator:
                 if ref.ref and ref.ref not in self.model_names:
                     self.result.add_error(
                         "EXPOSURE_MODEL_NOT_FOUND",
-                        errors.exposure_model_not_found(exposure.name, ref.ref, list(self.model_names)),
+                        errors.exposure_model_not_found(
+                            exposure.name, ref.ref, list(self.model_names)
+                        ),
                     )
 
             # Validate depends_on references
@@ -469,6 +474,7 @@ class ProjectValidator:
             try:
                 issues = checker.check_model(model)
             except Exception:
+                logger.debug("Type check failed for model '%s'", model.name, exc_info=True)
                 continue
             for issue in issues:
                 hint = f" Did you mean '{issue.suggestion}'?" if issue.suggestion else ""
@@ -722,10 +728,7 @@ class ProjectValidator:
             return
 
         # Find ML_PREDICT/ML_EVALUATE patterns in SQL
-        ml_pattern = re.compile(
-            r'\b(ML_PREDICT|ML_EVALUATE)\s*\(\s*(\w+|\([^)]+\))',
-            re.IGNORECASE
-        )
+        ml_pattern = re.compile(r"\b(ML_PREDICT|ML_EVALUATE)\s*\(\s*(\w+|\([^)]+\))", re.IGNORECASE)
         matches = ml_pattern.findall(model.sql)
 
         if not matches:
@@ -747,10 +750,10 @@ class ProjectValidator:
         for _func_name, first_arg in matches:
             # First argument is typically the model reference
             # Could be: model_name, `model_name`, or TABLE(model_name)
-            clean_name = first_arg.strip('`"\'() ')
-            if clean_name.upper().startswith('TABLE'):
+            clean_name = first_arg.strip("`\"'() ")
+            if clean_name.upper().startswith("TABLE"):
                 # Extract from TABLE(...) syntax
-                inner = re.match(r'TABLE\s*\(\s*(\w+)', first_arg, re.IGNORECASE)
+                inner = re.match(r"TABLE\s*\(\s*(\w+)", first_arg, re.IGNORECASE)
                 if inner:
                     clean_name = inner.group(1)
             ml_models_used.add(clean_name)

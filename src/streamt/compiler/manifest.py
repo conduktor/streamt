@@ -149,6 +149,7 @@ class Manifest:
     def _safe_artifacts(self) -> dict[str, list[dict[str, object]]]:
         """Return artifacts with credentials redacted from Flink SQL (for disk storage)."""
         from streamt.compiler.flink_ddl import redact_ddl_credentials
+
         result = dict(self.artifacts)
         if "flink_jobs" in result:
             result["flink_jobs"] = [
@@ -162,18 +163,22 @@ class Manifest:
         path.parent.mkdir(parents=True, exist_ok=True)
         safe_dict = self.to_dict()
         safe_dict["artifacts"] = self._safe_artifacts()
-        fd = tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", delete=False)
+        tmp_name = None
         try:
-            fd.write(json.dumps(safe_dict, indent=2))
-            fd.flush()
-            os.fsync(fd.fileno())
-            fd.close()
-            Path(fd.name).replace(path)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=path.parent, suffix=".tmp", delete=False
+            ) as fd:
+                tmp_name = fd.name
+                fd.write(json.dumps(safe_dict, indent=2))
+                fd.flush()
+                os.fsync(fd.fileno())
+            Path(tmp_name).replace(path)
         except Exception:
-            try:
-                Path(fd.name).unlink(missing_ok=True)
-            except Exception:
-                pass
+            if tmp_name:
+                try:
+                    Path(tmp_name).unlink(missing_ok=True)
+                except Exception:
+                    pass
             raise
 
     @classmethod
