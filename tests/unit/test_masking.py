@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from streamt.compiler.masking import build_mask_expression
+from streamt.compiler.masking import apply_masking_to_sql, build_mask_expression
 from streamt.compiler.compiler import Compiler
 from streamt.core.models import (
     ColumnDefinition,
@@ -69,6 +69,70 @@ class TestBuildMaskExpression:
     def test_redact_on_boolean_nulls(self):
         result = build_mask_expression("active", "redact", "BOOLEAN")
         assert result == "CAST(NULL AS BOOLEAN)"
+
+
+class TestApplyMaskingToSql:
+    """Tests for AST-based SQL masking."""
+
+    def test_masks_column_in_select_not_where(self):
+        sql = "SELECT name, age FROM users WHERE name = 'test'"
+        masks = [{"column": "name", "method": "hash"}]
+        schema = {"name": "STRING", "age": "INT"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        # SELECT should have MD5(name), WHERE should still have plain name
+        assert "MD5(name)" in result
+        assert "WHERE name" in result or "WHERE `name`" in result
+
+    def test_masks_column_in_select_not_string_literal(self):
+        sql = "SELECT name, status FROM users WHERE status = 'name'"
+        masks = [{"column": "name", "method": "hash"}]
+        schema = {"name": "STRING", "status": "STRING"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        assert "MD5(name)" in result
+        # The string literal 'name' should NOT be replaced
+        assert "'name'" in result
+
+    def test_multiple_columns_masked(self):
+        sql = "SELECT name, email, age FROM users"
+        masks = [
+            {"column": "name", "method": "hash"},
+            {"column": "email", "method": "redact"},
+        ]
+        schema = {"name": "STRING", "email": "STRING", "age": "INT"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        assert "MD5(name)" in result
+        assert "REGEXP_REPLACE(email)" in result
+        assert "age" in result
+
+    def test_non_string_type_preserving_mask(self):
+        sql = "SELECT user_id, name FROM users"
+        masks = [{"column": "user_id", "method": "hash"}]
+        schema = {"user_id": "BIGINT", "name": "STRING"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        assert "HASH_CODE" in result
+        assert "BIGINT" in result
+
+    def test_no_masks_returns_original(self):
+        sql = "SELECT name FROM users"
+        result = apply_masking_to_sql(sql, [], {"name": "STRING"})
+        assert result == sql
+
+    def test_unmatched_column_leaves_sql_unchanged(self):
+        sql = "SELECT name FROM users"
+        masks = [{"column": "nonexistent", "method": "hash"}]
+        schema = {"nonexistent": "STRING"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        assert "name" in result
+        assert "MD5" not in result
+
+    def test_fallback_to_regex_on_unparseable_sql(self):
+        # Garbage SQL that sqlglot can't parse - falls back to regex
+        sql = "SELECT name %%% INVALID FROM users"
+        masks = [{"column": "name", "method": "null"}]
+        schema = {"name": "STRING"}
+        result = apply_masking_to_sql(sql, masks, schema)
+        # Regex fallback should still attempt replacement
+        assert "CAST(NULL AS STRING)" in result
 
 
 class TestCompilerMaskingTypePreservation:

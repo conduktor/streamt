@@ -11,7 +11,7 @@ from typing import Optional
 from jinja2 import BaseLoader, Environment
 
 from streamt.compiler.flink_ddl import kafka_with_properties
-from streamt.compiler.masking import build_mask_expression
+from streamt.compiler.masking import apply_masking_to_sql
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -588,23 +588,16 @@ WHERE {condition}""")
         # Generate INSERT statement
         transformed_sql = self._transform_sql(model.sql or "")
 
-        # Apply masking functions if needed
+        # Apply masking functions if needed (AST-based with regex fallback)
         if model.security and model.security.policies:
             schema = self._build_source_schema(model)
+            masks = []
             for policy in model.security.policies:
                 if "mask" in policy:
                     mask_config = policy["mask"]
-                    column = mask_config["column"]
-                    method = mask_config["method"]
-                    col_type = schema.get(column, "STRING")
-                    mask_expr = build_mask_expression(column, method, col_type)
-                    # Replace column reference with masked version
-                    transformed_sql = re.sub(
-                        rf"\b{column}\b",
-                        f"{mask_expr} AS {column}",
-                        transformed_sql,
-                        count=1,
-                    )
+                    masks.append({"column": mask_config["column"], "method": mask_config["method"]})
+            if masks:
+                transformed_sql = apply_masking_to_sql(transformed_sql, masks, schema)
 
         sink_table = self._topic_to_table_name(output_topic)
         sql_parts.append(f"INSERT INTO {sink_table}\n{transformed_sql};")
