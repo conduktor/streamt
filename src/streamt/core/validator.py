@@ -102,6 +102,7 @@ class ProjectValidator:
         self._validate_tests()
         self._validate_exposures()
         self._validate_dag()
+        self._validate_column_types()
         self._validate_rules()
         return self.result
 
@@ -455,6 +456,28 @@ class ProjectValidator:
                         errors.cycle_detected(cycle),
                     )
                     return
+
+    def _validate_column_types(self) -> None:
+        """Validate column references across sources and models."""
+        try:
+            from streamt.core.type_checker import ColumnTypeChecker
+        except ImportError:
+            return
+
+        checker = ColumnTypeChecker(self.project)
+        for model in self.project.models:
+            try:
+                issues = checker.check_model(model)
+            except Exception:
+                continue
+            for issue in issues:
+                hint = f" Did you mean '{issue.suggestion}'?" if issue.suggestion else ""
+                self.result.add_warning(
+                    "COLUMN_TYPE_CHECK",
+                    f"Column '{issue.column}' not found in {issue.source_or_model} "
+                    f"(referenced in model '{issue.model}').{hint}",
+                    f"model '{issue.model}'",
+                )
 
     def _validate_rules(self) -> None:
         """Validate governance rules."""
