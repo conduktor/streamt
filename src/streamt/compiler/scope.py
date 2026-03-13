@@ -44,6 +44,9 @@ def _enrich_schema_from_scope(
     for join in select.find_all(exp.Join):
         _enrich_from_subqueries(mixin, join, schema)
 
+    # Register table aliases so qualified refs (alias.col) resolve correctly
+    _register_table_aliases(select, schema)
+
     return schema
 
 
@@ -63,6 +66,28 @@ def _enrich_from_subqueries(
             schema[col_name] = col_type
             if alias:
                 schema[f"{alias}.{col_name}"] = col_type
+
+
+def _register_table_aliases(
+    select: exp.Select,
+    schema: dict[str, str],
+) -> None:
+    """Map table aliases to qualified schema entries.
+
+    For ``FROM orders o JOIN payments p``, copies ``orders.col``
+    entries to ``o.col`` so qualified column references resolve.
+    """
+    for table in select.find_all(exp.Table):
+        table_name = table.name
+        alias = table.alias
+        if not alias or alias == table_name:
+            continue
+        # Copy table_name.col → alias.col
+        prefix = f"{table_name}."
+        for key, val in list(schema.items()):
+            if key.startswith(prefix):
+                col = key[len(prefix):]
+                schema[f"{alias}.{col}"] = val
 
 
 def _infer_subquery_columns(

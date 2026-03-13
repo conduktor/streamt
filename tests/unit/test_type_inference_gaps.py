@@ -358,7 +358,6 @@ class TestGroup5QualifiedColumnNamesInJoins:
         assert cols[1][1] == "BIGINT"
 
     def test_different_types_same_name_should_resolve_per_table(self):
-        pytest.xfail("Table qualifier ignored: flat schema cannot distinguish a.id vs b.id")
         cols = _infer_via_compiler(
             sources=[
                 Source(name="orders", topic="orders_topic", columns=[
@@ -379,7 +378,6 @@ class TestGroup5QualifiedColumnNamesInJoins:
         assert type_map["payment_id"] == "BIGINT"
 
     def test_same_column_name_different_types_amount(self):
-        pytest.xfail("Table qualifier ignored in flat schema lookup")
         cols = _infer_via_compiler(
             sources=[
                 Source(name="orders", topic="orders_topic", columns=[

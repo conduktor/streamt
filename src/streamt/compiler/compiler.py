@@ -751,13 +751,15 @@ WHERE {condition}""")
                     for col in source.columns:
                         # Use the type from YAML, or default based on context
                         if col.proctime:
-                            schema[col.name] = "TIMESTAMP_LTZ(3)"
+                            col_type = "TIMESTAMP_LTZ(3)"
                         elif source.event_time and col.name == source.event_time.column:
-                            schema[col.name] = "TIMESTAMP(3)"
+                            col_type = "TIMESTAMP(3)"
                         elif col.type:
-                            schema[col.name] = col.type
+                            col_type = col.type
                         else:
-                            schema[col.name] = "STRING"
+                            col_type = "STRING"
+                        schema[col.name] = col_type
+                        schema[f"{dep_name}.{col.name}"] = col_type
             else:
                 # For model references, recursively build schema from upstream model
                 dep_model = self.project.get_model(dep_name)

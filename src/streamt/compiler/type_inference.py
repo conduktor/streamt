@@ -134,14 +134,14 @@ class TypeInferenceMixin:
         # Column reference - look up in schema
         if isinstance(expr, exp.Column):
             col_name = expr.name
-            if col_name in schema:
-                return schema[col_name]
-            # Try qualified name (table.column)
+            # Try qualified name first (table.column) for disambiguation
             table = expr.table
             if table:
                 qualified = f"{table}.{col_name}"
                 if qualified in schema:
                     return schema[qualified]
+            if col_name in schema:
+                return schema[col_name]
             upper_name = col_name.upper()
             if upper_name == "$ROWTIME":
                 return "TIMESTAMP_LTZ(3)"
