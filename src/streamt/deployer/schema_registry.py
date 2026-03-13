@@ -75,6 +75,7 @@ class SchemaRegistryDeployer:
         self.url = url.rstrip("/")
         self.auth = (username, password) if username and password else None
         self.headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
+        self._closed = False
         self._http_session = requests.Session()
         self._http_session.headers.update(self.headers)
         if self.auth:
@@ -97,6 +98,7 @@ class SchemaRegistryDeployer:
 
     def close(self) -> None:
         """Close the deployer and clean up resources."""
+        self._closed = True
         self._http_session.close()
 
     def _request(
@@ -111,6 +113,8 @@ class SchemaRegistryDeployer:
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
+        if self._closed:
+            raise RuntimeError("SchemaRegistryDeployer is closed")
         url = f"{self.url}{path}"
         last_err: Optional[Exception] = None
         for attempt in range(3):
@@ -299,14 +303,21 @@ class SchemaRegistryDeployer:
         change = self.plan_schema(artifact)
 
         if change.action == "register":
-            # Set compatibility before registration to allow schema evolution
-            if artifact.compatibility:
-                self.set_compatibility(artifact.subject, artifact.compatibility)
+            # Register schema first (validates content under current rules),
+            # then set compatibility (only once we know the schema is valid).
             self.register_schema(
                 artifact.subject,
                 artifact.schema,
                 artifact.schema_type,
             )
+            if artifact.compatibility:
+                try:
+                    self.set_compatibility(artifact.subject, artifact.compatibility)
+                except Exception as e:
+                    logger.warning(
+                        "Schema '%s' registered but compatibility not set: %s",
+                        artifact.subject, e,
+                    )
             return "registered"
 
         elif change.action == "update":
@@ -314,16 +325,17 @@ class SchemaRegistryDeployer:
                 err = change.changes["schema_incompatible"]
                 raise RuntimeError(err.get("message", str(err)))
 
-            # Set compatibility before registration to allow breaking changes
-            if change.changes and "compatibility" in change.changes:
-                self.set_compatibility(artifact.subject, artifact.compatibility)
-
+            # Register schema first (under current compatibility rules),
+            # then update compatibility level (safe order: content before policy).
             if change.changes and "schema" in change.changes:
                 self.register_schema(
                     artifact.subject,
                     artifact.schema,
                     artifact.schema_type,
                 )
+
+            if change.changes and "compatibility" in change.changes:
+                self.set_compatibility(artifact.subject, artifact.compatibility)
 
             return "updated"
 

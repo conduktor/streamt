@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import SecretStr
 
 from streamt.core.models import KafkaConfig
+
+# Patterns for credentials embedded in Flink DDL WITH clauses
+_DDL_SASL_JAAS = re.compile(
+    r"('properties\.sasl\.jaas\.config'\s*=\s*)'([^']*)'",
+    re.IGNORECASE,
+)
+_DDL_SSL_KEY_PASSWORD = re.compile(
+    r"('properties\.ssl\.key\.password'\s*=\s*)'([^']*)'",
+    re.IGNORECASE,
+)
+
+
+def redact_ddl_credentials(sql: str) -> str:
+    """Redact credential values from Flink DDL SQL for safe storage on disk."""
+    sql = _DDL_SASL_JAAS.sub(r"\1'***'", sql)
+    sql = _DDL_SSL_KEY_PASSWORD.sub(r"\1'***'", sql)
+    return sql
 
 
 def _secret(val: str | SecretStr | None) -> str | None:

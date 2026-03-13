@@ -310,6 +310,10 @@ def _init_discover(
 
         fmt.print(f"\n[green]Initialized project '{name}' with {len(discovered)} source(s)[/green]")
 
+    kafka_deployer.close()
+    if sr_deployer is not None:
+        sr_deployer.close()
+
     fmt.set_data({
         "project_name": name,
         "discovered_topics": [

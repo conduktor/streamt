@@ -196,8 +196,8 @@ class TestRunner:
             cluster = flink_config.clusters[default_cluster]
             if cluster.rest_url:
                 try:
-                    deployer = FlinkDeployer(cluster.rest_url)
-                    job_state = deployer.get_job_state(f"test_{test.name}")
+                    with FlinkDeployer(cluster.rest_url) as deployer:
+                        job_state = deployer.get_job_state(f"test_{test.name}")
 
                     if job_state.exists:
                         return {

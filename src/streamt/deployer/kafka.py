@@ -428,6 +428,7 @@ class KafkaDeployer:
         consumer_config["group.id"] = "_streamt_internal_count"
         consumer_config["enable.auto.commit"] = False
 
+        consumer = None
         try:
             consumer = Consumer(consumer_config)
             total = 0
@@ -435,8 +436,10 @@ class KafkaDeployer:
                 tp = TopicPartition(topic, partition)
                 low, high = consumer.get_watermark_offsets(tp, timeout=DEFAULT_TIMEOUT)
                 total += high - low
-            consumer.close()
             return total
         except Exception as e:
             logger.warning(f"Failed to get message count for {topic}: {e}")
             return 0
+        finally:
+            if consumer is not None:
+                consumer.close()

@@ -8,6 +8,7 @@ from typing import Optional
 import click
 
 from streamt.cli.helpers import (
+    check_required_deployers,
     close_deployers,
     get_project_path,
     handle_parse_error,
@@ -62,6 +63,13 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         flink_deployer = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
         connect_deployer = make_connect_deployer(project, fmt)
         gateway_deployer = make_gateway_deployer(project, fmt)
+
+        # Pre-flight: abort if required deployers are unavailable
+        if not check_required_deployers(project, kafka_deployer, sr_deployer, flink_deployer, connect_deployer, gateway_deployer, fmt):
+            close_deployers(sr_deployer, kafka_deployer, flink_deployer, connect_deployer, gateway_deployer)
+            fmt.flush()
+            sys.exit(1)
+
         try:
             planner = DeploymentPlanner(
                 manifest,
@@ -105,5 +113,14 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    except KeyboardInterrupt:
+        fmt.print_error("Interrupted.")
+        fmt.flush()
+        sys.exit(130)
+    except Exception as e:
+        fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
 
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json as _json
 import logging
+import os
 import tempfile
 import time
 from dataclasses import dataclass
@@ -127,6 +129,7 @@ class FlinkDeployer:
         self.version = version
         self.environment = environment
         self.session_id: Optional[str] = None
+        self._closed = False
         self._timeout = timeout or DEFAULT_TIMEOUT
         self._retries = retries or 3
         self._statement_timeout = statement_timeout or STATEMENT_TIMEOUT
@@ -156,6 +159,7 @@ class FlinkDeployer:
 
     def close(self) -> None:
         """Close the deployer and clean up resources."""
+        self._closed = True
         self.close_session()
         self._http_session.close()
 
@@ -184,6 +188,8 @@ class FlinkDeployer:
 
         Raises on HTTP errors.
         """
+        if self._closed:
+            raise RuntimeError("FlinkDeployer is closed")
         if use_sql_gateway:
             if not self.sql_gateway_url:
                 raise ValueError(errors.sql_gateway_not_configured())
@@ -374,9 +380,9 @@ class FlinkDeployer:
                 # Poll for completion with exponential backoff
                 poll_interval = 0.5
                 max_poll_interval = 5.0
-                elapsed = 0.0
+                deadline = time.monotonic() + statement_timeout
 
-                while elapsed < statement_timeout:
+                while time.monotonic() < deadline:
                     status_response = self._request(
                         "GET",
                         f"/v1/sessions/{session_id}/operations/{operation_handle}/status",
@@ -405,12 +411,10 @@ class FlinkDeployer:
                         raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
                     elif status in ("RUNNING", "PENDING"):
                         time.sleep(poll_interval)
-                        elapsed += poll_interval
                         poll_interval = min(poll_interval * 2, max_poll_interval)
                     else:
                         raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
-
-                if elapsed >= statement_timeout:
+                else:
                     raise RuntimeError(f"Timeout waiting for statement: {statement[:50]}...")
         except Exception:
             self.close_session()
@@ -447,24 +451,43 @@ class FlinkDeployer:
             logger.warning("Corrupt state file %s — starting with empty hashes", path)
 
     def _save_hashes(self) -> None:
-        """Persist SQL hashes to state file (atomic write)."""
+        """Persist SQL hashes to state file (atomic write with file locking)."""
         path = self._hashes_file
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = tempfile.NamedTemporaryFile(
-            mode="w", dir=path.parent, suffix=".tmp", delete=False,
-        )
+        lock_path = path.with_suffix(".lock")
+        lock_fd = open(lock_path, "w")
         try:
-            _json.dump(self._sql_hashes, fd)
-            fd.close()
-            Path(fd.name).replace(path)
-        except Exception:
-            logger.debug("Failed to save hashes to %s", path)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            # Re-read on-disk state under the lock and merge
+            on_disk: dict[str, str] = {}
+            if path.exists():
+                try:
+                    data = _json.loads(path.read_text())
+                    if isinstance(data, dict):
+                        on_disk = data
+                except Exception:
+                    pass
+            merged = {**on_disk, **self._sql_hashes}
+            fd = tempfile.NamedTemporaryFile(
+                mode="w", dir=path.parent, suffix=".tmp", delete=False,
+            )
             try:
-                Path(fd.name).unlink(missing_ok=True)
-            except Exception:
-                pass
+                _json.dump(merged, fd)
+                fd.flush()
+                os.fsync(fd.fileno())
+                fd.close()
+                Path(fd.name).replace(path)
+            except Exception as e:
+                logger.warning("Failed to save hashes to %s: %s", path, e)
+                try:
+                    Path(fd.name).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
     def set_sql_hash(self, job_name: str, sql: str) -> None:
         """Record the SQL hash for a job (used to seed state from a prior deploy)."""
@@ -526,10 +549,23 @@ class FlinkDeployer:
             self._save_hashes()
             return "submitted"
         elif change.action == "update":
-            # Cancel the running job, then re-submit with new SQL
+            # Cancel the running job, then re-submit with new SQL.
+            # If resubmit fails, the pipeline is down — log loudly and re-raise.
             if change.current and change.current.job_id:
                 self.cancel_job(change.current.job_id)
-            self.submit_sql(artifact.sql)
+            try:
+                self.submit_sql(artifact.sql)
+            except Exception:
+                # Job was cancelled but resubmit failed. Clear hash so next plan
+                # sees a missing job and retries as "submit" rather than skipping.
+                self._sql_hashes.pop(artifact.name, None)
+                self._save_hashes()
+                logger.critical(
+                    "PIPELINE DOWN: job '%s' was cancelled but resubmit failed. "
+                    "Re-run 'streamt apply' after fixing the SQL.",
+                    artifact.name,
+                )
+                raise
             self._sql_hashes[artifact.name] = self._sql_hash(artifact.sql)
             self._save_hashes()
             return "submitted"

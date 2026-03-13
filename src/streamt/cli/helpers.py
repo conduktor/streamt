@@ -101,6 +101,57 @@ def _resolve_secret(val: object) -> object:
     return val.get_secret_value() if hasattr(val, "get_secret_value") else val
 
 
+def check_required_deployers(
+    project: "StreamtProject",
+    kafka_deployer: Optional["KafkaDeployer"],
+    sr_deployer: Optional["SchemaRegistryDeployer"],
+    flink_deployer: Optional["FlinkDeployer"],
+    connect_deployer: Optional["ConnectDeployer"],
+    gateway_deployer: Optional["GatewayDeployer"],
+    fmt: OutputFormatter,
+) -> bool:
+    """Return False (with errors in fmt) if any configured deployer failed to connect."""
+    from streamt.core.errors import ErrorCode
+
+    ok = True
+    if project.runtime.kafka and kafka_deployer is None:
+        fmt.add_error(StructuredError(
+            code=ErrorCode.CONNECTION_REFUSED,
+            message="Kafka is configured but unreachable. Cannot proceed.",
+        ))
+        fmt.print_error("Kafka is configured but unreachable. Cannot proceed with plan/apply.")
+        ok = False
+    if project.runtime.schema_registry and sr_deployer is None:
+        fmt.add_error(StructuredError(
+            code=ErrorCode.CONNECTION_REFUSED,
+            message="Schema Registry is configured but unreachable. Cannot proceed.",
+        ))
+        fmt.print_error("Schema Registry is configured but unreachable. Cannot proceed with plan/apply.")
+        ok = False
+    if (project.runtime.flink and getattr(project.runtime.flink, "clusters", None) and flink_deployer is None):
+        fmt.add_error(StructuredError(
+            code=ErrorCode.CONNECTION_REFUSED,
+            message="Flink is configured but unreachable. Cannot proceed.",
+        ))
+        fmt.print_error("Flink is configured but unreachable. Cannot proceed with plan/apply.")
+        ok = False
+    if (project.runtime.connect and getattr(project.runtime.connect, "clusters", None) and connect_deployer is None):
+        fmt.add_error(StructuredError(
+            code=ErrorCode.CONNECTION_REFUSED,
+            message="Kafka Connect is configured but unreachable. Cannot proceed.",
+        ))
+        fmt.print_error("Kafka Connect is configured but unreachable. Cannot proceed with plan/apply.")
+        ok = False
+    if (project.runtime.conduktor and getattr(project.runtime.conduktor, "gateway", None) and gateway_deployer is None):
+        fmt.add_error(StructuredError(
+            code=ErrorCode.CONNECTION_REFUSED,
+            message="Conduktor Gateway is configured but unreachable. Cannot proceed.",
+        ))
+        fmt.print_error("Conduktor Gateway is configured but unreachable. Cannot proceed with plan/apply.")
+        ok = False
+    return ok
+
+
 def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[KafkaDeployer]:
     """Create KafkaDeployer from project config. Returns None on failure."""
     from streamt.deployer.kafka import KafkaDeployer

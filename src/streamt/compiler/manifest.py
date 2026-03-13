@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,11 +146,35 @@ class Manifest:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
 
+    def _safe_artifacts(self) -> dict[str, list[dict[str, object]]]:
+        """Return artifacts with credentials redacted from Flink SQL (for disk storage)."""
+        from streamt.compiler.flink_ddl import redact_ddl_credentials
+        result = dict(self.artifacts)
+        if "flink_jobs" in result:
+            result["flink_jobs"] = [
+                {**job, "sql": redact_ddl_credentials(job["sql"])} if "sql" in job else dict(job)
+                for job in result["flink_jobs"]
+            ]
+        return result
+
     def save(self, path: Path) -> None:
-        """Save manifest to file."""
+        """Save manifest to file (atomic write, credentials redacted)."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(self.to_json())
+        safe_dict = self.to_dict()
+        safe_dict["artifacts"] = self._safe_artifacts()
+        fd = tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", delete=False)
+        try:
+            fd.write(json.dumps(safe_dict, indent=2))
+            fd.flush()
+            os.fsync(fd.fileno())
+            fd.close()
+            Path(fd.name).replace(path)
+        except Exception:
+            try:
+                Path(fd.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
     @classmethod
     def load(cls, path: Path) -> Manifest:

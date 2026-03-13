@@ -131,13 +131,15 @@ class TestSchemaCompatibilityOrder:
     """set_compatibility should be called BEFORE register_schema when
     lowering compatibility (e.g. BACKWARD -> NONE)."""
 
-    def test_compatibility_set_before_registration(self):
+    def test_schema_registered_before_compatibility_change(self):
         """Subject has BACKWARD. Artifact wants NONE + schema update.
-        set_compatibility('NONE') must precede register_schema()."""
+        register_schema() must precede set_compatibility() so the schema is
+        validated under the current (stricter) rules before they are relaxed."""
         deployer = SchemaRegistryDeployer.__new__(SchemaRegistryDeployer)
         deployer.url = "http://localhost:8081"
         deployer.auth = None
         deployer.headers = {}
+        deployer._closed = False
         deployer._http_session = MagicMock()
 
         call_order = []
@@ -162,7 +164,8 @@ class TestSchemaCompatibilityOrder:
             )
             deployer.apply_schema(artifact)
 
-            assert call_order.index("set_compat") < call_order.index("register")
+            # Schema registered first, then compatibility relaxed
+            assert call_order.index("register") < call_order.index("set_compat")
 
 
 # ===========================================================================

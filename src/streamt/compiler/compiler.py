@@ -934,6 +934,16 @@ WHERE {condition}""")
             },
         )
 
+    @staticmethod
+    def _safe_filename(name: str, resource_type: str) -> str:
+        """Reject names containing path separators or dotdot sequences."""
+        if "/" in name or "\\" in name or ".." in name:
+            raise ValueError(
+                f"Unsafe {resource_type} name {name!r}: "
+                "names may not contain '/', '\\', or '..'"
+            )
+        return name
+
     def _write_artifacts(self) -> None:
         """Write all artifacts to output directory."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -943,8 +953,8 @@ WHERE {condition}""")
             schemas_dir = self.output_dir / "schemas"
             schemas_dir.mkdir(exist_ok=True)
             for schema in self.schemas:
-                # Write schema file
-                path = schemas_dir / f"{schema.subject}.json"
+                safe = self._safe_filename(schema.subject, "schema subject")
+                path = schemas_dir / f"{safe}.json"
                 with open(path, "w") as f:
                     json.dump(schema.to_dict(), f, indent=2)
 
@@ -952,7 +962,8 @@ WHERE {condition}""")
         topics_dir = self.output_dir / "topics"
         topics_dir.mkdir(exist_ok=True)
         for topic in self.topics:
-            path = topics_dir / f"{topic.name}.json"
+            safe = self._safe_filename(topic.name, "topic")
+            path = topics_dir / f"{safe}.json"
             with open(path, "w") as f:
                 json.dump(topic.to_dict(), f, indent=2)
 
@@ -960,12 +971,11 @@ WHERE {condition}""")
         flink_dir = self.output_dir / "flink"
         flink_dir.mkdir(exist_ok=True)
         for job in self.flink_jobs:
-            # Write SQL file
-            sql_path = flink_dir / f"{job.name}.sql"
+            safe = self._safe_filename(job.name, "flink job")
+            sql_path = flink_dir / f"{safe}.sql"
             with open(sql_path, "w") as f:
                 f.write(job.sql)
-            # Write config file
-            config_path = flink_dir / f"{job.name}.json"
+            config_path = flink_dir / f"{safe}.json"
             with open(config_path, "w") as f:
                 json.dump(job.to_dict(), f, indent=2)
 
@@ -973,7 +983,8 @@ WHERE {condition}""")
         connect_dir = self.output_dir / "connect"
         connect_dir.mkdir(exist_ok=True)
         for connector in self.connectors:
-            path = connect_dir / f"{connector.name}.json"
+            safe = self._safe_filename(connector.name, "connector")
+            path = connect_dir / f"{safe}.json"
             with open(path, "w") as f:
                 json.dump(connector.to_dict(), f, indent=2)
 
@@ -982,7 +993,8 @@ WHERE {condition}""")
             gateway_dir = self.output_dir / "gateway"
             gateway_dir.mkdir(exist_ok=True)
             for rule in self.gateway_rules:
-                path = gateway_dir / f"{rule.name}.json"
+                safe = self._safe_filename(rule.name, "gateway rule")
+                path = gateway_dir / f"{safe}.json"
                 with open(path, "w") as f:
                     json.dump(rule.to_dict(), f, indent=2)
 

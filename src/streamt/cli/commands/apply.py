@@ -8,6 +8,7 @@ from typing import Optional
 import click
 
 from streamt.cli.helpers import (
+    check_required_deployers,
     close_deployers,
     get_project_path,
     handle_parse_error,
@@ -113,6 +114,13 @@ def apply(
         flink = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
         connect = make_connect_deployer(project, fmt)
         gateway = make_gateway_deployer(project, fmt)
+
+        # Pre-flight: abort if required deployers are unavailable
+        if not check_required_deployers(project, kafka, sr, flink, connect, gateway, fmt):
+            close_deployers(sr, kafka, flink, connect, gateway)
+            fmt.flush()
+            sys.exit(1)
+
         try:
             planner = DeploymentPlanner(
                 manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
@@ -154,7 +162,7 @@ def apply(
                 fmt.set_status("error")
                 fmt.print("\n[red]Errors:[/red]")
                 for item in results["errors"]:
-                    fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=item))
+                    fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
                     fmt.print_error(item)
                 fmt.flush()
                 sys.exit(1)
@@ -166,8 +174,12 @@ def apply(
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    except KeyboardInterrupt:
+        fmt.print_error("Interrupted.")
+        fmt.flush()
+        sys.exit(130)
     except Exception as e:
-        fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=f"Cannot connect: {e}"))
+        fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Cannot connect: {e}"))
         fmt.print_error(f"Cannot connect: {e}")
         fmt.flush()
         sys.exit(1)

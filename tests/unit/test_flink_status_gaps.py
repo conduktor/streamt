@@ -244,6 +244,7 @@ class TestRetryLogic:
         deployer.url = "http://localhost:8081"
         deployer.auth = None
         deployer.headers = {}
+        deployer._closed = False
         deployer._http_session = MagicMock()
 
         ok = MagicMock()
@@ -273,6 +274,7 @@ class TestFlinkSessionCleanup:
         deployer.sql_gateway_url = "http://localhost:8084"
         deployer.session_id = None
         deployer._http_session = MagicMock()
+        deployer._closed = False
         deployer._timeout = 30
         deployer._retries = 3
         deployer._statement_timeout = 60
@@ -299,6 +301,7 @@ class TestFlinkSessionCleanup:
         deployer.sql_gateway_url = "http://localhost:8084"
         deployer.session_id = None
         deployer._http_session = MagicMock()
+        deployer._closed = False
         deployer._timeout = 30
         deployer._retries = 3
         deployer._statement_timeout = 60

@@ -24,12 +24,16 @@ _SENSITIVE_AUTH = re.compile(
     r"(authorization|bearer)\s*[=:]\s*\S+(?:\s+\S+)?",
     re.IGNORECASE,
 )
+_SENSITIVE_URL = re.compile(
+    r"://([^:@/\s]+):([^@/\s]+)@",
+)
 
 
 def _sanitize_error(msg: str) -> str:
     """Strip credentials/tokens from error messages."""
     result = _SENSITIVE_KV.sub(r"\1=***", str(msg))
-    return _SENSITIVE_AUTH.sub(r"\1=***", result)
+    result = _SENSITIVE_AUTH.sub(r"\1=***", result)
+    return _SENSITIVE_URL.sub(r"://***:***@", result)
 
 
 @dataclass

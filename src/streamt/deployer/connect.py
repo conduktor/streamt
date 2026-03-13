@@ -73,6 +73,7 @@ class ConnectDeployer:
         if not rest_url or not rest_url.startswith(("http://", "https://")):
             raise ValueError(f"Invalid Connect REST URL: {rest_url!r} — must start with http:// or https://")
         self.rest_url = rest_url.rstrip("/")
+        self._closed = False
         self._http_session = requests.Session()
         if username and password:
             self._http_session.auth = (username, password)
@@ -94,6 +95,7 @@ class ConnectDeployer:
 
     def close(self) -> None:
         """Close the deployer and clean up resources."""
+        self._closed = True
         self._http_session.close()
 
     def _request(
@@ -107,6 +109,8 @@ class ConnectDeployer:
 
         Raises on HTTP errors.
         """
+        if self._closed:
+            raise RuntimeError("ConnectDeployer is closed")
         url = f"{self.rest_url}{endpoint}"
         last_err: Optional[Exception] = None
         for attempt in range(3):
