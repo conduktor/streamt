@@ -210,7 +210,7 @@ class ConnectDeployer:
 
         for key, value in desired_config_cmp.items():
             current_value = current_config.get(key)
-            if current_value is None or str(current_value) != str(value):
+            if current_value is None or str(current_value).lower() != str(value).lower():
                 changes[key] = {
                     "from": current_value,
                     "to": value,

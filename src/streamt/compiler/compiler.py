@@ -728,6 +728,11 @@ WHERE {condition}""")
         else:
             columns_ddl = "`_raw` STRING"
 
+        # Add PRIMARY KEY constraint if declared
+        if model.primary_key and columns_with_types:
+            pk_cols = ", ".join(f"`{k}`" for k in model.primary_key)
+            columns_ddl += f",\n    PRIMARY KEY ({pk_cols}) NOT ENFORCED"
+
         kafka = self.project.runtime.kafka
         with_clause = kafka_with_properties(kafka, topic_name, bootstrap)
         return f"CREATE TABLE IF NOT EXISTS {table_name} (\n    {columns_ddl}\n) {with_clause};"
