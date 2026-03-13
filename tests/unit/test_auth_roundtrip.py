@@ -7,7 +7,6 @@ This test exercises the full pipeline without needing running services:
 4. Verify the Flink SQL DDL contains SASL properties and JAAS config
 """
 
-import textwrap
 from pathlib import Path
 
 import yaml

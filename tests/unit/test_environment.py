@@ -289,9 +289,8 @@ class TestMultiEnvMode:
             assert result.exit_code == 0
             output_lower = result.output.lower()
             # Must specifically mention runtime is ignored in multi-env mode
-            assert "runtime" in output_lower and "ignored" in output_lower, (
-                f"Warning must mention 'runtime' is 'ignored'. Got: {result.output}"
-            )
+            assert "runtime" in output_lower, f"Warning must mention 'runtime'. Got: {result.output}"
+            assert "ignored" in output_lower, f"Warning must mention 'ignored'. Got: {result.output}"
 
     def test_validate_all_envs_flag(self):
         """Spec: validate --all-envs validates all environments at once."""
@@ -715,7 +714,7 @@ class TestEnvFlagAcrossCommands:
                 }
             )
 
-            full_command = command + ["-p", str(tmpdir), "--env", "dev"]
+            full_command = [*command, "-p", str(tmpdir), "--env", "dev"]
             result = runner.invoke(main, full_command)
 
             # Should not fail with "unknown option --env"
@@ -1093,9 +1092,7 @@ class TestDestructiveSafety:
             # - Should NOT show "blocked" message (force overrides blocking)
             if "blocked" in result.output.lower():
                 # If still blocked, --force didn't work - this is a failure
-                assert False, (
-                    f"--force should override destructive blocking. Got: {result.output}"
-                )
+                pytest.fail(f"--force should override destructive blocking. Got: {result.output}")
 
     def test_t6_3_destructive_allowed_when_enabled(self):
         """T6.3: allow_destructive: true -> proceeds normally.

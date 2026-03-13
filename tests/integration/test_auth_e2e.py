@@ -181,7 +181,7 @@ class TestKafkaSASLIntegration:
             },
         )
         # confluent_kafka will raise or return error metadata
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match=r"."):
             deployer.list_topics()
 
     def test_no_auth_fails(self):
@@ -189,7 +189,7 @@ class TestKafkaSASLIntegration:
         from streamt.deployer.kafka import KafkaDeployer
 
         deployer = KafkaDeployer(KAFKA_SASL_BOOTSTRAP)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match=r"."):
             deployer.list_topics()
 
     def test_yaml_to_deployer_roundtrip(self):

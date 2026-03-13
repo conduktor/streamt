@@ -1,6 +1,5 @@
 """Tests for structured auth/connection error codes in deployer factories."""
 
-import pytest
 
 from streamt.cli.helpers import _classify_connection_error
 from streamt.core.errors import ErrorCode

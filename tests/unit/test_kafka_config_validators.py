@@ -88,7 +88,7 @@ class TestSaslRequiresProtocol:
 
     def test_sasl_mechanism_without_sasl_protocol_rejected(self):
         """Setting sasl_mechanism with security_protocol=SSL (no SASL) is a misconfiguration."""
-        with pytest.raises(ValueError, match="sasl_mechanism.*requires.*SASL"):
+        with pytest.raises(ValueError, match=r"sasl_mechanism.*requires.*SASL"):
             KafkaConfig(
                 bootstrap_servers="b:9092",
                 security_protocol="SSL",

@@ -4,7 +4,6 @@ Production scenario: User logs KafkaConfig or prints a project object.
 Passwords, API keys, and other secrets must NOT appear in repr/str output.
 """
 
-import pytest
 
 from streamt.core.models import (
     ConnectClusterConfig,

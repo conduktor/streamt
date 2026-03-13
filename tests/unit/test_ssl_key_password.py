@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from streamt.core.models import ConnectClusterConfig, FlinkClusterConfig, SchemaRegistryConfig
 
 

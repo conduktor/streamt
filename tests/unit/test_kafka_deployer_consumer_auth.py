@@ -125,7 +125,7 @@ class TestConsumerInheritsAuth:
         MockConsumer.return_value = mock_consumer
 
         with patch("streamt.deployer.kafka.ConsumerGroupTopicPartitions", mock_cgtp_cls, create=True):
-            result = deployer.get_consumer_group_lag("my-group", "my-topic")
+            deployer.get_consumer_group_lag("my-group", "my-topic")
 
         # If ConsumerGroupTopicPartitions import fails, the method returns None
         # but Consumer should still have been created with auth if it got that far

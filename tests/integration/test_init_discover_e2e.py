@@ -50,7 +50,7 @@ def setup_discover_topics(docker_services):
         for name, cfg in DISCOVER_TOPICS.items()
     ]
     futures = admin.create_topics(new_topics)
-    for name, future in futures.items():
+    for _name, future in futures.items():
         try:
             future.result(timeout=10)
         except Exception:

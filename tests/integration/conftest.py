@@ -101,7 +101,7 @@ def kafka_producer(docker_services: DockerComposeManager) -> Producer:
     )
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def kafka_consumer_factory(docker_services: DockerComposeManager):
     """Factory fixture for creating Kafka consumers."""
     consumers = []
@@ -130,19 +130,19 @@ def kafka_consumer_factory(docker_services: DockerComposeManager):
         consumer.close()
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def kafka_helper(kafka_admin: AdminClient, kafka_producer: Producer) -> KafkaHelper:
     """Fixture providing Kafka helper for tests."""
     return KafkaHelper(kafka_admin, kafka_producer)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def connect_helper(docker_services: DockerComposeManager) -> ConnectHelper:
     """Fixture providing Connect helper for tests."""
     return ConnectHelper(INFRA_CONFIG.connect_url)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def flink_helper(docker_services: DockerComposeManager) -> Generator[FlinkHelper, None, None]:
     """Fixture providing Flink helper for tests.
 
@@ -158,13 +158,13 @@ def flink_helper(docker_services: DockerComposeManager) -> Generator[FlinkHelper
     helper.cancel_all_running_jobs()
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def schema_registry_helper(docker_services: DockerComposeManager) -> SchemaRegistryHelper:
     """Fixture providing Schema Registry helper for tests."""
     return SchemaRegistryHelper(INFRA_CONFIG.schema_registry_url)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def gateway_helper(docker_services: DockerComposeManager) -> Generator[GatewayHelper, None, None]:
     """Fixture providing Conduktor Gateway helper for tests.
 

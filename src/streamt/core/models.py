@@ -89,18 +89,16 @@ class Severity(str, Enum):
     WARNING = "warning"
 
 
-from streamt.core.runtime import (  # noqa: E402, F401
-    ConduktorConfig,
-    ConnectClusterConfig,
-    ConnectConfig,
-    ConsoleConfig,
-    FlinkClusterConfig,
-    FlinkConfig,
-    GatewayConfig,
-    KafkaConfig,
-    RuntimeConfig,
-    SchemaRegistryConfig,
-)
+from streamt.core.runtime import ConduktorConfig as ConduktorConfig  # noqa: E402
+from streamt.core.runtime import ConnectClusterConfig as ConnectClusterConfig  # noqa: E402
+from streamt.core.runtime import ConnectConfig as ConnectConfig  # noqa: E402
+from streamt.core.runtime import ConsoleConfig as ConsoleConfig  # noqa: E402
+from streamt.core.runtime import FlinkClusterConfig as FlinkClusterConfig  # noqa: E402
+from streamt.core.runtime import FlinkConfig as FlinkConfig  # noqa: E402
+from streamt.core.runtime import GatewayConfig as GatewayConfig  # noqa: E402
+from streamt.core.runtime import KafkaConfig as KafkaConfig  # noqa: E402
+from streamt.core.runtime import RuntimeConfig as RuntimeConfig  # noqa: E402
+from streamt.core.runtime import SchemaRegistryConfig as SchemaRegistryConfig  # noqa: E402
 
 # ============================================================================
 # Governance Rules

@@ -75,10 +75,8 @@ class TestFlinkDeployerSqlGateway:
         """Should raise error if sql_gateway_url not configured."""
         deployer = FlinkDeployer(rest_url="http://localhost:8082")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="SQL Gateway URL not configured"):
             deployer.get_session()
-
-        assert "SQL Gateway URL not configured" in str(exc_info.value)
         deployer.close()
 
     def test_get_session_uses_session_handle(self):

@@ -168,7 +168,7 @@ models:
             kafka_helper.create_topic(source_topic, partitions=3)
 
             # Compile project using streamt
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             # Verify compilation produced expected artifacts
             assert "topics" in manifest.artifacts, "Manifest should have topics"
@@ -321,7 +321,7 @@ models:
             kafka_helper.create_topic(customers_topic, partitions=1)
 
             # Compile and deploy
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             assert len(manifest.artifacts.get("flink_jobs", [])) == 1, "Should have 1 join job"
 
@@ -444,7 +444,7 @@ models:
             kafka_helper.create_topic(source_topic, partitions=1)
 
             # Compile and deploy
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             # Verify event_time config was compiled
             job_sql = manifest.artifacts["flink_jobs"][0]["sql"]
@@ -503,7 +503,8 @@ models:
                 assert "window_end" in r, f"Missing window_end: {r}"
                 assert "user_id" in r, f"Missing user_id: {r}"
                 assert "page_views" in r, f"Missing page_views: {r}"
-                assert isinstance(r["page_views"], int) and r["page_views"] > 0, f"Invalid page_views: {r}"
+                assert isinstance(r["page_views"], int), f"Invalid page_views type: {r}"
+                assert r["page_views"] > 0, f"Invalid page_views value: {r}"
 
         finally:
             flink_helper.cancel_all_running_jobs()
@@ -595,7 +596,7 @@ models:
             time.sleep(5)  # Let datagen produce some data
 
             # Compile and deploy streamt model
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
             deploy_manifest_topics(manifest)
             deploy_manifest_flink_jobs(manifest)
 

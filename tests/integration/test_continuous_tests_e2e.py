@@ -155,10 +155,10 @@ def wait_for_job_ready_with_probe(
             expected_count=1,
             timeout=timeout,
         )
-    except TimeoutError:
+    except TimeoutError as err:
         raise TimeoutError(
             f"Flink job not ready within {timeout}s - probe event did not produce violation"
-        )
+        ) from err
 
 
 def create_test_project(
@@ -625,7 +625,7 @@ class TestContinuousTestsE2E:
                     timeout=5.0,  # Short timeout
                 )
                 # If we get here, we have unexpected violations
-                assert False, f"Expected no violations for valid events, got: {violations}"
+                pytest.fail(f"Expected no violations for valid events, got: {violations}")
             except TimeoutError:
                 # Expected - no violations
                 pass

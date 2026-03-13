@@ -257,8 +257,9 @@ class TestConnectorDeletion:
         try:
             deployer.delete_connector(connector_name)
         except requests.HTTPError as e:
-            # 404 should be handled gracefully by the deployer
-            assert e.response.status_code == 404
+            # 404 is expected during cleanup
+            if e.response.status_code != 404:
+                raise
 
 
 @pytest.mark.integration

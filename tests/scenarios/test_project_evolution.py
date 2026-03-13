@@ -198,7 +198,7 @@ class TestAddingNewModels:
 
             # 1 source + 3 models (exposures count separately)
             model_and_source_count = len(
-                [n for n in dag.nodes.keys() if dag.nodes[n].type.value in ("source", "model")]
+                [n for n in dag.nodes if dag.nodes[n].type.value in ("source", "model")]
             )
             assert model_and_source_count == 4
 

@@ -917,7 +917,7 @@ class TestStatusCommandAuthWiring:
             with patch("streamt.deployer.kafka.KafkaDeployer.__init__", return_value=None) as mock_init, \
                  patch("streamt.deployer.kafka.KafkaDeployer.get_topic_state") as mock_state:
                 mock_state.return_value = MagicMock(exists=False)
-                result = runner.invoke(main, ["status", "-p", str(p)])
+                runner.invoke(main, ["status", "-p", str(p)])
                 # Deployer should have been called with auth
                 if mock_init.called:
                     args, kwargs = mock_init.call_args
@@ -956,7 +956,7 @@ class TestStatusCommandAuthWiring:
                  patch("streamt.deployer.kafka.KafkaDeployer.__init__", return_value=None), \
                  patch("streamt.deployer.kafka.KafkaDeployer.get_topic_state", return_value=MagicMock(exists=False)):
                 mock_state.return_value = MagicMock(exists=False)
-                result = runner.invoke(main, ["status", "-p", str(p)])
+                runner.invoke(main, ["status", "-p", str(p)])
                 if mock_init.called:
                     _, kwargs = mock_init.call_args
                     assert kwargs.get("ssl_ca_location") == "/certs/ca.pem"

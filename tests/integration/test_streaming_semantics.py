@@ -157,7 +157,7 @@ models:
             kafka_helper.create_topic(source_topic, partitions=1)
 
             # Compile and deploy via streamt
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             # Verify compilation generated correct SQL with watermark
             job_sql = manifest.artifacts["flink_jobs"][0]["sql"]
@@ -526,7 +526,7 @@ models:
             kafka_helper.create_topic(source_topic, partitions=1)
 
             # Compile and deploy via streamt
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             # Verify compilation produced deduplication SQL
             job_sql = manifest.artifacts["flink_jobs"][0]["sql"]
@@ -700,7 +700,7 @@ models:
             kafka_helper.create_topic(source_topic, partitions=1)
 
             # Compile via streamt
-            manifest, tmpdir = create_and_compile_project(project_yaml)
+            manifest, _tmpdir = create_and_compile_project(project_yaml)
 
             # Verify PROCTIME was generated
             job_sql = manifest.artifacts["flink_jobs"][0]["sql"]

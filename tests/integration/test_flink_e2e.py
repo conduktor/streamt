@@ -1109,17 +1109,13 @@ class TestFailureModes:
             producer.flush()
 
             # Consuming should raise ValueError about decode errors
-            with pytest.raises(ValueError) as exc_info:
+            with pytest.raises(ValueError, match=r"(?i)decode"):
                 kafka_helper.consume_messages(
                     topic_name,
                     group_id=f"malformed_test_{uuid.uuid4().hex[:8]}",
                     max_messages=10,
                     timeout=10.0,
                 )
-
-            # Verify error message is informative
-            error_msg = str(exc_info.value)
-            assert "decode" in error_msg.lower() or "Failed to decode" in error_msg
 
         finally:
             kafka_helper.delete_topic(topic_name)

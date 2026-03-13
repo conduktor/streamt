@@ -32,7 +32,7 @@ class KafkaHelper:
             config=config or {},
         )
         futures = self.admin.create_topics([topic])
-        for topic_name, future in futures.items():
+        for _topic_name, future in futures.items():
             future.result(timeout=30)
 
         # Wait for topic to be fully created
@@ -41,7 +41,7 @@ class KafkaHelper:
     def delete_topic(self, name: str) -> None:
         """Delete a topic."""
         futures = self.admin.delete_topics([name])
-        for topic_name, future in futures.items():
+        for _topic_name, future in futures.items():
             try:
                 future.result(timeout=30)
             except Exception:

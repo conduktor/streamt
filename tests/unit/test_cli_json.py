@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -551,6 +552,6 @@ class TestOutputEnvelope:
             # Should NOT be valid JSON (it's Rich text)
             try:
                 json.loads(result.output)
-                assert False, "Text mode should not output valid JSON"
+                pytest.fail("Text mode should not output valid JSON")
             except json.JSONDecodeError:
                 pass  # Expected

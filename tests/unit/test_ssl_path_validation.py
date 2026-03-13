@@ -6,7 +6,12 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from streamt.core.models import ConnectClusterConfig, FlinkClusterConfig, KafkaConfig, SchemaRegistryConfig
+from streamt.core.models import (
+    ConnectClusterConfig,
+    FlinkClusterConfig,
+    KafkaConfig,
+    SchemaRegistryConfig,
+)
 
 
 class TestSslPathValidationWarning:
@@ -37,19 +42,16 @@ class TestSslPathStrictMode:
     """With STREAMT_STRICT_SSL=1, non-existent paths raise ValidationError."""
 
     def test_strict_raises_for_nonexistent_ca(self):
-        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}):
-            with pytest.raises(ValidationError, match="does not exist"):
-                KafkaConfig(bootstrap_servers="kafka:9092", ssl_ca_location="/no/such/ca.pem")
+        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}), pytest.raises(ValidationError, match="does not exist"):
+            KafkaConfig(bootstrap_servers="kafka:9092", ssl_ca_location="/no/such/ca.pem")
 
     def test_strict_raises_for_nonexistent_cert(self):
-        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}):
-            with pytest.raises(ValidationError, match="does not exist"):
-                SchemaRegistryConfig(url="http://sr:8081", ssl_certificate_location="/no/cert.pem")
+        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}), pytest.raises(ValidationError, match="does not exist"):
+            SchemaRegistryConfig(url="http://sr:8081", ssl_certificate_location="/no/cert.pem")
 
     def test_strict_raises_for_nonexistent_key(self):
-        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}):
-            with pytest.raises(ValidationError, match="does not exist"):
-                FlinkClusterConfig(ssl_key_location="/no/key.pem")
+        with patch.dict(os.environ, {"STREAMT_STRICT_SSL": "1"}), pytest.raises(ValidationError, match="does not exist"):
+            FlinkClusterConfig(ssl_key_location="/no/key.pem")
 
 
 class TestSslPathEnvVarPassthrough:
