@@ -286,12 +286,12 @@ class DeploymentPlanner:
             except Exception as e:
                 logger.error("Failed to list connectors for orphan detection: %s", e)
 
-    def apply(self, plan: Optional[DeploymentPlan] = None) -> dict[str, list[str]]:
+    def apply(self, plan: Optional[DeploymentPlan] = None) -> dict[str, object]:
         """Apply a deployment plan."""
         if plan is None:
             plan = self.plan()
 
-        results: dict[str, list[str]] = {
+        results: dict[str, object] = {
             "created": [],
             "updated": [],
             "deleted": [],
@@ -401,5 +401,12 @@ class DeploymentPlanner:
                         results["deleted"].append(f"gateway_rule:{change.name}")
                     except Exception as e:
                         results["errors"].append(f"gateway_rule:{change.name}: {e}")
+
+        results["summary"] = {
+            "total": sum(len(v) for v in results.values() if isinstance(v, list)),
+            "succeeded": len(results["created"]) + len(results["updated"]) + len(results["deleted"]),
+            "failed": len(results["errors"]),
+            "unchanged": len(results["unchanged"]),
+        }
 
         return results

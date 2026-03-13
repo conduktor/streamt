@@ -121,6 +121,13 @@ class FlinkClusterConfig(BaseModel):
     type: str = "rest"
     rest_url: Optional[str] = None
     sql_gateway_url: Optional[str] = None
+
+    @field_validator("rest_url", "sql_gateway_url", mode="before")
+    @classmethod
+    def validate_urls_not_blank(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("URL must not be blank")
+        return v
     version: Optional[str] = None
     environment: Optional[str] = None
     api_key: Optional[SecretStr] = None
@@ -178,6 +185,13 @@ class GatewayConfig(BaseModel):
 
     admin_url: Optional[str] = None
     proxy_bootstrap: Optional[str] = None
+
+    @field_validator("admin_url", "proxy_bootstrap", mode="before")
+    @classmethod
+    def validate_urls_not_blank(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("URL must not be blank")
+        return v
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     virtual_cluster: Optional[str] = None

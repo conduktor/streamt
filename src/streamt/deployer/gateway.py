@@ -391,17 +391,25 @@ class GatewayDeployer:
                 created_names.append(interceptor_name)
         except Exception:
             # Roll back: delete interceptors created in this batch
+            rollback_failures: list[str] = []
             for name in created_names:
                 try:
                     self.delete_interceptor(name)
                 except Exception as cleanup_err:
+                    rollback_failures.append(f"interceptor {name}: {cleanup_err}")
                     logger.debug("Failed to roll back interceptor %s: %s", name, cleanup_err)
             # Roll back alias if we just created it
             if not alias_existed:
                 try:
                     self.delete_alias_topic(artifact.virtual_topic)
                 except Exception as cleanup_err:
+                    rollback_failures.append(f"alias {artifact.virtual_topic}: {cleanup_err}")
                     logger.debug("Failed to roll back alias %s: %s", artifact.virtual_topic, cleanup_err)
+            if rollback_failures:
+                logger.warning(
+                    "Partial rollback failure for rule '%s'. Orphaned resources may remain: %s",
+                    artifact.name, "; ".join(rollback_failures),
+                )
             raise
 
         # 4. Remove orphaned interceptors
