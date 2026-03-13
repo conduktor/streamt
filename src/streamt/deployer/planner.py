@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
@@ -317,6 +317,44 @@ class DeploymentPlanner:
             except Exception as e:
                 logger.error("Failed to list connectors for orphan detection: %s", e)
 
+    @staticmethod
+    def _bucket_for(result: str, create_verb: str) -> str:
+        """Map an apply-result string to a result-bucket key."""
+        if result == create_verb:
+            return "created"
+        return "updated" if result == "updated" else "unchanged"
+
+    def _apply_resource_changes(
+        self,
+        results: dict[str, Any],
+        deployer: Optional[Any],
+        changes: list[Any],
+        *,
+        upsert_actions: tuple[str, ...],
+        label_fn: Callable[[Any], str],
+        apply_fn: Callable[[Any], str],
+        create_verb: str,
+        delete_action: str = "delete",
+        delete_fn: Optional[Callable[[Any], None]] = None,
+    ) -> None:
+        """Apply a homogeneous list of resource changes, recording outcomes into results."""
+        if not deployer:
+            return
+        for change in changes:
+            label = label_fn(change)
+            if change.action in upsert_actions and getattr(change, "desired", None):
+                try:
+                    result = apply_fn(change.desired)
+                    results[self._bucket_for(result, create_verb)].append(label)
+                except Exception as e:
+                    results["errors"].append(f"{label}: {_sanitize_error(e)}")
+            elif change.action == delete_action and delete_fn is not None:
+                try:
+                    delete_fn(change)
+                    results["deleted"].append(label)
+                except Exception as e:
+                    results["errors"].append(f"{label}: {_sanitize_error(e)}")
+
     def apply(self, plan: Optional[DeploymentPlan] = None) -> dict[str, object]:
         """Apply a deployment plan."""
         if plan is None:
@@ -331,108 +369,65 @@ class DeploymentPlanner:
         }
 
         # Apply schemas first (before topics that may use them)
-        if self.schema_registry_deployer:
-            for change in plan.schema_changes:
-                if change.action in ["register", "update"] and change.desired:
-                    try:
-                        result = self.schema_registry_deployer.apply_schema(change.desired)
-                        if result == "registered":
-                            results["created"].append(f"schema:{change.subject}")
-                        elif result == "updated":
-                            results["updated"].append(f"schema:{change.subject}")
-                        else:
-                            results["unchanged"].append(f"schema:{change.subject}")
-                    except Exception as e:
-                        results["errors"].append(f"schema:{change.subject}: {_sanitize_error(e)}")
-                elif change.action == "delete":
-                    try:
-                        self.schema_registry_deployer.delete_subject(change.subject)
-                        results["deleted"].append(f"schema:{change.subject}")
-                    except Exception as e:
-                        results["errors"].append(f"schema:{change.subject}: {_sanitize_error(e)}")
+        sr = self.schema_registry_deployer
+        self._apply_resource_changes(
+            results, sr, plan.schema_changes,
+            upsert_actions=("register", "update"),
+            label_fn=lambda c: f"schema:{c.subject}",
+            apply_fn=lambda desired: sr.apply_schema(desired),  # type: ignore[union-attr]
+            create_verb="registered",
+            delete_fn=lambda c: sr.delete_subject(c.subject),  # type: ignore[union-attr]
+        )
 
-        # Apply topics
-        if self.kafka_deployer:
-            for change in plan.topic_changes:
-                if change.action in ["create", "update"] and change.desired:
-                    try:
-                        result = self.kafka_deployer.apply_topic(change.desired)
-                        if result == "created":
-                            results["created"].append(f"topic:{change.topic}")
-                        elif result == "updated":
-                            results["updated"].append(f"topic:{change.topic}")
-                        else:
-                            results["unchanged"].append(f"topic:{change.topic}")
-                    except Exception as e:
-                        results["errors"].append(f"topic:{change.topic}: {_sanitize_error(e)}")
-                elif change.action == "delete":
-                    try:
-                        self.kafka_deployer.delete_topic(change.topic)
-                        results["deleted"].append(f"topic:{change.topic}")
-                    except Exception as e:
-                        results["errors"].append(f"topic:{change.topic}: {_sanitize_error(e)}")
+        kd = self.kafka_deployer
+        self._apply_resource_changes(
+            results, kd, plan.topic_changes,
+            upsert_actions=("create", "update"),
+            label_fn=lambda c: f"topic:{c.topic}",
+            apply_fn=lambda desired: kd.apply_topic(desired),  # type: ignore[union-attr]
+            create_verb="created",
+            delete_fn=lambda c: kd.delete_topic(c.topic),  # type: ignore[union-attr]
+        )
 
-        # Apply Flink jobs
+        # Flink: "submitted" maps to created/updated based on action; delete is "cancel"
         if self.flink_deployer:
             for change in plan.flink_changes:
+                label = f"flink_job:{change.job_name}"
                 if change.action in ("submit", "update") and change.desired:
                     try:
                         result = self.flink_deployer.apply_job(change.desired)
                         if result == "submitted":
-                            key = "updated" if change.action == "update" else "created"
-                            results[key].append(f"flink_job:{change.job_name}")
+                            results["updated" if change.action == "update" else "created"].append(label)
                         else:
-                            results["unchanged"].append(f"flink_job:{change.job_name}")
+                            results["unchanged"].append(label)
                     except Exception as e:
-                        results["errors"].append(f"flink_job:{change.job_name}: {_sanitize_error(e)}")
+                        results["errors"].append(f"{label}: {_sanitize_error(e)}")
                 elif change.action == "cancel" and change.current and change.current.job_id:
                     try:
                         self.flink_deployer.cancel_job(change.current.job_id)
-                        results["deleted"].append(f"flink_job:{change.job_name}")
+                        results["deleted"].append(label)
                     except Exception as e:
-                        results["errors"].append(f"flink_job:{change.job_name}: {_sanitize_error(e)}")
+                        results["errors"].append(f"{label}: {_sanitize_error(e)}")
 
-        # Apply connectors
-        if self.connect_deployer:
-            for change in plan.connector_changes:
-                if change.action in ["create", "update"] and change.desired:
-                    try:
-                        result = self.connect_deployer.apply_connector(change.desired)
-                        if result == "created":
-                            results["created"].append(f"connector:{change.connector_name}")
-                        elif result == "updated":
-                            results["updated"].append(f"connector:{change.connector_name}")
-                        else:
-                            results["unchanged"].append(f"connector:{change.connector_name}")
-                    except Exception as e:
-                        results["errors"].append(f"connector:{change.connector_name}: {_sanitize_error(e)}")
-                elif change.action == "delete":
-                    try:
-                        self.connect_deployer.delete_connector(change.connector_name)
-                        results["deleted"].append(f"connector:{change.connector_name}")
-                    except Exception as e:
-                        results["errors"].append(f"connector:{change.connector_name}: {_sanitize_error(e)}")
+        cd = self.connect_deployer
+        self._apply_resource_changes(
+            results, cd, plan.connector_changes,
+            upsert_actions=("create", "update"),
+            label_fn=lambda c: f"connector:{c.connector_name}",
+            apply_fn=lambda desired: cd.apply_connector(desired),  # type: ignore[union-attr]
+            create_verb="created",
+            delete_fn=lambda c: cd.delete_connector(c.connector_name),  # type: ignore[union-attr]
+        )
 
-        # Apply gateway rules
-        if self.gateway_deployer:
-            for change in plan.gateway_changes:
-                if change.action in ["create", "update"] and change.desired:
-                    try:
-                        result = self.gateway_deployer.apply(change.desired)
-                        if result == "created":
-                            results["created"].append(f"gateway_rule:{change.name}")
-                        elif result == "updated":
-                            results["updated"].append(f"gateway_rule:{change.name}")
-                        else:
-                            results["unchanged"].append(f"gateway_rule:{change.name}")
-                    except Exception as e:
-                        results["errors"].append(f"gateway_rule:{change.name}: {_sanitize_error(e)}")
-                elif change.action == "delete":
-                    try:
-                        self.gateway_deployer.delete(change.name)
-                        results["deleted"].append(f"gateway_rule:{change.name}")
-                    except Exception as e:
-                        results["errors"].append(f"gateway_rule:{change.name}: {_sanitize_error(e)}")
+        gd = self.gateway_deployer
+        self._apply_resource_changes(
+            results, gd, plan.gateway_changes,
+            upsert_actions=("create", "update"),
+            label_fn=lambda c: f"gateway_rule:{c.name}",
+            apply_fn=lambda desired: gd.apply(desired),  # type: ignore[union-attr]
+            create_verb="created",
+            delete_fn=lambda c: gd.delete(c.name),  # type: ignore[union-attr]
+        )
 
         results["summary"] = {
             "total": sum(len(v) for v in results.values() if isinstance(v, list)),
