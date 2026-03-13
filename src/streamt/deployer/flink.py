@@ -344,6 +344,47 @@ class FlinkDeployer:
             status=best_match.get("state") or best_match.get("status"),
         )
 
+    def _poll_statement(self, session_id: str, operation_handle: str, statement: str, timeout: int) -> None:
+        """Poll a submitted statement until FINISHED or raise on ERROR/timeout.
+
+        Uses exponential backoff (0.5 s → 5 s cap) with a wall-clock deadline.
+        """
+        poll_interval = 0.5
+        max_poll_interval = 5.0
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            status_response = self._request(
+                "GET",
+                f"/v1/sessions/{session_id}/operations/{operation_handle}/status",
+                use_sql_gateway=True,
+            )
+            status = status_response.get("status")
+
+            if status == "FINISHED":
+                return
+            elif status == "ERROR":
+                error_msg = status_response.get("error")
+                if not error_msg:
+                    try:
+                        result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
+                        result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
+                        try:
+                            result_data = result_resp.json()
+                        except ValueError:
+                            result_data = {}
+                        error_list = result_data.get("errors", [])
+                        error_msg = " ".join(error_list) if error_list else "Unknown error"
+                    except Exception as e:
+                        error_msg = f"Unknown error (failed to fetch details: {e})"
+                raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
+            elif status in ("RUNNING", "PENDING"):
+                time.sleep(poll_interval)
+                poll_interval = min(poll_interval * 2, max_poll_interval)
+            else:
+                raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
+        raise RuntimeError(f"Timeout waiting for statement: {statement[:50]}...")
+
     def submit_sql(self, sql: str, statement_timeout: Optional[int] = None) -> dict:
         """Submit SQL statements to Flink via SQL Gateway.
 
@@ -356,14 +397,11 @@ class FlinkDeployer:
         """
         statement_timeout = statement_timeout or self._statement_timeout
         session_id = self.get_session()
-
-        # Split SQL into statements
         statements = _split_sql_statements(sql)
 
         results = []
         try:
             for statement in statements:
-                # Submit statement
                 response = self._request(
                     "POST",
                     f"/v1/sessions/{session_id}/statements",
@@ -373,49 +411,11 @@ class FlinkDeployer:
                 if not isinstance(response, dict):
                     raise RuntimeError(f"Unexpected response type for statement: {statement[:50]}...")
                 operation_handle = response.get("operationHandle")
-
                 if not operation_handle:
                     raise RuntimeError(f"No operationHandle returned for statement: {statement[:50]}...")
 
-                # Poll for completion with exponential backoff
-                poll_interval = 0.5
-                max_poll_interval = 5.0
-                deadline = time.monotonic() + statement_timeout
-
-                while time.monotonic() < deadline:
-                    status_response = self._request(
-                        "GET",
-                        f"/v1/sessions/{session_id}/operations/{operation_handle}/status",
-                        use_sql_gateway=True,
-                    )
-                    status = status_response.get("status")
-
-                    if status == "FINISHED":
-                        results.append({"status": "FINISHED", "statement": statement[:100]})
-                        break
-                    elif status == "ERROR":
-                        # Get error details - try result endpoint first
-                        error_msg = status_response.get("error")
-                        if not error_msg:
-                            try:
-                                result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
-                                result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
-                                try:
-                                    result_data = result_resp.json()
-                                except ValueError:
-                                    result_data = {}
-                                error_list = result_data.get("errors", [])
-                                error_msg = " ".join(error_list) if error_list else "Unknown error"
-                            except Exception as e:
-                                error_msg = f"Unknown error (failed to fetch details: {e})"
-                        raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
-                    elif status in ("RUNNING", "PENDING"):
-                        time.sleep(poll_interval)
-                        poll_interval = min(poll_interval * 2, max_poll_interval)
-                    else:
-                        raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
-                else:
-                    raise RuntimeError(f"Timeout waiting for statement: {statement[:50]}...")
+                self._poll_statement(session_id, operation_handle, statement, statement_timeout)
+                results.append({"status": "FINISHED", "statement": statement[:100]})
         except Exception:
             self.close_session()
             raise
