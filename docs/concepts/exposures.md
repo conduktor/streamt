@@ -339,7 +339,7 @@ Every consumer should have an exposure:
 ```yaml
 # Don't leave mystery consumer groups
 - name: unknown_consumer
-  description: "TODO: Identify this consumer"
+  description: "Legacy checkout service — migrating to v2 in Q3"
   consumer_group: legacy-consumer-123
 ```
 

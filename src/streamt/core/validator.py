@@ -543,6 +543,21 @@ class ProjectValidator:
                     f"expected >= {rules.min_replication_factor}, got {rf}",
                 )
 
+        # Check max retention
+        if rules.max_retention_ms is not None and topic_config:
+            retention = topic_config.config.get("retention.ms") if topic_config.config else None
+            if retention is not None:
+                try:
+                    retention_val = int(retention)
+                    if retention_val > rules.max_retention_ms and retention_val != -1:
+                        self.result.add_error(
+                            "RULE_MAX_RETENTION",
+                            f"Model '{model.name}' topic retention {retention_val}ms exceeds "
+                            f"max allowed {rules.max_retention_ms}ms",
+                        )
+                except (ValueError, TypeError):
+                    pass
+
         # Check naming pattern
         if rules.naming_pattern:
             topic_name = topic_config.name if topic_config and topic_config.name else model.name
@@ -578,6 +593,15 @@ class ProjectValidator:
                 "RULE_REQUIRE_OWNER",
                 f"Model '{model.name}' missing required field 'owner'",
             )
+
+        # Check valid_owners
+        if rules.valid_owners and model.owner:
+            if model.owner not in rules.valid_owners:
+                self.result.add_error(
+                    "RULE_INVALID_OWNER",
+                    f"Model '{model.name}' owner '{model.owner}' is not in the allowed list: "
+                    f"{', '.join(rules.valid_owners)}",
+                )
 
         # Check require_tests
         if rules.require_tests:

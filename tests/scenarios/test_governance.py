@@ -7,10 +7,9 @@ Tests enterprise governance patterns:
 - Data quality enforcement
 - Compliance and audit requirements
 
-NOTE: These tests validate PARSING and STRUCTURAL validation of governance
-configurations. Runtime ENFORCEMENT of governance rules (e.g., blocking
-deployments, alerting on violations) is NOT YET IMPLEMENTED. Tests marked
-with @pytest.mark.skip indicate features that require enforcement logic.
+These tests validate parsing and structural validation of governance
+configurations. Core enforcement (valid_owners, max_retention_ms,
+require_tests) is implemented in ProjectValidator._validate_rules().
 """
 
 import tempfile

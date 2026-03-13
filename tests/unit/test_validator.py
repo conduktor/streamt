@@ -499,3 +499,195 @@ class TestProjectValidator:
 
             assert result.is_valid
             assert any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)
+
+
+class TestGovernanceRules:
+    """Tests for governance rule enforcement."""
+
+    def _create_project(self, tmpdir: str, config: dict) -> "StreamtProject":
+        project_path = Path(tmpdir)
+        with open(project_path / "stream_project.yml", "w") as f:
+            yaml.dump(config, f)
+        parser = ProjectParser(project_path)
+        return parser.parse()
+
+    def test_valid_owners_rejects_unknown_owner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "rules": {
+                    "models": {
+                        "valid_owners": ["team-alpha", "team-beta"],
+                    },
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "owner": "team-unknown",
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert any("RULE_INVALID_OWNER" in e.code for e in result.errors)
+
+    def test_valid_owners_accepts_known_owner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "rules": {
+                    "models": {
+                        "valid_owners": ["team-alpha", "team-beta"],
+                    },
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "owner": "team-alpha",
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert not any("RULE_INVALID_OWNER" in e.code for e in result.errors)
+
+    def test_valid_owners_skipped_when_no_owner_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "rules": {
+                    "models": {"valid_owners": ["team-alpha"]},
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert not any("RULE_INVALID_OWNER" in e.code for e in result.errors)
+
+    def test_max_retention_rejects_excessive_retention(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8081"}},
+                    },
+                },
+                "rules": {
+                    "topics": {"max_retention_ms": 7776000000},  # 90 days
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "materialized": "flink",
+                        "advanced": {
+                            "topic": {"config": {"retention.ms": "31536000000"}},  # 365 days
+                        },
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert any("RULE_MAX_RETENTION" in e.code for e in result.errors)
+
+    def test_max_retention_allows_compliant_retention(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8081"}},
+                    },
+                },
+                "rules": {
+                    "topics": {"max_retention_ms": 7776000000},
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "materialized": "flink",
+                        "advanced": {
+                            "topic": {"config": {"retention.ms": "86400000"}},  # 1 day
+                        },
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert not any("RULE_MAX_RETENTION" in e.code for e in result.errors)
+
+    def test_max_retention_allows_infinite_retention(self):
+        """retention.ms=-1 means infinite; skip the check."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8081"}},
+                    },
+                },
+                "rules": {
+                    "topics": {"max_retention_ms": 7776000000},
+                },
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "materialized": "flink",
+                        "advanced": {
+                            "topic": {"config": {"retention.ms": "-1"}},
+                        },
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert not any("RULE_MAX_RETENTION" in e.code for e in result.errors)
+
+    def test_no_rules_section_no_errors(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+            assert result.is_valid
