@@ -104,12 +104,16 @@ class FlinkDeployer:
         ssl_certificate_location: Optional[str] = None,
         ssl_key_location: Optional[str] = None,
         ssl_key_password: Optional[str] = None,
+        version: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> None:
         """Initialize Flink deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
 
         self.rest_url = rest_url.rstrip("/")
         self.sql_gateway_url = sql_gateway_url.rstrip("/") if sql_gateway_url else None
+        self.version = version
+        self.environment = environment
         self.session_id: Optional[str] = None
         self._http_session = requests.Session()
         if username and password:

@@ -152,6 +152,8 @@ def make_flink_deployer(project: StreamtProject, fmt: OutputFormatter) -> Option
                         ssl_certificate_location=cfg.ssl_certificate_location,
                         ssl_key_location=cfg.ssl_key_location,
                         ssl_key_password=_resolve_secret(cfg.ssl_key_password),
+                        version=cfg.version,
+                        environment=cfg.environment,
                     )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Flink")
