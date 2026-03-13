@@ -72,6 +72,16 @@ class TypeInferenceMixin:
 
             columns = []
             for expr in parsed.expressions:
+                # Handle SELECT * — expand all schema columns
+                if isinstance(expr, exp.Star):
+                    for col_name, col_type in schema_context.items():
+                        columns.append((col_name, col_type))
+                    continue
+                # Handle table.* (qualified star)
+                if isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+                    for col_name, col_type in schema_context.items():
+                        columns.append((col_name, col_type))
+                    continue
                 col_name = self._get_expression_alias(expr)
                 col_type = self._infer_expression_type(expr, schema_context)
                 if col_name:
@@ -120,6 +130,12 @@ class TypeInferenceMixin:
             col_name = expr.name
             if col_name in schema:
                 return schema[col_name]
+            # Try qualified name (table.column)
+            table = expr.table
+            if table:
+                qualified = f"{table}.{col_name}"
+                if qualified in schema:
+                    return schema[qualified]
             upper_name = col_name.upper()
             if upper_name == "$ROWTIME":
                 return "TIMESTAMP_LTZ(3)"
@@ -140,7 +156,7 @@ class TypeInferenceMixin:
             input_type = self._infer_expression_type(expr.this, schema)
             base_type = input_type.split("(")[0].upper()
             if base_type in ("DECIMAL", "NUMERIC"):
-                return input_type
+                return self._widen_decimal_for_aggregate(input_type)
             if base_type in ("FLOAT", "DOUBLE"):
                 return "DOUBLE"
             if base_type in ("TINYINT", "SMALLINT", "INT", "INTEGER", "BIGINT"):
@@ -152,7 +168,7 @@ class TypeInferenceMixin:
             input_type = self._infer_expression_type(expr.this, schema)
             base_type = input_type.split("(")[0].upper()
             if base_type in ("DECIMAL", "NUMERIC"):
-                return input_type
+                return self._widen_decimal_for_aggregate(input_type)
             return "DOUBLE"
         if isinstance(expr, (exp.Min, exp.Max)):
             if expr.this is not None:
@@ -210,6 +226,10 @@ class TypeInferenceMixin:
         # String functions
         if isinstance(expr, (exp.Upper, exp.Lower, exp.Concat, exp.ConcatWs, exp.Substring, exp.Trim)):
             return "STRING"
+
+        # NULL literal
+        if isinstance(expr, exp.Null):
+            return "NULL"
 
         # Numeric literals
         if isinstance(expr, exp.Literal):
@@ -408,6 +428,14 @@ class TypeInferenceMixin:
         if isinstance(expr, exp.Neg):
             return self._infer_expression_type(expr.this, schema)
 
+        # Subquery - infer type from the first column of the inner SELECT
+        if isinstance(expr, exp.Subquery):
+            inner_select = expr.find(exp.Select)
+            if inner_select and inner_select.expressions:
+                first_expr = inner_select.expressions[0]
+                return self._infer_expression_type(first_expr, schema)
+            return "STRING"
+
         # Default to STRING for unknown expressions
         return "STRING"
 
@@ -429,20 +457,42 @@ class TypeInferenceMixin:
             "NUMERIC",
         }
 
+    def _widen_decimal_for_aggregate(self, decimal_type: str) -> str:
+        """Widen DECIMAL precision to 38 for aggregate functions (SUM/AVG).
+
+        Per Flink SQL rules, SUM(DECIMAL(p,s)) -> DECIMAL(38,s).
+        """
+        match = re.match(r"DECIMAL\((\d+),\s*(\d+)\)", decimal_type, re.IGNORECASE)
+        if match:
+            scale = match.group(2)
+            return f"DECIMAL(38,{scale})"
+        return decimal_type
+
     def _merge_types(self, types: list[str]) -> str:
-        merged = [type_name for type_name in types if type_name]
+        merged = [type_name for type_name in types if type_name and type_name != "NULL"]
         if not merged:
             return "STRING"
         if all(type_name.split("(")[0].upper() == "BOOLEAN" for type_name in merged):
             return "BOOLEAN"
-        if all(self._is_numeric_type(type_name) for type_name in merged):
-            result = merged[0]
-            for next_type in merged[1:]:
+        # Filter out non-numeric before checking numeric-only
+        numeric_types = [t for t in merged if self._is_numeric_type(t)]
+        non_numeric = [t for t in merged if not self._is_numeric_type(t)]
+        if numeric_types and not non_numeric:
+            result = numeric_types[0]
+            for next_type in numeric_types[1:]:
                 result = self._promote_numeric_types(result, next_type)
             return result
         base_types = {type_name.split("(")[0].upper() for type_name in merged}
         if len(base_types) == 1:
             return merged[0]
+        # Type widening: if mix of timestamp types, widen to TIMESTAMP
+        timestamp_bases = {"TIMESTAMP", "TIMESTAMP_LTZ", "DATE", "TIME"}
+        if base_types.issubset(timestamp_bases):
+            # Prefer TIMESTAMP_LTZ if any LTZ present, else TIMESTAMP
+            if any("LTZ" in t.upper() for t in merged):
+                return "TIMESTAMP_LTZ(3)"
+            return "TIMESTAMP(3)"
+        # If mix of numeric and string, return STRING
         return "STRING"
 
     def _promote_numeric_types(self, left_type: str, right_type: str) -> str:
@@ -562,6 +612,18 @@ class TypeInferenceMixin:
     # ------------------------------------------------------------------
 
     def _normalize_cast_type(self, target_type: str) -> str:
+        # Map SQL standard type aliases to Flink types
+        type_aliases = {
+            "VARCHAR": "STRING",
+            "CHAR": "STRING",
+            "CHARACTER": "STRING",
+            "TEXT": "STRING",
+            "REAL": "FLOAT",
+            "NUMBER": "DECIMAL",
+        }
+        base = target_type.split("(")[0].upper()
+        if base in type_aliases:
+            return type_aliases[base]
         ltz_match = re.match(r"^TIMESTAMPLTZ(?:\((\d+)\))?$", target_type)
         if ltz_match:
             precision = ltz_match.group(1)

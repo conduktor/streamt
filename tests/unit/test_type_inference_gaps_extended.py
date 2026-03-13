@@ -61,14 +61,9 @@ def _infer_via_compiler(sources: list[Source], model_sql: str) -> list[tuple[str
 class TestGroup6LiteralTypes:
     """Literal values should infer to appropriate types."""
 
-    def test_null_literal_currently_string(self):
+    def test_null_literal_returns_null_type(self):
         cols = _infer("SELECT NULL as x FROM t")
-        assert cols[0][1] == "STRING"
-
-    def test_null_literal_should_not_be_string(self):
-        pytest.xfail("NULL literal defaults to STRING instead of NULL type")
-        cols = _infer("SELECT NULL as x FROM t")
-        assert cols[0][1] != "STRING"
+        assert cols[0][1] == "NULL"
 
     def test_integer_literal_42(self):
         cols = _infer("SELECT 42 as x FROM t")
@@ -142,16 +137,11 @@ class TestGroup7AggregatePrecision:
         cols = _infer("SELECT AVG(bigint_col) AS avg_val FROM t", {"bigint_col": "BIGINT"})
         assert cols[0][1] == "DOUBLE"
 
-    def test_avg_decimal_preserves_type(self):
+    def test_avg_decimal_widens_to_38(self):
         cols = _infer("SELECT AVG(x) AS avg_val FROM t", {"x": "DECIMAL(10,2)"})
-        assert cols[0][1] == "DECIMAL(10,2)"
+        assert cols[0][1] == "DECIMAL(38,2)"
 
-    def test_sum_decimal_preserves_input_type(self):
-        cols = _infer("SELECT SUM(decimal_col) AS total FROM t", {"decimal_col": "DECIMAL(10,2)"})
-        assert cols[0][1] == "DECIMAL(10,2)"
-
-    def test_sum_decimal_should_widen_to_38(self):
-        pytest.xfail("SUM(DECIMAL) does not widen precision to (38, s)")
+    def test_sum_decimal_widens_to_38(self):
         cols = _infer("SELECT SUM(decimal_col) AS total FROM t", {"decimal_col": "DECIMAL(10,2)"})
         assert cols[0][1] == "DECIMAL(38,2)"
 
@@ -331,45 +321,27 @@ class TestSchemaGenerationColumnTypes:
         compiler = Compiler(project)
         return compiler._generate_schema_from_columns(source)
 
-    def test_bigint_generates_string_currently(self):
-        schema = self._schema_for([ColumnDefinition(name="id", type="BIGINT")])
-        assert schema["fields"][0]["type"] == ["null", "string"]
-
-    def test_double_generates_string_currently(self):
-        schema = self._schema_for([ColumnDefinition(name="amount", type="DOUBLE")])
-        assert schema["fields"][0]["type"] == ["null", "string"]
-
-    def test_boolean_generates_string_currently(self):
-        schema = self._schema_for([ColumnDefinition(name="active", type="BOOLEAN")])
-        assert schema["fields"][0]["type"] == ["null", "string"]
-
-    def test_bigint_should_generate_long(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_bigint_generates_long(self):
         schema = self._schema_for([ColumnDefinition(name="id", type="BIGINT")])
         assert schema["fields"][0]["type"] == ["null", "long"]
 
-    def test_int_should_generate_int(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_int_generates_int(self):
         schema = self._schema_for([ColumnDefinition(name="count", type="INT")])
         assert schema["fields"][0]["type"] == ["null", "int"]
 
-    def test_double_should_generate_double(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_double_generates_double(self):
         schema = self._schema_for([ColumnDefinition(name="amount", type="DOUBLE")])
         assert schema["fields"][0]["type"] == ["null", "double"]
 
-    def test_float_should_generate_float(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_float_generates_float(self):
         schema = self._schema_for([ColumnDefinition(name="ratio", type="FLOAT")])
         assert schema["fields"][0]["type"] == ["null", "float"]
 
-    def test_boolean_should_generate_boolean(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_boolean_generates_boolean(self):
         schema = self._schema_for([ColumnDefinition(name="active", type="BOOLEAN")])
         assert schema["fields"][0]["type"] == ["null", "boolean"]
 
-    def test_timestamp_should_generate_logical_type(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_timestamp_generates_logical_type(self):
         schema = self._schema_for([ColumnDefinition(name="ts", type="TIMESTAMP(3)")])
         avro_type = schema["fields"][0]["type"]
         assert isinstance(avro_type, list)
@@ -378,8 +350,7 @@ class TestSchemaGenerationColumnTypes:
         assert isinstance(inner, dict)
         assert inner.get("logicalType") in ("timestamp-millis", "timestamp-micros")
 
-    def test_decimal_should_generate_decimal_logical_type(self):
-        pytest.xfail("_generate_schema_from_columns ignores column types")
+    def test_decimal_generates_decimal_logical_type(self):
         schema = self._schema_for([ColumnDefinition(name="price", type="DECIMAL(10,2)")])
         avro_type = schema["fields"][0]["type"]
         assert isinstance(avro_type, list)
@@ -389,15 +360,18 @@ class TestSchemaGenerationColumnTypes:
         assert inner.get("precision") == 10
         assert inner.get("scale") == 2
 
-    def test_multiple_columns_all_string_currently(self):
+    def test_multiple_columns_typed_correctly(self):
         schema = self._schema_for([
             ColumnDefinition(name="id", type="BIGINT"),
             ColumnDefinition(name="amount", type="DOUBLE"),
             ColumnDefinition(name="active", type="BOOLEAN"),
             ColumnDefinition(name="name", type="STRING"),
         ])
-        for field in schema["fields"]:
-            assert field["type"] == ["null", "string"]
+        types = {f["name"]: f["type"] for f in schema["fields"]}
+        assert types["id"] == ["null", "long"]
+        assert types["amount"] == ["null", "double"]
+        assert types["active"] == ["null", "boolean"]
+        assert types["name"] == ["null", "string"]
 
 
 # ===================================================================
@@ -481,9 +455,8 @@ class TestCrossCuttingScenarios:
         m = dict(cols)
         assert m["big"] == "BIGINT"
         assert m["dbl"] == "DOUBLE"
-        # Flink STRING is tokenized as VARCHAR by sqlglot; _normalize_cast_type
-        # does not map it back, so CAST(... AS STRING) yields VARCHAR.
-        assert m["str"] == "VARCHAR"
+        # _normalize_cast_type now maps VARCHAR → STRING
+        assert m["str"] == "STRING"
 
     def test_window_function_preserves_inner_type(self):
         cols = _infer(

@@ -75,17 +75,8 @@ class TestGroup1SelectStarPropagation:
     Currently returns [] because Star is not handled by _get_expression_alias.
     """
 
-    def test_select_star_returns_empty_currently(self):
-        """SELECT * with schema context currently yields no columns."""
-        cols = _infer(
-            "SELECT * FROM src",
-            {"id": "BIGINT", "name": "STRING"},
-        )
-        assert cols == []
-
-    def test_select_star_should_propagate_source_columns(self):
-        """SELECT * FROM src should return all source columns with types."""
-        pytest.xfail("SELECT * does not expand schema context columns")
+    def test_select_star_propagates_source_columns(self):
+        """SELECT * FROM src returns all source columns with types."""
         cols = _infer(
             "SELECT * FROM src",
             {"id": "BIGINT", "name": "STRING"},
@@ -95,17 +86,8 @@ class TestGroup1SelectStarPropagation:
         assert type_map["id"] == "BIGINT"
         assert type_map["name"] == "STRING"
 
-    def test_select_star_plus_expression_only_returns_expression(self):
-        """SELECT *, amount * 2 AS doubled -- only 'doubled' is returned today."""
-        cols = _infer(
-            "SELECT *, amount * 2 AS doubled FROM src",
-            {"id": "BIGINT", "name": "STRING", "amount": "DOUBLE"},
-        )
-        assert cols == [("doubled", "DOUBLE")]
-
-    def test_select_star_plus_expression_should_include_all(self):
-        """SELECT *, expr should include all source cols + the expression."""
-        pytest.xfail("SELECT * does not expand, so source cols are missing")
+    def test_select_star_plus_expression_includes_all(self):
+        """SELECT *, expr includes all source cols + the expression."""
         cols = _infer(
             "SELECT *, amount * 2 AS doubled FROM src",
             {"id": "BIGINT", "name": "STRING", "amount": "DOUBLE"},
@@ -116,22 +98,8 @@ class TestGroup1SelectStarPropagation:
         assert type_map["doubled"] == "DOUBLE"
         assert len(cols) == 4  # id, name, amount, doubled
 
-    def test_select_star_via_compiler(self):
-        """Full-stack SELECT * via Compiler also returns empty."""
-        cols = _infer_via_compiler(
-            sources=[
-                Source(name="src", topic="src_topic", columns=[
-                    ColumnDefinition(name="id", type="BIGINT"),
-                    ColumnDefinition(name="name", type="STRING"),
-                ])
-            ],
-            model_sql="SELECT * FROM {{ source('src') }}",
-        )
-        assert cols == []
-
-    def test_select_star_via_compiler_should_propagate(self):
-        """Full-stack SELECT * should propagate source columns."""
-        pytest.xfail("SELECT * does not propagate source columns through Compiler")
+    def test_select_star_via_compiler_propagates(self):
+        """Full-stack SELECT * propagates source columns through Compiler."""
         cols = _infer_via_compiler(
             sources=[
                 Source(name="src", topic="src_topic", columns=[
@@ -180,17 +148,8 @@ class TestGroup2DecimalPrecision:
         cols = _infer("SELECT amount FROM t", {"amount": "DECIMAL(38,18)"})
         assert cols == [("amount", "DECIMAL(38,18)")]
 
-    def test_sum_decimal_preserves_precision(self):
-        """SUM(DECIMAL(10,2)) preserves input type (current behavior)."""
-        cols = _infer(
-            "SELECT SUM(amount) AS total FROM t",
-            {"amount": "DECIMAL(10,2)"},
-        )
-        assert cols[0][1] == "DECIMAL(10,2)"
-
-    def test_sum_decimal_should_widen_precision_to_38(self):
-        """Per Flink rules, SUM(DECIMAL(10,2)) should widen to DECIMAL(38,2)."""
-        pytest.xfail("SUM does not widen DECIMAL precision to (38, original_scale)")
+    def test_sum_decimal_widens_precision_to_38(self):
+        """Per Flink rules, SUM(DECIMAL(10,2)) widens to DECIMAL(38,2)."""
         cols = _infer(
             "SELECT SUM(amount) AS total FROM t",
             {"amount": "DECIMAL(10,2)"},
@@ -342,23 +301,16 @@ class TestGroup4CaseCoalesceTypeWidening:
         cols = _infer("SELECT CASE WHEN x > 0 THEN 'high' ELSE 'low' END AS val FROM t")
         assert cols[0][1] == "STRING"
 
-    def test_coalesce_int_null_returns_string_currently(self):
-        """COALESCE(INT, NULL) returns STRING because NULL is treated as STRING."""
-        cols = _infer("SELECT COALESCE(x, NULL) AS val FROM t", {"x": "INT"})
-        assert cols[0][1] == "STRING"
-
-    def test_coalesce_int_null_should_preserve_int(self):
-        pytest.xfail("NULL treated as STRING breaks COALESCE type widening")
+    def test_coalesce_int_null_preserves_int(self):
+        """COALESCE(INT, NULL) preserves INT (NULL filtered from merge)."""
         cols = _infer("SELECT COALESCE(x, NULL) AS val FROM t", {"x": "INT"})
         assert cols[0][1] == "INT"
 
-    def test_coalesce_double_null_should_preserve_double(self):
-        pytest.xfail("NULL treated as STRING breaks COALESCE type widening")
+    def test_coalesce_double_null_preserves_double(self):
         cols = _infer("SELECT COALESCE(amount, NULL) AS val FROM t", {"amount": "DOUBLE"})
         assert cols[0][1] == "DOUBLE"
 
-    def test_case_with_null_else_should_preserve_type(self):
-        pytest.xfail("NULL treated as STRING breaks CASE type widening")
+    def test_case_with_null_else_preserves_type(self):
         cols = _infer(
             "SELECT CASE WHEN x > 0 THEN x ELSE NULL END AS val FROM t",
             {"x": "INT"},
@@ -366,7 +318,6 @@ class TestGroup4CaseCoalesceTypeWidening:
         assert cols[0][1] == "INT"
 
     def test_case_null_branch_with_bigint(self):
-        pytest.xfail("NULL treated as STRING breaks CASE type widening")
         cols = _infer(
             "SELECT CASE WHEN flag THEN amount ELSE NULL END AS val FROM t",
             {"flag": "BOOLEAN", "amount": "BIGINT"},
@@ -378,7 +329,6 @@ class TestGroup4CaseCoalesceTypeWidening:
         assert cols[0][1] == "BOOLEAN"
 
     def test_nested_coalesce_in_case_with_null(self):
-        pytest.xfail("NULL in COALESCE inside CASE breaks type inference")
         cols = _infer(
             "SELECT CASE WHEN flag THEN COALESCE(amount, NULL) ELSE 0 END AS val FROM t",
             {"flag": "BOOLEAN", "amount": "DOUBLE"},

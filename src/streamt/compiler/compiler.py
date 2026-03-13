@@ -153,6 +153,28 @@ class Compiler(TypeInferenceMixin):
                 )
             )
 
+    @staticmethod
+    def _flink_type_to_avro(flink_type: str) -> str | dict:
+        """Map a Flink SQL type to its Avro equivalent."""
+        base = flink_type.split("(")[0].upper()
+        simple = {"STRING": "string", "VARCHAR": "string", "CHAR": "string", "BOOLEAN": "boolean",
+                  "TINYINT": "int", "SMALLINT": "int", "INT": "int", "INTEGER": "int",
+                  "BIGINT": "long", "FLOAT": "float", "DOUBLE": "double", "BYTES": "bytes"}
+        if base in simple:
+            return simple[base]
+        if base in ("DECIMAL", "NUMERIC"):
+            import re
+            m = re.match(r"(?:DECIMAL|NUMERIC)\((\d+),\s*(\d+)\)", flink_type, re.IGNORECASE)
+            p, s = (int(m.group(1)), int(m.group(2))) if m else (38, 18)
+            return {"type": "bytes", "logicalType": "decimal", "precision": p, "scale": s}
+        if base in ("TIMESTAMP", "TIMESTAMP_LTZ"):
+            return {"type": "long", "logicalType": "timestamp-millis"}
+        if base == "DATE":
+            return {"type": "int", "logicalType": "date"}
+        if base == "TIME":
+            return {"type": "int", "logicalType": "time-millis"}
+        return "string"
+
     def _generate_schema_from_columns(self, source: Source) -> dict | None:
         """Generate Avro schema from source columns."""
         if not source.columns:
@@ -160,10 +182,10 @@ class Compiler(TypeInferenceMixin):
 
         fields = []
         for col in source.columns:
-            # Default to string type, can be enhanced with type mapping
+            avro_type = self._flink_type_to_avro(col.type) if col.type else "string"
             fields.append({
                 "name": col.name,
-                "type": ["null", "string"],
+                "type": ["null", avro_type],
                 "default": None,
                 "doc": col.description or "",
             })
@@ -202,10 +224,11 @@ class Compiler(TypeInferenceMixin):
 
     def _compile_topic_model(self, model: Model) -> None:
         """Compile a topic model (creates real Kafka topic)."""
-        topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
-        partitions = (model.get_topic_config().partitions if model.get_topic_config() and model.get_topic_config().partitions else None) or self._topic_defaults.partitions
-        replication_factor = (model.get_topic_config().replication_factor if model.get_topic_config() and model.get_topic_config().replication_factor else None) or self._topic_defaults.replication_factor
-        config = model.get_topic_config().config if model.get_topic_config() else {}
+        tc = model.get_topic_config()
+        topic_name = tc.name if tc and tc.name else model.name
+        partitions = (tc.partitions if tc and tc.partitions else None) or self._topic_defaults.partitions
+        replication_factor = (tc.replication_factor if tc and tc.replication_factor else None) or self._topic_defaults.replication_factor
+        config = tc.config if tc else {}
 
         self.topics.append(
             TopicArtifact(
@@ -222,7 +245,8 @@ class Compiler(TypeInferenceMixin):
 
     def _compile_virtual_topic_model(self, model: Model) -> None:
         """Compile a virtual topic model (Gateway rule)."""
-        virtual_topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
+        tc = model.get_topic_config()
+        virtual_topic_name = tc.name if tc and tc.name else model.name
 
         # Get the source topic
         source_topic = self._get_source_topic(model)
@@ -273,10 +297,11 @@ class Compiler(TypeInferenceMixin):
     def _compile_flink_model(self, model: Model) -> None:
         """Compile a Flink model."""
         # Create output topic
-        topic_name = model.get_topic_config().name if model.get_topic_config() and model.get_topic_config().name else model.name
-        partitions = (model.get_topic_config().partitions if model.get_topic_config() and model.get_topic_config().partitions else None) or self._topic_defaults.partitions
-        replication_factor = (model.get_topic_config().replication_factor if model.get_topic_config() and model.get_topic_config().replication_factor else None) or self._topic_defaults.replication_factor
-        config = model.get_topic_config().config if model.get_topic_config() else {}
+        tc = model.get_topic_config()
+        topic_name = tc.name if tc and tc.name else model.name
+        partitions = (tc.partitions if tc and tc.partitions else None) or self._topic_defaults.partitions
+        replication_factor = (tc.replication_factor if tc and tc.replication_factor else None) or self._topic_defaults.replication_factor
+        config = tc.config if tc else {}
 
         self.topics.append(
             TopicArtifact(
