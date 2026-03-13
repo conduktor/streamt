@@ -37,8 +37,6 @@ class TestGatewayInterceptorChangeDetection:
 
     def test_different_interceptor_count_should_detect_change(self, deployer):
         """Alias same physical_topic, but 3 interceptors instead of 1."""
-        pytest.xfail("plan only checks physical_topic -- task #60")
-
         with patch.object(deployer, "get_alias_topic") as mock_alias, \
              patch.object(deployer, "list_interceptors") as mock_ints:
             mock_alias.return_value = {
@@ -61,8 +59,6 @@ class TestGatewayInterceptorChangeDetection:
 
     def test_different_interceptor_config_should_detect_change(self, deployer):
         """Same count, different config on the interceptor."""
-        pytest.xfail("plan only checks physical_topic -- task #60")
-
         with patch.object(deployer, "get_alias_topic") as mock_alias, \
              patch.object(deployer, "list_interceptors") as mock_ints:
             mock_alias.return_value = {
@@ -128,8 +124,6 @@ class TestGatewayInterceptorOrphaning:
 
     def test_fewer_interceptors_deletes_orphans(self, deployer):
         """3 interceptors exist, artifact has 1 -> 2 should be deleted."""
-        pytest.xfail("orphaned interceptors not cleaned -- task #59")
-
         with patch.object(deployer, "get_alias_topic") as mock_get, \
              patch.object(deployer, "create_alias_topic"), \
              patch.object(deployer, "create_interceptor"), \
@@ -152,8 +146,6 @@ class TestGatewayInterceptorOrphaning:
 
     def test_zero_interceptors_deletes_all(self, deployer):
         """2 interceptors exist, artifact has 0 -> all should be deleted."""
-        pytest.xfail("orphaned interceptors not cleaned -- task #59")
-
         with patch.object(deployer, "get_alias_topic") as mock_get, \
              patch.object(deployer, "create_alias_topic"), \
              patch.object(deployer, "list_interceptors") as mock_list, \

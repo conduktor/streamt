@@ -71,8 +71,11 @@ class TestRunner:
             # Would validate against Schema Registry
             # For now, validate assertion structure
             for assertion in test.assertions:
+                if not assertion:
+                    errors.append("Empty assertion dict")
+                    continue
                 assertion_type = list(assertion.keys())[0]
-                assertion_config = assertion[assertion_type]
+                assertion_config = assertion[assertion_type] or {}
 
                 if assertion_type == "not_null":
                     columns = assertion_config.get("columns", [])
@@ -129,8 +132,10 @@ class TestRunner:
             # Run assertions against sampled messages
             assertion_results = []
             for assertion in test.assertions:
+                if not assertion:
+                    continue
                 assertion_type = list(assertion.keys())[0]
-                assertion_config = assertion[assertion_type]
+                assertion_config = assertion[assertion_type] or {}
 
                 result = self._run_assertion(
                     assertion_type, assertion_config, messages

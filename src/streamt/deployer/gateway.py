@@ -347,7 +347,15 @@ class GatewayDeployer:
             physical_topic=artifact.physical_topic,
         )
 
-        # 2. Create interceptors for this rule
+        # 2. Delete orphaned interceptors (existing ones not in desired list)
+        existing_interceptors = self.list_interceptors()
+        rule_interceptors = [
+            i for i in existing_interceptors
+            if (i.get("metadata", {}).get("name") or i.get("name", "")).startswith(f"{artifact.name}_")
+        ]
+        desired_names = set()
+
+        # 3. Create interceptors for this rule
         for i, interceptor_config in enumerate(artifact.interceptors):
             interceptor_type = interceptor_config.get("type", "filter")
             config = interceptor_config.get("config", {})
@@ -359,17 +367,23 @@ class GatewayDeployer:
                 )
                 continue
 
-            # Build plugin-specific config
             plugin_config = self._build_plugin_config(
                 interceptor_type, config, artifact
             )
 
             interceptor_name = f"{artifact.name}_{interceptor_type}_{i}"
+            desired_names.add(interceptor_name)
             self.create_interceptor(
                 name=interceptor_name,
                 plugin_class=plugin_class,
                 config=plugin_config,
             )
+
+        # 4. Remove orphaned interceptors
+        for existing in rule_interceptors:
+            name = existing.get("metadata", {}).get("name") or existing.get("name", "")
+            if name not in desired_names:
+                self.delete_interceptor(name)
 
         return "updated" if alias_existed else "created"
 
@@ -450,7 +464,30 @@ class GatewayDeployer:
             alias_state.get("spec", {}).get("physicalName")
             or alias_state.get("physicalName")
         )
+        changes: dict[str, Any] = {}
         if current_physical != artifact.physical_topic:
+            changes["physical_topic"] = {"from": current_physical, "to": artifact.physical_topic}
+
+        # Check interceptor changes (count and config)
+        current_interceptors = self.list_interceptors()
+        rule_interceptors = [
+            i for i in current_interceptors
+            if (i.get("metadata", {}).get("name") or i.get("name", "")).startswith(f"{artifact.name}_")
+        ]
+        desired_count = len(artifact.interceptors) if artifact.interceptors else 0
+        if len(rule_interceptors) != desired_count:
+            changes["interceptors"] = {"from": len(rule_interceptors), "to": desired_count}
+        elif desired_count > 0:
+            # Compare interceptor configs
+            for idx, desired_int in enumerate(artifact.interceptors):
+                if idx < len(rule_interceptors):
+                    current_spec = rule_interceptors[idx].get("spec", {}).get("config", {})
+                    desired_config = desired_int.get("config", {})
+                    if current_spec != desired_config:
+                        changes["interceptors"] = {"from": "current_config", "to": "desired_config"}
+                        break
+
+        if changes:
             return GatewayRuleChange(
                 name=artifact.name,
                 action="update",
@@ -460,7 +497,7 @@ class GatewayDeployer:
                     physical_topic=current_physical,
                 ),
                 desired=artifact,
-                changes={"physical_topic": {"from": current_physical, "to": artifact.physical_topic}},
+                changes=changes,
             )
 
         return GatewayRuleChange(

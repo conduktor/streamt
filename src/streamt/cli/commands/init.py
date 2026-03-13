@@ -80,7 +80,10 @@ def _extract_columns_from_avro(schema: dict) -> list[dict]:
     """Extract columns from an Avro schema."""
     columns = []
     for field in schema.get("fields", []):
-        col = {"name": field["name"], "type": _avro_type_to_flink(field["type"])}
+        name = field.get("name")
+        if not name:
+            continue
+        col = {"name": name, "type": _avro_type_to_flink(field.get("type", "string"))}
         if field.get("doc"):
             col["description"] = field["doc"]
         columns.append(col)

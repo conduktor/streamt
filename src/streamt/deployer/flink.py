@@ -311,6 +311,8 @@ class FlinkDeployer:
                     use_sql_gateway=True,
                     json={"statement": statement},
                 )
+                if not isinstance(response, dict):
+                    raise RuntimeError(f"Unexpected response type for statement: {statement[:50]}...")
                 operation_handle = response.get("operationHandle")
 
                 if not operation_handle:
