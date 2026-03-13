@@ -169,7 +169,17 @@ class FlinkDeployer:
         else:
             base_url = self.rest_url
         url = f"{base_url}{endpoint}"
-        response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+        last_err: Optional[requests.ConnectionError] = None
+        for attempt in range(3):
+            try:
+                response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+                break
+            except requests.ConnectionError as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        else:
+            raise last_err  # type: ignore[misc]
         response.raise_for_status()
         if response.status_code == 204 or not response.content:
             return None

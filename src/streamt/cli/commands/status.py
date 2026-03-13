@@ -208,13 +208,28 @@ def status(
                             continue
                         alias = gd.get_alias_topic(r["virtualTopic"])
                         exists = alias is not None
-                        entry = {"name": r["name"], "exists": exists,
-                                 "virtual_topic": r["virtualTopic"],
-                                 "physical_topic": r["physicalTopic"]}
+                        entry: dict[str, object] = {
+                            "name": r["name"], "exists": exists,
+                            "virtual_topic": r["virtualTopic"],
+                            "physical_topic": r["physicalTopic"],
+                        }
+                        # Check interceptors
+                        desired_interceptors = r.get("interceptors", [])
+                        if exists and desired_interceptors:
+                            found = 0
+                            for ic in desired_interceptors:
+                                ic_name = ic.get("name", "")
+                                if ic_name and gd.get_interceptor(ic_name):
+                                    found += 1
+                            entry["interceptors_desired"] = len(desired_interceptors)
+                            entry["interceptors_found"] = found
                         data["gateway_rules"].append(entry)
                         if is_text:
                             if exists:
-                                fmt.print(f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']})")
+                                ic_info = ""
+                                if "interceptors_found" in entry:
+                                    ic_info = f", interceptors: {entry['interceptors_found']}/{entry['interceptors_desired']}"
+                                fmt.print(f"  [green]OK[/green] {r['name']} ({r['virtualTopic']} -> {r['physicalTopic']}{ic_info})")
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {r['name']}")
                 except Exception as e:
