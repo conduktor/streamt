@@ -37,11 +37,13 @@ class TestFlinkJobSqlChangeDetection:
         d.rest_url = "http://localhost:8082"
         d.sql_gateway_url = None
         d._http_session = MagicMock()
+        d._sql_hashes = {}
         return d
 
     def test_running_job_different_sql_should_plan_update(self, deployer):
-        """RUNNING job with different SQL should not be 'none'."""
-        pytest.xfail("plan_job doesn't compare SQL -- task #57")
+        """RUNNING job with different SQL should plan 'update'."""
+        # Seed the deployer with the "old" SQL hash
+        deployer.set_sql_hash("my_proc", "SELECT id FROM source")
 
         with patch.object(deployer, "get_job_state") as mock_state:
             mock_state.return_value = FlinkJobState(
@@ -51,10 +53,21 @@ class TestFlinkJobSqlChangeDetection:
                 name="my_proc", sql="SELECT id, name, email FROM source",
             )
             change = deployer.plan_job(artifact)
-            assert change.action != "none"
+            assert change.action == "update"
 
     def test_running_job_same_sql_is_none(self, deployer):
-        """RUNNING job with same SQL should be 'none' (current behavior)."""
+        """RUNNING job with same SQL should be 'none'."""
+        deployer.set_sql_hash("my_proc", "SELECT id FROM source")
+
+        with patch.object(deployer, "get_job_state") as mock_state:
+            mock_state.return_value = FlinkJobState(
+                name="my_proc", exists=True, job_id="j-1", status="RUNNING",
+            )
+            artifact = FlinkJobArtifact(name="my_proc", sql="SELECT id FROM source")
+            assert deployer.plan_job(artifact).action == "none"
+
+    def test_running_job_no_prior_hash_is_none(self, deployer):
+        """RUNNING job without prior hash should be 'none' (no baseline to compare)."""
         with patch.object(deployer, "get_job_state") as mock_state:
             mock_state.return_value = FlinkJobState(
                 name="my_proc", exists=True, job_id="j-1", status="RUNNING",

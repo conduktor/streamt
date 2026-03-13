@@ -344,11 +344,12 @@ class DeploymentPlanner:
         # Apply Flink jobs
         if self.flink_deployer:
             for change in plan.flink_changes:
-                if change.action == "submit" and change.desired:
+                if change.action in ("submit", "update") and change.desired:
                     try:
                         result = self.flink_deployer.apply_job(change.desired)
                         if result == "submitted":
-                            results["created"].append(f"flink_job:{change.job_name}")
+                            key = "updated" if change.action == "update" else "created"
+                            results[key].append(f"flink_job:{change.job_name}")
                         else:
                             results["unchanged"].append(f"flink_job:{change.job_name}")
                     except Exception as e:

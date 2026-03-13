@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -115,6 +116,7 @@ class FlinkDeployer:
         self.version = version
         self.environment = environment
         self.session_id: Optional[str] = None
+        self._sql_hashes: dict[str, str] = {}
         self._http_session = requests.Session()
         if username and password:
             self._http_session.auth = (username, password)
@@ -378,6 +380,15 @@ class FlinkDeployer:
         """Cancel a running job."""
         self._request("PATCH", f"/jobs/{job_id}", json={"state": "cancelled"})
 
+    @staticmethod
+    def _sql_hash(sql: str) -> str:
+        """Compute a short hash of SQL for change detection."""
+        return hashlib.sha256(sql.encode()).hexdigest()[:16]
+
+    def set_sql_hash(self, job_name: str, sql: str) -> None:
+        """Record the SQL hash for a job (used to seed state from a prior deploy)."""
+        self._sql_hashes[job_name] = self._sql_hash(sql)
+
     def plan_job(self, artifact: FlinkJobArtifact) -> FlinkJobChange:
         """Plan changes for a Flink job."""
         current = self.get_job_state(artifact.name)
@@ -392,9 +403,19 @@ class FlinkDeployer:
 
         # Job exists - check if running
         if current.status in ["RUNNING", "CREATED"]:
+            # Check if SQL changed (requires prior hash from apply or set_sql_hash)
+            if artifact.name in self._sql_hashes:
+                desired_hash = self._sql_hash(artifact.sql)
+                if desired_hash != self._sql_hashes[artifact.name]:
+                    return FlinkJobChange(
+                        job_name=artifact.name,
+                        action="update",  # SQL changed, cancel + re-submit
+                        current=current,
+                        desired=artifact,
+                    )
             return FlinkJobChange(
                 job_name=artifact.name,
-                action="none",  # Already running
+                action="none",  # Already running, SQL unchanged
                 current=current,
                 desired=artifact,
             )
@@ -413,6 +434,14 @@ class FlinkDeployer:
 
         if change.action == "submit":
             self.submit_sql(artifact.sql)
+            self._sql_hashes[artifact.name] = self._sql_hash(artifact.sql)
+            return "submitted"
+        elif change.action == "update":
+            # Cancel the running job, then re-submit with new SQL
+            if change.current and change.current.job_id:
+                self.cancel_job(change.current.job_id)
+            self.submit_sql(artifact.sql)
+            self._sql_hashes[artifact.name] = self._sql_hash(artifact.sql)
             return "submitted"
         elif change.action == "cancel":
             if change.current and change.current.job_id:
