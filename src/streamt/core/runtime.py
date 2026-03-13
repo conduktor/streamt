@@ -137,6 +137,9 @@ class FlinkClusterConfig(BaseModel):
     ssl_certificate_location: Optional[str] = None
     ssl_key_location: Optional[str] = None
     ssl_key_password: Optional[SecretStr] = None
+    timeout: Optional[int] = None
+    retries: Optional[int] = None
+    statement_timeout: Optional[int] = None
 
     _check_ssl_paths = field_validator(
         "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",

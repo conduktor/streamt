@@ -70,6 +70,8 @@ class ConnectDeployer:
         """Initialize Connect deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
 
+        if not rest_url or not rest_url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid Connect REST URL: {rest_url!r} — must start with http:// or https://")
         self.rest_url = rest_url.rstrip("/")
         self._http_session = requests.Session()
         if username and password:
@@ -106,12 +108,17 @@ class ConnectDeployer:
         Raises on HTTP errors.
         """
         url = f"{self.rest_url}{endpoint}"
-        last_err: Optional[requests.ConnectionError] = None
+        last_err: Optional[Exception] = None
         for attempt in range(3):
             try:
                 response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+                status_code = getattr(response, "status_code", 200)
+                if isinstance(status_code, int) and status_code >= 500 and attempt < 2:
+                    last_err = requests.HTTPError(response=response)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 break
-            except requests.ConnectionError as e:
+            except (requests.ConnectionError, requests.Timeout) as e:
                 last_err = e
                 if attempt < 2:
                     time.sleep(0.5 * (attempt + 1))

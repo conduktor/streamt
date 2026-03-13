@@ -273,6 +273,9 @@ class TestFlinkSessionCleanup:
         deployer.sql_gateway_url = "http://localhost:8084"
         deployer.session_id = None
         deployer._http_session = MagicMock()
+        deployer._timeout = 30
+        deployer._retries = 3
+        deployer._statement_timeout = 60
 
         responses = [
             Mock(json=Mock(return_value={"sessionHandle": "s1"}), content=b"{}", raise_for_status=Mock()),
@@ -296,6 +299,9 @@ class TestFlinkSessionCleanup:
         deployer.sql_gateway_url = "http://localhost:8084"
         deployer.session_id = None
         deployer._http_session = MagicMock()
+        deployer._timeout = 30
+        deployer._retries = 3
+        deployer._statement_timeout = 60
 
         responses = [
             Mock(json=Mock(return_value={"sessionHandle": "s1"}), content=b"{}", raise_for_status=Mock()),

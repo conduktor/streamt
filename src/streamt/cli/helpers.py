@@ -159,6 +159,9 @@ def make_flink_deployer(
                         version=cfg.version,
                         environment=cfg.environment,
                         state_dir=state_dir,
+                        timeout=cfg.timeout,
+                        retries=cfg.retries,
+                        statement_timeout=cfg.statement_timeout,
                     )
         except Exception as e:
             _warn_deployer_error(fmt, e, "Flink")

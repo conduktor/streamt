@@ -46,9 +46,15 @@ def configure_session_ssl(
             keyfile=ssl_key_location,
             password=ssl_key_password,
         )
-        adapter = SSLAdapter(ctx)
+        adapter = SSLAdapter(ctx, pool_connections=5, pool_maxsize=10)
         session.mount("https://", adapter)
     elif ssl_certificate_location and ssl_key_location:
         session.cert = (ssl_certificate_location, ssl_key_location)
     elif ssl_certificate_location:
         session.cert = ssl_certificate_location
+
+    # Set connection pool limits if no custom adapter was mounted
+    if not any(isinstance(v, SSLAdapter) for v in session.adapters.values()):
+        adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)

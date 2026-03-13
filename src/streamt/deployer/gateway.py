@@ -91,7 +91,7 @@ class GatewayDeployer:
         deployer = GatewayDeployer(
             admin_url="http://localhost:8888",
             username="admin",
-            password="conduktor"
+            password="***"
         )
         deployer.apply(gateway_rule_artifact)
     """
@@ -109,6 +109,8 @@ class GatewayDeployer:
         api_version: str = "v2",
     ) -> None:
         """Initialize Gateway deployer."""
+        if not admin_url or not admin_url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid Gateway admin URL: {admin_url!r} — must start with http:// or https://")
         self.admin_url = admin_url.rstrip("/")
         self._api_base = f"/gateway/{api_version}"
         self.auth = HTTPBasicAuth(username, password) if username and password else None
@@ -149,9 +151,11 @@ class GatewayDeployer:
 
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
+        if self._closed:
+            raise RuntimeError("GatewayDeployer is closed")
         url = f"{self.admin_url}{self._api_base}{endpoint}"
 
-        last_err: Optional[requests.ConnectionError] = None
+        last_err: Optional[Exception] = None
         for attempt in range(3):
             try:
                 response = self._session.request(
@@ -161,8 +165,13 @@ class GatewayDeployer:
                     params=params,
                     timeout=DEFAULT_TIMEOUT,
                 )
+                status_code = getattr(response, "status_code", 200)
+                if isinstance(status_code, int) and status_code >= 500 and attempt < 2:
+                    last_err = requests.HTTPError(response=response)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 break
-            except requests.ConnectionError as e:
+            except (requests.ConnectionError, requests.Timeout) as e:
                 last_err = e
                 if attempt < 2:
                     time.sleep(0.5 * (attempt + 1))

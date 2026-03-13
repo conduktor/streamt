@@ -111,15 +111,25 @@ class FlinkDeployer:
         version: Optional[str] = None,
         environment: Optional[str] = None,
         state_dir: Optional[Path] = None,
+        timeout: Optional[int] = None,
+        retries: Optional[int] = None,
+        statement_timeout: Optional[int] = None,
     ) -> None:
         """Initialize Flink deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
 
+        if not rest_url or not rest_url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid Flink REST URL: {rest_url!r} — must start with http:// or https://")
         self.rest_url = rest_url.rstrip("/")
+        if sql_gateway_url and not sql_gateway_url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid SQL Gateway URL: {sql_gateway_url!r} — must start with http:// or https://")
         self.sql_gateway_url = sql_gateway_url.rstrip("/") if sql_gateway_url else None
         self.version = version
         self.environment = environment
         self.session_id: Optional[str] = None
+        self._timeout = timeout or DEFAULT_TIMEOUT
+        self._retries = retries or 3
+        self._statement_timeout = statement_timeout or STATEMENT_TIMEOUT
         self._state_dir = state_dir
         self._sql_hashes: dict[str, str] = {}
         self._load_hashes()
@@ -167,7 +177,7 @@ class FlinkDeployer:
         method: str,
         endpoint: str,
         use_sql_gateway: bool = False,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: Optional[int] = None,
         **kwargs: object,
     ) -> dict | list | None:
         """Make a request to Flink API. Returns parsed JSON.
@@ -181,14 +191,20 @@ class FlinkDeployer:
         else:
             base_url = self.rest_url
         url = f"{base_url}{endpoint}"
-        last_err: Optional[requests.ConnectionError] = None
-        for attempt in range(3):
+        effective_timeout = timeout or self._timeout
+        last_err: Optional[Exception] = None
+        for attempt in range(self._retries):
             try:
-                response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+                response = self._http_session.request(method, url, timeout=effective_timeout, **kwargs)
+                status_code = getattr(response, "status_code", 200)
+                if isinstance(status_code, int) and status_code >= 500 and attempt < self._retries - 1:
+                    last_err = requests.HTTPError(response=response)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 break
-            except requests.ConnectionError as e:
+            except (requests.ConnectionError, requests.Timeout) as e:
                 last_err = e
-                if attempt < 2:
+                if attempt < self._retries - 1:
                     time.sleep(0.5 * (attempt + 1))
         else:
             raise last_err  # type: ignore[misc]
@@ -322,7 +338,7 @@ class FlinkDeployer:
             status=best_match.get("state") or best_match.get("status"),
         )
 
-    def submit_sql(self, sql: str, statement_timeout: int = STATEMENT_TIMEOUT) -> dict:
+    def submit_sql(self, sql: str, statement_timeout: Optional[int] = None) -> dict:
         """Submit SQL statements to Flink via SQL Gateway.
 
         Args:
@@ -332,6 +348,7 @@ class FlinkDeployer:
         Returns:
             Dict with 'results' key containing list of statement results
         """
+        statement_timeout = statement_timeout or self._statement_timeout
         session_id = self.get_session()
 
         # Split SQL into statements
@@ -354,8 +371,9 @@ class FlinkDeployer:
                 if not operation_handle:
                     raise RuntimeError(f"No operationHandle returned for statement: {statement[:50]}...")
 
-                # Poll for completion
+                # Poll for completion with exponential backoff
                 poll_interval = 0.5
+                max_poll_interval = 5.0
                 elapsed = 0.0
 
                 while elapsed < statement_timeout:
@@ -376,7 +394,10 @@ class FlinkDeployer:
                             try:
                                 result_url = f"{self.sql_gateway_url}/v1/sessions/{session_id}/operations/{operation_handle}/result/0"
                                 result_resp = self._http_session.get(result_url, timeout=DEFAULT_TIMEOUT)
-                                result_data = result_resp.json()
+                                try:
+                                    result_data = result_resp.json()
+                                except ValueError:
+                                    result_data = {}
                                 error_list = result_data.get("errors", [])
                                 error_msg = " ".join(error_list) if error_list else "Unknown error"
                             except Exception as e:
@@ -385,6 +406,7 @@ class FlinkDeployer:
                     elif status in ("RUNNING", "PENDING"):
                         time.sleep(poll_interval)
                         elapsed += poll_interval
+                        poll_interval = min(poll_interval * 2, max_poll_interval)
                     else:
                         raise RuntimeError(f"Unknown status '{status}' for statement: {statement[:50]}...")
 

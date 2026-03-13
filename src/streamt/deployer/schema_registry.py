@@ -70,6 +70,8 @@ class SchemaRegistryDeployer:
         """Initialize Schema Registry deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
 
+        if not url or not url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid Schema Registry URL: {url!r} — must start with http:// or https://")
         self.url = url.rstrip("/")
         self.auth = (username, password) if username and password else None
         self.headers = {"Content-Type": "application/vnd.schemaregistry.v1+json"}
@@ -110,12 +112,17 @@ class SchemaRegistryDeployer:
         Raises on HTTP errors. If not_found_ok=True, returns None on 404.
         """
         url = f"{self.url}{path}"
-        last_err: Optional[requests.ConnectionError] = None
+        last_err: Optional[Exception] = None
         for attempt in range(3):
             try:
                 response = self._http_session.request(method, url, timeout=timeout, **kwargs)
+                status_code = getattr(response, "status_code", 200)
+                if isinstance(status_code, int) and status_code >= 500 and attempt < 2:
+                    last_err = requests.HTTPError(response=response)
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 break
-            except requests.ConnectionError as e:
+            except (requests.ConnectionError, requests.Timeout) as e:
                 last_err = e
                 if attempt < 2:
                     time.sleep(0.5 * (attempt + 1))
@@ -149,7 +156,11 @@ class SchemaRegistryDeployer:
             return SchemaState(subject=subject, exists=False)
 
         # Parse schema JSON string
-        schema = json.loads(data.get("schema", "{}"))
+        try:
+            schema = json.loads(data.get("schema", "{}"))
+        except json.JSONDecodeError:
+            logger.warning("Malformed schema JSON for subject '%s'", subject)
+            schema = {}
 
         # Get compatibility level
         compat_data = self._request("GET", f"/config/{subject}", not_found_ok=True)
@@ -300,7 +311,8 @@ class SchemaRegistryDeployer:
 
         elif change.action == "update":
             if change.changes and "schema_incompatible" in change.changes:
-                raise RuntimeError(change.changes["schema_incompatible"]["message"])
+                err = change.changes["schema_incompatible"]
+                raise RuntimeError(err.get("message", str(err)))
 
             # Set compatibility before registration to allow breaking changes
             if change.changes and "compatibility" in change.changes:

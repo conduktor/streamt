@@ -243,7 +243,7 @@ class KafkaDeployer:
         self._check_closed()
         # Handle partition increase
         if "partitions" in changes:
-            new_partitions = changes["partitions"]["to"]
+            new_partitions = changes["partitions"].get("to", changes.get("partitions"))
             futures = self.admin.create_partitions(
                 [NewPartitions(artifact.name, new_partitions)]
             )
@@ -255,7 +255,8 @@ class KafkaDeployer:
 
         # Handle config changes using incremental_alter_configs (alter_configs is deprecated)
         config_changes = {
-            k.replace("config.", ""): v["to"] for k, v in changes.items() if k.startswith("config.")
+            k.replace("config.", ""): v.get("to", v) if isinstance(v, dict) else v
+            for k, v in changes.items() if k.startswith("config.")
         }
 
         if config_changes:
@@ -300,7 +301,8 @@ class KafkaDeployer:
             return "created"
         elif change.action == "update":
             if "partitions_error" in change.changes:
-                raise RuntimeError(change.changes["partitions_error"]["message"])
+                err = change.changes["partitions_error"]
+                raise RuntimeError(err.get("message", str(err)))
             self.update_topic(artifact, change.changes)
             return "updated"
         else:

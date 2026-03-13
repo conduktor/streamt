@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 import sys
 from pathlib import Path
@@ -14,6 +15,8 @@ import yaml
 from streamt.cli.helpers import make_formatter
 from streamt.core.errors import ErrorCode
 from streamt.output import OutputFormatter, StructuredError
+
+logger = logging.getLogger(__name__)
 
 INTERNAL_TOPIC_PREFIXES = ("__", "_schemas", "_confluent", "_streamt-connect-")
 
@@ -257,8 +260,8 @@ def _init_discover(
                         columns = _extract_columns_from_avro(schema_state.schema)
                         if columns:
                             source_def["columns"] = columns
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Schema discovery failed for topic '%s': %s", topic, e)
 
         discovered.append({
             "source": source_def,

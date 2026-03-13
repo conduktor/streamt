@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -14,6 +15,21 @@ from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_KV = re.compile(
+    r"(password|passwd|secret|token|api_key|apikey)\s*[=:]\s*\S+",
+    re.IGNORECASE,
+)
+_SENSITIVE_AUTH = re.compile(
+    r"(authorization|bearer)\s*[=:]\s*\S+(?:\s+\S+)?",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_error(msg: str) -> str:
+    """Strip credentials/tokens from error messages."""
+    result = _SENSITIVE_KV.sub(r"\1=***", str(msg))
+    return _SENSITIVE_AUTH.sub(r"\1=***", result)
 
 
 @dataclass
@@ -323,13 +339,13 @@ class DeploymentPlanner:
                         else:
                             results["unchanged"].append(f"schema:{change.subject}")
                     except Exception as e:
-                        results["errors"].append(f"schema:{change.subject}: {e}")
+                        results["errors"].append(f"schema:{change.subject}: {_sanitize_error(e)}")
                 elif change.action == "delete":
                     try:
                         self.schema_registry_deployer.delete_subject(change.subject)
                         results["deleted"].append(f"schema:{change.subject}")
                     except Exception as e:
-                        results["errors"].append(f"schema:{change.subject}: {e}")
+                        results["errors"].append(f"schema:{change.subject}: {_sanitize_error(e)}")
 
         # Apply topics
         if self.kafka_deployer:
@@ -344,13 +360,13 @@ class DeploymentPlanner:
                         else:
                             results["unchanged"].append(f"topic:{change.topic}")
                     except Exception as e:
-                        results["errors"].append(f"topic:{change.topic}: {e}")
+                        results["errors"].append(f"topic:{change.topic}: {_sanitize_error(e)}")
                 elif change.action == "delete":
                     try:
                         self.kafka_deployer.delete_topic(change.topic)
                         results["deleted"].append(f"topic:{change.topic}")
                     except Exception as e:
-                        results["errors"].append(f"topic:{change.topic}: {e}")
+                        results["errors"].append(f"topic:{change.topic}: {_sanitize_error(e)}")
 
         # Apply Flink jobs
         if self.flink_deployer:
@@ -364,13 +380,13 @@ class DeploymentPlanner:
                         else:
                             results["unchanged"].append(f"flink_job:{change.job_name}")
                     except Exception as e:
-                        results["errors"].append(f"flink_job:{change.job_name}: {e}")
+                        results["errors"].append(f"flink_job:{change.job_name}: {_sanitize_error(e)}")
                 elif change.action == "cancel" and change.current and change.current.job_id:
                     try:
                         self.flink_deployer.cancel_job(change.current.job_id)
                         results["deleted"].append(f"flink_job:{change.job_name}")
                     except Exception as e:
-                        results["errors"].append(f"flink_job:{change.job_name}: {e}")
+                        results["errors"].append(f"flink_job:{change.job_name}: {_sanitize_error(e)}")
 
         # Apply connectors
         if self.connect_deployer:
@@ -385,13 +401,13 @@ class DeploymentPlanner:
                         else:
                             results["unchanged"].append(f"connector:{change.connector_name}")
                     except Exception as e:
-                        results["errors"].append(f"connector:{change.connector_name}: {e}")
+                        results["errors"].append(f"connector:{change.connector_name}: {_sanitize_error(e)}")
                 elif change.action == "delete":
                     try:
                         self.connect_deployer.delete_connector(change.connector_name)
                         results["deleted"].append(f"connector:{change.connector_name}")
                     except Exception as e:
-                        results["errors"].append(f"connector:{change.connector_name}: {e}")
+                        results["errors"].append(f"connector:{change.connector_name}: {_sanitize_error(e)}")
 
         # Apply gateway rules
         if self.gateway_deployer:
@@ -406,13 +422,13 @@ class DeploymentPlanner:
                         else:
                             results["unchanged"].append(f"gateway_rule:{change.name}")
                     except Exception as e:
-                        results["errors"].append(f"gateway_rule:{change.name}: {e}")
+                        results["errors"].append(f"gateway_rule:{change.name}: {_sanitize_error(e)}")
                 elif change.action == "delete":
                     try:
                         self.gateway_deployer.delete(change.name)
                         results["deleted"].append(f"gateway_rule:{change.name}")
                     except Exception as e:
-                        results["errors"].append(f"gateway_rule:{change.name}: {e}")
+                        results["errors"].append(f"gateway_rule:{change.name}: {_sanitize_error(e)}")
 
         results["summary"] = {
             "total": sum(len(v) for v in results.values() if isinstance(v, list)),

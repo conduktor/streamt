@@ -9,6 +9,10 @@ This module handles:
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import os
 import re
 from dataclasses import dataclass, field
@@ -324,9 +328,8 @@ class EnvironmentManager:
             try:
                 env_config = self.load_environment(env_name)
                 environments.append(env_config)
-            except EnvironmentError:
-                # Skip environments that fail to load
-                pass
+            except EnvironmentError as e:
+                logger.debug("Skipping environment '%s': %s", env_name, e)
 
         return environments
 
