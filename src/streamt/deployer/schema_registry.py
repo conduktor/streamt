@@ -177,6 +177,10 @@ class SchemaRegistryDeployer:
             "schemaType": schema_type,
         }
         data = self._request("POST", f"/subjects/{subject}/versions", json=payload)
+        if not isinstance(data, dict) or "id" not in data:
+            raise RuntimeError(
+                f"Schema Registry did not return a schema ID for '{subject}'. Response: {data}"
+            )
         return data["id"]
 
     def set_compatibility(self, subject: str, level: str) -> None:

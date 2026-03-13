@@ -110,11 +110,15 @@ class KafkaDeployer:
         but we mark the deployer as closed to prevent further operations.
         """
         self._closed = True
-        # AdminClient doesn't have close(), but setting to None helps GC
         self.admin = None
+
+    def _check_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("KafkaDeployer is closed")
 
     def get_topic_state(self, topic_name: str) -> TopicState:
         """Get current state of a topic."""
+        self._check_closed()
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
 
         if topic_name not in metadata.topics:
@@ -218,6 +222,7 @@ class KafkaDeployer:
 
     def create_topic(self, artifact: TopicArtifact) -> None:
         """Create a new topic."""
+        self._check_closed()
         new_topic = NewTopic(
             artifact.name,
             num_partitions=artifact.partitions,
@@ -235,6 +240,7 @@ class KafkaDeployer:
 
     def update_topic(self, artifact: TopicArtifact, changes: dict) -> None:
         """Update an existing topic."""
+        self._check_closed()
         # Handle partition increase
         if "partitions" in changes:
             new_partitions = changes["partitions"]["to"]
@@ -276,6 +282,7 @@ class KafkaDeployer:
 
     def delete_topic(self, topic_name: str) -> None:
         """Delete a topic."""
+        self._check_closed()
         futures = self.admin.delete_topics([topic_name])
 
         for topic, future in futures.items():
@@ -305,6 +312,7 @@ class KafkaDeployer:
 
     def list_topics(self) -> list[str]:
         """List all topics in the cluster."""
+        self._check_closed()
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         return [
             topic
@@ -319,6 +327,7 @@ class KafkaDeployer:
 
     def get_consumer_groups(self) -> list[str]:
         """List all consumer groups in the cluster."""
+        self._check_closed()
         future = self.admin.list_consumer_groups()
         result = future.result(timeout=DEFAULT_TIMEOUT)
         return [g.group_id for g in result.valid]
@@ -402,6 +411,7 @@ class KafkaDeployer:
 
     def get_topic_message_count(self, topic: str) -> int:
         """Get approximate message count for a topic (sum of end offsets)."""
+        self._check_closed()
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         if topic not in metadata.topics:
             return 0

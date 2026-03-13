@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -345,11 +346,19 @@ class GatewayDeployer:
     # Gateway Rules (combined alias + interceptors)
     # -------------------------------------------------------------------------
 
+    _VALID_RESOURCE_NAME = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+
     def apply(self, artifact: GatewayRuleArtifact) -> str:
         """Deploy a gateway rule (alias topic + interceptors).
 
         Returns action taken: "created", "updated", or "unchanged"
         """
+        if not self._VALID_RESOURCE_NAME.match(artifact.name):
+            raise ValueError(
+                f"Invalid gateway rule name '{artifact.name}'. "
+                "Names must contain only alphanumeric characters, underscores, hyphens, and dots."
+            )
+
         # 1. Create alias topic mapping
         alias_existed = self.get_alias_topic(artifact.virtual_topic) is not None
         self.create_alias_topic(

@@ -160,6 +160,12 @@ class DeploymentPlanner:
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()
+        # Track successfully-planned names so orphan detection only considers
+        # artifacts that were actually parsed. Malformed artifacts are excluded
+        # to prevent accidental deletion of real resources.
+        planned_subjects: set[str] = set()
+        planned_topics: set[str] = set()
+        planned_connectors: set[str] = set()
 
         # Plan schemas first (before topics that may depend on them)
         if self.schema_registry_deployer:
@@ -175,6 +181,7 @@ class DeploymentPlanner:
                     )
                     change = self.schema_registry_deployer.plan_schema(artifact)
                     plan.schema_changes.append(change)
+                    planned_subjects.add(artifact.subject)
                 except KeyError as e:
                     logger.error("Malformed schema artifact, missing key %s: %s", e, schema_data)
 
@@ -187,6 +194,7 @@ class DeploymentPlanner:
                     artifact = TopicArtifact(**topic_data)
                     change = self.kafka_deployer.plan_topic(artifact)
                     plan.topic_changes.append(change)
+                    planned_topics.add(artifact.name)
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed topic artifact: %s in %s", e, topic_data)
 
@@ -217,6 +225,7 @@ class DeploymentPlanner:
                     )
                     change = self.connect_deployer.plan_connector(artifact)
                     plan.connector_changes.append(change)
+                    planned_connectors.add(artifact.name)
                 except KeyError as e:
                     logger.error("Malformed connector artifact, missing key %s: %s", e, conn_data)
 
@@ -238,20 +247,28 @@ class DeploymentPlanner:
                     logger.error("Malformed gateway_rule artifact, missing key %s: %s", e, rule_data)
 
         # Detect orphaned resources (exist in cluster but not in manifest)
-        self._detect_orphans(plan)
+        self._detect_orphans(plan, planned_subjects, planned_topics, planned_connectors)
 
         return plan
 
-    def _detect_orphans(self, plan: DeploymentPlan) -> None:
-        """Detect resources in the cluster that are absent from the manifest."""
+    def _detect_orphans(
+        self,
+        plan: DeploymentPlan,
+        planned_subjects: set[str],
+        planned_topics: set[str],
+        planned_connectors: set[str],
+    ) -> None:
+        """Detect resources in the cluster that are absent from the manifest.
+
+        Uses the sets of successfully-planned artifact names (not raw manifest
+        data) to avoid marking resources for deletion when their manifest entry
+        was malformed and skipped during planning.
+        """
         # Orphaned schemas
         if self.schema_registry_deployer:
-            desired_subjects = {
-                s["subject"] for s in self.manifest.artifacts.get("schemas", []) if "subject" in s
-            }
             try:
                 for subject in self.schema_registry_deployer.list_subjects():
-                    if subject not in desired_subjects:
+                    if subject not in planned_subjects:
                         plan.schema_changes.append(
                             SchemaChange(subject=subject, action="delete")
                         )
@@ -260,12 +277,9 @@ class DeploymentPlanner:
 
         # Orphaned topics
         if self.kafka_deployer:
-            desired_topics = {
-                t["name"] for t in self.manifest.artifacts.get("topics", []) if "name" in t
-            }
             try:
                 for topic in self.kafka_deployer.list_topics():
-                    if topic not in desired_topics:
+                    if topic not in planned_topics:
                         plan.topic_changes.append(
                             TopicChange(topic=topic, action="delete")
                         )
@@ -274,12 +288,9 @@ class DeploymentPlanner:
 
         # Orphaned connectors
         if self.connect_deployer:
-            desired_connectors = {
-                c["name"] for c in self.manifest.artifacts.get("connectors", []) if "name" in c
-            }
             try:
                 for connector in self.connect_deployer.list_connectors():
-                    if connector not in desired_connectors:
+                    if connector not in planned_connectors:
                         plan.connector_changes.append(
                             ConnectorChange(connector_name=connector, action="delete")
                         )

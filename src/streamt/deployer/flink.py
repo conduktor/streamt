@@ -149,7 +149,7 @@ class FlinkDeployer:
             try:
                 self._http_session.delete(
                     f"{self.sql_gateway_url}/v1/sessions/{self.session_id}",
-                    timeout=DEFAULT_TIMEOUT,
+                    timeout=HEALTH_CHECK_TIMEOUT,
                 )
             except Exception as e:
                 logger.debug(f"Failed to close session {self.session_id}: {e}")
@@ -212,7 +212,11 @@ class FlinkDeployer:
             use_sql_gateway=True,
             json={},
         )
-        self.session_id = response.get("sessionHandle")
+        if not isinstance(response, dict) or "sessionHandle" not in response:
+            raise RuntimeError(
+                f"SQL Gateway did not return a sessionHandle. Response: {response}"
+            )
+        self.session_id = response["sessionHandle"]
         return self.session_id
 
     def list_jobs(self, include_details: bool = False) -> list[dict]:
@@ -223,19 +227,29 @@ class FlinkDeployer:
                              This makes an additional API call per job.
         """
         response = self._request("GET", "/jobs")
+        if not isinstance(response, dict):
+            return []
         jobs = response.get("jobs", [])
 
         if include_details:
             detailed_jobs = []
             for job in jobs:
+                job_id = job.get("id") or job.get("jid")
+                if not job_id:
+                    logger.warning("Job entry missing 'id' and 'jid' keys: %s", job)
+                    detailed_jobs.append(job)
+                    continue
                 try:
-                    details = self._request("GET", f"/jobs/{job['id']}")
-                    detailed_jobs.append(details)
+                    details = self._request("GET", f"/jobs/{job_id}")
+                    if isinstance(details, dict):
+                        detailed_jobs.append(details)
+                    else:
+                        detailed_jobs.append(job)
                 except requests.HTTPError as e:
-                    logger.warning(f"Failed to fetch details for job {job['id']}: {e}")
+                    logger.warning(f"Failed to fetch details for job {job_id}: {e}")
                     detailed_jobs.append(job)
                 except Exception as e:
-                    logger.error(f"Unexpected error fetching job {job['id']}: {e}")
+                    logger.error(f"Unexpected error fetching job {job_id}: {e}")
                     detailed_jobs.append(job)
             return detailed_jobs
 
@@ -413,9 +427,15 @@ class FlinkDeployer:
                         current=current,
                         desired=artifact,
                     )
+            else:
+                logger.debug(
+                    "No prior SQL hash for job '%s'; cannot detect SQL changes. "
+                    "Use set_sql_hash() or re-apply to seed the hash.",
+                    artifact.name,
+                )
             return FlinkJobChange(
                 job_name=artifact.name,
-                action="none",  # Already running, SQL unchanged
+                action="none",
                 current=current,
                 desired=artifact,
             )
