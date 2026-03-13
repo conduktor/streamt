@@ -299,10 +299,8 @@ class TestStatusJsonErrorReporting:
 class TestPrimaryKeysInDDL:
     """Models with primary_key should generate PRIMARY KEY in DDL."""
 
-    def test_primary_key_not_supported(self):
-        """Model has no primary_key attribute -- documents the gap."""
-        pytest.xfail("primary_key not in model or DDL generation -- task #93")
-
+    def test_primary_key_supported(self):
+        """Model has primary_key attribute."""
         from streamt.core.models import Model
         model = Model(name="orders_deduped", sql="SELECT order_id, amount FROM orders")
         assert hasattr(model, "primary_key")

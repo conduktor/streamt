@@ -396,6 +396,7 @@ class Model(BaseModel):
     from_: Optional[list[FromRef]] = Field(default=None, alias="from")
     key: Optional[str] = None
     columns: Optional[list[ColumnDefinition]] = None
+    primary_key: Optional[list[str]] = None
     owner: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     security: Optional[SecurityPolicies] = None
