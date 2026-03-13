@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import click
 
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
+
+if TYPE_CHECKING:
+    from streamt.core.models import StreamtProject
+    from streamt.deployer.connect import ConnectDeployer
+    from streamt.deployer.flink import FlinkDeployer
+    from streamt.deployer.gateway import GatewayDeployer
+    from streamt.deployer.kafka import KafkaDeployer
+    from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
 
 def get_project_path(project_dir: Optional[str]) -> Path:
@@ -93,9 +101,9 @@ def _resolve_secret(val: Any) -> Any:
     return val.get_secret_value() if hasattr(val, "get_secret_value") else val
 
 
-def make_kafka_deployer(project: Any, fmt: OutputFormatter) -> Any:
+def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[KafkaDeployer]:
     """Create KafkaDeployer from project config. Returns None on failure."""
-    from streamt.deployer.kafka import KafkaDeployer
+    from streamt.deployer.kafka import KafkaDeployer  # noqa: F811
     try:
         confluent_config = project.runtime.kafka.to_confluent_config()
         bootstrap = confluent_config.pop("bootstrap.servers")
@@ -105,9 +113,9 @@ def make_kafka_deployer(project: Any, fmt: OutputFormatter) -> Any:
     return None
 
 
-def make_sr_deployer(project: Any, fmt: OutputFormatter) -> Any:
+def make_sr_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[SchemaRegistryDeployer]:
     """Create SchemaRegistryDeployer from project config. Returns None on failure."""
-    from streamt.deployer.schema_registry import SchemaRegistryDeployer
+    from streamt.deployer.schema_registry import SchemaRegistryDeployer  # noqa: F811
     if project.runtime.schema_registry:
         try:
             sr = project.runtime.schema_registry
@@ -125,9 +133,9 @@ def make_sr_deployer(project: Any, fmt: OutputFormatter) -> Any:
     return None
 
 
-def make_flink_deployer(project: Any, fmt: OutputFormatter) -> Any:
+def make_flink_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[FlinkDeployer]:
     """Create FlinkDeployer from project config. Returns None on failure."""
-    from streamt.deployer.flink import FlinkDeployer
+    from streamt.deployer.flink import FlinkDeployer  # noqa: F811
     if project.runtime.flink and project.runtime.flink.clusters:
         try:
             default = project.runtime.flink.default
@@ -150,9 +158,9 @@ def make_flink_deployer(project: Any, fmt: OutputFormatter) -> Any:
     return None
 
 
-def make_gateway_deployer(project: Any, fmt: OutputFormatter) -> Any:
+def make_gateway_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[GatewayDeployer]:
     """Create GatewayDeployer from project config. Returns None on failure."""
-    from streamt.deployer.gateway import GatewayDeployer
+    from streamt.deployer.gateway import GatewayDeployer  # noqa: F811
     if project.runtime.conduktor and project.runtime.conduktor.gateway:
         try:
             gw = project.runtime.conduktor.gateway
@@ -172,9 +180,9 @@ def make_gateway_deployer(project: Any, fmt: OutputFormatter) -> Any:
     return None
 
 
-def make_connect_deployer(project: Any, fmt: OutputFormatter) -> Any:
+def make_connect_deployer(project: StreamtProject, fmt: OutputFormatter) -> Optional[ConnectDeployer]:
     """Create ConnectDeployer from project config. Returns None on failure."""
-    from streamt.deployer.connect import ConnectDeployer
+    from streamt.deployer.connect import ConnectDeployer  # noqa: F811
     if project.runtime.connect and project.runtime.connect.clusters:
         try:
             default = project.runtime.connect.default

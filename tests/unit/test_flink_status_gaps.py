@@ -203,8 +203,6 @@ class TestFlinkSessionCleanup:
 
     def test_session_closed_after_statement_error(self):
         """2 statements: 1st FINISHED, 2nd ERROR -> session should close."""
-        pytest.xfail("session not closed on error -- task #68")
-
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer.rest_url = "http://localhost:8082"
         deployer.sql_gateway_url = "http://localhost:8084"
@@ -228,8 +226,6 @@ class TestFlinkSessionCleanup:
 
     def test_session_closed_after_connection_error(self):
         """Session created, then connection lost -> session should close."""
-        pytest.xfail("session not closed on error -- task #68")
-
         deployer = FlinkDeployer.__new__(FlinkDeployer)
         deployer.rest_url = "http://localhost:8082"
         deployer.sql_gateway_url = "http://localhost:8084"
@@ -243,7 +239,7 @@ class TestFlinkSessionCleanup:
         deployer._http_session.request = Mock(side_effect=responses)
 
         with patch.object(deployer, "close_session") as mock_close:
-            with pytest.raises(RuntimeError, match=r"."):
+            with pytest.raises((RuntimeError, requests.ConnectionError)):
                 deployer.submit_sql("SELECT 1")
             mock_close.assert_called_once()
 

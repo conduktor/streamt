@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 # ============================================================================
 # Enums
@@ -424,7 +424,7 @@ class Model(BaseModel):
 
     @field_validator("sql")
     @classmethod
-    def sql_required_for_non_sink(cls, v: Optional[str], info: Any) -> Optional[str]:
+    def sql_required_for_non_sink(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
         """Validate that SQL is provided for non-sink models."""
         # Note: This validation is relaxed - sink models may not need SQL
         return v

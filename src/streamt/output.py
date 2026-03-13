@@ -11,6 +11,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -168,7 +169,7 @@ class OutputFormatter:
         return self._result
 
 
-def get_output_format_from_context(ctx: Any) -> str:
+def get_output_format_from_context(ctx: click.Context) -> str:
     """Extract output format from Click context.
 
     Reads from ctx.obj["output"] (set by the main group callback).

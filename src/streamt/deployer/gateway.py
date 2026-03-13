@@ -353,31 +353,48 @@ class GatewayDeployer:
             i for i in existing_interceptors
             if (i.get("metadata", {}).get("name") or i.get("name", "")).startswith(f"{artifact.name}_")
         ]
-        desired_names = set()
+        desired_names: set[str] = set()
+        created_names: list[str] = []
 
         # 3. Create interceptors for this rule
-        for i, interceptor_config in enumerate(artifact.interceptors):
-            interceptor_type = interceptor_config.get("type", "filter")
-            config = interceptor_config.get("config", {})
+        try:
+            for i, interceptor_config in enumerate(artifact.interceptors):
+                interceptor_type = interceptor_config.get("type", "filter")
+                config = interceptor_config.get("config", {})
 
-            plugin_class = INTERCEPTOR_PLUGINS.get(interceptor_type)
-            if not plugin_class:
-                logger.warning(
-                    f"Unknown interceptor type '{interceptor_type}', skipping"
+                plugin_class = INTERCEPTOR_PLUGINS.get(interceptor_type)
+                if not plugin_class:
+                    logger.warning(
+                        f"Unknown interceptor type '{interceptor_type}', skipping"
+                    )
+                    continue
+
+                plugin_config = self._build_plugin_config(
+                    interceptor_type, config, artifact
                 )
-                continue
 
-            plugin_config = self._build_plugin_config(
-                interceptor_type, config, artifact
-            )
-
-            interceptor_name = f"{artifact.name}_{interceptor_type}_{i}"
-            desired_names.add(interceptor_name)
-            self.create_interceptor(
-                name=interceptor_name,
-                plugin_class=plugin_class,
-                config=plugin_config,
-            )
+                interceptor_name = f"{artifact.name}_{interceptor_type}_{i}"
+                desired_names.add(interceptor_name)
+                self.create_interceptor(
+                    name=interceptor_name,
+                    plugin_class=plugin_class,
+                    config=plugin_config,
+                )
+                created_names.append(interceptor_name)
+        except Exception:
+            # Roll back: delete interceptors created in this batch
+            for name in created_names:
+                try:
+                    self.delete_interceptor(name)
+                except Exception as cleanup_err:
+                    logger.debug("Failed to roll back interceptor %s: %s", name, cleanup_err)
+            # Roll back alias if we just created it
+            if not alias_existed:
+                try:
+                    self.delete_alias_topic(artifact.virtual_topic)
+                except Exception as cleanup_err:
+                    logger.debug("Failed to roll back alias %s: %s", artifact.virtual_topic, cleanup_err)
+            raise
 
         # 4. Remove orphaned interceptors
         for existing in rule_interceptors:

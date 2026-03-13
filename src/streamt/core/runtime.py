@@ -17,6 +17,13 @@ class KafkaConfig(BaseModel):
 
     bootstrap_servers: str
     bootstrap_servers_internal: Optional[str] = None
+
+    @field_validator("bootstrap_servers", mode="before")
+    @classmethod
+    def validate_bootstrap_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("bootstrap_servers must not be empty")
+        return v
     security_protocol: Optional[str] = None
     sasl_mechanism: Optional[str] = None
     sasl_username: Optional[str] = None
@@ -89,6 +96,13 @@ class SchemaRegistryConfig(BaseModel):
     """Schema Registry configuration."""
 
     url: str
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("url must not be empty")
+        return v
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
@@ -133,6 +147,13 @@ class ConnectClusterConfig(BaseModel):
     """Connect cluster configuration."""
 
     rest_url: str
+
+    @field_validator("rest_url", mode="before")
+    @classmethod
+    def validate_rest_url_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("rest_url must not be empty")
+        return v
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
@@ -175,6 +196,13 @@ class ConsoleConfig(BaseModel):
 
     url: str
     api_key: Optional[str] = None
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("url must not be empty")
+        return v
 
 
 class ConduktorConfig(BaseModel):

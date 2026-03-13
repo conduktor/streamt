@@ -180,12 +180,12 @@ class TestGatewayPartialFailure:
         return d
 
     def test_interceptor_failure_after_alias_creation(self, deployer):
-        """Alias succeeds, interceptor raises -> partial state, no rollback."""
-        pytest.xfail("no rollback for partial gateway apply -- task #64")
-
+        """Alias succeeds, interceptor raises -> rollback alias and re-raise."""
         with patch.object(deployer, "get_alias_topic", return_value=None), \
+             patch.object(deployer, "list_interceptors", return_value=[]), \
              patch.object(deployer, "create_alias_topic") as mock_alias, \
-             patch.object(deployer, "create_interceptor") as mock_int:
+             patch.object(deployer, "create_interceptor") as mock_int, \
+             patch.object(deployer, "delete_alias_topic") as mock_del_alias:
             mock_alias.return_value = {"ok": True}
             mock_int.side_effect = RuntimeError("Gateway 500")
             artifact = GatewayRuleArtifact(
@@ -195,6 +195,7 @@ class TestGatewayPartialFailure:
             with pytest.raises(RuntimeError, match="500"):
                 deployer.apply(artifact)
             mock_alias.assert_called_once()
+            mock_del_alias.assert_called_once_with("vt1")
 
 
 # ===========================================================================

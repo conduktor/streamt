@@ -234,7 +234,6 @@ class TestEmptyConnectionStringValidation:
     """Runtime config models should reject empty connection strings."""
 
     def test_kafka_empty_bootstrap_servers(self):
-        pytest.xfail("empty strings accepted by Pydantic model -- task #83")
         from pydantic import ValidationError
 
         from streamt.core.runtime import KafkaConfig
@@ -242,7 +241,6 @@ class TestEmptyConnectionStringValidation:
             KafkaConfig(bootstrap_servers="")
 
     def test_kafka_whitespace_bootstrap_servers(self):
-        pytest.xfail("whitespace strings accepted by Pydantic model -- task #83")
         from pydantic import ValidationError
 
         from streamt.core.runtime import KafkaConfig
@@ -250,7 +248,6 @@ class TestEmptyConnectionStringValidation:
             KafkaConfig(bootstrap_servers="   ")
 
     def test_schema_registry_empty_url(self):
-        pytest.xfail("empty strings accepted by Pydantic model -- task #83")
         from pydantic import ValidationError
 
         from streamt.core.runtime import SchemaRegistryConfig
