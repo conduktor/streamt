@@ -29,6 +29,9 @@ class TypeInferenceMixin:
     Expects the host class to provide:
     - ``self._build_source_schema(model)`` for schema resolution
     - ``self._current_model`` for ML_PREDICT type inference
+
+    Optional attributes:
+    - ``self._udf_types`` — dict mapping upper-case function names to return types
     """
 
     # ------------------------------------------------------------------
@@ -408,6 +411,11 @@ class TypeInferenceMixin:
                 return "STRING"
             if func_name in ("NOW", "CURRENT_ROW_TIMESTAMP"):
                 return "TIMESTAMP_LTZ(3)"
+
+            # Check user-declared UDF return types
+            udf_types: dict[str, str] = getattr(self, "_udf_types", {})
+            if func_name in udf_types:
+                return udf_types[func_name]
 
         # Current timestamp/time/date functions
         if isinstance(expr, (exp.CurrentTimestamp, exp.CurrentTimestampLTZ)):

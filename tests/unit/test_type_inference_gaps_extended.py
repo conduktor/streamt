@@ -18,6 +18,7 @@ from streamt.core.models import (
     RuntimeConfig,
     Source,
     StreamtProject,
+    UDFDeclaration,
 )
 
 # ---------------------------------------------------------------------------
@@ -209,8 +210,32 @@ class TestGroup8UDFReturnTypes:
         assert cols[0][1] == "STRING"
 
     def test_udf_with_declared_return_type(self):
-        pytest.xfail("No mechanism to declare UDF return types")
-        cols = _infer("SELECT MY_CUSTOM_UDF(x) AS result FROM t", {"x": "INT"})
+        stub = StubTypeInference()
+        stub._udf_types = {"MY_CUSTOM_UDF": "BIGINT"}
+        cols = stub._extract_select_columns_with_types(
+            "SELECT MY_CUSTOM_UDF(x) AS result FROM t", schema_context={"x": "INT"},
+        )
+        assert cols[0][1] == "BIGINT"
+
+    def test_udf_declaration_is_case_insensitive(self):
+        stub = StubTypeInference()
+        stub._udf_types = {"MY_FUNC": "DOUBLE"}
+        cols = stub._extract_select_columns_with_types(
+            "SELECT my_func(x) AS result FROM t", schema_context={"x": "INT"},
+        )
+        assert cols[0][1] == "DOUBLE"
+
+    def test_udf_via_compiler_project_config(self):
+        project = _project(
+            sources=[Source(name="src", topic="src_topic", columns=[
+                ColumnDefinition(name="x", type="INT"),
+            ])],
+            models=[Model(name="m", sql="SELECT MY_AGG(x) AS result FROM {{ source('src') }}")],
+        )
+        project.udfs = [UDFDeclaration(name="MY_AGG", return_type="BIGINT")]
+        compiler = Compiler(project)
+        model = project.get_model("m")
+        cols = compiler._extract_select_columns_with_types(model.sql, model=model)
         assert cols[0][1] == "BIGINT"
 
 

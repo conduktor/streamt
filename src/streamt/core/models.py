@@ -787,6 +787,18 @@ class Exposure(BaseModel):
 
 
 # ============================================================================
+# UDF Declarations
+# ============================================================================
+
+
+class UDFDeclaration(BaseModel):
+    """User-defined function type declaration."""
+
+    name: str
+    return_type: str
+
+
+# ============================================================================
 # Full Project
 # ============================================================================
 
@@ -802,6 +814,7 @@ class StreamtProject(BaseModel):
     models: list[Model] = Field(default_factory=list)
     tests: list[DataTest] = Field(default_factory=list)
     exposures: list[Exposure] = Field(default_factory=list)
+    udfs: list[UDFDeclaration] = Field(default_factory=list)
 
     # Internal - set after parsing
     project_path: Optional[Path] = Field(default=None, exclude=True)

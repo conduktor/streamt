@@ -69,8 +69,8 @@ class Compiler(TypeInferenceMixin):
         # Jinja environment
         self.jinja_env = Environment(loader=BaseLoader())
 
-        # Topic defaults
         self._topic_defaults = self._get_topic_defaults()
+        self._udf_types: dict[str, str] = {udf.name.upper(): udf.return_type for udf in project.udfs}
 
         # Artifacts
         self.schemas: list[SchemaArtifact] = []
