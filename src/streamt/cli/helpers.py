@@ -113,42 +113,24 @@ def check_required_deployers(
     """Return False (with errors in fmt) if any configured deployer failed to connect."""
     from streamt.core.errors import ErrorCode
 
+    rt = project.runtime
+    checks: list[tuple[bool, Optional[object], str]] = [
+        (bool(rt.kafka), kafka_deployer, "Kafka"),
+        (bool(rt.schema_registry), sr_deployer, "Schema Registry"),
+        (bool(rt.flink and getattr(rt.flink, "clusters", None)), flink_deployer, "Flink"),
+        (bool(rt.connect and getattr(rt.connect, "clusters", None)), connect_deployer, "Kafka Connect"),
+        (bool(rt.conduktor and getattr(rt.conduktor, "gateway", None)), gateway_deployer, "Conduktor Gateway"),
+    ]
+
     ok = True
-    if project.runtime.kafka and kafka_deployer is None:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.CONNECTION_REFUSED,
-            message="Kafka is configured but unreachable. Cannot proceed.",
-        ))
-        fmt.print_error("Kafka is configured but unreachable. Cannot proceed with plan/apply.")
-        ok = False
-    if project.runtime.schema_registry and sr_deployer is None:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.CONNECTION_REFUSED,
-            message="Schema Registry is configured but unreachable. Cannot proceed.",
-        ))
-        fmt.print_error("Schema Registry is configured but unreachable. Cannot proceed with plan/apply.")
-        ok = False
-    if (project.runtime.flink and getattr(project.runtime.flink, "clusters", None) and flink_deployer is None):
-        fmt.add_error(StructuredError(
-            code=ErrorCode.CONNECTION_REFUSED,
-            message="Flink is configured but unreachable. Cannot proceed.",
-        ))
-        fmt.print_error("Flink is configured but unreachable. Cannot proceed with plan/apply.")
-        ok = False
-    if (project.runtime.connect and getattr(project.runtime.connect, "clusters", None) and connect_deployer is None):
-        fmt.add_error(StructuredError(
-            code=ErrorCode.CONNECTION_REFUSED,
-            message="Kafka Connect is configured but unreachable. Cannot proceed.",
-        ))
-        fmt.print_error("Kafka Connect is configured but unreachable. Cannot proceed with plan/apply.")
-        ok = False
-    if (project.runtime.conduktor and getattr(project.runtime.conduktor, "gateway", None) and gateway_deployer is None):
-        fmt.add_error(StructuredError(
-            code=ErrorCode.CONNECTION_REFUSED,
-            message="Conduktor Gateway is configured but unreachable. Cannot proceed.",
-        ))
-        fmt.print_error("Conduktor Gateway is configured but unreachable. Cannot proceed with plan/apply.")
-        ok = False
+    for is_configured, deployer, name in checks:
+        if is_configured and deployer is None:
+            fmt.add_error(StructuredError(
+                code=ErrorCode.CONNECTION_REFUSED,
+                message=f"{name} is configured but unreachable. Cannot proceed.",
+            ))
+            fmt.print_error(f"{name} is configured but unreachable. Cannot proceed with plan/apply.")
+            ok = False
     return ok
 
 
