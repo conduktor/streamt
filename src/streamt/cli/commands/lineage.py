@@ -20,10 +20,11 @@ from streamt.output import get_output_format_from_context
 @click.option("--model", "-m", help="Focus on this model")
 @click.option("--upstream", is_flag=True, help="Show only upstream dependencies")
 @click.option("--downstream", is_flag=True, help="Show only downstream dependents")
+@click.option("--columns", is_flag=True, help="Show column-level lineage (requires --model)")
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["ascii", "json"]),
+    type=click.Choice(["ascii", "json", "mermaid", "dot"]),
     default=None,
     help="Output format (overrides global --output)",
 )
@@ -35,6 +36,7 @@ def lineage(
     model: Optional[str],
     upstream: bool,
     downstream: bool,
+    columns: bool,
     output_format: Optional[str],
 ) -> None:
     """Show the DAG lineage."""
@@ -45,7 +47,7 @@ def lineage(
     fmt = make_formatter(ctx, "lineage")
     project_path = get_project_path(project_dir)
 
-    if (upstream or downstream) and not model:
+    if (upstream or downstream or columns) and not model:
         fmt.print_error("--upstream and --downstream require --model/-m")
         fmt.flush()
         import sys
@@ -64,6 +66,28 @@ def lineage(
 
         dag_builder = DAGBuilder(project)
         dag = dag_builder.build()
+
+        # Column-level lineage (LINEAGE-3)
+        if columns and model:
+            from streamt.core.dag import ColumnLineageBuilder
+
+            col_builder = ColumnLineageBuilder(project)
+            col_lineage = col_builder.build(model)
+            col_data = [
+                {
+                    "column": cl.column,
+                    "upstream": [{"source": u[0], "column": u[1]} for u in cl.upstream],
+                }
+                for cl in col_lineage
+            ]
+            fmt.set_data({"model": model, "column_lineage": col_data})
+            if fmt.format != "json":
+                fmt.print(f"[cyan]Column lineage for '{model}':[/cyan]\n")
+                for cl in col_lineage:
+                    origins = ", ".join(f"{u[0]}.{u[1]}" for u in cl.upstream)
+                    fmt.print(f"  {cl.column} ← {origins}")
+            fmt.flush()
+            return
 
         # Filter nodes for --upstream / --downstream
         nodes_to_show: set[str] | None = None
@@ -95,7 +119,47 @@ def lineage(
 
         fmt.set_data(dag_data)
 
-        if effective_format == "json" and fmt.format != "json":
+        if effective_format == "mermaid":
+            if nodes_to_show is not None:
+                from streamt.core.dag import DAG, DAGNode
+
+                sub = DAG()
+                for n in nodes_to_show:
+                    orig = dag.get_node(n)
+                    if orig:
+                        sub.add_node(
+                            DAGNode(name=orig.name, type=orig.type, materialized=orig.materialized)
+                        )
+                for n in nodes_to_show:
+                    orig = dag.get_node(n)
+                    if orig:
+                        for d in orig.downstream:
+                            if d in nodes_to_show:
+                                sub.add_edge(n, d)
+                fmt.print(sub.render_mermaid(focus=model))
+            else:
+                fmt.print(dag.render_mermaid(focus=model))
+        elif effective_format == "dot":
+            if nodes_to_show is not None:
+                from streamt.core.dag import DAG, DAGNode
+
+                sub = DAG()
+                for n in nodes_to_show:
+                    orig = dag.get_node(n)
+                    if orig:
+                        sub.add_node(
+                            DAGNode(name=orig.name, type=orig.type, materialized=orig.materialized)
+                        )
+                for n in nodes_to_show:
+                    orig = dag.get_node(n)
+                    if orig:
+                        for d in orig.downstream:
+                            if d in nodes_to_show:
+                                sub.add_edge(n, d)
+                click.echo(sub.render_dot(focus=model))
+            else:
+                click.echo(dag.render_dot(focus=model))
+        elif effective_format == "json" and fmt.format != "json":
             fmt.print(json.dumps(dag_data, indent=2))
         elif fmt.format != "json":
             if nodes_to_show is not None:

@@ -22,6 +22,9 @@ from streamt.output import OutputFormatter, StructuredError
 @click.option(
     "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
 )
+@click.option(
+    "--diff", "show_diff", is_flag=True, help="Show diff between declared and deployed state"
+)
 @click.pass_context
 def show_resource(
     ctx: click.Context,
@@ -29,6 +32,7 @@ def show_resource(
     name: str,
     project_dir: Optional[str],
     environment: Optional[str],
+    show_diff: bool = False,
 ) -> None:
     """Show detailed info about a single resource."""
     from streamt.core.dag import DAGBuilder
@@ -58,6 +62,11 @@ def show_resource(
             _show_test(project, name, data, fmt)
         elif resource_type == "exposure":
             _show_exposure(project, name, data, fmt)
+
+        if show_diff and resource_type == "model":
+            _show_model_diff(project, name, data, fmt)
+        elif show_diff and resource_type == "source":
+            _show_source_diff(project, name, data, fmt)
 
         fmt.set_data(data)
         fmt.flush()
@@ -293,3 +302,77 @@ def _show_exposure(
         fmt.print(f"  Description: {exposure.description}")
     if exposure.owner:
         fmt.print(f"  Owner: {exposure.owner}")
+
+
+def _show_model_diff(
+    project: StreamtProject, name: str, data: dict[str, object], fmt: OutputFormatter
+) -> None:
+    """Show diff between declared model config and deployed state."""
+    model = project.get_model(name)
+    if not model:
+        return
+    try:
+        from streamt.cli.helpers import make_kafka_deployer
+
+        kd = make_kafka_deployer(project, fmt)
+        if not kd:
+            return
+        tc = model.get_topic_config()
+        topic_name = tc.name if tc and tc.name else model.name
+        state = kd.get_topic_state(topic_name)
+        if not state.exists:
+            data["diff"] = {"status": "not_deployed"}
+            fmt.print(f"\n[yellow]Topic '{topic_name}' not deployed[/yellow]")
+            return
+        diffs: list[dict[str, object]] = []
+        desired_p = tc.partitions if tc and tc.partitions else None
+        if desired_p and state.partitions != desired_p:
+            diffs.append({"field": "partitions", "declared": desired_p, "actual": state.partitions})
+        desired_rf = tc.replication_factor if tc and tc.replication_factor else None
+        if desired_rf and state.replication_factor != desired_rf:
+            diffs.append(
+                {
+                    "field": "replication_factor",
+                    "declared": desired_rf,
+                    "actual": state.replication_factor,
+                }
+            )
+        data["diff"] = {"status": "drift" if diffs else "in_sync", "diffs": diffs}
+        if diffs:
+            fmt.print("\n[yellow]Drift detected:[/yellow]")
+            for d in diffs:
+                fmt.print(f"  {d['field']}: declared={d['declared']} actual={d['actual']}")
+        else:
+            fmt.print("\n[green]In sync with deployed state[/green]")
+        kd.close()
+    except Exception:
+        pass
+
+
+def _show_source_diff(
+    project: StreamtProject, name: str, data: dict[str, object], fmt: OutputFormatter
+) -> None:
+    """Show diff for source topic existence."""
+    source = project.get_source(name)
+    if not source:
+        return
+    try:
+        from streamt.cli.helpers import make_kafka_deployer
+
+        kd = make_kafka_deployer(project, fmt)
+        if not kd:
+            return
+        state = kd.get_topic_state(source.topic)
+        data["diff"] = {
+            "exists": state.exists,
+            "partitions": state.partitions if state.exists else None,
+        }
+        if state.exists:
+            fmt.print(
+                f"\n[green]Topic '{source.topic}' exists (partitions: {state.partitions})[/green]"
+            )
+        else:
+            fmt.print(f"\n[red]Topic '{source.topic}' does not exist[/red]")
+        kd.close()
+    except Exception:
+        pass

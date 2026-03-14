@@ -44,6 +44,7 @@ def _deployer_section(
     "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
 )
 @click.option("--lag", is_flag=True, help="Show consumer lag for topics")
+@click.option("--consumer-groups", is_flag=True, help="Show per-consumer-group lag")
 @click.option(
     "--format",
     "output_format",
@@ -60,6 +61,7 @@ def status(
     project_dir: Optional[str],
     environment: Optional[str],
     lag: bool,
+    consumer_groups: bool,
     output_format: Optional[str],
     filter_pattern: Optional[str],
 ) -> None:
@@ -217,6 +219,36 @@ def status(
                             fmt.print(line)
                         else:
                             fmt.print(f"  [red]MISSING[/red] {t['name']}")
+
+        # Consumer group lag (STATUS-3)
+        if consumer_groups and kd:
+            data["consumer_groups"] = []
+            if is_text:
+                fmt.print("\n[cyan]Consumer Groups:[/cyan]")
+            with _deployer_section(fmt, is_text, "Kafka (consumer groups)"):
+                groups = kd.get_consumer_groups()
+                topic_names = [t["name"] for t in manifest.artifacts.get("topics", [])]
+                for group_id in sorted(groups):
+                    group_data: dict[str, object] = {"group_id": group_id, "topics": []}
+                    for topic_name in topic_names:
+                        if not matches(topic_name):
+                            continue
+                        lag_info = kd.get_consumer_group_lag(group_id, topic_name)
+                        if lag_info is not None:
+                            tlag = {
+                                "topic": topic_name,
+                                "total_lag": lag_info.total_lag,
+                                "partitions": lag_info.partitions,
+                            }
+                            group_data["topics"].append(tlag)
+                    if group_data["topics"]:
+                        data["consumer_groups"].append(group_data)
+                        if is_text:
+                            total = sum(t["total_lag"] for t in group_data["topics"])
+                            color = "green" if total == 0 else "yellow" if total < 1000 else "red"
+                            fmt.print(f"  [{color}]{group_id}[/{color}] total_lag={total}")
+                            for tlag in group_data["topics"]:
+                                fmt.print(f"    {tlag['topic']}: lag={tlag['total_lag']}")
 
         # Flink jobs
         if manifest.artifacts.get("flink_jobs"):

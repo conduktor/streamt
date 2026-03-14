@@ -155,6 +155,23 @@ class OutputFormatter:
         else:
             self.console.print(message)
 
+    def progress_bar(self, items: list, label: str = "Processing") -> list:
+        """Wrap iterable with a Rich progress bar. Returns list of results.
+
+        Falls back to plain iteration in JSON/quiet mode.
+        """
+        if self.quiet or self.format == "json":
+            return items
+        from rich.progress import Progress
+
+        results: list = []
+        with Progress(console=self.stderr, transient=True) as progress:
+            task = progress.add_task(label, total=len(items))
+            for item in items:
+                results.append(item)
+                progress.update(task, advance=1)
+        return results
+
     # -- Finalize --
 
     def flush(self) -> None:

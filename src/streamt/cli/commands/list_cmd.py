@@ -23,13 +23,20 @@ from streamt.core.errors import ErrorCode
     "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
 )
 @click.option("--select", "-s", help="Filter by tag (e.g., 'tag:payments')")
+@click.option(
+    "--sort-by",
+    type=click.Choice(["name", "type", "upstream"]),
+    default="name",
+    help="Sort results by field (default: name)",
+)
 @click.pass_context
 def list_resources(
     ctx: click.Context,
     resource_type: Optional[str],
     project_dir: Optional[str],
     environment: Optional[str],
-    select: Optional[str] = None,
+    select: Optional[str],
+    sort_by: str,
 ) -> None:
     """List project resources (sources, models, tests, exposures)."""
     from streamt.core.environment import EnvironmentError
@@ -121,6 +128,12 @@ def list_resources(
                         "has_sql": m.sql is not None,
                     }
                 )
+            if sort_by == "type":
+                items.sort(key=lambda x: (x.get("materialized", ""), x.get("name", "")))
+            elif sort_by == "upstream":
+                items.sort(key=lambda x: (-len(x.get("upstream", [])), x.get("name", "")))
+            else:
+                items.sort(key=lambda x: x.get("name", ""))
             fmt.print_table(
                 "Models",
                 [("Name", "cyan"), ("Materialized", "green"), ("Upstream", "yellow")],
