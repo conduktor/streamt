@@ -82,8 +82,9 @@ class OutputFormatter:
     In json mode: emits structured JSON to stdout, progress/debug to stderr.
     """
 
-    def __init__(self, output_format: str = "text") -> None:
+    def __init__(self, output_format: str = "text", quiet: bool = False) -> None:
         self.format = output_format
+        self.quiet = quiet
         self.console = Console()
         self.stderr = Console(stderr=True)
         self._result = CommandResult()
@@ -112,30 +113,32 @@ class OutputFormatter:
     # -- Text-mode helpers (no-op in json mode) --
 
     def print(self, message: str) -> None:
-        """Print a message (text mode only)."""
-        if self.format == "text":
+        """Print a message (text mode only, suppressed in quiet mode)."""
+        if self.format == "text" and not self.quiet:
             self.console.print(message)
 
     def print_error(self, message: str) -> None:
         """Print an error message to stderr (both modes)."""
         self.stderr.print(f"[red]ERROR[/red]: {message}")
 
-    def print_warning(self, message: str) -> None:
-        """Print a warning to stderr in json mode, stdout in text mode."""
+    def print_warning(self, message: str, code: str = "W000_WARNING") -> None:
+        """Print a warning and auto-capture it in the JSON warnings array."""
+        # Always capture for JSON envelope consistency
+        existing = {w.message for w in self._result.warnings}
+        if message not in existing:
+            self._result.warnings.append(StructuredWarning(code=code, message=message))
+        if self.quiet:
+            return
         if self.format == "json":
             self.stderr.print(f"[yellow]WARNING[/yellow]: {message}")
         else:
             self.console.print(f"[yellow]WARNING[/yellow]: {message}")
 
-    def print_table(self, title: str, columns: list[tuple[str, str]], rows: list[list[str]]) -> None:
-        """Print a Rich table (text mode only).
-
-        Args:
-            title: Table title
-            columns: List of (name, style) tuples
-            rows: List of row value lists
-        """
-        if self.format == "text":
+    def print_table(
+        self, title: str, columns: list[tuple[str, str]], rows: list[list[str]]
+    ) -> None:
+        """Print a Rich table (text mode only, suppressed in quiet mode)."""
+        if self.format == "text" and not self.quiet:
             table = Table(title=title)
             for name, style in columns:
                 table.add_column(name, style=style)
@@ -144,7 +147,9 @@ class OutputFormatter:
             self.console.print(table)
 
     def progress(self, message: str) -> None:
-        """Print progress info (always to stderr in json mode, stdout in text mode)."""
+        """Print progress info. Suppressed in quiet mode."""
+        if self.quiet:
+            return
         if self.format == "json":
             self.stderr.print(message)
         else:

@@ -324,3 +324,234 @@ class TestValidatorWithParsedProject:
             result = validator.validate()
             assert not result.is_valid
             assert any(m.code == "SOURCE_NOT_FOUND" for m in result.errors)
+
+
+# ===========================================================================
+# Tier 1 deferred items
+# ===========================================================================
+
+
+class TestShowCompiledSQL:
+    """SHOW-2: show model displays compiled (Jinja-resolved) SQL."""
+
+    def test_compiled_sql_resolves_source(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "events.raw.v1"}],
+                    "models": [{"name": "clean", "sql": 'SELECT id FROM {{ source("raw") }}'}],
+                },
+            )
+            r = runner.invoke(main, ["show", "model", "clean", "-p", d])
+            assert r.exit_code == 0
+            assert "events.raw.v1" in r.output
+
+    def test_compiled_sql_in_json(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "events.raw.v1"}],
+                    "models": [{"name": "clean", "sql": 'SELECT id FROM {{ source("raw") }}'}],
+                },
+            )
+            r = runner.invoke(main, ["-o", "json", "show", "model", "clean", "-p", d])
+            assert r.exit_code == 0
+            data = json.loads(r.output)
+            assert "events.raw.v1" in data["data"]["compiled_sql"]
+
+
+class TestSelectStarWarning:
+    """COMPILE-5: validator warns on SELECT * in models."""
+
+    def test_select_star_produces_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            project = _parse_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [{"name": "wide", "sql": 'SELECT * FROM {{ source("raw") }}'}],
+                },
+            )
+            result = ProjectValidator(project).validate()
+            assert any(m.code == "SELECT_STAR" for m in result.warnings)
+
+    def test_explicit_columns_no_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            project = _parse_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [
+                        {"name": "narrow", "sql": 'SELECT id, name FROM {{ source("raw") }}'}
+                    ],
+                },
+            )
+            result = ProjectValidator(project).validate()
+            assert not any(m.code == "SELECT_STAR" for m in result.warnings)
+
+
+class TestQuietFlag:
+    """JSON-3: --quiet suppresses non-error output."""
+
+    def test_quiet_suppresses_output(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [{"name": "a", "sql": 'SELECT id FROM {{ source("raw") }}'}],
+                },
+            )
+            r = runner.invoke(main, ["-q", "validate", "-p", d])
+            assert r.exit_code == 0
+            # Quiet mode: no table, no "is valid" — output should be minimal
+            assert "Project Summary" not in r.output
+
+
+class TestVerboseFlag:
+    """UX-5: --verbose enables debug logging."""
+
+    def test_verbose_flag_accepted(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                },
+            )
+            r = runner.invoke(main, ["-v", "validate", "-p", d])
+            assert r.exit_code == 0
+
+
+class TestTestCoverage:
+    """TEST-3: test --coverage shows model coverage report."""
+
+    def test_coverage_report(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [
+                        {"name": "a", "sql": 'SELECT id FROM {{ source("raw") }}'},
+                        {"name": "b", "sql": 'SELECT id FROM {{ source("raw") }}'},
+                    ],
+                    "tests": [
+                        {
+                            "name": "t1",
+                            "model": "a",
+                            "type": "schema",
+                            "assertions": [{"row_count": {"min": 1}}],
+                        }
+                    ],
+                },
+            )
+            r = runner.invoke(main, ["test", "--coverage", "-p", d])
+            assert r.exit_code == 0
+            assert "1/2" in r.output or "50%" in r.output
+
+    def test_coverage_json(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [
+                        {"name": "a", "sql": 'SELECT id FROM {{ source("raw") }}'},
+                    ],
+                    "tests": [
+                        {
+                            "name": "t1",
+                            "model": "a",
+                            "type": "schema",
+                            "assertions": [{"row_count": {"min": 1}}],
+                        }
+                    ],
+                },
+            )
+            r = runner.invoke(main, ["-o", "json", "test", "--coverage", "-p", d])
+            assert r.exit_code == 0
+            data = json.loads(r.output)
+            assert data["data"]["percent"] == 100
+
+
+class TestWarningsInJSON:
+    """JSON-1: all commands include warnings array in JSON output."""
+
+    def test_warnings_always_present_in_json(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                },
+            )
+            r = runner.invoke(main, ["-o", "json", "validate", "-p", d])
+            assert r.exit_code == 0
+            data = json.loads(r.output)
+            assert "warnings" in data
+            assert isinstance(data["warnings"], list)
+
+    def test_print_warning_captured_in_json(self):
+        """Warnings from print_warning() auto-captured in JSON envelope."""
+        from streamt.output import OutputFormatter
+
+        fmt = OutputFormatter("json")
+        fmt.set_command("test")
+        fmt.print_warning("something is off")
+        result = fmt.get_result()
+        assert len(result.warnings) == 1
+        assert result.warnings[0].message == "something is off"

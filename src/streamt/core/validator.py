@@ -852,10 +852,16 @@ class ProjectValidator:
                         )
 
     def _validate_sql_syntax(self, model: Model) -> None:
-        """Validate SQL syntax using sqlglot's Flink dialect."""
+        """Validate SQL syntax using sqlglot; also warn on SELECT *."""
         if not model.sql:
             return
-
+        if re.search(r"\bSELECT\s+\*\s", model.sql, re.IGNORECASE):
+            self.result.add_warning(
+                "SELECT_STAR",
+                f"Model '{model.name}' uses SELECT *. Explicit column lists are safer "
+                f"for streaming — schema changes upstream won't silently alter output.",
+                f"model '{model.name}'",
+            )
         try:
             import sqlglot
         except ImportError:

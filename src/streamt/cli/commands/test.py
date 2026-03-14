@@ -14,10 +14,20 @@ from streamt.output import StructuredError
 
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
-@click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
+@click.option(
+    "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
+)
 @click.option("--model", "-m", help="Run tests for this model only")
-@click.option("--type", "test_type", type=click.Choice(["schema", "sample", "continuous"]), help="Run only tests of this type")
+@click.option(
+    "--type",
+    "test_type",
+    type=click.Choice(["schema", "sample", "continuous"]),
+    help="Run only tests of this type",
+)
 @click.option("--deploy", is_flag=True, help="Deploy continuous tests as Flink jobs")
+@click.option(
+    "--coverage", is_flag=True, help="Show test coverage report (which models have tests)"
+)
 @click.pass_context
 def test(
     ctx: click.Context,
@@ -26,6 +36,7 @@ def test(
     model: Optional[str],
     test_type: Optional[str],
     deploy: bool,
+    coverage: bool,
 ) -> None:
     """Run tests."""
     from streamt.core.environment import EnvironmentError
@@ -41,7 +52,8 @@ def test(
 
     try:
         parser = ProjectParser(
-            project_path, environment=environment,
+            project_path,
+            environment=environment,
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
@@ -54,6 +66,27 @@ def test(
                 fmt.print_error(error.message)
             fmt.flush()
             sys.exit(1)
+
+        if coverage:
+            tested_models = {t.model for t in project.tests}
+            rows = []
+            cov_data = []
+            for m in project.models:
+                has_test = m.name in tested_models
+                rows.append([m.name, "[green]yes[/green]" if has_test else "[red]no[/red]"])
+                cov_data.append({"model": m.name, "covered": has_test})
+            total = len(project.models)
+            covered = sum(1 for d in cov_data if d["covered"])
+            pct = int(covered / total * 100) if total else 0
+            fmt.print_table(
+                "Test Coverage",
+                [("Model", "cyan"), ("Has Tests", "")],
+                rows,
+            )
+            fmt.print(f"\n{covered}/{total} models covered ({pct}%)")
+            fmt.set_data({"coverage": cov_data, "covered": covered, "total": total, "percent": pct})
+            fmt.flush()
+            return
 
         tests = project.tests
         if model:
@@ -87,7 +120,9 @@ def test(
                 failed += 1
             test_results.append(tr)
 
-        fmt.set_data({"results": test_results, "passed": passed, "failed": failed, "total": passed + failed})
+        fmt.set_data(
+            {"results": test_results, "passed": passed, "failed": failed, "total": passed + failed}
+        )
         fmt.print(f"\n{passed} passed, {failed} failed")
 
         if failed > 0:

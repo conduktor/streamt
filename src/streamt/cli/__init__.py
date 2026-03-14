@@ -32,8 +32,10 @@ from .commands import (
     default="text",
     help="Output format (text=human-readable, json=machine-readable)",
 )
+@click.option("--quiet", "-q", is_flag=True, help="Suppress all output except errors")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug-level output")
 @click.pass_context
-def main(ctx: click.Context, output: str) -> None:
+def main(ctx: click.Context, output: str, quiet: bool, verbose: bool) -> None:
     """streamt - dbt for streaming.
 
     Declarative streaming pipelines for Kafka, Flink, and Connect.
@@ -42,6 +44,12 @@ def main(ctx: click.Context, output: str) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj["output"] = output
+    ctx.obj["quiet"] = quiet
+    ctx.obj["verbose"] = verbose
+    if verbose:
+        import logging
+
+        logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
 
 
 # Register all commands

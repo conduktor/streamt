@@ -29,7 +29,11 @@ def get_project_path(project_dir: Optional[str]) -> Path:
 
 def make_formatter(ctx: click.Context, command: str) -> OutputFormatter:
     """Create an OutputFormatter from Click context."""
-    fmt = OutputFormatter(get_output_format_from_context(ctx))
+    root = ctx
+    while root.parent is not None:
+        root = root.parent
+    quiet = (root.obj or {}).get("quiet", False)
+    fmt = OutputFormatter(get_output_format_from_context(ctx), quiet=quiet)
     fmt.set_command(command)
     return fmt
 

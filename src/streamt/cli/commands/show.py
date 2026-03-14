@@ -66,6 +66,29 @@ def show_resource(
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
 
 
+def _resolve_jinja_sql(sql: str, project: StreamtProject) -> str:
+    """Resolve Jinja source()/ref() calls to actual topic/table names."""
+    source_map = {s.name: s.topic for s in project.sources}
+    model_map = {
+        m.name: m.get_topic_config().name
+        if m.get_topic_config() and m.get_topic_config().name
+        else m.name
+        for m in project.models
+    }
+
+    def _replace_source(m: re.Match[str]) -> str:
+        name = m.group(1)
+        return source_map.get(name, name)
+
+    def _replace_ref(m: re.Match[str]) -> str:
+        name = m.group(1)
+        return model_map.get(name, name)
+
+    result = re.sub(r'\{\{\s*source\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}', _replace_source, sql)
+    result = re.sub(r'\{\{\s*ref\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}', _replace_ref, result)
+    return result
+
+
 def _not_found(
     fmt: OutputFormatter, code: str, resource_type: str, name: str, available: list[str]
 ) -> None:
@@ -194,6 +217,11 @@ def _show_model(
     if model.sql:
         snippet = model.sql.strip()[:120]
         fmt.print(f"  SQL: {snippet}{'...' if len(model.sql.strip()) > 120 else ''}")
+        # SHOW-2: Compiled SQL (Jinja resolved)
+        compiled = _resolve_jinja_sql(model.sql, project)
+        if compiled != model.sql:
+            data["compiled_sql"] = compiled
+            fmt.print(f"  Compiled SQL: {compiled.strip()}")
     if model.contract:
         fmt.print(f"  Contract: {'enforced' if model.contract.enforced else 'advisory'}")
         if model.contract.columns:
