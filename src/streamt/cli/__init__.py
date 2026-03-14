@@ -14,6 +14,7 @@ from .commands import (
     init,
     lineage,
     list_cmd,
+    observe,
     plan,
     show,
     status,
@@ -50,6 +51,7 @@ main.add_command(plan.plan)
 main.add_command(apply.apply)
 main.add_command(test.test)
 main.add_command(lineage.lineage)
+main.add_command(observe.observe)
 main.add_command(status.status)
 main.add_command(list_cmd.list_resources, name="list")
 main.add_command(show.show_resource, name="show")
