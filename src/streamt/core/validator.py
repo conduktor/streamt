@@ -859,10 +859,11 @@ class ProjectValidator:
             )
         try:
             import sqlglot
+
+            from streamt.compiler.flink_dialect import FlinkDialect
+            from streamt.core.sql_checks import check_having_aliases, check_window_group_by
         except ImportError:
             return
-
-        # Render Jinja refs to plain table names so sqlglot can parse
         rendered = re.sub(
             r'\{\{\s*(?:source|ref)\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}',
             r"\1",
@@ -870,16 +871,20 @@ class ProjectValidator:
         )
 
         try:
-            sqlglot.parse(rendered)
+            sqlglot.parse(rendered, dialect=FlinkDialect)
         except sqlglot.errors.ParseError as e:
             self.result.add_warning(
                 "SQL_PARSE_WARNING",
                 f"Model '{model.name}' SQL may have syntax issues: {e}",
                 f"model '{model.name}'",
             )
-        except (ValueError, Exception):
-            # Dialect not available or other non-parse issue — skip silently
+        except Exception:
             pass
+        ctx = f"model '{model.name}'"
+        for code, msg in check_window_group_by(model.sql):
+            self.result.add_warning(code, msg, ctx)
+        for code, msg in check_having_aliases(model.sql):
+            self.result.add_warning(code, msg, ctx)
 
     def _validate_unused_sources(self) -> None:
         """Warn when declared sources have no downstream consumers."""

@@ -128,23 +128,26 @@ models:
   - name: hourly_order_stats
     description: |
       Hourly order statistics by region.
-      Uses a tumbling window to compute non-overlapping hourly aggregates.
-    # Auto-inferred as flink due to TUMBLE window function
+      Uses a tumbling window TVF to compute non-overlapping hourly aggregates.
+    # Auto-inferred as flink due to window TVF
 
     sql: |
       SELECT
         region,
-        TUMBLE_START(order_timestamp, INTERVAL '1' HOUR) AS window_start,
-        TUMBLE_END(order_timestamp, INTERVAL '1' HOUR) AS window_end,
+        window_start,
+        window_end,
         COUNT(*) AS order_count,
         SUM(amount) AS total_revenue,
         AVG(amount) AS avg_order_value,
         MIN(amount) AS min_order,
         MAX(amount) AS max_order
-      FROM {{ ref("orders_clean") }}
+      FROM TABLE(
+        TUMBLE(TABLE {{ ref("orders_clean") }}, DESCRIPTOR(order_timestamp), INTERVAL '1' HOUR)
+      )
       GROUP BY
         region,
-        TUMBLE(order_timestamp, INTERVAL '1' HOUR)
+        window_start,
+        window_end
 
     advanced:  # Optional: tune Flink behavior
       topic:
@@ -157,10 +160,14 @@ models:
 
 **How it works:**
 
-1. `TUMBLE(order_timestamp, INTERVAL '1' HOUR)` creates 1-hour non-overlapping windows
-2. Orders are grouped by region AND window
-3. When the watermark passes the window end, results are emitted
-4. Each order belongs to exactly one window
+1. `TABLE(TUMBLE(TABLE ..., DESCRIPTOR(col), INTERVAL))` creates 1-hour non-overlapping windows
+2. The TVF appends `window_start`, `window_end`, and `window_time` columns
+3. Orders are grouped by region AND window columns
+4. When the watermark passes the window end, results are emitted
+5. Each order belongs to exactly one window
+
+!!! tip "TVF vs Legacy Syntax"
+    The `TABLE(TUMBLE(...))` TVF syntax is the recommended Flink SQL pattern (Flink 1.15+). The legacy `GROUP BY TUMBLE(ts, INTERVAL ...)` syntax still works but is deprecated.
 
 **Example output:**
 
@@ -180,23 +187,26 @@ models:
   - name: order_trends_15min
     description: |
       Rolling order trends updated every 15 minutes.
-      Uses a hopping window: 1-hour windows sliding every 15 minutes.
+      Uses a hopping window TVF: 1-hour windows sliding every 15 minutes.
       Good for dashboards that need smooth trend lines.
-    # Auto-inferred as flink due to HOP window function
+    # Auto-inferred as flink due to window TVF
 
     sql: |
       SELECT
         region,
-        HOP_START(order_timestamp, INTERVAL '15' MINUTE, INTERVAL '1' HOUR) AS window_start,
-        HOP_END(order_timestamp, INTERVAL '15' MINUTE, INTERVAL '1' HOUR) AS window_end,
+        window_start,
+        window_end,
         COUNT(*) AS order_count,
         SUM(amount) AS total_revenue,
         -- Calculate order velocity (orders per minute)
         COUNT(*) / 60.0 AS orders_per_minute
-      FROM {{ ref("orders_clean") }}
+      FROM TABLE(
+        HOP(TABLE {{ ref("orders_clean") }}, DESCRIPTOR(order_timestamp), INTERVAL '15' MINUTE, INTERVAL '1' HOUR)
+      )
       GROUP BY
         region,
-        HOP(order_timestamp, INTERVAL '15' MINUTE, INTERVAL '1' HOUR)
+        window_start,
+        window_end
 
     advanced:  # Optional: tune for larger state
       topic:
@@ -209,7 +219,7 @@ models:
 
 **How it works:**
 
-1. `HOP(..., INTERVAL '15' MINUTE, INTERVAL '1' HOUR)` creates:
+1. `TABLE(HOP(TABLE ..., DESCRIPTOR(col), slide, size))` creates:
    - 1-hour windows
    - Sliding every 15 minutes
    - Each order appears in 4 windows (60min / 15min = 4)
@@ -345,9 +355,9 @@ event_time:
 # Hourly
 - name: stats_hourly
   sql: |
-    SELECT ...
-    FROM {{ ref("orders_clean") }}
-    GROUP BY TUMBLE(order_timestamp, INTERVAL '1' HOUR)
+    SELECT window_start, window_end, region, COUNT(*) AS order_count, SUM(amount) AS total_revenue
+    FROM TABLE(TUMBLE(TABLE {{ ref("orders_clean") }}, DESCRIPTOR(order_timestamp), INTERVAL '1' HOUR))
+    GROUP BY window_start, window_end, region
 
 # Daily (aggregates hourly)
 - name: stats_daily

@@ -367,14 +367,37 @@ clusters:
 
 ### Supported Window Functions
 
+#### TVF Syntax (Recommended, Flink 1.15+)
+
+The Table-Valued Function (TVF) syntax is the modern Flink window API. It appends `window_start`, `window_end`, and `window_time` columns automatically.
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `TUMBLE` | Fixed-size, non-overlapping | `TABLE(TUMBLE(TABLE t, DESCRIPTOR(ts), INTERVAL '5' MINUTE))` |
+| `HOP` | Fixed-size, overlapping | `TABLE(HOP(TABLE t, DESCRIPTOR(ts), INTERVAL '1' MINUTE, INTERVAL '5' MINUTE))` |
+| `SESSION` | Gap-based sessions | `TABLE(SESSION(TABLE t, DESCRIPTOR(ts), INTERVAL '10' MINUTE))` |
+| `CUMULATE` | Cumulative windows | `TABLE(CUMULATE(TABLE t, DESCRIPTOR(ts), INTERVAL '1' MINUTE, INTERVAL '1' HOUR))` |
+
+```sql
+-- TVF example: tumbling window
+SELECT window_start, window_end, COUNT(*) AS cnt
+FROM TABLE(TUMBLE(TABLE orders, DESCRIPTOR(ts), INTERVAL '1' HOUR))
+GROUP BY window_start, window_end
+```
+
+#### Legacy GROUP BY Syntax
+
+Still supported but deprecated. Does not provide `window_start`/`window_end` columns directly — use accessor functions instead.
+
 | Function | Description | Example |
 |----------|-------------|---------|
 | `TUMBLE` | Fixed-size, non-overlapping | `GROUP BY TUMBLE(ts, INTERVAL '5' MINUTE)` |
 | `HOP` | Fixed-size, overlapping | `GROUP BY HOP(ts, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE)` |
 | `SESSION` | Gap-based sessions | `GROUP BY SESSION(ts, INTERVAL '10' MINUTE)` |
-| `CUMULATE` | Cumulative windows | `GROUP BY CUMULATE(ts, INTERVAL '1' MINUTE, INTERVAL '1' HOUR)` |
 
-### Window Accessors
+### Window Accessors (Legacy Syntax)
+
+These functions are used with the legacy `GROUP BY` window syntax to extract window boundaries:
 
 | Function | Description |
 |----------|-------------|
@@ -385,6 +408,8 @@ clusters:
 | `HOP_END(...)` | Hopping window end |
 | `SESSION_START(...)` | Session window start |
 | `SESSION_END(...)` | Session window end |
+
+With TVF syntax, use `window_start`, `window_end`, `window_time` columns directly instead of these accessor functions.
 
 ### Supported Join Types
 
@@ -537,13 +562,14 @@ models:
   - name: hourly_revenue
     description: "Hourly revenue aggregation"
 
-    # materialized: flink (auto-inferred from TUMBLE)
+    # materialized: flink (auto-inferred from window TVF)
     sql: |
       SELECT
-        TUMBLE_START(order_time, INTERVAL '1' HOUR) as window_start,
+        window_start,
+        window_end,
         SUM(amount) as revenue
-      FROM {{ ref("orders_valid") }}
-      GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR)
+      FROM TABLE(TUMBLE(TABLE {{ ref("orders_valid") }}, DESCRIPTOR(order_time), INTERVAL '1' HOUR))
+      GROUP BY window_start, window_end
 
     # Only when overriding defaults:
     advanced:
@@ -571,6 +597,7 @@ CREATE TABLE orders_valid (
 
 CREATE TABLE hourly_revenue_sink (
   `window_start` TIMESTAMP(3),
+  `window_end` TIMESTAMP(3),
   `revenue` DOUBLE
 ) WITH (
   'connector' = 'kafka',
@@ -581,10 +608,11 @@ CREATE TABLE hourly_revenue_sink (
 
 INSERT INTO hourly_revenue_sink
 SELECT
-  TUMBLE_START(order_time, INTERVAL '1' HOUR) as window_start,
+  window_start,
+  window_end,
   SUM(amount) as revenue
-FROM orders_valid
-GROUP BY TUMBLE(order_time, INTERVAL '1' HOUR);
+FROM TABLE(TUMBLE(TABLE orders_valid, DESCRIPTOR(order_time), INTERVAL '1' HOUR))
+GROUP BY window_start, window_end;
 ```
 
 ---

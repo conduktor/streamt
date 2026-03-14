@@ -80,6 +80,24 @@ class FlinkDialect(Dialect):
     class Parser(Parser):
         """Flink SQL parser with custom function and syntax support."""
 
+        CONSTRAINT_PARSERS = {
+            **Parser.CONSTRAINT_PARSERS,
+            "WATERMARK": lambda self: self.expression(
+                exp.WatermarkColumnConstraint,
+                this=self._match(TokenType.FOR) and self._parse_column(),
+                expression=self._match(TokenType.ALIAS) and self._parse_disjunction(),
+            ),
+        }
+
+        SCHEMA_UNNAMED_CONSTRAINTS = {
+            *Parser.SCHEMA_UNNAMED_CONSTRAINTS,
+            "WATERMARK",
+        }
+
+        # SESSION is tokenized as TokenType.SESSION (keyword), not VAR.
+        # Add it to FUNC_TOKENS so _parse_function_call treats it as a function.
+        FUNC_TOKENS = {*Parser.FUNC_TOKENS, TokenType.SESSION}
+
         FUNCTIONS = {
             **Parser.FUNCTIONS,
             # Map Flink window functions to Anonymous (sqlglot doesn't have these)
@@ -98,7 +116,9 @@ class FlinkDialect(Dialect):
             "SESSION_START": lambda args: exp.Anonymous(this="SESSION_START", expressions=args),
             "SESSION_END": lambda args: exp.Anonymous(this="SESSION_END", expressions=args),
             "SESSION_ROWTIME": lambda args: exp.Anonymous(this="SESSION_ROWTIME", expressions=args),
-            "SESSION_PROCTIME": lambda args: exp.Anonymous(this="SESSION_PROCTIME", expressions=args),
+            "SESSION_PROCTIME": lambda args: exp.Anonymous(
+                this="SESSION_PROCTIME", expressions=args
+            ),
             # Processing time
             "PROCTIME": lambda args: exp.Anonymous(this="PROCTIME", expressions=args),
             # Flink built-in functions
@@ -124,9 +144,15 @@ class FlinkDialect(Dialect):
             "JSON_UNQUOTE": lambda args: exp.Anonymous(this="JSON_UNQUOTE", expressions=args),
             "IS_JSON": lambda args: exp.Anonymous(this="IS_JSON", expressions=args),
             # Datetime functions (Confluent Flink compatible)
-            "TO_TIMESTAMP_LTZ": lambda args: exp.Anonymous(this="TO_TIMESTAMP_LTZ", expressions=args),
-            "CURRENT_WATERMARK": lambda args: exp.Anonymous(this="CURRENT_WATERMARK", expressions=args),
-            "SOURCE_WATERMARK": lambda args: exp.Anonymous(this="SOURCE_WATERMARK", expressions=args),
+            "TO_TIMESTAMP_LTZ": lambda args: exp.Anonymous(
+                this="TO_TIMESTAMP_LTZ", expressions=args
+            ),
+            "CURRENT_WATERMARK": lambda args: exp.Anonymous(
+                this="CURRENT_WATERMARK", expressions=args
+            ),
+            "SOURCE_WATERMARK": lambda args: exp.Anonymous(
+                this="SOURCE_WATERMARK", expressions=args
+            ),
             "TIMESTAMPADD": lambda args: exp.Anonymous(this="TIMESTAMPADD", expressions=args),
             "TIMESTAMPDIFF": lambda args: exp.Anonymous(this="TIMESTAMPDIFF", expressions=args),
             "CONVERT_TZ": lambda args: exp.Anonymous(this="CONVERT_TZ", expressions=args),
@@ -386,8 +412,8 @@ def is_flink_window_function(func_name: str) -> bool:
     """
     upper_name = func_name.upper()
     return (
-        upper_name.startswith("TUMBLE") or
-        upper_name.startswith("HOP") or
-        upper_name.startswith("SESSION") or
-        upper_name in ("PROCTIME", "ROWTIME", "CUMULATE")
+        upper_name.startswith("TUMBLE")
+        or upper_name.startswith("HOP")
+        or upper_name.startswith("SESSION")
+        or upper_name in ("PROCTIME", "ROWTIME", "CUMULATE")
     )

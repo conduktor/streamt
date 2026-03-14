@@ -894,9 +894,7 @@ The following commands and options are planned:
 | Command/Option | Description | Status |
 |----------------|-------------|--------|
 | `streamt status --health` | Health checks with thresholds | Planned |
-| `streamt rollback` | Rollback to previous deployment | Planned |
 | `streamt diff` | Show diff between local and deployed | Planned |
-| `streamt init` | Initialize new project from template | Planned |
 | `streamt build` | Generate deployable artifacts | Planned |
 
 See the [roadmap](https://github.com/conduktor/streamt#roadmap) for the full list of planned features.

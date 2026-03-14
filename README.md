@@ -6,7 +6,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)]()
-[![Tests](https://img.shields.io/badge/tests-807%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-1126%20passed-brightgreen.svg)]()
 [![CI](https://github.com/conduktor/streamt/actions/workflows/ci.yml/badge.svg)](https://github.com/conduktor/streamt/actions)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
@@ -94,9 +94,9 @@ Most models only need `name` and `sql`. Framework details go in the optional `ad
 # Advanced: tune performance when needed
 - name: hourly_stats
   sql: |
-    SELECT TUMBLE_START(ts, INTERVAL '1' HOUR), COUNT(*)
-    FROM {{ ref("valid_orders") }}
-    GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
+    SELECT window_start, window_end, COUNT(*)
+    FROM TABLE(TUMBLE(TABLE {{ ref("valid_orders") }}, DESCRIPTOR(ts), INTERVAL '1' HOUR))
+    GROUP BY window_start, window_end
 
   advanced:
     flink:
@@ -307,13 +307,14 @@ sources:
 - name: hourly_revenue
   sql: |
     SELECT
-      TUMBLE_START(ts, INTERVAL '1' HOUR) as hour,
+      window_start,
+      window_end,
       SUM(amount) as revenue
-    FROM {{ ref("orders_clean") }}
-    GROUP BY TUMBLE(ts, INTERVAL '1' HOUR)
+    FROM TABLE(TUMBLE(TABLE {{ ref("orders_clean") }}, DESCRIPTOR(ts), INTERVAL '1' HOUR))
+    GROUP BY window_start, window_end
 ```
 
-The `TUMBLE` window automatically triggers Flink materialization.
+Window TVF syntax (`TABLE(TUMBLE(...))`) is the recommended Flink SQL pattern. Legacy `GROUP BY TUMBLE(ts, ...)` is also supported.
 
 ### ML Inference (Confluent Flink)
 
@@ -399,8 +400,7 @@ tests:
 
 ### What's Missing for Production
 
-- **SQL injection mitigation** — Add input validation for identifiers in SQL generation
-- **Planner module tests** — Add test coverage for deployment logic
+- **Flink savepoint handling** — Graceful upgrades without data loss
 - **HTTP response validation** — Add checks before `.json()` calls
 - **Input validation** — Pydantic validators for URLs, topic names, bootstrap servers
 
@@ -413,7 +413,7 @@ tests:
 - [x] Multi-environment support — dev/staging/prod profiles with protected environments
 - [ ] Advanced test assertions — `unique_key`, `foreign_key`, `distribution`, `max_lag`, `throughput` (require windowing/aggregation)
 - [ ] Test failure handlers — `on_failure` actions (alert to Slack/PagerDuty, pause model, route to DLQ, block deployment)
-- [ ] DLQ support — Dead Letter Queue for failed messages
+- [x] DLQ support — Dead Letter Queue for failed messages (auto-created by compiler)
 - [ ] Flink savepoint handling — Graceful upgrades without data loss
 - [ ] Global credentials/connections — Define Snowflake, S3, etc. once and reference everywhere
 
@@ -424,10 +424,10 @@ tests:
 - [ ] Kubernetes Flink operator support — Native K8s deployment
 - [ ] CI/CD GitHub Actions templates — Automation for deploy pipelines
 - [ ] Curated connector library — Tested configs for Postgres, Snowflake, S3
-- [ ] CLI: `streamt init` — Initialize new project from template
-- [ ] CLI: `streamt init --discover` — Bootstrap config from existing Kafka/SR infrastructure ([spec](docs/specs/init-command.md))
+- [x] CLI: `streamt init` — Initialize new project from template
+- [x] CLI: `streamt init --discover` — Bootstrap config from existing Kafka/SR infrastructure ([spec](docs/specs/init-command.md))
 - [ ] CLI: `streamt diff` — Show diff between local and deployed state
-- [ ] CLI: `streamt rollback` — Rollback to previous deployment
+- [x] CLI: `streamt rollback` — Rollback to previous deployment
 
 ### Vision
 
