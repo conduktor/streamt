@@ -524,13 +524,22 @@ class ProjectValidator:
                 logger.debug("Type check failed for model '%s'", model.name, exc_info=True)
                 continue
             for issue in issues:
-                hint = f" Did you mean '{issue.suggestion}'?" if issue.suggestion else ""
-                self.result.add_warning(
-                    "COLUMN_TYPE_CHECK",
-                    f"Column '{issue.column}' not found in {issue.source_or_model} "
-                    f"(referenced in model '{issue.model}').{hint}",
-                    f"model '{issue.model}'",
-                )
+                if issue.issue == "type_incompatible":
+                    self.result.add_warning(
+                        "COLUMN_TYPE_MISMATCH",
+                        f"Column '{issue.column}' in model '{issue.model}': "
+                        f"declared '{issue.expected_type}' but SQL infers "
+                        f"'{issue.actual_type}'",
+                        f"model '{issue.model}'",
+                    )
+                else:
+                    hint = f" Did you mean '{issue.suggestion}'?" if issue.suggestion else ""
+                    self.result.add_warning(
+                        "COLUMN_TYPE_CHECK",
+                        f"Column '{issue.column}' not found in {issue.source_or_model} "
+                        f"(referenced in model '{issue.model}').{hint}",
+                        f"model '{issue.model}'",
+                    )
 
     def _validate_model_contracts(self) -> None:
         """Validate model data contracts: column presence and type compatibility."""
@@ -633,36 +642,31 @@ class ProjectValidator:
         rules = self.project.rules
         if not rules:
             return
-
-        # Topic rules
         if rules.topics:
             for model in self.project.models:
-                if model.get_materialized() in [
-                    MaterializedType.TOPIC,
-                    MaterializedType.FLINK,
-                ]:
+                if model.get_materialized() in [MaterializedType.TOPIC, MaterializedType.FLINK]:
                     self._validate_topic_rules(model, rules.topics)
-
-        # Model rules
+            if rules.topics.naming_pattern:
+                for source in self.project.sources:
+                    if not re.match(rules.topics.naming_pattern, source.topic):
+                        self.result.add_error(
+                            "NAMING_VIOLATION",
+                            f"Source topic '{source.topic}' does not match naming pattern "
+                            f"'{rules.topics.naming_pattern}'",
+                            f"source '{source.name}'",
+                        )
         if rules.models:
             for model in self.project.models:
                 self._validate_model_rules(model, rules.models)
-
-        # Source rules
         if rules.sources:
             for source in self.project.sources:
                 self._validate_source_rules(source, rules.sources)
-
-        # Security rules
         if rules.security:
             self._validate_security_rules(rules.security)
 
     def _validate_topic_rules(self, model: Model, rules: TopicRules) -> None:
         """Validate topic rules for a model."""
-
         topic_config = model.get_topic_config()
-
-        # Check min partitions
         if rules.min_partitions is not None:
             partitions = topic_config.partitions if topic_config else None
             if partitions is not None and partitions < rules.min_partitions:
@@ -671,8 +675,6 @@ class ProjectValidator:
                     f"Model '{model.name}' violates rule 'topics.min_partitions': "
                     f"expected >= {rules.min_partitions}, got {partitions}",
                 )
-
-        # Check max partitions
         if rules.max_partitions is not None:
             partitions = topic_config.partitions if topic_config else None
             if partitions is not None and partitions > rules.max_partitions:
@@ -681,8 +683,6 @@ class ProjectValidator:
                     f"Model '{model.name}' violates rule 'topics.max_partitions': "
                     f"expected <= {rules.max_partitions}, got {partitions}",
                 )
-
-        # Check min replication factor
         if rules.min_replication_factor is not None:
             rf = topic_config.replication_factor if topic_config else None
             if rf is not None and rf < rules.min_replication_factor:
@@ -691,8 +691,6 @@ class ProjectValidator:
                     f"Model '{model.name}' violates rule 'topics.min_replication_factor': "
                     f"expected >= {rules.min_replication_factor}, got {rf}",
                 )
-
-        # Check max retention
         if rules.max_retention_ms is not None and topic_config:
             retention = topic_config.config.get("retention.ms") if topic_config.config else None
             if retention is not None:
@@ -707,7 +705,6 @@ class ProjectValidator:
                 except (ValueError, TypeError):
                     pass
 
-        # Check naming pattern
         if rules.naming_pattern:
             topic_name = topic_config.name if topic_config and topic_config.name else model.name
             if not re.match(rules.naming_pattern, topic_name):
@@ -715,8 +712,6 @@ class ProjectValidator:
                     "RULE_NAMING_PATTERN",
                     f"Topic name '{topic_name}' does not match pattern '{rules.naming_pattern}'",
                 )
-
-        # Check forbidden prefixes
         if rules.forbidden_prefixes:
             topic_name = topic_config.name if topic_config and topic_config.name else model.name
             for prefix in rules.forbidden_prefixes:

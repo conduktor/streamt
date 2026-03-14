@@ -91,6 +91,42 @@ class _MinimalTypeInference(TypeInferenceMixin):
         return sources, refs
 
 
+_TYPE_GROUPS: dict[str, str] = {
+    "STRING": "string",
+    "VARCHAR": "string",
+    "TEXT": "string",
+    "CHAR": "string",
+    "INT": "int",
+    "INTEGER": "int",
+    "SMALLINT": "int",
+    "TINYINT": "int",
+    "BIGINT": "bigint",
+    "LONG": "bigint",
+    "DOUBLE": "float",
+    "FLOAT": "float",
+    "DECIMAL": "float",
+    "NUMERIC": "float",
+    "BOOLEAN": "boolean",
+    "BOOL": "boolean",
+    "TIMESTAMP": "timestamp",
+    "DATETIME": "timestamp",
+    "DATE": "date",
+    "TIME": "time",
+    "BYTES": "bytes",
+}
+
+
+def _normalize_type(t: str) -> str:
+    """Normalize a Flink SQL type to its base group for comparison."""
+    base = re.split(r"[\s(]", t.upper().strip())[0]
+    return _TYPE_GROUPS.get(base, base.lower())
+
+
+def _types_compatible(declared: str, inferred: str) -> bool:
+    """Check if declared and inferred types are compatible."""
+    return _normalize_type(declared) == _normalize_type(inferred)
+
+
 def _suggest_similar(name: str, available: list[str]) -> Optional[str]:
     """Suggest a similar column name if a close match exists."""
     matches = difflib.get_close_matches(name, available, n=1, cutoff=0.6)
@@ -114,6 +150,42 @@ class ColumnTypeChecker:
         results: list[TypeCheckResult] = []
         results.extend(self._check_missing_source_columns(model))
         results.extend(self._check_missing_ref_columns(model))
+        results.extend(self._check_contract_type_inference(model))
+        return results
+
+    def _check_contract_type_inference(self, model: Model) -> list[TypeCheckResult]:
+        """Check contract column types against SQL-inferred types."""
+        results: list[TypeCheckResult] = []
+        if not model.contract or not model.contract.columns or not model.sql:
+            return results
+        try:
+            schema = self._inference._build_source_schema(model)
+            inferred = self._inference._extract_select_columns_with_types(
+                model.sql,
+                schema_context=schema,
+                model=model,
+            )
+        except Exception:
+            return results
+
+        inferred_map = dict(inferred)
+        for col_spec in model.contract.columns:
+            if not col_spec.type:
+                continue
+            inferred_type = inferred_map.get(col_spec.name)
+            if not inferred_type:
+                continue
+            if not _types_compatible(col_spec.type, inferred_type):
+                results.append(
+                    TypeCheckResult(
+                        column=col_spec.name,
+                        issue="type_incompatible",
+                        model=model.name,
+                        source_or_model=f"contract for '{model.name}'",
+                        expected_type=col_spec.type,
+                        actual_type=inferred_type,
+                    )
+                )
         return results
 
     def _check_missing_source_columns(self, model: Model) -> list[TypeCheckResult]:

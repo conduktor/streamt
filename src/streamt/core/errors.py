@@ -78,6 +78,32 @@ class ErrorCode:
     UNUSED_SOURCE = "W202_UNUSED_SOURCE"
     SOURCE_NO_COLUMNS = "W203_SOURCE_NO_COLUMNS"
 
+    # Naming convention (E6xx)
+    NAMING_VIOLATION = "E601_NAMING_VIOLATION"
+
+    # Column type mismatch (W3xx)
+    COLUMN_TYPE_MISMATCH = "W301_COLUMN_TYPE_MISMATCH"
+
+
+# Map error code prefix to CLI exit code
+EXIT_CODE_MAP: dict[str, int] = {
+    "E1": 2,  # Validation errors
+    "E2": 3,  # Configuration errors
+    "E3": 3,  # State/TTL errors
+    "E4": 4,  # Deployment errors
+    "E5": 5,  # Parse errors
+    "E6": 2,  # Naming errors (validation)
+    "W": 0,  # Warnings never cause non-zero exit alone
+}
+
+
+def exit_code_for(error_code: str) -> int:
+    """Return the CLI exit code for a given error code."""
+    for prefix, code in EXIT_CODE_MAP.items():
+        if error_code.startswith(prefix):
+            return code
+    return 1
+
 
 def format_error(
     title: str,
