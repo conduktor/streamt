@@ -407,7 +407,12 @@ class FlinkDeployer:
                         except ValueError:
                             result_data = {}
                         error_list = result_data.get("errors", [])
-                        error_msg = " ".join(error_list) if error_list else "Unknown error"
+                        if error_list:
+                            error_msg = " ".join(error_list)
+                        elif not result_resp.ok:
+                            error_msg = f"HTTP {result_resp.status_code} fetching error details"
+                        else:
+                            error_msg = "Unknown error"
                     except Exception as e:
                         error_msg = f"Unknown error (failed to fetch details: {e})"
                 raise RuntimeError(errors.flink_sql_error(error_msg, statement[:200]))
