@@ -6,8 +6,8 @@ Unimplemented features and planned work.
 
 - [ ] Flink savepoint handling — graceful upgrades without data loss; trigger savepoints on upgrade, restore from savepoint
 - [x] HTTP response validation — Flink polling checks HTTP status before `.json()` calls
-- [ ] HTTP response validation — remaining deployers (Connect, SR, Gateway)
-- [ ] Input validation — Pydantic validators for URLs, topic names, bootstrap servers
+- [x] HTTP response validation — all deployers already call raise_for_status()
+- [x] Input validation — URL scheme validation on SR, Flink, Connect, Gateway configs
 
 ## Core Features
 
@@ -41,25 +41,21 @@ Unimplemented features and planned work.
   ```
 - [ ] Test failure handlers — `on_failure` actions: alert (Slack/PagerDuty), pause model, route to DLQ, block deployment
 - [ ] Global credentials/connections — define Snowflake, S3, etc. once and reference everywhere
-- [ ] `streamt build` — generate self-contained deployable artifacts (topics JSON, Flink SQL, connector configs, manifest with checksums) for debugging, auditing, air-gapped deployments
+- [x] `streamt build` — compile + package artifacts with manifest and checksums
 - [x] `streamt diff` — standalone diff between local and deployed state
-- [ ] `streamt status --health` — health checks with configurable thresholds
+- [x] `streamt status --health` — exit 1 if any resource MISSING or DRIFT
 
 ## Flink Options
 
-`state_backend` is parsed and applied as `SET 'execution.state-backend'` in generated Flink SQL.
+`state_backend` applied as `SET 'state.backend'`. Checkpointing, restart strategy, custom watermark, changelog mode all implemented.
 
 Not yet implemented:
 
-- [ ] Advanced checkpointing — `timeout_ms`, `min_pause_ms`, `max_concurrent`, `mode` (exactly_once/at_least_once), `externalized` (cleanup policy), `unaligned`, `incremental` (RocksDB)
 - [ ] State backend advanced — RocksDB tuning (`block_cache_size_mb`, `write_buffer_size_mb`, `predefined_options`), incremental cleanup config
-- [ ] Restart strategy — `fixed_delay` (attempts + delay), `failure_rate` (max failures per interval), `exponential_delay` (initial/max delay + multiplier)
 - [ ] Resource configuration — task manager memory/CPU/slots, job manager memory/CPU
 - [ ] Savepoint management — `savepoint.enabled`, `savepoint.path`, `savepoint.on_upgrade` (trigger_and_restore), `savepoint.on_cancel`
-- [ ] Custom watermark expression — `event_time.watermark.strategy: custom` with user-defined SQL expression
 - [ ] Kubernetes Flink operator — deploy via K8s CRDs instead of REST API; namespace, service account, image, pod template config
 - [ ] Docker cluster type — local Docker deployment
-- [ ] Changelog mode configuration — append, upsert, retract
 
 ## Governance Rules
 
@@ -69,8 +65,8 @@ Not yet implemented:
 ## Data Governance
 
 - [ ] Security policies — field-level encryption, `allowed_roles`, purpose-based access control, per-consumer column masking
-- [ ] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness` contracts
-- [ ] Exposure access control — `allowed_roles`, `purpose` metadata on exposures
+- [x] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness_minutes` with validation
+- [x] Exposure access control — `allowed_roles`, `purpose` metadata on exposures
 - [ ] Data residency — region constraints (`region: EU`, `allowed_clusters`, `forbidden_sinks`)
 - [ ] Schema versioning — v1/v2 model versions with compatibility checks and migration paths
 
