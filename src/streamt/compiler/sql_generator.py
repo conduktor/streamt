@@ -253,6 +253,11 @@ WHERE {condition}""")
                     ttl_str = f"{ttl_ms} ms"
                 statements.append(f"SET 'table.exec.state.ttl' = '{ttl_str}';")
 
+            if model.get_flink_config().state_backend:
+                statements.append(
+                    f"SET 'state.backend' = '{model.get_flink_config().state_backend}';"
+                )
+
             if model.get_flink_config().checkpoint_interval_ms:
                 interval_ms = model.get_flink_config().checkpoint_interval_ms
                 statements.append(f"SET 'execution.checkpointing.interval' = '{interval_ms}ms';")
