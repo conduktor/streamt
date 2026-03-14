@@ -64,7 +64,7 @@ def _invoke(*args: str, project_dir: str | None = None):
 
     from streamt.cli import main
 
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     cmd = list(args)
     if project_dir:
         cmd += ["-p", project_dir]
