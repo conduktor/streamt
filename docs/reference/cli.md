@@ -887,18 +887,6 @@ fi
 
 ---
 
-## Coming Soon
-
-The following commands and options are planned:
-
-| Command/Option | Description | Status |
-|----------------|-------------|--------|
-| `streamt status --health` | Health checks with thresholds | Planned |
-| `streamt diff` | Show diff between local and deployed | Planned |
-| `streamt build` | Generate deployable artifacts | Planned |
-
-See [TODO.md](https://github.com/conduktor/streamt/blob/main/TODO.md) for the full list of planned features.
-
 ## See Also
 
 - [Multi-Environment Support](../guides/multi-environment.md) — Complete guide for managing dev/staging/prod environments

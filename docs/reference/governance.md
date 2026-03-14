@@ -41,7 +41,6 @@ rules:
 
     # Replication requirements
     min_replication_factor: 2
-    # max_replication_factor: 5  # Planned - not yet implemented
 
     # Naming conventions
     naming_pattern: "^[a-z]+\\.[a-z-]+\\.v[0-9]+$"
@@ -50,9 +49,6 @@ rules:
       - "test"
       - "tmp"
       - "dev"
-    # forbidden_suffixes:       # Planned - not yet implemented
-    #   - "-test"
-    #   - "-tmp"
 
     # Required configurations
     required_config:
@@ -67,10 +63,8 @@ rules:
 | `min_partitions` | int | Minimum partition count | ✅ |
 | `max_partitions` | int | Maximum partition count | ✅ |
 | `min_replication_factor` | int | Minimum replication factor | ✅ |
-| `max_replication_factor` | int | Maximum replication factor | 🚧 Planned |
 | `naming_pattern` | regex | Required topic name pattern | ✅ |
 | `forbidden_prefixes` | list | Disallowed name prefixes | ✅ |
-| `forbidden_suffixes` | list | Disallowed name suffixes | 🚧 Planned |
 | `required_config` | list | Configs that must be set | ✅ |
 
 ### Naming Pattern Examples

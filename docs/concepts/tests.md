@@ -101,8 +101,8 @@ streamt test --deploy
 ## Assertions Reference
 
 **Status Legend:**
-- ✅ **Implemented** — Available in continuous tests
-- 🚧 **Planned** — Documented but not yet implemented
+- ✅ **Implemented** — Available now
+- 🚧 **Planned** — See [TODO.md](https://github.com/conduktor/streamt/blob/main/TODO.md)
 
 ### not_null ✅
 
@@ -148,7 +148,7 @@ Check numeric values are within bounds:
     max: 1000000
 ```
 
-### unique_key 🚧
+### unique_key ✅
 
 Validate uniqueness of a key:
 

@@ -697,23 +697,6 @@ Nested under `advanced.flink:`:
 | `state_backend` | string | `hashmap` or `rocksdb` | Parsed only |
 | `state_ttl_ms` | int | State time-to-live in milliseconds | Supported |
 
-**Planned for Future:**
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    parallelism: 4
-    checkpoint_interval_ms: 60000
-    state_backend: rocksdb
-    state_ttl_ms: 86400000
-
-    # Advanced checkpointing (planned)
-    checkpoint_timeout_ms: 600000
-    checkpoint_min_pause_ms: 500
-    max_concurrent_checkpoints: 1
-```
-
 See [Flink Options Reference](flink-options.md) for complete Flink configuration.
 
 ### Security Policies

@@ -5,7 +5,7 @@ description: Complete reference for Flink configuration in streamt
 
 # Flink Options Reference
 
-This page documents all Flink-related configuration options in streamt, including what's currently supported and what's planned for future releases.
+This page documents all Flink-related configuration options in streamt.
 
 ## Current Status
 
@@ -16,8 +16,6 @@ This page documents all Flink-related configuration options in streamt, includin
 | Checkpointing | Partial | Interval only, no advanced options |
 | State backend | Partial | Type selection only |
 | MATCH_RECOGNIZE (CEP) | Supported | Complex event processing patterns |
-| Savepoints | Planned | Not yet implemented |
-| Kubernetes operator | Planned | Currently REST API only |
 
 ---
 
@@ -104,152 +102,11 @@ models:
 - **TTL too long**: State grows too large → memory pressure, longer recovery times
 - **No TTL**: State grows forever → eventual job failure
 
-### Parsed But Not Yet Applied
+### state_backend (Parsed Only)
 
-These options are parsed from YAML but not yet used when deploying jobs:
-
-| Option | Location | Type | Description | Status |
-|--------|----------|------|-------------|--------|
-| `state_backend` | `advanced.flink` | string | State backend type (`hashmap`, `rocksdb`) | Parsed only |
-
-!!! warning "state_backend not applied"
-    The `state_backend` option is currently parsed but **not applied** to Flink jobs. The state backend is determined by your Flink cluster configuration. Support for setting this via streamt is planned.
+The `state_backend` option is parsed from YAML but not yet applied to Flink jobs. The state backend is currently determined by your Flink cluster configuration.
 
 ---
-
-## Planned Options (Not Yet Implemented)
-
-The following options are planned for future releases:
-
-### Checkpointing (Advanced)
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    checkpoint:
-      interval_ms: 60000
-      timeout_ms: 600000
-      min_pause_ms: 500
-      max_concurrent: 1
-      mode: exactly_once          # exactly_once, at_least_once
-      externalized:
-        enabled: true
-        cleanup: retain_on_cancellation
-      unaligned:
-        enabled: false
-      incremental: true           # For RocksDB
-```
-
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `checkpoint.interval_ms` | int | Checkpoint interval | Supported |
-| `checkpoint.timeout_ms` | int | Checkpoint timeout | Planned |
-| `checkpoint.min_pause_ms` | int | Min pause between checkpoints | Planned |
-| `checkpoint.max_concurrent` | int | Max concurrent checkpoints | Planned |
-| `checkpoint.mode` | string | `exactly_once` or `at_least_once` | Planned |
-| `checkpoint.externalized.enabled` | bool | Enable externalized checkpoints | Planned |
-| `checkpoint.externalized.cleanup` | string | Cleanup policy on cancellation | Planned |
-| `checkpoint.unaligned.enabled` | bool | Enable unaligned checkpoints | Planned |
-| `checkpoint.incremental` | bool | Incremental checkpoints (RocksDB) | Planned |
-
-### State Backend (Advanced)
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    state:
-      backend: rocksdb
-      rocksdb:
-        block_cache_size_mb: 256
-        write_buffer_size_mb: 64
-        max_write_buffer_number: 4
-        predefined_options: SPINNING_DISK_OPTIMIZED_HIGH_MEM
-      ttl_ms: 86400000              # State TTL
-      incremental_cleanup:
-        enabled: true
-        records_per_cleanup: 1000
-```
-
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `state.backend` | string | State backend type | Supported |
-| `state.ttl_ms` | int | State TTL in milliseconds | Planned |
-| `state.rocksdb.*` | various | RocksDB tuning options | Planned |
-| `state.incremental_cleanup.*` | various | Incremental cleanup config | Planned |
-
-### Restart Strategy
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    restart:
-      strategy: fixed_delay        # fixed_delay, failure_rate, exponential_delay, none
-      fixed_delay:
-        attempts: 3
-        delay_ms: 10000
-      failure_rate:
-        max_failures_per_interval: 3
-        failure_interval_ms: 60000
-        delay_ms: 10000
-      exponential_delay:
-        initial_delay_ms: 1000
-        max_delay_ms: 60000
-        multiplier: 2.0
-```
-
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `restart.strategy` | string | Restart strategy type | Planned |
-| `restart.fixed_delay.*` | various | Fixed delay restart config | Planned |
-| `restart.failure_rate.*` | various | Failure rate restart config | Planned |
-| `restart.exponential_delay.*` | various | Exponential backoff config | Planned |
-
-### Resource Configuration
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    resources:
-      task_manager:
-        memory_mb: 4096
-        cpu_cores: 2
-        slots: 4
-      job_manager:
-        memory_mb: 2048
-        cpu_cores: 1
-```
-
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `resources.task_manager.memory_mb` | int | TM memory | Planned |
-| `resources.task_manager.cpu_cores` | float | TM CPU cores | Planned |
-| `resources.task_manager.slots` | int | TM task slots | Planned |
-| `resources.job_manager.memory_mb` | int | JM memory | Planned |
-| `resources.job_manager.cpu_cores` | float | JM CPU cores | Planned |
-
-### Savepoint Management
-
-```yaml
-# PLANNED - Not yet supported
-advanced:
-  flink:
-    savepoint:
-      enabled: true
-      path: s3://my-bucket/savepoints
-      on_upgrade: trigger_and_restore
-      on_cancel: trigger
-```
-
-| Option | Type | Description | Status |
-|--------|------|-------------|--------|
-| `savepoint.enabled` | bool | Enable savepoint management | Planned |
-| `savepoint.path` | string | Savepoint storage path | Planned |
-| `savepoint.on_upgrade` | string | Behavior on job upgrade | Planned |
-| `savepoint.on_cancel` | string | Behavior on job cancel | Planned |
 
 ### Watermark Strategy
 
@@ -272,18 +129,13 @@ sources:
         # OR
         watermark:
           strategy: monotonous
-        # OR (planned)
-        watermark:
-          strategy: custom
-          expression: "event_timestamp - INTERVAL '5' SECOND"
 ```
 
-| Option | Location | Type | Description | Status |
-|--------|----------|------|-------------|--------|
-| `event_time.column` | Top-level | string | Event time column | Supported |
-| `event_time.watermark.strategy` | Advanced | string | Watermark strategy | Supported |
-| `event_time.watermark.max_out_of_orderness_ms` | Advanced | int | Allowed lateness | Supported |
-| `event_time.watermark.expression` | Advanced | string | Custom watermark SQL | Planned |
+| Option | Location | Type | Description |
+|--------|----------|------|-------------|
+| `event_time.column` | Top-level | string | Event time column |
+| `event_time.watermark.strategy` | Advanced | string | `bounded_out_of_orderness` or `monotonous` |
+| `event_time.watermark.max_out_of_orderness_ms` | Advanced | int | Max out-of-orderness for bounded strategy |
 
 ---
 
@@ -314,8 +166,6 @@ runtime:
 |------|-------------|--------|
 | `rest` | Connect via REST API | Supported |
 | `confluent` | Confluent Cloud for Flink | Supported |
-| `docker` | Local Docker deployment | Planned |
-| `kubernetes` | Kubernetes Flink Operator | Planned |
 
 ### REST Cluster Configuration
 
@@ -338,28 +188,6 @@ clusters:
 | `version` | string | No | Flink version |
 | `environment` | string | No | Environment identifier |
 | `api_key` | string | No | API key for authentication |
-
-### Kubernetes Cluster Configuration (Planned)
-
-```yaml
-# PLANNED - Not yet supported
-clusters:
-  k8s-cluster:
-    type: kubernetes
-    namespace: flink-jobs
-    service_account: flink-sa
-    image: flink:1.18
-    image_pull_policy: IfNotPresent
-    image_pull_secrets:
-      - flink-registry-secret
-    pod_template:
-      spec:
-        tolerations:
-          - key: "streaming"
-            operator: "Equal"
-            value: "true"
-            effect: "NoSchedule"
-```
 
 ---
 
@@ -624,10 +452,10 @@ GROUP BY window_start, window_end;
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | Job fails to start | SQL Gateway not running | Ensure `sql_gateway_url` is correct |
-| State grows unbounded | No TTL configured | Add state TTL (coming soon) |
-| Late data dropped | Watermark too aggressive | Increase `max_out_of_orderness` (coming soon) |
+| State grows unbounded | No TTL configured | Add `state_ttl_ms` in advanced.flink |
+| Late data dropped | Watermark too aggressive | Increase `max_out_of_orderness_ms` |
 | OOM errors | State too large for heap | Use `rocksdb` state backend |
-| Checkpoint failures | Timeout too short | Increase checkpoint timeout (coming soon) |
+| Checkpoint failures | Timeout too short | Tune checkpoint interval |
 
 ### Debugging Tips
 
@@ -652,33 +480,3 @@ GROUP BY window_start, window_end;
 - **Flink 1.17+**: SQL Gateway is required for SQL submission
 - **Flink 1.18+**: Recommended for best SQL features
 - **Flink 1.19+**: Full support, recommended for production
-
----
-
-## Roadmap
-
-### Completed
-
-- [x] **Event time configuration** — `event_time.column`, `event_time.watermark` in source/model YAML
-- [x] **`streamt status` command** — Show running jobs with health, lag, checkpoint status
-- [x] **State TTL configuration** — `state_ttl_ms` to prevent unbounded state growth
-- [x] **Watermark strategies** — bounded out-of-orderness, monotonous
-- [x] **Confluent Cloud for Flink** — `type: confluent` cluster with ML_PREDICT/ML_EVALUATE support
-
-### Soon
-
-- [ ] **Advanced checkpoint options** — timeout, min pause, externalized checkpoints
-- [ ] **Custom watermark expressions** — User-defined watermark SQL
-
-### Later
-
-- [ ] **Savepoint management** — Trigger savepoints on upgrade, restore from savepoint
-- [ ] **Kubernetes Flink Operator integration** — Deploy via K8s CRDs instead of REST API
-- [ ] **Prometheus/OpenTelemetry metrics** — Export job metrics for observability
-- [ ] **Resource configuration** — Memory, CPU, task slots per job
-
-### Deferred
-
-- [ ] Changelog mode configuration (append, upsert, retract)
-
-See [GitHub Issues](https://github.com/conduktor/streamt/issues) for the latest roadmap updates.

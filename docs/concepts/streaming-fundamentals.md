@@ -69,7 +69,7 @@ Using event time:
 
 **Rule of thumb**: Always use event time for business logic. Processing time is only useful for monitoring the system itself.
 
-### In streamt (Coming Soon)
+### In streamt
 
 ```yaml
 sources:

@@ -1,46 +1,44 @@
 # TODO
 
-Unimplemented features, planned work, and known gaps.
+Unimplemented features and planned work.
 
 ## Production Readiness
 
-- [ ] Flink savepoint handling — graceful upgrades without data loss
+- [ ] Flink savepoint handling — graceful upgrades without data loss; trigger savepoints on upgrade, restore from savepoint
 - [ ] HTTP response validation — check status before `.json()` calls in deployers
 - [ ] Input validation — Pydantic validators for URLs, topic names, bootstrap servers
 
 ## Core Features
 
-- [ ] Advanced test assertions — `unique_key`, `foreign_key`, `distribution`, `max_lag`, `throughput` (require windowing/aggregation). Documented in `docs/concepts/tests.md`
+- [ ] Test assertions: `foreign_key` (referential integrity across streams with time window + match rate), `max_lag` (event time lag monitoring), `throughput` (messages/sec bounds), `distribution` (value distribution across buckets with tolerance)
 - [ ] Test failure handlers — `on_failure` actions: alert (Slack/PagerDuty), pause model, route to DLQ, block deployment
 - [ ] Global credentials/connections — define Snowflake, S3, etc. once and reference everywhere
-- [ ] `streamt build` — generate deployable artifacts for debugging, auditing, air-gapped deployments
-- [ ] `streamt diff` — show diff between local and deployed state
-- [ ] `streamt status --health` — health checks with thresholds
+- [ ] `streamt build` — generate self-contained deployable artifacts (topics JSON, Flink SQL, connector configs, manifest with checksums) for debugging, auditing, air-gapped deployments
+- [ ] `streamt diff` — standalone diff between local and deployed state (currently available as `streamt show --diff`)
+- [ ] `streamt status --health` — health checks with configurable thresholds
 
-## Flink Options (Parsed But Not Applied)
+## Flink Options
 
-- [ ] `state_backend` — parsed from YAML but not applied to Flink jobs (`docs/reference/flink-options.md:113`)
+`state_backend` is parsed from YAML but not yet applied to Flink jobs (cluster config determines it).
 
-## Flink Options (Not Yet Implemented)
+Not yet implemented:
 
-Documented in `docs/reference/flink-options.md`:
-
-- [ ] Advanced checkpointing — `timeout_ms`, `min_pause_ms`, `max_concurrent`, `mode`, `externalized`, `unaligned`, `incremental`
-- [ ] State backend advanced — `state.ttl_ms`, `state.rocksdb.*`, `state.incremental_cleanup.*`
-- [ ] Restart strategy — `fixed_delay`, `failure_rate`, `exponential_delay`
+- [ ] Advanced checkpointing — `timeout_ms`, `min_pause_ms`, `max_concurrent`, `mode` (exactly_once/at_least_once), `externalized` (cleanup policy), `unaligned`, `incremental` (RocksDB)
+- [ ] State backend advanced — RocksDB tuning (`block_cache_size_mb`, `write_buffer_size_mb`, `predefined_options`), incremental cleanup config
+- [ ] Restart strategy — `fixed_delay` (attempts + delay), `failure_rate` (max failures per interval), `exponential_delay` (initial/max delay + multiplier)
 - [ ] Resource configuration — task manager memory/CPU/slots, job manager memory/CPU
-- [ ] Savepoint management — `savepoint.enabled`, `savepoint.path`, `savepoint.on_upgrade`, `savepoint.on_cancel`
-- [ ] Custom watermark expression — `event_time.watermark.expression`
-- [ ] Kubernetes Flink operator deployment
+- [ ] Savepoint management — `savepoint.enabled`, `savepoint.path`, `savepoint.on_upgrade` (trigger_and_restore), `savepoint.on_cancel`
+- [ ] Custom watermark expression — `event_time.watermark.strategy: custom` with user-defined SQL expression
+- [ ] Kubernetes Flink operator — deploy via K8s CRDs instead of REST API; namespace, service account, image, pod template config
+- [ ] Docker cluster type — local Docker deployment
+- [ ] Changelog mode configuration — append, upsert, retract
 
 ## Governance Rules
 
-Documented in `docs/reference/governance.md`:
+- [ ] `max_replication_factor` — maximum replication factor enforcement
+- [ ] `forbidden_suffixes` — disallowed topic name suffixes (complement to existing `forbidden_prefixes`)
 
-- [ ] `max_replication_factor` (line 44, commented out)
-- [ ] `forbidden_suffixes` (line 53, commented out)
-
-## Data Governance (Future)
+## Data Governance
 
 - [ ] Security policies — field-level encryption, `allowed_roles`, purpose-based access control, per-consumer column masking
 - [ ] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness` contracts
@@ -51,7 +49,6 @@ Documented in `docs/reference/governance.md`:
 ## Operational
 
 - [ ] Prometheus/OpenTelemetry integration — metrics and alerting
-- [ ] Kubernetes Flink operator support — native K8s deployment
 - [ ] CI/CD GitHub Actions templates — automation for deploy pipelines
 - [ ] Curated connector library — tested configs for Postgres, Snowflake, S3
 
@@ -70,9 +67,3 @@ Documented in `docs/reference/governance.md`:
 - [ ] VS Code extension
 - [ ] Additional streaming substrates (Pulsar, Kinesis)
 - [ ] Cloud/SaaS version
-
-## Known Gaps in Docs
-
-- [ ] `docs/concepts/streaming-fundamentals.md:72` — "Coming Soon" section for `event_time:` config in sources
-- [ ] `docs/reference/yaml-schema.md:700` — "PLANNED" block for advanced Flink options
-- [ ] `docs/reference/cli.md:890` — "Coming Soon" section referencing deleted roadmap link

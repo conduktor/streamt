@@ -337,7 +337,7 @@ Watermark > Window end → Window closes, results emitted!
 Late events (arriving after the watermark passed) are dropped by default:
 
 ```yaml
-# To accept late events, configure allowed_lateness (coming soon)
+# To accept late events, configure allowed_lateness
 event_time:
   column: order_timestamp
   watermark:
