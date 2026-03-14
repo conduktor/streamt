@@ -20,6 +20,7 @@ DOCS_BASE_URL = "https://streamt.dev/docs"
 # Error Codes — machine-readable identifiers for every error type
 # =============================================================================
 
+
 class ErrorCode:
     """Machine-readable error codes for structured output."""
 
@@ -64,10 +65,18 @@ class ErrorCode:
     RULE_MAX_RETENTION = "W104_RULE_MAX_RETENTION"
     RULE_INVALID_OWNER = "W105_RULE_INVALID_OWNER"
 
+    # Name/collision errors (E1xx continued)
+    NAME_COLLISION = "E111_NAME_COLLISION"
+
     # Parse errors (E5xx)
     PARSE_ERROR = "E501_PARSE_ERROR"
     ENV_VAR_ERROR = "E502_ENV_VAR_ERROR"
     ENVIRONMENT_ERROR = "E503_ENVIRONMENT_ERROR"
+
+    # SQL parse warnings (W2xx)
+    SQL_PARSE_WARNING = "W201_SQL_PARSE_WARNING"
+    UNUSED_SOURCE = "W202_UNUSED_SOURCE"
+    SOURCE_NO_COLUMNS = "W203_SOURCE_NO_COLUMNS"
 
 
 def format_error(
@@ -187,7 +196,7 @@ def source_not_found(
         suggestion=suggestion or "Define the source in your sources configuration.",
         example=f"""sources:
   - name: {source_name}
-    topic: {source_name.replace('_', '.')}.v1""",
+    topic: {source_name.replace("_", ".")}.v1""",
         docs_path="concepts/sources",
     )
 
@@ -334,7 +343,7 @@ def jinja_syntax_error(model_name: str, error: str, sql: Optional[str] = None) -
         title=f"Jinja syntax error in model '{model_name}'",
         explanation=explanation + line_info + sql_snippet,
         suggestion="Common issues:\n"
-        "  - Missing closing braces: {{ source(\"name\") }} not {{ source(\"name\")\n"
+        '  - Missing closing braces: {{ source("name") }} not {{ source("name")\n'
         "  - Wrong quotes: use {{ source(\"name\") }} not {{ source('name') }}\n"
         "  - Typo in function: use source() or ref(), not sources() or refs()",
         docs_path="concepts/models#sql-templates",
@@ -427,7 +436,8 @@ def exposure_model_not_found(
         title=f"Model '{model_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' references model '{model_name}', "
         f"but no model with that name is defined.",
-        suggestion=suggestion or "Define the model or check for typos in the exposure configuration.",
+        suggestion=suggestion
+        or "Define the model or check for typos in the exposure configuration.",
         docs_path="concepts/exposures",
     )
 
@@ -445,7 +455,8 @@ def exposure_source_not_found(
         title=f"Source '{source_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' produces source '{source_name}', "
         f"but no source with that name is defined.",
-        suggestion=suggestion or "Define the source or check for typos in the exposure configuration.",
+        suggestion=suggestion
+        or "Define the source or check for typos in the exposure configuration.",
         docs_path="concepts/exposures",
     )
 
@@ -464,7 +475,8 @@ def exposure_dependency_not_found(
         title=f"{dependency_type.capitalize()} '{dependency_name}' not found for exposure '{exposure_name}'",
         explanation=f"Exposure '{exposure_name}' depends on {dependency_type} '{dependency_name}', "
         f"but no {dependency_type} with that name is defined.",
-        suggestion=suggestion or f"Define the {dependency_type} or check for typos in the depends_on configuration.",
+        suggestion=suggestion
+        or f"Define the {dependency_type} or check for typos in the depends_on configuration.",
         docs_path="concepts/exposures",
     )
 

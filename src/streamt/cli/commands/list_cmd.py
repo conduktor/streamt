@@ -12,15 +12,24 @@ from streamt.core.errors import ErrorCode
 
 
 @click.command("list")
-@click.argument("resource_type", type=click.Choice(["sources", "models", "tests", "exposures"]))
+@click.argument(
+    "resource_type",
+    type=click.Choice(["sources", "models", "tests", "exposures"]),
+    required=False,
+    default=None,
+)
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
-@click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
+@click.option(
+    "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
+)
+@click.option("--select", "-s", help="Filter by tag (e.g., 'tag:payments')")
 @click.pass_context
 def list_resources(
     ctx: click.Context,
-    resource_type: str,
+    resource_type: Optional[str],
     project_dir: Optional[str],
     environment: Optional[str],
+    select: Optional[str] = None,
 ) -> None:
     """List project resources (sources, models, tests, exposures)."""
     from streamt.core.environment import EnvironmentError
@@ -31,26 +40,67 @@ def list_resources(
 
     try:
         parser = ProjectParser(
-            project_path, environment=environment,
+            project_path,
+            environment=environment,
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
+
+        # Parse tag filter
+        tag_filter: Optional[str] = None
+        if select and select.startswith("tag:"):
+            tag_filter = select[4:]
+        elif select:
+            fmt.print_warning(f"Unknown select syntax '{select}'. Expected: tag:<value>")
+
+        # UX-4: No resource_type → show summary
+        if resource_type is None:
+            summary = {
+                "sources": len(project.sources),
+                "models": len(project.models),
+                "tests": len(project.tests),
+                "exposures": len(project.exposures),
+            }
+            fmt.set_data({"summary": summary})
+            fmt.print_table(
+                "Project Summary",
+                [("Resource", "cyan"), ("Count", "green")],
+                [[k.capitalize(), str(v)] for k, v in summary.items()],
+            )
+            fmt.flush()
+            return
+
         items: list[dict[str, object]] = []
 
         if resource_type == "sources":
-            for s in project.sources:
-                items.append({
-                    "name": s.name, "topic": s.topic, "description": s.description,
-                    "has_schema": s.schema_ is not None, "columns": len(s.columns), "tags": s.tags,
-                })
+            sources = project.sources
+            if tag_filter:
+                sources = [s for s in sources if tag_filter in s.tags]
+            for s in sources:
+                items.append(
+                    {
+                        "name": s.name,
+                        "topic": s.topic,
+                        "description": s.description,
+                        "has_schema": s.schema_ is not None,
+                        "columns": len(s.columns),
+                        "tags": s.tags,
+                    }
+                )
             fmt.print_table(
                 "Sources",
                 [("Name", "cyan"), ("Topic", "green"), ("Columns", "yellow"), ("Schema", "dim")],
-                [[i["name"], i["topic"], str(i["columns"]), "yes" if i["has_schema"] else "-"] for i in items],
+                [
+                    [i["name"], i["topic"], str(i["columns"]), "yes" if i["has_schema"] else "-"]
+                    for i in items
+                ],
             )
 
         elif resource_type == "models":
-            for m in project.models:
+            models = project.models
+            if tag_filter:
+                models = [m for m in models if tag_filter in m.tags]
+            for m in models:
                 upstream: list[str] = []
                 if m.sql:
                     upstream += re.findall(r'{{\s*source\(\s*["\'](\w+)["\']\s*\)', m.sql)
@@ -61,11 +111,16 @@ def list_resources(
                             upstream.append(f.source)
                         if f.ref:
                             upstream.append(f.ref)
-                items.append({
-                    "name": m.name, "materialized": m.get_materialized().value,
-                    "description": m.description, "upstream": upstream,
-                    "tags": m.tags, "has_sql": m.sql is not None,
-                })
+                items.append(
+                    {
+                        "name": m.name,
+                        "materialized": m.get_materialized().value,
+                        "description": m.description,
+                        "upstream": upstream,
+                        "tags": m.tags,
+                        "has_sql": m.sql is not None,
+                    }
+                )
             fmt.print_table(
                 "Models",
                 [("Name", "cyan"), ("Materialized", "green"), ("Upstream", "yellow")],
@@ -74,10 +129,14 @@ def list_resources(
 
         elif resource_type == "tests":
             for t in project.tests:
-                items.append({
-                    "name": t.name, "model": t.model,
-                    "type": t.type.value, "assertions": len(t.assertions),
-                })
+                items.append(
+                    {
+                        "name": t.name,
+                        "model": t.model,
+                        "type": t.type.value,
+                        "assertions": len(t.assertions),
+                    }
+                )
             fmt.print_table(
                 "Tests",
                 [("Name", "cyan"), ("Model", "green"), ("Type", "yellow"), ("Assertions", "dim")],
@@ -86,10 +145,14 @@ def list_resources(
 
         elif resource_type == "exposures":
             for e in project.exposures:
-                items.append({
-                    "name": e.name, "type": e.type.value,
-                    "description": e.description, "owner": e.owner,
-                })
+                items.append(
+                    {
+                        "name": e.name,
+                        "type": e.type.value,
+                        "description": e.description,
+                        "owner": e.owner,
+                    }
+                )
             fmt.print_table(
                 "Exposures",
                 [("Name", "cyan"), ("Type", "green"), ("Owner", "yellow")],

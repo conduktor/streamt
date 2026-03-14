@@ -137,9 +137,7 @@ class TestRunner:
                 assertion_type = list(assertion.keys())[0]
                 assertion_config = assertion[assertion_type] or {}
 
-                result = self._run_assertion(
-                    assertion_type, assertion_config, messages
-                )
+                result = self._run_assertion(assertion_type, assertion_config, messages)
                 assertion_results.append(result)
 
                 if not result["passed"]:
@@ -151,9 +149,7 @@ class TestRunner:
             return {
                 "name": test.name,
                 "status": "failed",
-                "errors": [
-                    "kafka-python not installed. Run: pip install kafka-python"
-                ],
+                "errors": ["kafka-python not installed. Run: pip install kafka-python"],
             }
         except Exception as e:
             return {
@@ -206,8 +202,19 @@ class TestRunner:
                             "job_status": job_state.status,
                             "message": f"Continuous test job is {job_state.status}",
                         }
+                except ConnectionError as e:
+                    return {
+                        "name": test.name,
+                        "status": "error",
+                        "errors": [f"Cannot connect to Flink: {e}"],
+                    }
                 except Exception as e:
                     logger.warning(f"Failed to check Flink job status for test '{test.name}': {e}")
+                    return {
+                        "name": test.name,
+                        "status": "error",
+                        "errors": [f"Flink query failed: {e}"],
+                    }
 
         return {
             "name": test.name,
@@ -254,9 +261,7 @@ class TestRunner:
             bootstrap_servers=bootstrap_servers,
             auto_offset_reset="earliest",
             consumer_timeout_ms=timeout_ms,
-            value_deserializer=lambda m: json.loads(m.decode("utf-8"))
-            if m
-            else None,
+            value_deserializer=lambda m: json.loads(m.decode("utf-8")) if m else None,
             max_poll_records=sample_size,
         )
 
@@ -304,15 +309,11 @@ class TestRunner:
 
         for col, count in null_counts.items():
             if count > 0:
-                errors.append(
-                    f"Column '{col}' has {count} null values in {len(messages)} messages"
-                )
+                errors.append(f"Column '{col}' has {count} null values in {len(messages)} messages")
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_accepted_values(
-        self, config: dict, messages: list[dict]
-    ) -> dict[str, object]:
+    def _assert_accepted_values(self, config: dict, messages: list[dict]) -> dict[str, object]:
         """Assert that a column only contains accepted values."""
         column = config.get("column")
         accepted = set(config.get("values", []))
@@ -328,8 +329,7 @@ class TestRunner:
         if invalid_values:
             sample = list(invalid_values)[:5]
             errors.append(
-                f"Column '{column}' has {len(invalid_values)} invalid values. "
-                f"Sample: {sample}"
+                f"Column '{column}' has {len(invalid_values)} invalid values. Sample: {sample}"
             )
 
         return {"passed": len(errors) == 0, "errors": errors}
@@ -386,8 +386,7 @@ class TestRunner:
 
         if duplicate_rate > tolerance:
             errors.append(
-                f"Key '{key}' has {duplicate_rate:.2%} duplicate rate "
-                f"(tolerance: {tolerance:.2%})"
+                f"Key '{key}' has {duplicate_rate:.2%} duplicate rate (tolerance: {tolerance:.2%})"
             )
 
         return {"passed": len(errors) == 0, "errors": errors}

@@ -139,10 +139,12 @@ class ProjectValidator:
         self._validate_column_types()
         self._validate_model_contracts()
         self._validate_rules()
+        self._validate_unused_sources()
+        self._validate_source_columns()
         return self.result
 
     def _validate_duplicates(self) -> None:
-        """Check for duplicate names."""
+        """Check for duplicate names and name collisions."""
         # Check source duplicates
         seen_sources: set[str] = set()
         for source in self.project.sources:
@@ -182,6 +184,16 @@ class ProjectValidator:
                     errors.duplicate_name("exposure", exposure.name),
                 )
             seen_exposures.add(exposure.name)
+
+        # Check source/model name collisions
+        collisions = self.source_names & self.model_names
+        for name in collisions:
+            self.result.add_error(
+                "NAME_COLLISION",
+                f"Name '{name}' is used as both a source and a model. "
+                f"This creates ambiguity between source() and ref() references "
+                f"and may cause DDL conflicts at deploy time.",
+            )
 
     def _validate_sources(self) -> None:
         """Validate source declarations."""
@@ -289,6 +301,9 @@ class ProjectValidator:
                     errors.jinja_syntax_error(model.name, error, model.sql),
                 )
                 return
+
+            # Validate SQL syntax via sqlglot
+            self._validate_sql_syntax(model)
 
             # Extract and validate references
             sources, refs = self.parser.extract_refs_from_sql(model.sql)
@@ -835,6 +850,79 @@ class ProjectValidator:
                             f"Column '{col}' in '{entity_name}' classified as sensitive "
                             f"has no masking policy",
                         )
+
+    def _validate_sql_syntax(self, model: Model) -> None:
+        """Validate SQL syntax using sqlglot's Flink dialect."""
+        if not model.sql:
+            return
+
+        try:
+            import sqlglot
+        except ImportError:
+            return
+
+        # Render Jinja refs to plain table names so sqlglot can parse
+        rendered = re.sub(
+            r'\{\{\s*(?:source|ref)\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}',
+            r"\1",
+            model.sql,
+        )
+
+        try:
+            sqlglot.parse(rendered)
+        except sqlglot.errors.ParseError as e:
+            self.result.add_warning(
+                "SQL_PARSE_WARNING",
+                f"Model '{model.name}' SQL may have syntax issues: {e}",
+                f"model '{model.name}'",
+            )
+        except (ValueError, Exception):
+            # Dialect not available or other non-parse issue — skip silently
+            pass
+
+    def _validate_unused_sources(self) -> None:
+        """Warn when declared sources have no downstream consumers."""
+        if not self.parser:
+            return
+
+        consumed_sources: set[str] = set()
+        for model in self.project.models:
+            if model.sql:
+                sources, _ = self.parser.extract_refs_from_sql(model.sql)
+                consumed_sources.update(sources)
+
+        for source in self.project.sources:
+            if source.name not in consumed_sources:
+                self.result.add_warning(
+                    "UNUSED_SOURCE",
+                    f"Source '{source.name}' is declared but not referenced by any model. "
+                    f"Consider removing it or adding a model that reads from it.",
+                    f"source '{source.name}'",
+                )
+
+    def _validate_source_columns(self) -> None:
+        """Warn when sources referenced by models have no column definitions."""
+        if not self.parser:
+            return
+
+        warned: set[str] = set()
+        for model in self.project.models:
+            if not model.sql:
+                continue
+            sources, _ = self.parser.extract_refs_from_sql(model.sql)
+            for source_name in sources:
+                if source_name in warned:
+                    continue
+                source = next((s for s in self.project.sources if s.name == source_name), None)
+                if source and not source.columns:
+                    warned.add(source_name)
+                    self.result.add_warning(
+                        "SOURCE_NO_COLUMNS",
+                        f"Source '{source_name}' referenced by model '{model.name}' "
+                        f"has no column definitions. Column type checking and contract "
+                        f"validation will be limited.",
+                        f"source '{source_name}'",
+                    )
 
     def _has_confluent_flink(self) -> bool:
         """Check if any configured Flink cluster is Confluent Cloud."""

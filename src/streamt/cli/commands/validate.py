@@ -15,10 +15,13 @@ from streamt.output import StructuredError, StructuredWarning
 
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
-@click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
+@click.option(
+    "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
+)
 @click.option("--all-envs", is_flag=True, help="Validate all environments")
 @click.option("--check-schemas", is_flag=True, help="Validate schemas against Schema Registry")
 @click.option("--model", "-m", "target_model", help="Validate only this model and its dependencies")
+@click.option("--strict", is_flag=True, help="Treat warnings as errors (exit 1 on any warning)")
 @click.pass_context
 def validate(
     ctx: click.Context,
@@ -27,6 +30,7 @@ def validate(
     all_envs: bool,
     check_schemas: bool,
     target_model: Optional[str],
+    strict: bool = False,
 ) -> None:
     """Validate project syntax and references."""
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -38,7 +42,9 @@ def validate(
     if check_schemas:
         fmt.print_warning("--check-schemas is not yet implemented; skipping registry validation")
     if target_model:
-        fmt.print_warning(f"--model '{target_model}' filtering is not yet implemented; validating all models")
+        fmt.print_warning(
+            f"--model '{target_model}' filtering is not yet implemented; validating all models"
+        )
 
     def validate_single_env(env_name: Optional[str]) -> dict[str, object]:
         """Validate a single environment. Returns result dict."""
@@ -60,9 +66,13 @@ def validate(
                 if warning.location:
                     w["location"] = warning.location
                 warns.append(w)
-                fmt.add_warning(StructuredWarning(
-                    code="W000_VALIDATION_WARNING", message=warning.message, location=warning.location,
-                ))
+                fmt.add_warning(
+                    StructuredWarning(
+                        code="W000_VALIDATION_WARNING",
+                        message=warning.message,
+                        location=warning.location,
+                    )
+                )
                 fmt.print_warning(warning.message)
                 if warning.location:
                     fmt.print(f"  Location: {warning.location}")
@@ -74,9 +84,13 @@ def validate(
                     if error.location:
                         e["location"] = error.location
                     errs.append(e)
-                    fmt.add_error(StructuredError(
-                        code=ErrorCode.PARSE_ERROR, message=error.message, location=error.location,
-                    ))
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.PARSE_ERROR,
+                            message=error.message,
+                            location=error.location,
+                        )
+                    )
                     fmt.print_error(error.message)
                     if error.location:
                         fmt.print(f"  Location: {error.location}")
@@ -108,6 +122,12 @@ def validate(
                 result_data["governance_passed"] = True
                 fmt.print("[green]All governance rules passed[/green]")
 
+            # --strict: treat warnings as errors
+            if strict and warns:
+                result_data["valid"] = False
+                result_data["strict_failure"] = True
+                fmt.print_error(f"--strict: {len(warns)} warning(s) treated as errors")
+
             return result_data
 
         except EnvVarError as e:
@@ -127,20 +147,26 @@ def validate(
         if all_envs:
             env_manager = EnvironmentManager(project_path)
             if env_manager.mode == "single":
-                fmt.add_error(StructuredError(
-                    code=ErrorCode.ENVIRONMENT_ERROR,
-                    message="--all-envs requires multi-environment mode.",
-                ))
-                fmt.print_error("--all-envs requires multi-environment mode. Create an environments/ directory.")
+                fmt.add_error(
+                    StructuredError(
+                        code=ErrorCode.ENVIRONMENT_ERROR,
+                        message="--all-envs requires multi-environment mode.",
+                    )
+                )
+                fmt.print_error(
+                    "--all-envs requires multi-environment mode. Create an environments/ directory."
+                )
                 fmt.flush()
                 sys.exit(1)
 
             environments = env_manager.discover_environments()
             if not environments:
-                fmt.add_error(StructuredError(
-                    code=ErrorCode.ENVIRONMENT_ERROR,
-                    message="No environment files found in environments/ directory.",
-                ))
+                fmt.add_error(
+                    StructuredError(
+                        code=ErrorCode.ENVIRONMENT_ERROR,
+                        message="No environment files found in environments/ directory.",
+                    )
+                )
                 fmt.print_error("No environment files found in environments/ directory.")
                 fmt.flush()
                 sys.exit(1)

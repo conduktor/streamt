@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
+from pydantic import ValidationError
 
 from streamt.core.environment import (
     EnvironmentConfig,
@@ -43,6 +44,15 @@ class JinjaError(Exception):
     """Error in Jinja template."""
 
     pass
+
+
+def _format_pydantic_error(exc: ValidationError) -> str:
+    """Format a Pydantic ValidationError into a user-friendly message."""
+    parts = []
+    for err in exc.errors():
+        loc = " → ".join(str(part) for part in err["loc"]) if err["loc"] else "root"
+        parts.append(f"field '{loc}': {err['msg']}")
+    return "; ".join(parts)
 
 
 class ProjectParser:
@@ -103,6 +113,14 @@ class ProjectParser:
         runtime_warning = self.env_manager.check_project_runtime_warning(project_data)
         if runtime_warning:
             self.warn_callback(f"[yellow]WARNING[/yellow]: {runtime_warning}")
+
+        # ENV-1: Warn about environments: key in project file
+        if "environments" in project_data:
+            self.warn_callback(
+                "[yellow]WARNING[/yellow]: The 'environments:' key in stream_project.yml "
+                "is not used. Environments are configured in the environments/ directory. "
+                "See: https://streamt.dev/docs/reference/environments"
+            )
 
         # Parse project info and runtime
         project_info = self._parse_project_info(project_data)
@@ -251,7 +269,11 @@ class ProjectParser:
         # From main project file
         if "sources" in data:
             for source_data in data["sources"]:
-                sources.append(Source(**source_data))
+                try:
+                    sources.append(Source(**source_data))
+                except ValidationError as e:
+                    name = source_data.get("name", "<unknown>")
+                    raise ParseError(f"Invalid source '{name}': {_format_pydantic_error(e)}") from e
 
         # From sources/ directory
         sources_dir = self.project_path / "sources"
@@ -260,13 +282,27 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 if "sources" in file_data:
                     for source_data in file_data["sources"]:
-                        sources.append(Source(**source_data))
+                        try:
+                            sources.append(Source(**source_data))
+                        except ValidationError as e:
+                            name = source_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid source '{name}' in {yml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
             for yaml_file in sources_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
                 if "sources" in file_data:
                     for source_data in file_data["sources"]:
-                        sources.append(Source(**source_data))
+                        try:
+                            sources.append(Source(**source_data))
+                        except ValidationError as e:
+                            name = source_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid source '{name}' in {yaml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
         return sources
 
@@ -277,22 +313,51 @@ class ProjectParser:
         # From main project file
         if "models" in data:
             for model_data in data["models"]:
-                models.append(Model(**model_data))
+                try:
+                    models.append(Model(**model_data))
+                except ValidationError as e:
+                    name = model_data.get("name", "<unknown>")
+                    raise ParseError(f"Invalid model '{name}': {_format_pydantic_error(e)}") from e
 
         # From models/ directory
         models_dir = self.project_path / "models"
         if models_dir.exists():
+            # INIT-2: Warn about .sql files in models/ directory
+            sql_files = list(models_dir.glob("*.sql"))
+            if sql_files:
+                names = ", ".join(f.name for f in sql_files[:5])
+                suffix = f" and {len(sql_files) - 5} more" if len(sql_files) > 5 else ""
+                self.warn_callback(
+                    f"[yellow]WARNING[/yellow]: Found .sql files in models/ directory "
+                    f"({names}{suffix}). streamt uses YAML model definitions with inline SQL, "
+                    f"not separate .sql files. Move your SQL into the 'sql:' field of each model."
+                )
+
             for yml_file in models_dir.glob("*.yml"):
                 file_data = self._load_yaml(yml_file)
                 if "models" in file_data:
                     for model_data in file_data["models"]:
-                        models.append(Model(**model_data))
+                        try:
+                            models.append(Model(**model_data))
+                        except ValidationError as e:
+                            name = model_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid model '{name}' in {yml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
             for yaml_file in models_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
                 if "models" in file_data:
                     for model_data in file_data["models"]:
-                        models.append(Model(**model_data))
+                        try:
+                            models.append(Model(**model_data))
+                        except ValidationError as e:
+                            name = model_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid model '{name}' in {yaml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
         return models
 
@@ -303,7 +368,11 @@ class ProjectParser:
         # From main project file
         if "tests" in data:
             for test_data in data["tests"]:
-                tests.append(DataTest(**test_data))
+                try:
+                    tests.append(DataTest(**test_data))
+                except ValidationError as e:
+                    name = test_data.get("name", "<unknown>")
+                    raise ParseError(f"Invalid test '{name}': {_format_pydantic_error(e)}") from e
 
         # From tests/ directory
         tests_dir = self.project_path / "tests"
@@ -312,13 +381,27 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 if "tests" in file_data:
                     for test_data in file_data["tests"]:
-                        tests.append(DataTest(**test_data))
+                        try:
+                            tests.append(DataTest(**test_data))
+                        except ValidationError as e:
+                            name = test_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid test '{name}' in {yml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
             for yaml_file in tests_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
                 if "tests" in file_data:
                     for test_data in file_data["tests"]:
-                        tests.append(DataTest(**test_data))
+                        try:
+                            tests.append(DataTest(**test_data))
+                        except ValidationError as e:
+                            name = test_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid test '{name}' in {yaml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
         return tests
 
@@ -329,7 +412,13 @@ class ProjectParser:
         # From main project file
         if "exposures" in data:
             for exposure_data in data["exposures"]:
-                exposures.append(Exposure(**exposure_data))
+                try:
+                    exposures.append(Exposure(**exposure_data))
+                except ValidationError as e:
+                    name = exposure_data.get("name", "<unknown>")
+                    raise ParseError(
+                        f"Invalid exposure '{name}': {_format_pydantic_error(e)}"
+                    ) from e
 
         # From exposures/ directory
         exposures_dir = self.project_path / "exposures"
@@ -338,13 +427,27 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 if "exposures" in file_data:
                     for exposure_data in file_data["exposures"]:
-                        exposures.append(Exposure(**exposure_data))
+                        try:
+                            exposures.append(Exposure(**exposure_data))
+                        except ValidationError as e:
+                            name = exposure_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid exposure '{name}' in {yml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
             for yaml_file in exposures_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
                 if "exposures" in file_data:
                     for exposure_data in file_data["exposures"]:
-                        exposures.append(Exposure(**exposure_data))
+                        try:
+                            exposures.append(Exposure(**exposure_data))
+                        except ValidationError as e:
+                            name = exposure_data.get("name", "<unknown>")
+                            raise ParseError(
+                                f"Invalid exposure '{name}' in {yaml_file.name}: "
+                                f"{_format_pydantic_error(e)}"
+                            ) from e
 
         return exposures
 

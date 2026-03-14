@@ -125,6 +125,36 @@ def status(
             elif is_text:
                 fmt.print("  [yellow]No Schema Registry configured[/yellow]")
 
+        # Source Topics (STATUS-2)
+        if project.sources:
+            data["source_topics"] = []
+            if is_text:
+                fmt.print("\n[cyan]Source Topics:[/cyan]")
+            skd = make_kafka_deployer(project, fmt)
+            if skd:
+                deployers_to_close.append(skd)
+                with _deployer_section(fmt, is_text, "Kafka (sources)"):
+                    for src in project.sources:
+                        if not matches(src.name) and not matches(src.topic):
+                            continue
+                        state = skd.get_topic_state(src.topic)
+                        entry = {
+                            "name": src.name,
+                            "topic": src.topic,
+                            "exists": state.exists,
+                            "partitions": state.partitions if state.exists else None,
+                        }
+                        data["source_topics"].append(entry)
+                        if is_text:
+                            if state.exists:
+                                fmt.print(
+                                    f"  [green]OK[/green] {src.name} → {src.topic} (partitions: {state.partitions})"
+                                )
+                            else:
+                                fmt.print(f"  [red]MISSING[/red] {src.name} → {src.topic}")
+            elif is_text:
+                fmt.print("  [yellow]No Kafka configured[/yellow]")
+
         # Topics
         if is_text:
             fmt.print("\n[cyan]Topics:[/cyan]")

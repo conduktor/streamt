@@ -210,15 +210,6 @@ class Project(BaseModel):
 # ============================================================================
 
 
-class SchemaRef(BaseModel):
-    """Schema reference."""
-
-    registry: Optional[str] = None
-    subject: Optional[str] = None
-    format: Optional[str] = None  # avro, json, protobuf
-    definition: Optional[str] = None
-
-
 class ColumnDefinition(BaseModel):
     """Column definition with classification."""
 
@@ -226,7 +217,23 @@ class ColumnDefinition(BaseModel):
     type: Optional[str] = None  # Flink SQL type (STRING, INT, DOUBLE, TIMESTAMP(3), etc.)
     classification: Optional[Classification] = None
     description: Optional[str] = None
+    required: bool = False  # If true, column is NOT NULL
     proctime: bool = False  # If true, this column is a processing time attribute
+
+
+class SchemaRef(BaseModel):
+    """Schema reference.
+
+    Supports both registry references (registry/subject/format) and inline field
+    definitions via `fields:`. When `fields:` is set, Source.columns is populated
+    automatically via a model_validator.
+    """
+
+    registry: Optional[str] = None
+    subject: Optional[str] = None
+    format: Optional[str] = None  # avro, json, protobuf
+    definition: Optional[str] = None
+    fields: Optional[list[ColumnDefinition]] = None
 
 
 class MLModelOutput(BaseModel):
@@ -297,6 +304,13 @@ class Source(BaseModel):
     columns: list[ColumnDefinition] = Field(default_factory=list)
     freshness: Optional[FreshnessConfig] = None
     event_time: Optional[EventTimeConfig] = None
+
+    @model_validator(mode="after")
+    def populate_columns_from_schema_fields(self) -> Source:
+        """Map schema.fields → columns when columns is empty."""
+        if not self.columns and self.schema_ and self.schema_.fields:
+            self.columns = list(self.schema_.fields)
+        return self
 
 
 # ============================================================================
@@ -818,6 +832,7 @@ class Exposure(BaseModel):
     role: Optional[ExposureRole] = None
     description: Optional[str] = None
     owner: Optional[str] = None
+    owners: Optional[list[dict[str, str]]] = None
     url: Optional[str] = None
     repo: Optional[str] = None
     language: Optional[str] = None
@@ -833,6 +848,14 @@ class Exposure(BaseModel):
     freshness: Optional[FreshnessConfig] = None
     schedule: Optional[str] = None
     data_requirements: Optional[dict[str, object]] = None
+
+    @model_validator(mode="after")
+    def populate_owner_from_owners_list(self) -> Exposure:
+        """Map owners[0].name → owner when owner is not set."""
+        if self.owner is None and self.owners:
+            first = self.owners[0]
+            self.owner = first.get("name") if isinstance(first, dict) else None
+        return self
 
 
 # ============================================================================

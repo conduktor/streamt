@@ -25,11 +25,18 @@ from streamt.output import StructuredError
 
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
-@click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
+@click.option(
+    "--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)"
+)
 @click.option("--target", "-t", help="Deploy only this model and its dependencies")
 @click.option("--select", "-s", help="Select models by tag (e.g., 'tag:payments')")
 @click.option("--confirm", is_flag=True, help="Skip confirmation prompt for protected environments")
-@click.option("--confirm-env", type=str, default=None, help="Non-interactive confirm: pass env name (for agents/CI)")
+@click.option(
+    "--confirm-env",
+    type=str,
+    default=None,
+    help="Non-interactive confirm: pass env name (for agents/CI)",
+)
 @click.option("--force", is_flag=True, help="Override safety checks (allow destructive operations)")
 @click.pass_context
 def apply(
@@ -44,6 +51,7 @@ def apply(
 ) -> None:
     """Deploy the project."""
     from streamt.compiler import Compiler
+    from streamt.core.dag import DAGBuilder
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
@@ -52,14 +60,10 @@ def apply(
     fmt = make_formatter(ctx, "apply")
     project_path = get_project_path(project_dir)
 
-    if target:
-        fmt.print_warning(f"--target '{target}' filtering is not yet implemented; deploying all models")
-    if select:
-        fmt.print_warning(f"--select '{select}' filtering is not yet implemented; deploying all models")
-
     try:
         parser = ProjectParser(
-            project_path, environment=environment,
+            project_path,
+            environment=environment,
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
@@ -71,28 +75,36 @@ def apply(
 
             if confirm_env:
                 if confirm_env != env_name:
-                    fmt.add_error(StructuredError(
-                        code=ErrorCode.ENVIRONMENT_ERROR,
-                        message=f"--confirm-env '{confirm_env}' does not match '{env_name}'",
-                    ))
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.ENVIRONMENT_ERROR,
+                            message=f"--confirm-env '{confirm_env}' does not match '{env_name}'",
+                        )
+                    )
                     fmt.print_error(f"--confirm-env '{confirm_env}' does not match '{env_name}'")
                     fmt.flush()
                     sys.exit(1)
             elif not confirm:
                 if sys.stdin.isatty():
                     fmt.print_warning(f"'{env_name}' is a protected environment.")
-                    user_input = click.prompt(f"Type '{env_name}' to confirm", default="", show_default=False)
+                    user_input = click.prompt(
+                        f"Type '{env_name}' to confirm", default="", show_default=False
+                    )
                     if user_input != env_name:
                         fmt.print_error("Aborted")
                         fmt.set_status("error")
                         fmt.flush()
                         sys.exit(1)
                 else:
-                    fmt.add_error(StructuredError(
-                        code=ErrorCode.ENVIRONMENT_ERROR,
-                        message=f"Protected env '{env_name}'. Use --confirm or --confirm-env {env_name}.",
-                    ))
-                    fmt.print_error(f"'{env_name}' is protected. Use --confirm or --confirm-env in CI.")
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.ENVIRONMENT_ERROR,
+                            message=f"Protected env '{env_name}'. Use --confirm or --confirm-env {env_name}.",
+                        )
+                    )
+                    fmt.print_error(
+                        f"'{env_name}' is protected. Use --confirm or --confirm-env in CI."
+                    )
                     fmt.flush()
                     sys.exit(1)
 
@@ -107,6 +119,87 @@ def apply(
 
         compiler = Compiler(project)
         manifest = compiler.compile()
+
+        # --target / --select filtering
+        if target or select:
+            dag = DAGBuilder(project).build()
+            all_model_names = {m.name for m in project.models}
+            selected_models: set[str] = set()
+
+            if target:
+                if target not in all_model_names:
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.PARSE_ERROR,
+                            message=f"Target model '{target}' not found. Available: {', '.join(sorted(all_model_names))}",
+                        )
+                    )
+                    fmt.print_error(f"Target model '{target}' not found")
+                    fmt.flush()
+                    sys.exit(1)
+                selected_models = dag.get_upstream(target) & all_model_names | {target}
+
+            if select:
+                # Parse tag:X syntax
+                if select.startswith("tag:"):
+                    tag_value = select[4:]
+                    tagged = {m.name for m in project.models if tag_value in m.tags}
+                    if not tagged:
+                        fmt.add_error(
+                            StructuredError(
+                                code=ErrorCode.PARSE_ERROR,
+                                message=f"No models found with tag '{tag_value}'",
+                            )
+                        )
+                        fmt.print_error(f"No models found with tag '{tag_value}'")
+                        fmt.flush()
+                        sys.exit(1)
+                    # Include upstream deps of tagged models
+                    for name in list(tagged):
+                        tagged |= dag.get_upstream(name) & all_model_names
+                    if selected_models:
+                        selected_models &= tagged  # intersection if --target also set
+                    else:
+                        selected_models = tagged
+                else:
+                    fmt.print_warning(f"Unknown select syntax '{select}'. Expected: tag:<value>")
+
+            if selected_models:
+                # Get source names used by selected models
+                source_names = {s.name for s in project.sources}
+                selected_sources: set[str] = set()
+                for model in project.models:
+                    if model.name in selected_models and model.sql and parser:
+                        srcs, _ = parser.extract_refs_from_sql(model.sql)
+                        selected_sources.update(s for s in srcs if s in source_names)
+
+                # Filter manifest
+                manifest.models = [m for m in manifest.models if m.get("name") in selected_models]
+                manifest.sources = [
+                    s for s in manifest.sources if s.get("name") in selected_sources
+                ]
+                if "topics" in manifest.artifacts:
+                    manifest.artifacts["topics"] = [
+                        t
+                        for t in manifest.artifacts["topics"]
+                        if t.get("model") in selected_models or t.get("source") in selected_sources
+                    ]
+                if "flink_jobs" in manifest.artifacts:
+                    manifest.artifacts["flink_jobs"] = [
+                        j
+                        for j in manifest.artifacts["flink_jobs"]
+                        if j.get("model") in selected_models
+                    ]
+                if "gateway_vclusters" in manifest.artifacts:
+                    manifest.artifacts["gateway_vclusters"] = [
+                        v
+                        for v in manifest.artifacts["gateway_vclusters"]
+                        if v.get("model") in selected_models
+                    ]
+
+                fmt.print(
+                    f"[cyan]Deploying {len(selected_models)} model(s): {', '.join(sorted(selected_models))}[/cyan]"
+                )
 
         # Create deployers
         sr = make_sr_deployer(project, fmt)
@@ -123,8 +216,11 @@ def apply(
 
         try:
             planner = DeploymentPlanner(
-                manifest, schema_registry_deployer=sr, kafka_deployer=kafka,
-                flink_deployer=flink, connect_deployer=connect,
+                manifest,
+                schema_registry_deployer=sr,
+                kafka_deployer=kafka,
+                flink_deployer=flink,
+                connect_deployer=connect,
                 gateway_deployer=gateway,
             )
             deployment_plan = planner.plan()
@@ -134,11 +230,15 @@ def apply(
                 if deployment_plan.deletes > 0:
                     env_name = parser.env_config.environment.name
                     if not force:
-                        fmt.add_error(StructuredError(
-                            code=ErrorCode.ENVIRONMENT_ERROR,
-                            message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
-                        ))
-                        fmt.print_error(f"Destructive ops blocked for '{env_name}'. Use --force to override.")
+                        fmt.add_error(
+                            StructuredError(
+                                code=ErrorCode.ENVIRONMENT_ERROR,
+                                message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
+                            )
+                        )
+                        fmt.print_error(
+                            f"Destructive ops blocked for '{env_name}'. Use --force to override."
+                        )
                         fmt.flush()
                         sys.exit(1)
                     fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
@@ -179,7 +279,9 @@ def apply(
         fmt.flush()
         sys.exit(130)
     except Exception as e:
-        fmt.add_error(StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Cannot connect: {e}"))
+        fmt.add_error(
+            StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Cannot connect: {e}")
+        )
         fmt.print_error(f"Cannot connect: {e}")
         fmt.flush()
         sys.exit(1)
