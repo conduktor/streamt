@@ -10,7 +10,34 @@ Unimplemented features and planned work.
 
 ## Core Features
 
-- [ ] Test assertions: `foreign_key` (referential integrity across streams with time window + match rate), `max_lag` (event time lag monitoring), `throughput` (messages/sec bounds), `distribution` (value distribution across buckets with tolerance)
+- [ ] Test assertions — `foreign_key`, `max_lag`, `throughput`, `distribution`:
+  ```yaml
+  # Referential integrity across streams
+  - foreign_key:
+      column: customer_id
+      ref_model: customers
+      ref_key: id
+      window: "1 HOUR"
+      match_rate: 0.99
+
+  # Event time lag monitoring (continuous only)
+  - max_lag:
+      column: event_timestamp
+      max_seconds: 300
+
+  # Message throughput bounds (continuous only)
+  - throughput:
+      min_per_second: 10
+      max_per_second: 1000
+
+  # Value distribution across buckets
+  - distribution:
+      column: amount
+      buckets:
+        - { min: 0, max: 100, expected_ratio: 0.4, tolerance: 0.1 }
+        - { min: 100, max: 1000, expected_ratio: 0.5, tolerance: 0.1 }
+        - { min: 1000, max: 10000, expected_ratio: 0.1, tolerance: 0.05 }
+  ```
 - [ ] Test failure handlers — `on_failure` actions: alert (Slack/PagerDuty), pause model, route to DLQ, block deployment
 - [ ] Global credentials/connections — define Snowflake, S3, etc. once and reference everywhere
 - [ ] `streamt build` — generate self-contained deployable artifacts (topics JSON, Flink SQL, connector configs, manifest with checksums) for debugging, auditing, air-gapped deployments
