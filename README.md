@@ -6,7 +6,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)]()
-[![Tests](https://img.shields.io/badge/tests-277%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-807%20passed-brightgreen.svg)]()
 [![CI](https://github.com/conduktor/streamt/actions/workflows/ci.yml/badge.svg)](https://github.com/conduktor/streamt/actions)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
@@ -18,7 +18,9 @@
 
 ## What is streamt?
 
-**streamt** brings the beloved dbt workflow to real-time streaming. Define your streaming pipelines declaratively using YAML and SQL, then let streamt handle compilation, validation, and deployment to Kafka, Flink, and Kafka Connect.
+**streamt** is declarative infrastructure for streaming data products. Not just ETL tooling — a policy-as-code layer that treats Kafka topics, Flink jobs, and data governance rules with the same rigor that Terraform brought to compute and dbt Mesh brought to the warehouse.
+
+The dbt workflow (sources, models, tests, lineage, plan/apply) is the surface. The deeper ambition: a single YAML project that encodes *what your data means* — who owns it, how it's classified, which fields must be masked, what retention limits apply, which teams consume it downstream. Today most platform teams track this across Conduktor Console, DataHub, and spreadsheets. streamt makes it a first-class artifact next to the SQL.
 
 ```yaml
 sources:
@@ -26,14 +28,21 @@ sources:
     topic: payments.raw.v1
 
 models:
-  - name: payments_validated
+  - name: payments_clean
+    owner: team-payments
+    classification: confidential
     sql: |
       SELECT payment_id, customer_id, amount
       FROM {{ source("payments_raw") }}
       WHERE amount > 0 AND status IS NOT NULL
+    masking:
+      - column: customer_id
+        method: hash
+    governance:
+      max_retention_ms: 2592000000  # 30 days
 ```
 
-That's it! The model is automatically materialized as a topic or Flink job based on your SQL.
+`streamt apply` doesn't just create a Kafka topic and a Flink job — it enforces the policy, validates the schema, and records the lineage. `streamt plan` shows the diff before anything touches production.
 
 ## Features
 
@@ -41,9 +50,9 @@ That's it! The model is automatically materialized as a topic or Flink job based
 |---------|-------------|
 | 🎯 **Declarative** | Define what you want, not how to build it |
 | 🔗 **Lineage** | Automatic dependency tracking from SQL |
-| 🛡️ **Governance** | Enforce naming conventions, partitions, tests |
+| 🛡️ **Policy-as-code** | Classification, masking, retention, and owner rules enforced at compile time |
 | 📊 **Testing** | Schema, sample, and continuous tests |
-| 🔄 **Plan/Apply** | Review changes before deployment |
+| 🔄 **Plan/Apply** | Review changes before deployment — like Terraform for streaming |
 | 🤖 **Agent-Friendly** | Structured JSON output for LLM/CI integration |
 | 📖 **Documentation** | Auto-generated docs with lineage diagrams |
 
