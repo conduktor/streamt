@@ -12,6 +12,15 @@ _VALID_SECURITY_PROTOCOLS = {"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"}
 _VALID_SASL_MECHANISMS = {"PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512", "OAUTHBEARER", "GSSAPI"}
 
 
+def _validate_http_url(v: str, field_name: str = "url") -> str:
+    """Validate that a string is a non-empty HTTP(S) URL."""
+    if not v or not v.strip():
+        raise ValueError(f"{field_name} must not be empty")
+    if not v.startswith(("http://", "https://")):
+        raise ValueError(f"{field_name} must start with http:// or https://, got '{v}'")
+    return v
+
+
 class KafkaConfig(BaseModel):
     """Kafka cluster configuration."""
 
@@ -24,6 +33,7 @@ class KafkaConfig(BaseModel):
         if not v or not v.strip():
             raise ValueError("bootstrap_servers must not be empty")
         return v
+
     security_protocol: Optional[str] = None
     sasl_mechanism: Optional[str] = None
     sasl_username: Optional[str] = None
@@ -58,7 +68,10 @@ class KafkaConfig(BaseModel):
         return upper
 
     _check_ssl_paths = field_validator(
-        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        mode="before",
     )(_validate_ssl_path)
 
     @model_validator(mode="after")
@@ -88,7 +101,9 @@ class KafkaConfig(BaseModel):
         for field, confluent_key in mapping.items():
             val = getattr(self, field)
             if val is not None:
-                result[confluent_key] = val.get_secret_value() if isinstance(val, SecretStr) else val
+                result[confluent_key] = (
+                    val.get_secret_value() if isinstance(val, SecretStr) else val
+                )
         return result
 
 
@@ -99,10 +114,9 @@ class SchemaRegistryConfig(BaseModel):
 
     @field_validator("url", mode="before")
     @classmethod
-    def validate_url_not_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("url must not be empty")
-        return v
+    def validate_url_format(cls, v: str) -> str:
+        return _validate_http_url(v, "Schema Registry url")
+
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
@@ -111,7 +125,10 @@ class SchemaRegistryConfig(BaseModel):
     ssl_key_password: Optional[SecretStr] = None
 
     _check_ssl_paths = field_validator(
-        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        mode="before",
     )(_validate_ssl_path)
 
 
@@ -124,10 +141,11 @@ class FlinkClusterConfig(BaseModel):
 
     @field_validator("rest_url", "sql_gateway_url", mode="before")
     @classmethod
-    def validate_urls_not_blank(cls, v: str | None) -> str | None:
-        if v is not None and not v.strip():
-            raise ValueError("URL must not be blank")
+    def validate_urls_format(cls, v: str | None) -> str | None:
+        if v is not None:
+            _validate_http_url(v, "Flink URL")
         return v
+
     version: Optional[str] = None
     environment: Optional[str] = None
     api_key: Optional[SecretStr] = None
@@ -142,7 +160,10 @@ class FlinkClusterConfig(BaseModel):
     statement_timeout: Optional[int] = None
 
     _check_ssl_paths = field_validator(
-        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        mode="before",
     )(_validate_ssl_path)
 
 
@@ -160,10 +181,9 @@ class ConnectClusterConfig(BaseModel):
 
     @field_validator("rest_url", mode="before")
     @classmethod
-    def validate_rest_url_not_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("rest_url must not be empty")
-        return v
+    def validate_rest_url_format(cls, v: str) -> str:
+        return _validate_http_url(v, "Connect rest_url")
+
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     ssl_ca_location: Optional[str] = None
@@ -172,7 +192,10 @@ class ConnectClusterConfig(BaseModel):
     ssl_key_password: Optional[SecretStr] = None
 
     _check_ssl_paths = field_validator(
-        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        mode="before",
     )(_validate_ssl_path)
 
 
@@ -189,12 +212,13 @@ class GatewayConfig(BaseModel):
     admin_url: Optional[str] = None
     proxy_bootstrap: Optional[str] = None
 
-    @field_validator("admin_url", "proxy_bootstrap", mode="before")
+    @field_validator("admin_url", mode="before")
     @classmethod
-    def validate_urls_not_blank(cls, v: str | None) -> str | None:
-        if v is not None and not v.strip():
-            raise ValueError("URL must not be blank")
+    def validate_admin_url_format(cls, v: str | None) -> str | None:
+        if v is not None:
+            _validate_http_url(v, "Gateway admin_url")
         return v
+
     username: Optional[str] = None
     password: Optional[SecretStr] = None
     virtual_cluster: Optional[str] = None
@@ -204,7 +228,10 @@ class GatewayConfig(BaseModel):
     ssl_key_password: Optional[SecretStr] = None
 
     _check_ssl_paths = field_validator(
-        "ssl_ca_location", "ssl_certificate_location", "ssl_key_location", mode="before",
+        "ssl_ca_location",
+        "ssl_certificate_location",
+        "ssl_key_location",
+        mode="before",
     )(_validate_ssl_path)
 
 
@@ -216,10 +243,8 @@ class ConsoleConfig(BaseModel):
 
     @field_validator("url", mode="before")
     @classmethod
-    def validate_url_not_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("url must not be empty")
-        return v
+    def validate_url_format(cls, v: str) -> str:
+        return _validate_http_url(v, "Console url")
 
 
 class ConduktorConfig(BaseModel):
