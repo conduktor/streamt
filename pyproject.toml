@@ -124,6 +124,9 @@ ignore = [
     "ERA001",                   # Commented code OK in tests
     "TID251",                   # Any OK in tests (MagicMock, fixtures)
     "ARG",                      # Unused args common in fixtures/mocks
+    "N806",                     # Uppercase vars OK in tests (class names as locals)
+    "B017",                     # pytest.raises(Exception) OK in tests
+    "PT011",                    # pytest.raises(Exception) broad match OK in tests
 ]
 "src/streamt/cli/**" = [
     "T20",                      # CLI uses print/click.echo

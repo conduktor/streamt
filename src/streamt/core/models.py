@@ -377,6 +377,27 @@ class ModelGatewayConfig(BaseModel):
     virtual_topic: Optional[VirtualTopicConfig] = None
 
 
+class ContractColumn(BaseModel):
+    """Declared output column in a model contract."""
+
+    name: str
+    type: Optional[str] = None
+    nullable: Optional[bool] = None
+    description: Optional[str] = None
+
+
+class ModelContract(BaseModel):
+    """Schema contract for a model — declares expected output columns.
+
+    When enforced=True, the validator errors if SQL-inferred types are
+    incompatible with declared types, and warns if downstream exposures
+    consume columns not present in the contract.
+    """
+
+    enforced: bool = True
+    columns: list[ContractColumn] = Field(default_factory=list)
+
+
 class AdvancedConfig(BaseModel):
     """Advanced configuration options for models (nested structure)."""
 
@@ -425,12 +446,28 @@ class Model(BaseModel):
     group: Optional[str] = None
     version: Optional[int] = None
 
+    # Data contract (column-level breaking change enforcement)
+    contract: Optional[ModelContract] = None
+
+    # Macro templates (mutually exclusive with sql:)
+    macro: Optional[str] = None
+    params: dict[str, str] = Field(default_factory=dict)
+
     @field_validator("sql")
     @classmethod
     def sql_required_for_non_sink(cls, v: Optional[str], _info: ValidationInfo) -> Optional[str]:
         """Validate that SQL is provided for non-sink models."""
         # Note: This validation is relaxed - sink models may not need SQL
         return v
+
+    @model_validator(mode="after")
+    def validate_macro_and_sql_exclusive(self) -> Model:
+        """macro: and sql: are mutually exclusive."""
+        if self.macro and self.sql:
+            raise ValueError(
+                f"Model '{self.name}': cannot set both 'macro' and 'sql'. Use one or the other."
+            )
+        return self
 
     @model_validator(mode="after")
     def convert_connector_to_sink(self) -> Model:
@@ -440,7 +477,9 @@ class Model(BaseModel):
             if "type" in self.connector:
                 connector_type = str(self.connector["type"])
                 raw_config = self.connector.get("config", {})
-                connector_config: dict[str, object] = dict(raw_config) if isinstance(raw_config, dict) else {}
+                connector_config: dict[str, object] = (
+                    dict(raw_config) if isinstance(raw_config, dict) else {}
+                )
                 self.sink = SinkConfig(connector=connector_type, config=connector_config)
                 # Clear connector dict after conversion
                 self.connector = None
@@ -491,41 +530,41 @@ class Model(BaseModel):
 
             # Window TVFs
             window_patterns = [
-                r'\bTUMBLE\s*\(',
-                r'\bHOP\s*\(',
-                r'\bSESSION\s*\(',
-                r'\bCUMULATE\s*\(',
+                r"\bTUMBLE\s*\(",
+                r"\bHOP\s*\(",
+                r"\bSESSION\s*\(",
+                r"\bCUMULATE\s*\(",
             ]
             for pattern in window_patterns:
                 if re.search(pattern, sql_upper):
                     return MaterializedType.FLINK
 
             # Aggregations with GROUP BY
-            if re.search(r'\bGROUP\s+BY\b', sql_upper):
+            if re.search(r"\bGROUP\s+BY\b", sql_upper):
                 return MaterializedType.FLINK
 
             # Joins
-            if re.search(r'\s+JOIN\s+', sql_upper):
+            if re.search(r"\s+JOIN\s+", sql_upper):
                 return MaterializedType.FLINK
 
             # DISTINCT (requires state to track uniqueness)
-            if re.search(r'\bSELECT\s+DISTINCT\b', sql_upper):
+            if re.search(r"\bSELECT\s+DISTINCT\b", sql_upper):
                 return MaterializedType.FLINK
 
             # ORDER BY (requires seeing all data)
-            if re.search(r'\bORDER\s+BY\b', sql_upper):
+            if re.search(r"\bORDER\s+BY\b", sql_upper):
                 return MaterializedType.FLINK
 
             # Window functions (ROW_NUMBER, LAG, LEAD, RANK, etc.)
             window_funcs = [
-                r'\bROW_NUMBER\s*\(',
-                r'\bLAG\s*\(',
-                r'\bLEAD\s*\(',
-                r'\bRANK\s*\(',
-                r'\bDENSE_RANK\s*\(',
-                r'\bFIRST_VALUE\s*\(',
-                r'\bLAST_VALUE\s*\(',
-                r'\bNTH_VALUE\s*\(',
+                r"\bROW_NUMBER\s*\(",
+                r"\bLAG\s*\(",
+                r"\bLEAD\s*\(",
+                r"\bRANK\s*\(",
+                r"\bDENSE_RANK\s*\(",
+                r"\bFIRST_VALUE\s*\(",
+                r"\bLAST_VALUE\s*\(",
+                r"\bNTH_VALUE\s*\(",
             ]
             for pattern in window_funcs:
                 if re.search(pattern, sql_upper):
@@ -533,29 +572,29 @@ class Model(BaseModel):
 
             # Aggregate functions without GROUP BY (still stateful)
             agg_funcs = [
-                r'\bCOUNT\s*\(',
-                r'\bSUM\s*\(',
-                r'\bAVG\s*\(',
-                r'\bMIN\s*\(',
-                r'\bMAX\s*\(',
-                r'\bCOLLECT\s*\(',
-                r'\bLISTAGG\s*\(',
+                r"\bCOUNT\s*\(",
+                r"\bSUM\s*\(",
+                r"\bAVG\s*\(",
+                r"\bMIN\s*\(",
+                r"\bMAX\s*\(",
+                r"\bCOLLECT\s*\(",
+                r"\bLISTAGG\s*\(",
             ]
             for pattern in agg_funcs:
                 if re.search(pattern, sql_upper):
                     return MaterializedType.FLINK
 
             # ML functions (Confluent Flink specific)
-            if re.search(r'\bML_PREDICT\s*\(', sql_upper):
+            if re.search(r"\bML_PREDICT\s*\(", sql_upper):
                 return MaterializedType.FLINK
-            if re.search(r'\bML_EVALUATE\s*\(', sql_upper):
+            if re.search(r"\bML_EVALUATE\s*\(", sql_upper):
                 return MaterializedType.FLINK
 
             # === PURE PASSTHROUGH (no transformation) ===
             is_simple_passthrough = bool(
-                re.search(r'^\s*SELECT\s+\*\s+FROM\s+', sql_upper) and
-                not re.search(r'\bWHERE\b', sql_upper) and
-                not re.search(r'\bLIMIT\b', sql_upper)
+                re.search(r"^\s*SELECT\s+\*\s+FROM\s+", sql_upper)
+                and not re.search(r"\bWHERE\b", sql_upper)
+                and not re.search(r"\bLIMIT\b", sql_upper)
             )
 
             if is_simple_passthrough:
@@ -764,6 +803,13 @@ class ExposureRef(BaseModel):
     ref: Optional[str] = None
 
 
+class ExposureColumn(BaseModel):
+    """Column declared on an exposure (for contract breaking-change detection)."""
+
+    name: str
+    type: Optional[str] = None
+
+
 class Exposure(BaseModel):
     """Exposure declaration."""
 
@@ -779,6 +825,7 @@ class Exposure(BaseModel):
     produces: list[ExposureRef] = Field(default_factory=list)
     consumes: list[ExposureRef] = Field(default_factory=list)
     depends_on: list[ExposureRef] = Field(default_factory=list)
+    columns: list[ExposureColumn] = Field(default_factory=list)
     consumer_group: Optional[str] = None
     sla: Optional[SLAConfig] = None
     contracts: Optional[ContractConfig] = None

@@ -38,6 +38,16 @@ def _sanitize_error(msg: str) -> str:
 
 
 @dataclass
+class ImpactEntry:
+    """An entry in the impact radius for a planned change."""
+
+    resource: str
+    change_type: str
+    downstream_models: list[str] = field(default_factory=list)
+    consumers: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class DeploymentPlan:
     """A deployment plan."""
 
@@ -46,6 +56,7 @@ class DeploymentPlan:
     flink_changes: list[FlinkJobChange] = field(default_factory=list)
     connector_changes: list[ConnectorChange] = field(default_factory=list)
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
+    impact_radius: list[ImpactEntry] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -155,6 +166,20 @@ class DeploymentPlan:
         if not self.has_changes:
             lines.append("No changes detected.")
 
+        if self.impact_radius:
+            lines.append("")
+            lines.append("Impact Analysis:")
+            for entry in self.impact_radius:
+                lines.append(f"  {entry.resource} ({entry.change_type})")
+                if entry.downstream_models:
+                    lines.append(f"    downstream: {', '.join(entry.downstream_models)}")
+                if entry.consumers:
+                    for c in entry.consumers:
+                        declared = "" if c.get("declared", True) else " [undeclared]"
+                        lines.append(
+                            f"    consumer: {c['group_id']}{declared} lag={c.get('lag', 0)}"
+                        )
+
         return "\n".join(lines)
 
 
@@ -169,6 +194,7 @@ class DeploymentPlanner:
         flink_deployer: Optional[FlinkDeployer] = None,
         connect_deployer: Optional[ConnectDeployer] = None,
         gateway_deployer: Optional[GatewayDeployer] = None,
+        project: Optional[object] = None,
     ) -> None:
         """Initialize deployment planner."""
         self.manifest = manifest
@@ -177,6 +203,7 @@ class DeploymentPlanner:
         self.flink_deployer = flink_deployer
         self.connect_deployer = connect_deployer
         self.gateway_deployer = gateway_deployer
+        self.project = project
 
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
@@ -276,6 +303,9 @@ class DeploymentPlanner:
         # Detect orphaned resources (exist in cluster but not in manifest)
         self._detect_orphans(plan, planned_subjects, planned_topics, planned_connectors)
 
+        # Compute impact radius for planned changes
+        self._compute_impact_radius(plan)
+
         return plan
 
     def _detect_orphans(
@@ -319,6 +349,71 @@ class DeploymentPlanner:
                         )
             except Exception as e:
                 logger.error("Failed to list connectors for orphan detection: %s", e)
+
+    def _compute_impact_radius(self, plan: DeploymentPlan) -> None:
+        """Compute impact_radius for all planned topic creates/updates."""
+        if not self.project:
+            return
+
+        # Find topics being created or updated
+        changed_topics = [c.topic for c in plan.topic_changes if c.action in ("create", "update")]
+        if not changed_topics:
+            return
+
+        # Build DAG to find downstream models
+        try:
+            from streamt.core.dag import DAGBuilder
+
+            dag = DAGBuilder(self.project).build()  # type: ignore[arg-type]
+        except Exception as e:
+            logger.debug("Could not build DAG for impact analysis: %s", e)
+            return
+
+        # Declared consumer groups from project exposures
+        declared_groups: set[str] = set()
+        for exposure in getattr(self.project, "exposures", []):
+            for owner in getattr(exposure, "owners", []):
+                declared_groups.add(owner)
+
+        for topic_name in changed_topics:
+            # Find downstream models (those that depend on this topic)
+            downstream: list[str] = []
+            try:
+                downstream = dag.get_downstream(topic_name)
+            except Exception:
+                pass
+
+            change_type = next(
+                (c.action for c in plan.topic_changes if c.topic == topic_name), "update"
+            )
+            change_type = "topic_create" if change_type == "create" else "topic_update"
+
+            # Fetch live consumers if kafka_deployer available
+            consumers: list[dict] = []
+            if self.kafka_deployer:
+                try:
+                    groups = self.kafka_deployer.get_consumer_groups()
+                    for group_id in groups:
+                        lag = self.kafka_deployer.get_consumer_group_lag(group_id, topic_name)
+                        if lag is not None:
+                            consumers.append(
+                                {
+                                    "group_id": group_id,
+                                    "lag": lag.total_lag,
+                                    "declared": group_id in declared_groups,
+                                }
+                            )
+                except Exception as e:
+                    logger.debug("Could not fetch consumer groups for impact analysis: %s", e)
+
+            plan.impact_radius.append(
+                ImpactEntry(
+                    resource=topic_name,
+                    change_type=change_type,
+                    downstream_models=downstream,
+                    consumers=consumers,
+                )
+            )
 
     @staticmethod
     def _bucket_for(result: str, create_verb: str) -> str:

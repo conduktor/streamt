@@ -24,6 +24,37 @@ from streamt.core.parser import ProjectParser
 
 logger = logging.getLogger(__name__)
 
+_CONTRACT_TYPE_GROUPS: dict[str, str] = {
+    "STRING": "string",
+    "VARCHAR": "string",
+    "TEXT": "string",
+    "CHAR": "string",
+    "INT": "int",
+    "INTEGER": "int",
+    "SMALLINT": "int",
+    "TINYINT": "int",
+    "BIGINT": "bigint",
+    "LONG": "bigint",
+    "DOUBLE": "float",
+    "FLOAT": "float",
+    "DECIMAL": "float",
+    "NUMERIC": "float",
+    "REAL": "float",
+    "BOOLEAN": "boolean",
+    "BOOL": "boolean",
+    "TIMESTAMP": "timestamp",
+    "DATETIME": "timestamp",
+    "DATE": "date",
+    "TIME": "time",
+    "BYTES": "bytes",
+}
+
+
+def _normalize_contract_type(t: str) -> str:
+    """Normalize a SQL type string for contract compatibility comparison."""
+    base = t.split("(")[0].upper().strip()
+    return _CONTRACT_TYPE_GROUPS.get(base, base.lower())
+
 
 class ValidationLevel(str, Enum):
     """Validation message level."""
@@ -106,6 +137,7 @@ class ProjectValidator:
         self._validate_exposures()
         self._validate_dag()
         self._validate_column_types()
+        self._validate_model_contracts()
         self._validate_rules()
         return self.result
 
@@ -168,12 +200,12 @@ class ProjectValidator:
 
     def _validate_model(self, model: Model) -> None:
         """Validate a single model."""
-        # Check SQL has FROM clause (required for streaming)
+        # Check SQL has FROM clause (expected for streaming, but warn rather than hard-fail)
         if model.sql and not re.search(r"\bFROM\b", model.sql, re.IGNORECASE):
-            self.result.add_error(
+            self.result.add_warning(
                 "SQL_NO_FROM",
                 f"Model '{model.name}' SQL has no FROM clause. "
-                "Streaming models must read from at least one table or source.",
+                "Streaming models typically read from at least one table or source.",
                 f"model '{model.name}'",
             )
 
@@ -205,8 +237,8 @@ class ProjectValidator:
                             f"model '{model.name}'",
                         )
                     else:
-                        # Neither Gateway nor Flink available → error
-                        self.result.add_error(
+                        # Neither Gateway nor Flink available → warn (auto-detected, not explicit)
+                        self.result.add_warning(
                             "NO_PROCESSING_RUNTIME",
                             f"Model '{model.name}' has SQL transformations but no processing runtime is configured. "
                             f"Configure either:\n"
@@ -484,6 +516,102 @@ class ProjectValidator:
                     f"(referenced in model '{issue.model}').{hint}",
                     f"model '{issue.model}'",
                 )
+
+    def _validate_model_contracts(self) -> None:
+        """Validate model data contracts: column presence and type compatibility."""
+        try:
+            from streamt.compiler.type_inference import TypeInferenceMixin
+
+            class _Helper(TypeInferenceMixin):
+                def __init__(self, project: object) -> None:
+                    self.project = project  # type: ignore[assignment]
+                    self._udf_types = {
+                        udf.name.upper(): udf.return_type for udf in getattr(project, "udfs", [])
+                    }
+
+            helper: Optional[_Helper] = _Helper(self.project)
+        except Exception:
+            helper = None
+
+        for model in self.project.models:
+            if not model.contract:
+                continue
+            if not model.sql:
+                continue
+
+            inferred: list[tuple[str, str]] = []
+            if helper:
+                try:
+                    inferred = helper._extract_select_columns_with_types(  # type: ignore[attr-defined]
+                        model.sql, schema_context={}, model=None
+                    )
+                except Exception:
+                    pass
+
+            if not inferred:
+                continue  # can't infer → skip to avoid false positives
+
+            inferred_map = dict(inferred)
+            enforced = model.contract.enforced
+
+            for col_spec in model.contract.columns:
+                col_name = col_spec.name
+                if col_name not in inferred_map:
+                    msg = (
+                        f"Column '{col_name}' declared in contract is not produced "
+                        f"by model '{model.name}' SQL"
+                    )
+                    if enforced:
+                        self.result.add_error(
+                            "CONTRACT_MISSING_COLUMN", msg, f"model '{model.name}'"
+                        )
+                    else:
+                        self.result.add_warning(
+                            "CONTRACT_MISSING_COLUMN", msg, f"model '{model.name}'"
+                        )
+                    continue
+
+                if col_spec.type:
+                    declared_norm = _normalize_contract_type(col_spec.type)
+                    inferred_norm = _normalize_contract_type(inferred_map[col_name])
+                    if declared_norm != inferred_norm:
+                        msg = (
+                            f"Column '{col_name}' in model '{model.name}': "
+                            f"contract declares '{col_spec.type}' "
+                            f"but SQL produces '{inferred_map[col_name]}'"
+                        )
+                        if enforced:
+                            self.result.add_error(
+                                "CONTRACT_TYPE_MISMATCH", msg, f"model '{model.name}'"
+                            )
+                        else:
+                            self.result.add_warning(
+                                "CONTRACT_TYPE_MISMATCH", msg, f"model '{model.name}'"
+                            )
+
+        # Breaking change detection: exposure columns vs contract
+        for exposure in self.project.exposures:
+            exposure_cols = {c.name for c in exposure.columns}
+            if not exposure_cols:
+                continue
+
+            for ref in exposure.consumes:
+                if not ref.ref:
+                    continue
+                ref_model = self.project.get_model(ref.ref)
+                if not ref_model or not ref_model.contract:
+                    continue
+
+                contract_cols = {col.name for col in ref_model.contract.columns}
+                breaking = exposure_cols - contract_cols
+                for missing_col in breaking:
+                    self.result.add_warning(
+                        "CONTRACT_BREAKING_CHANGE",
+                        f"Exposure '{exposure.name}' references column '{missing_col}' "
+                        f"which is not in model '{ref_model.name}' contract — "
+                        "potential breaking change",
+                        f"exposure '{exposure.name}'",
+                    )
 
     def _validate_rules(self) -> None:
         """Validate governance rules."""

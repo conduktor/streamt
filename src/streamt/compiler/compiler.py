@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import BaseLoader, Environment
+from jinja2 import (
+    BaseLoader,
+    Environment,
+    FileSystemLoader,
+    StrictUndefined,
+    TemplateNotFound,
+    UndefinedError,
+)
 
-from streamt.compiler.flink_ddl import kafka_with_properties
 from streamt.compiler.manifest import (
     ConnectorArtifact,
     FlinkJobArtifact,
@@ -19,18 +24,16 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
-from streamt.compiler.masking import apply_masking_to_sql
+from streamt.compiler.sql_generator import SQLGeneratorMixin
 from streamt.compiler.type_inference import TypeInferenceMixin
 from streamt.core.dag import DAGBuilder
 from streamt.core.models import (
     DataTest,
-    EventTimeConfig,
     MaterializedType,
     Model,
     Source,
     StreamtProject,
     TopicDefaults,
-    WatermarkStrategy,
 )
 from streamt.core.parser import ProjectParser
 
@@ -52,7 +55,7 @@ class CompileError(Exception):
     pass
 
 
-class Compiler(TypeInferenceMixin):
+class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
     """Compiler for streamt projects."""
 
     def __init__(self, project: StreamtProject, output_dir: Optional[Path] = None) -> None:
@@ -79,22 +82,20 @@ class Compiler(TypeInferenceMixin):
         self.schemas: list[SchemaArtifact] = []
         self.topics: list[TopicArtifact] = []
         self.flink_jobs: list[FlinkJobArtifact] = []
+        self.test_jobs: list[FlinkJobArtifact] = []
         self.connectors: list[ConnectorArtifact] = []
         self.gateway_rules: list[GatewayRuleArtifact] = []
 
     def _get_topic_defaults(self) -> TopicDefaults:
         """Get topic defaults from project config."""
-        # Check project-level defaults.topic first
         if self.project.defaults and self.project.defaults.topic:
             return self.project.defaults.topic
-        # Then check defaults.models.topic
         if (
             self.project.defaults
             and self.project.defaults.models
             and self.project.defaults.models.topic
         ):
             return self.project.defaults.models.topic
-        # Return sensible defaults (1/1 works everywhere including local dev)
         return TopicDefaults()
 
     def compile(self, dry_run: bool = False) -> Manifest:
@@ -103,6 +104,7 @@ class Compiler(TypeInferenceMixin):
         self.schemas = []
         self.topics = []
         self.flink_jobs = []
+        self.test_jobs = []
         self.connectors = []
         self.gateway_rules = []
 
@@ -117,10 +119,19 @@ class Compiler(TypeInferenceMixin):
             if model:
                 self._compile_model(model)
 
-        # Compile continuous tests as Flink jobs
+        # Compile continuous tests as Flink jobs (DDL-style, backward compat)
         for test in self.project.tests:
             if test.type.value == "continuous":
                 self._compile_continuous_test(test)
+
+        # Compile test assertion jobs (simple INSERT-WHERE style)
+        from streamt.compiler.test_compiler import TestJobCompiler
+
+        for test in self.project.tests:
+            if test.type.value == "continuous":
+                job = TestJobCompiler.compile_job(test)
+                if job:
+                    self.test_jobs.append(job)
 
         # Create manifest
         manifest = self._create_manifest()
@@ -136,18 +147,14 @@ class Compiler(TypeInferenceMixin):
         if not source.schema_:
             return
 
-        # Generate subject name (topic-value is the convention)
         subject = source.schema_.subject or f"{source.topic}-value"
 
-        # Get schema definition - either inline or reference
         if source.schema_.definition:
             try:
                 schema = json.loads(source.schema_.definition)
             except json.JSONDecodeError:
-                # Assume it's already a dict-like definition
                 schema = {"type": "record", "name": source.name, "fields": []}
         else:
-            # Generate basic schema from columns if available
             schema = self._generate_schema_from_columns(source)
 
         if schema:
@@ -218,8 +225,51 @@ class Compiler(TypeInferenceMixin):
             "fields": fields,
         }
 
+    def _render_macro_sql(self, model: Model) -> str:
+        """Render a Jinja2 macro template to SQL."""
+        macro_name = model.macro
+        project_path = self.project.project_path
+
+        if project_path is None:
+            raise CompileError(
+                f"Model '{model.name}': cannot load macro '{macro_name}' without a project path"
+            )
+
+        macros_dir = project_path / "macros"
+        if not macros_dir.exists():
+            raise CompileError(
+                f"Model '{model.name}': macro '{macro_name}' referenced but no macros/ directory found"
+            )
+
+        loader = FileSystemLoader(str(macros_dir))
+        env = Environment(loader=loader, undefined=StrictUndefined)
+
+        # source() and ref() produce Jinja2-style refs for downstream processing
+        def source_fn(name: str) -> str:
+            return f'{{{{ source("{name}") }}}}'
+
+        def ref_fn(name: str) -> str:
+            return f'{{{{ ref("{name}") }}}}'
+
+        try:
+            template = env.get_template(f"{macro_name}.sql.j2")
+        except TemplateNotFound:
+            raise CompileError(
+                f"Model '{model.name}': macro file '{macro_name}.sql.j2' not found in {macros_dir}"
+            ) from None
+
+        try:
+            return template.render(source=source_fn, ref=ref_fn, **model.params)
+        except UndefinedError as e:
+            raise CompileError(f"Model '{model.name}': macro template error: {e}") from e
+
     def _compile_model(self, model: Model) -> None:
         """Compile a single model."""
+        # Resolve macro template to SQL before classification
+        if model.macro:
+            rendered_sql = self._render_macro_sql(model)
+            model = model.model_copy(update={"sql": rendered_sql, "macro": None, "params": {}})
+
         materialized = model.get_materialized()
 
         # Handle VIRTUAL_TOPIC fallback to FLINK when Gateway is not available
@@ -270,17 +320,14 @@ class Compiler(TypeInferenceMixin):
         tc = model.get_topic_config()
         virtual_topic_name = tc.name if tc and tc.name else model.name
 
-        # Get the source topic
         source_topic = self._get_source_topic(model)
         if not source_topic:
             raise CompileError(
                 f"Cannot determine source topic for virtual topic model '{model.name}'"
             )
 
-        # Build interceptors
         interceptors = []
 
-        # Add filter interceptor from SQL WHERE clause
         if model.sql:
             where_clause = self._extract_where_clause(model.sql)
             if where_clause:
@@ -291,7 +338,6 @@ class Compiler(TypeInferenceMixin):
                     }
                 )
 
-        # Add masking interceptors
         if model.security and model.security.policies:
             for policy in model.security.policies:
                 if "mask" in policy:
@@ -318,7 +364,6 @@ class Compiler(TypeInferenceMixin):
 
     def _compile_flink_model(self, model: Model) -> None:
         """Compile a Flink model."""
-        # Create output topic
         tc = model.get_topic_config()
         topic_name = tc.name if tc and tc.name else model.name
         partitions = (
@@ -338,7 +383,6 @@ class Compiler(TypeInferenceMixin):
             )
         )
 
-        # Generate Flink SQL
         flink_sql = self._generate_flink_sql(model, topic_name)
 
         self.flink_jobs.append(
@@ -367,18 +411,14 @@ class Compiler(TypeInferenceMixin):
         if not sink_config:
             raise CompileError(f"Sink model '{model.name}' has no sink configuration")
 
-        # Get source topic(s)
         source_topics = self._get_source_topics(model)
         if not source_topics:
             raise CompileError(f"Cannot determine source topics for sink model '{model.name}'")
 
-        # Get connector class
         connector_class = CONNECTOR_CLASSES.get(sink_config.connector, sink_config.connector)
 
-        # Build connector config
         config = dict(sink_config.config)
 
-        # Add masking transforms if needed
         if model.security and model.security.policies:
             transforms = []
             transform_configs = {}
@@ -420,17 +460,9 @@ class Compiler(TypeInferenceMixin):
         )
 
     def _compile_continuous_test(self, test: DataTest) -> None:
-        """Compile a continuous test as a Flink monitoring job.
-
-        Generates a Flink job that:
-        1. Reads from the model's output topic
-        2. Filters rows that violate assertions
-        3. Writes violations to _streamt_test_failures topic
-        """
-        # Get the model being tested
+        """Compile a continuous test as a Flink monitoring job."""
         model = self.project.get_model(test.model)
         if not model:
-            # Could be testing a source directly
             source = self.project.get_source(test.model)
             if not source:
                 return
@@ -442,10 +474,8 @@ class Compiler(TypeInferenceMixin):
                 if model.get_topic_config() and model.get_topic_config().name
                 else model.name
             )
-            # Extract columns from model's SQL
             columns = self._extract_select_columns(model.sql or "")
 
-        # Generate Flink SQL for monitoring
         flink_sql = self._generate_test_flink_sql(test, topic_name, columns)
 
         self.flink_jobs.append(
@@ -455,515 +485,6 @@ class Compiler(TypeInferenceMixin):
                 cluster=test.flink_cluster,
             )
         )
-
-    def _get_type_cast_expression(self, user_type: str) -> str:
-        """Map user-friendly type names to Flink SQL type expressions.
-
-        Args:
-            user_type: User-provided type name (e.g., "string", "number", "timestamp")
-
-        Returns:
-            Flink SQL type expression, or empty string if unsupported
-        """
-        type_mapping = {
-            "string": "STRING",
-            "str": "STRING",
-            "text": "STRING",
-            "number": "DOUBLE",
-            "numeric": "DOUBLE",
-            "double": "DOUBLE",
-            "float": "DOUBLE",
-            "int": "INT",
-            "integer": "INT",
-            "bigint": "BIGINT",
-            "long": "BIGINT",
-            "boolean": "BOOLEAN",
-            "bool": "BOOLEAN",
-            "timestamp": "TIMESTAMP(3)",
-            "datetime": "TIMESTAMP(3)",
-            "date": "DATE",
-            "time": "TIME",
-        }
-        return type_mapping.get(user_type.lower(), "")
-
-    def _generate_test_flink_sql(
-        self, test: DataTest, source_topic: str, columns: list[str]
-    ) -> str:
-        """Generate Flink SQL for a continuous test."""
-        bootstrap = self._get_flink_bootstrap_servers()
-        sql_parts = []
-
-        # Generate column DDL
-        if columns:
-            columns_ddl = ",\n    ".join(f"`{col}` STRING" for col in columns)
-        else:
-            columns_ddl = "`_raw` STRING"
-
-        # Source table (model output)
-        kafka = self.project.runtime.kafka
-        src_with = kafka_with_properties(
-            kafka, source_topic, bootstrap, {"scan.startup.mode": "latest-offset"}
-        )
-        sql_parts.append(
-            f"CREATE TABLE IF NOT EXISTS test_source_{test.name} (\n    {columns_ddl}\n) {src_with};"
-        )
-
-        # Failures sink table
-        fail_cols = "`test_name` STRING,\n    `violation_type` STRING,\n    `violation_details` STRING,\n    `record` STRING,\n    `detected_at` TIMESTAMP(3)"
-        fail_with = kafka_with_properties(kafka, "_streamt_test_failures", bootstrap)
-        sql_parts.append(
-            f"CREATE TABLE IF NOT EXISTS test_failures_{test.name} (\n    {fail_cols}\n) {fail_with};"
-        )
-
-        # Build WHERE clause from assertions
-        # Each tuple: (condition_sql, violation_type, column_name)
-        violation_conditions: list[tuple[str, str, str]] = []
-        for assertion in test.assertions:
-            assertion_type = list(assertion.keys())[0]
-            config = assertion[assertion_type]
-
-            if assertion_type == "not_null":
-                for col in config.get("columns", []):
-                    if col in columns:
-                        violation_conditions.append((f"`{col}` IS NULL", f"not_null:{col}", col))
-
-            elif assertion_type == "accepted_values":
-                col = config.get("column")
-                values = config.get("values", [])
-                if col and col in columns and values:
-                    values_str = ", ".join(f"'{v}'" for v in values)
-                    violation_conditions.append(
-                        (f"`{col}` NOT IN ({values_str})", f"accepted_values:{col}", col)
-                    )
-
-            elif assertion_type == "range":
-                col = config.get("column")
-                min_val = config.get("min")
-                max_val = config.get("max")
-                if col and col in columns:
-                    if min_val is not None:
-                        violation_conditions.append(
-                            (f"CAST(`{col}` AS DOUBLE) < {min_val}", f"range_min:{col}", col)
-                        )
-                    if max_val is not None:
-                        violation_conditions.append(
-                            (f"CAST(`{col}` AS DOUBLE) > {max_val}", f"range_max:{col}", col)
-                        )
-
-            elif assertion_type == "accepted_types":
-                types = config.get("types", {})
-                for col, expected_type in types.items():
-                    if col in columns:
-                        # Generate type validation condition
-                        # We try to cast to the expected type, and if it fails (returns NULL), it's a violation
-                        type_cast = self._get_type_cast_expression(expected_type)
-                        if type_cast:
-                            violation_conditions.append(
-                                (
-                                    f"TRY_CAST(`{col}` AS {type_cast}) IS NULL AND `{col}` IS NOT NULL",
-                                    f"accepted_types:{col}",
-                                    col,
-                                )
-                            )
-
-            elif assertion_type == "custom_sql":
-                # Custom SQL assertion - user provides the WHERE condition
-                name = config.get("name", "custom")
-                where_clause = config.get("where")
-                detail_column = config.get("detail_column", columns[0] if columns else "_raw")
-
-                if where_clause and detail_column in columns:
-                    violation_conditions.append((where_clause, f"custom_sql:{name}", detail_column))
-
-        # Generate INSERT statement for each violation type
-        if violation_conditions:
-            union_parts = []
-            for condition, violation_type, col_name in violation_conditions:
-                union_parts.append(f"""SELECT
-    '{test.name}' AS test_name,
-    '{violation_type}' AS violation_type,
-    CAST(`{col_name}` AS STRING) AS violation_details,
-    '' AS record,
-    CURRENT_TIMESTAMP AS detected_at
-FROM test_source_{test.name}
-WHERE {condition}""")
-
-            sql_parts.append(
-                f"INSERT INTO test_failures_{test.name}\n" + "\nUNION ALL\n".join(union_parts) + ";"
-            )
-
-        return "\n\n".join(sql_parts)
-
-    def _generate_flink_sql(self, model: Model, output_topic: str) -> str:
-        """Generate Flink SQL for a model."""
-        sql_parts = []
-
-        # Generate SET statements for Flink configuration
-        set_statements = self._generate_flink_set_statements(model)
-        if set_statements:
-            sql_parts.append(set_statements)
-
-        # Generate CREATE TABLE statements for sources
-        dependencies = self._get_model_dependencies(model)
-
-        for dep_name, dep_type in dependencies:
-            if dep_type == "source":
-                source = self.project.get_source(dep_name)
-                if source:
-                    sql_parts.append(self._generate_source_table_ddl(source, dep_name))
-            else:
-                dep_model = self.project.get_model(dep_name)
-                if dep_model:
-                    topic_name = (
-                        dep_model.get_topic_config().name
-                        if dep_model.get_topic_config() and dep_model.get_topic_config().name
-                        else dep_model.name
-                    )
-                    sql_parts.append(
-                        self._generate_model_table_ddl(dep_model, dep_name, topic_name)
-                    )
-
-        # Generate CREATE TABLE for output
-        sql_parts.append(self._generate_sink_table_ddl(model, output_topic))
-
-        # Generate INSERT statement
-        transformed_sql = self._transform_sql(model.sql or "")
-
-        # Apply masking functions if needed (AST-based with regex fallback)
-        if model.security and model.security.policies:
-            schema = self._build_source_schema(model)
-            masks = []
-            for policy in model.security.policies:
-                if "mask" in policy:
-                    mask_config = policy["mask"]
-                    masks.append({"column": mask_config["column"], "method": mask_config["method"]})
-            if masks:
-                transformed_sql = apply_masking_to_sql(transformed_sql, masks, schema)
-
-        sink_table = self._topic_to_table_name(output_topic)
-        sql_parts.append(f"INSERT INTO {sink_table}\n{transformed_sql};")
-
-        return "\n\n".join(sql_parts)
-
-    def _get_flink_bootstrap_servers(self) -> str:
-        """Get bootstrap servers for Flink (internal if available)."""
-        kafka_config = self.project.runtime.kafka
-        return kafka_config.bootstrap_servers_internal or kafka_config.bootstrap_servers
-
-    def _generate_source_table_ddl(self, source: Source, alias: str) -> str:
-        """Generate Flink CREATE TABLE DDL for a source."""
-        bootstrap = self._get_flink_bootstrap_servers()
-
-        # Generate columns from source definition
-        column_lines = []
-        if source.columns:
-            for col in source.columns:
-                # Handle proctime columns (processing time attribute)
-                if col.proctime:
-                    column_lines.append(f"`{col.name}` AS PROCTIME()")
-                # Determine column type - for event time columns, use TIMESTAMP(3)
-                elif source.event_time and col.name == source.event_time.column:
-                    column_lines.append(f"`{col.name}` TIMESTAMP(3)")
-                # Use type from YAML if specified, otherwise default to STRING
-                elif col.type:
-                    column_lines.append(f"`{col.name}` {col.type}")
-                else:
-                    column_lines.append(f"`{col.name}` STRING")
-        else:
-            column_lines.append("`_raw` STRING")
-
-        # Add watermark if event_time is configured
-        watermark_ddl = ""
-        if source.event_time:
-            watermark_ddl = self._generate_watermark_ddl(source.event_time)
-            if watermark_ddl:
-                column_lines.append(watermark_ddl)
-
-        columns = ",\n    ".join(column_lines)
-
-        kafka = self.project.runtime.kafka
-        with_clause = kafka_with_properties(
-            kafka, source.topic, bootstrap, {"scan.startup.mode": "earliest-offset"}
-        )
-        return f"CREATE TABLE IF NOT EXISTS {alias} (\n    {columns}\n) {with_clause};"
-
-    def _generate_flink_set_statements(self, model: Model) -> str:
-        """Generate SET statements for Flink job configuration."""
-        statements = []
-
-        if model.get_flink_config():
-            # Parallelism
-            if model.get_flink_config().parallelism:
-                statements.append(
-                    f"SET 'parallelism.default' = '{model.get_flink_config().parallelism}';"
-                )
-
-            # State TTL (table.exec.state.ttl)
-            if model.get_flink_config().state_ttl_ms:
-                # Convert milliseconds to Flink duration format (e.g., "24 h", "30 min", "5 s")
-                ttl_ms = model.get_flink_config().state_ttl_ms
-                if ttl_ms >= 3600000 and ttl_ms % 3600000 == 0:
-                    ttl_str = f"{ttl_ms // 3600000} h"
-                elif ttl_ms >= 60000 and ttl_ms % 60000 == 0:
-                    ttl_str = f"{ttl_ms // 60000} min"
-                elif ttl_ms >= 1000 and ttl_ms % 1000 == 0:
-                    ttl_str = f"{ttl_ms // 1000} s"
-                else:
-                    ttl_str = f"{ttl_ms} ms"
-                statements.append(f"SET 'table.exec.state.ttl' = '{ttl_str}';")
-
-            # Checkpoint interval
-            if model.get_flink_config().checkpoint_interval_ms:
-                interval_ms = model.get_flink_config().checkpoint_interval_ms
-                statements.append(f"SET 'execution.checkpointing.interval' = '{interval_ms}ms';")
-
-        return "\n".join(statements)
-
-    def _generate_watermark_ddl(self, event_time: EventTimeConfig) -> str:
-        """Generate watermark DDL clause for event time configuration."""
-        column = event_time.column
-
-        if event_time.watermark:
-            if event_time.watermark.strategy == WatermarkStrategy.MONOTONOUSLY_INCREASING:
-                return f"WATERMARK FOR `{column}` AS `{column}`"
-            else:
-                # bounded_out_of_orderness (default)
-                delay_ms = event_time.watermark.max_out_of_orderness_ms or 5000
-                delay_seconds = delay_ms / 1000
-                return f"WATERMARK FOR `{column}` AS `{column}` - INTERVAL '{int(delay_seconds)}' SECOND"
-        else:
-            # Default: 5 seconds out of orderness
-            return f"WATERMARK FOR `{column}` AS `{column}` - INTERVAL '5' SECOND"
-
-    def _generate_model_table_ddl(self, model: Model, alias: str, topic_name: str) -> str:
-        """Generate Flink CREATE TABLE DDL for a model reference."""
-        bootstrap = self._get_flink_bootstrap_servers()
-
-        # Try to infer columns with types from the upstream model's SQL SELECT clause
-        # Pass the model to enable schema resolution from source definitions
-        columns_with_types = self._extract_select_columns_with_types(model.sql or "", model=model)
-        if columns_with_types:
-            columns_ddl = ",\n    ".join(
-                f"`{col}` {col_type}" for col, col_type in columns_with_types
-            )
-        else:
-            columns_ddl = "`_raw` STRING"
-
-        kafka = self.project.runtime.kafka
-        with_clause = kafka_with_properties(
-            kafka, topic_name, bootstrap, {"scan.startup.mode": "earliest-offset"}
-        )
-        return f"CREATE TABLE IF NOT EXISTS {alias} (\n    {columns_ddl}\n) {with_clause};"
-
-    def _topic_to_table_name(self, topic_name: str) -> str:
-        """Convert topic name to valid Flink SQL table name."""
-        # Replace dots, dashes, and other special chars with underscores
-        return re.sub(r"[.\-]", "_", topic_name) + "_sink"
-
-    def _generate_sink_table_ddl(self, model: Model, topic_name: str) -> str:
-        """Generate Flink CREATE TABLE DDL for the output sink."""
-        bootstrap = self._get_flink_bootstrap_servers()
-        table_name = self._topic_to_table_name(topic_name)
-
-        # Extract columns with inferred types from SELECT clause
-        # Pass the model to enable schema resolution from source definitions
-        columns_with_types = self._extract_select_columns_with_types(model.sql or "", model=model)
-        if columns_with_types:
-            columns_ddl = ",\n    ".join(
-                f"`{col}` {col_type}" for col, col_type in columns_with_types
-            )
-        else:
-            columns_ddl = "`_raw` STRING"
-
-        # Add PRIMARY KEY constraint if declared
-        if model.primary_key and columns_with_types:
-            pk_cols = ", ".join(f"`{k}`" for k in model.primary_key)
-            columns_ddl += f",\n    PRIMARY KEY ({pk_cols}) NOT ENFORCED"
-
-        kafka = self.project.runtime.kafka
-        with_clause = kafka_with_properties(kafka, topic_name, bootstrap)
-        return f"CREATE TABLE IF NOT EXISTS {table_name} (\n    {columns_ddl}\n) {with_clause};"
-
-    def _extract_select_columns(self, sql: str) -> list[str]:
-        """Extract column names from SELECT clause."""
-        return [col for col, _ in self._extract_select_columns_with_types(sql)]
-
-    def _build_source_schema(self, model: Model) -> dict[str, str]:
-        """Build a schema dictionary from model dependencies.
-
-        Returns dict mapping column_name → Flink SQL type.
-        """
-        schema: dict[str, str] = {}
-        dependencies = self._get_model_dependencies(model)
-
-        for dep_name, dep_type in dependencies:
-            if dep_type == "source":
-                source = self.project.get_source(dep_name)
-                if source and source.columns:
-                    for col in source.columns:
-                        # Use the type from YAML, or default based on context
-                        if col.proctime:
-                            col_type = "TIMESTAMP_LTZ(3)"
-                        elif source.event_time and col.name == source.event_time.column:
-                            col_type = "TIMESTAMP(3)"
-                        elif col.type:
-                            col_type = col.type
-                        else:
-                            col_type = "STRING"
-                        schema[col.name] = col_type
-                        schema[f"{dep_name}.{col.name}"] = col_type
-            else:
-                # For model references, recursively build schema from upstream model
-                dep_model = self.project.get_model(dep_name)
-                if dep_model and dep_model.sql:
-                    # Recursively build schema for the upstream model first
-                    upstream_schema = self._build_source_schema(dep_model)
-                    # Now extract column types using the upstream schema context
-                    dep_columns = self._extract_select_columns_with_types(
-                        dep_model.sql, schema_context=upstream_schema
-                    )
-                    for col_name, col_type in dep_columns:
-                        schema[col_name] = col_type
-
-        return schema
-
-    def _transform_sql(self, sql: str) -> str:
-        """Transform Jinja SQL to plain SQL."""
-        # Replace {{ source("name") }} with table name
-        sql = re.sub(
-            r'\{\{\s*source\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}',
-            r"\1",
-            sql,
-        )
-        # Replace {{ ref("name") }} with table name
-        sql = re.sub(
-            r'\{\{\s*ref\s*\(\s*["\']([^"\']+)["\']\s*\)\s*\}\}',
-            r"\1",
-            sql,
-        )
-        return sql.strip()
-
-    def _get_source_topic(self, model: Model) -> Optional[str]:
-        """Get the source topic for a model."""
-        if model.sql and self.parser:
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            if sources:
-                source = self.project.get_source(sources[0])
-                if source:
-                    return source.topic
-            if refs:
-                ref_model = self.project.get_model(refs[0])
-                if ref_model:
-                    return (
-                        ref_model.get_topic_config().name
-                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                        else ref_model.name
-                    )
-        elif model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    source = self.project.get_source(from_ref.source)
-                    if source:
-                        return source.topic
-                if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)
-                    if ref_model:
-                        return (
-                            ref_model.get_topic_config().name
-                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                            else ref_model.name
-                        )
-        return None
-
-    def _get_source_topics(self, model: Model) -> list[str]:
-        """Get all source topics for a model."""
-        topics = []
-
-        if model.sql and self.parser:
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            for source_name in sources:
-                source = self.project.get_source(source_name)
-                if source:
-                    topics.append(source.topic)
-            for ref_name in refs:
-                ref_model = self.project.get_model(ref_name)
-                if ref_model:
-                    topics.append(
-                        ref_model.get_topic_config().name
-                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                        else ref_model.name
-                    )
-        elif model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    source = self.project.get_source(from_ref.source)
-                    if source:
-                        topics.append(source.topic)
-                if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)
-                    if ref_model:
-                        topics.append(
-                            ref_model.get_topic_config().name
-                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                            else ref_model.name
-                        )
-
-        return topics
-
-    def _get_model_dependencies(self, model: Model) -> list[tuple[str, str]]:
-        """Get model dependencies as (name, type) tuples."""
-        dependencies = []
-
-        if model.sql:
-            # Try using parser if available, otherwise extract directly with regex
-            if self.parser:
-                sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            else:
-                # Fallback: extract refs directly from SQL using regex
-                sources, refs = self._extract_refs_from_sql(model.sql)
-
-            for source_name in sources:
-                dependencies.append((source_name, "source"))
-            for ref_name in refs:
-                dependencies.append((ref_name, "model"))
-
-        if model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    dependencies.append((from_ref.source, "source"))
-                if from_ref.ref:
-                    dependencies.append((from_ref.ref, "model"))
-
-        return dependencies
-
-    def _extract_refs_from_sql(self, sql: str) -> tuple[list[str], list[str]]:
-        """Extract source and ref names from SQL using regex.
-
-        This is a fallback when parser is not available.
-        """
-        sources = []
-        refs = []
-
-        # Match {{ source('name') }} patterns
-        source_pattern = r"\{\{\s*source\s*\(\s*['\"](\w+)['\"]\s*\)\s*\}\}"
-        for match in re.finditer(source_pattern, sql):
-            sources.append(match.group(1))
-
-        # Match {{ ref('name') }} patterns
-        ref_pattern = r"\{\{\s*ref\s*\(\s*['\"](\w+)['\"]\s*\)\s*\}\}"
-        for match in re.finditer(ref_pattern, sql):
-            refs.append(match.group(1))
-
-        return sources, refs
-
-    def _extract_where_clause(self, sql: str) -> Optional[str]:
-        """Extract WHERE clause from SQL."""
-        match = re.search(
-            r"WHERE\s+(.+?)(?:GROUP BY|ORDER BY|LIMIT|$)", sql, re.IGNORECASE | re.DOTALL
-        )
-        if match:
-            return match.group(1).strip()
-        return None
 
     def _create_manifest(self) -> Manifest:
         """Create the manifest."""
@@ -979,6 +500,7 @@ WHERE {condition}""")
                 "schemas": [s.to_dict() for s in self.schemas],
                 "topics": [t.to_dict() for t in self.topics],
                 "flink_jobs": [f.to_dict() for f in self.flink_jobs],
+                "test_jobs": [j.to_dict() for j in self.test_jobs],
                 "connectors": [c.to_dict() for c in self.connectors],
                 "gateway_rules": [g.to_dict() for g in self.gateway_rules],
             },
