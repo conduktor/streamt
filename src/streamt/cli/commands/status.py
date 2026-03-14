@@ -46,6 +46,9 @@ def _deployer_section(
 @click.option("--lag", is_flag=True, help="Show consumer lag for topics")
 @click.option("--consumer-groups", is_flag=True, help="Show per-consumer-group lag")
 @click.option(
+    "--health", is_flag=True, help="Health check mode: exit 1 if any resource is MISSING or DRIFT"
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["text", "json"]),
@@ -62,6 +65,7 @@ def status(
     environment: Optional[str],
     lag: bool,
     consumer_groups: bool,
+    health: bool,
     output_format: Optional[str],
     filter_pattern: Optional[str],
 ) -> None:
@@ -369,6 +373,23 @@ def status(
             fmt.print(json.dumps(data, indent=2))
 
         fmt.flush()
+
+        if health:
+            unhealthy = (
+                any(not t["exists"] or t.get("status") == "DRIFT" for t in data.get("topics", []))
+                or any(
+                    not j["exists"] or j.get("status") != "RUNNING"
+                    for j in data.get("flink_jobs", [])
+                    if j.get("status")
+                )
+                or any(
+                    not c["exists"] or c.get("status") != "RUNNING"
+                    for c in data.get("connectors", [])
+                    if c.get("status")
+                )
+            )
+            if unhealthy:
+                raise SystemExit(1)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)

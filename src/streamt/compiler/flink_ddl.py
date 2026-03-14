@@ -32,6 +32,7 @@ def _secret(val: str | SecretStr | None) -> str | None:
         return None
     return val.get_secret_value() if isinstance(val, SecretStr) else val
 
+
 # SASL mechanism → Java login module class
 _JAAS_MODULES = {
     "PLAIN": "org.apache.kafka.common.security.plain.PlainLoginModule",
@@ -41,13 +42,19 @@ _JAAS_MODULES = {
 }
 
 
-def kafka_with_properties(kafka: KafkaConfig, topic: str, bootstrap: str, extra: dict[str, str] | None = None) -> str:
+def kafka_with_properties(
+    kafka: KafkaConfig,
+    topic: str,
+    bootstrap: str,
+    extra: dict[str, str] | None = None,
+    connector: str = "kafka",
+) -> str:
     """Build a complete Flink WITH (...) clause for a Kafka connector.
 
     Includes bootstrap.servers, auth/SSL properties, format, and any extra kv pairs.
     """
     props: list[tuple[str, str]] = [
-        ("connector", "kafka"),
+        ("connector", connector),
         ("topic", topic),
         ("properties.bootstrap.servers", bootstrap),
     ]
@@ -86,7 +93,7 @@ def _kafka_auth_properties(kafka: KafkaConfig) -> list[tuple[str, str]]:
                 "org.apache.kafka.common.security.plain.PlainLoginModule",
             )
             jaas = (
-                f'{module} required '
+                f"{module} required "
                 f'username="{kafka.sasl_username}" '
                 f'password="{_secret(kafka.sasl_password)}";'
             )

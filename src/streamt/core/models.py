@@ -274,6 +274,7 @@ class WatermarkStrategy(str, Enum):
 
     BOUNDED_OUT_OF_ORDERNESS = "bounded_out_of_orderness"
     MONOTONOUSLY_INCREASING = "monotonously_increasing"
+    CUSTOM = "custom"
 
 
 class WatermarkConfig(BaseModel):
@@ -281,6 +282,7 @@ class WatermarkConfig(BaseModel):
 
     strategy: WatermarkStrategy = WatermarkStrategy.BOUNDED_OUT_OF_ORDERNESS
     max_out_of_orderness_ms: Optional[int] = 5000  # 5 seconds default
+    expression: Optional[str] = None  # Raw SQL for strategy=custom
 
 
 class EventTimeConfig(BaseModel):
@@ -329,13 +331,41 @@ class TopicConfig(BaseModel):
     config: dict[str, object] = Field(default_factory=dict)
 
 
+class CheckpointConfig(BaseModel):
+    """Advanced checkpointing configuration."""
+
+    timeout_ms: Optional[int] = None
+    min_pause_ms: Optional[int] = None
+    max_concurrent: Optional[int] = None
+    mode: Optional[str] = None  # EXACTLY_ONCE | AT_LEAST_ONCE
+    externalized: Optional[str] = None  # RETAIN_ON_CANCELLATION | DELETE_ON_CANCELLATION
+    unaligned: Optional[bool] = None
+    incremental: Optional[bool] = None
+
+
+class RestartStrategyConfig(BaseModel):
+    """Restart strategy configuration."""
+
+    type: str = "fixed-delay"  # fixed-delay | failure-rate | exponential-delay | none
+    attempts: Optional[int] = None  # fixed-delay
+    delay_ms: Optional[int] = None  # fixed-delay, failure-rate
+    max_failures_per_interval: Optional[int] = None  # failure-rate
+    failure_rate_interval_ms: Optional[int] = None  # failure-rate
+    initial_backoff_ms: Optional[int] = None  # exponential-delay
+    max_backoff_ms: Optional[int] = None  # exponential-delay
+    backoff_multiplier: Optional[float] = None  # exponential-delay
+
+
 class FlinkJobConfig(BaseModel):
     """Flink job configuration."""
 
     parallelism: Optional[int] = None
     checkpoint_interval_ms: Optional[int] = None
+    checkpoint: Optional[CheckpointConfig] = None
     state_backend: Optional[str] = None
-    state_ttl_ms: Optional[int] = None  # Time-to-live for state entries
+    state_ttl_ms: Optional[int] = None
+    restart_strategy: Optional[RestartStrategyConfig] = None
+    changelog_mode: Optional[str] = None  # append | upsert
 
 
 class SinkConfig(BaseModel):
@@ -794,6 +824,14 @@ class SLAConfig(BaseModel):
     max_lag_messages: Optional[int] = None
     max_error_rate: Optional[float] = None
     max_lag_minutes: Optional[int] = None
+    freshness_minutes: Optional[int] = None
+
+    @field_validator("max_error_rate", mode="before")
+    @classmethod
+    def validate_error_rate(cls, v: float | None) -> float | None:
+        if v is not None and not 0 <= v <= 1:
+            raise ValueError(f"max_error_rate must be between 0 and 1, got {v}")
+        return v
 
 
 class ContractConfig(BaseModel):

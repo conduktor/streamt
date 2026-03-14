@@ -233,43 +233,97 @@ WHERE {condition}""")
 
     def _generate_flink_set_statements(self, model: Model) -> str:
         """Generate SET statements for Flink job configuration."""
-        statements = []
+        fc = model.get_flink_config()
+        if not fc:
+            return ""
+        stmts: list[str] = []
 
-        if model.get_flink_config():
-            if model.get_flink_config().parallelism:
-                statements.append(
-                    f"SET 'parallelism.default' = '{model.get_flink_config().parallelism}';"
-                )
+        def _set(key: str, val: object) -> None:
+            stmts.append(f"SET '{key}' = '{val}';")
 
-            if model.get_flink_config().state_ttl_ms:
-                ttl_ms = model.get_flink_config().state_ttl_ms
-                if ttl_ms >= 3600000 and ttl_ms % 3600000 == 0:
-                    ttl_str = f"{ttl_ms // 3600000} h"
-                elif ttl_ms >= 60000 and ttl_ms % 60000 == 0:
-                    ttl_str = f"{ttl_ms // 60000} min"
-                elif ttl_ms >= 1000 and ttl_ms % 1000 == 0:
-                    ttl_str = f"{ttl_ms // 1000} s"
-                else:
-                    ttl_str = f"{ttl_ms} ms"
-                statements.append(f"SET 'table.exec.state.ttl' = '{ttl_str}';")
+        if fc.parallelism:
+            _set("parallelism.default", fc.parallelism)
+        if fc.state_ttl_ms:
+            ms = fc.state_ttl_ms
+            if ms >= 3600000 and ms % 3600000 == 0:
+                ttl = f"{ms // 3600000} h"
+            elif ms >= 60000 and ms % 60000 == 0:
+                ttl = f"{ms // 60000} min"
+            elif ms >= 1000 and ms % 1000 == 0:
+                ttl = f"{ms // 1000} s"
+            else:
+                ttl = f"{ms} ms"
+            _set("table.exec.state.ttl", ttl)
+        if fc.state_backend:
+            _set("state.backend", fc.state_backend)
+        if fc.checkpoint_interval_ms:
+            _set("execution.checkpointing.interval", f"{fc.checkpoint_interval_ms}ms")
 
-            if model.get_flink_config().state_backend:
-                statements.append(
-                    f"SET 'state.backend' = '{model.get_flink_config().state_backend}';"
-                )
+        # Advanced checkpointing
+        if fc.checkpoint:
+            cp = fc.checkpoint
+            if cp.timeout_ms is not None:
+                _set("execution.checkpointing.timeout", f"{cp.timeout_ms}ms")
+            if cp.min_pause_ms is not None:
+                _set("execution.checkpointing.min-pause", f"{cp.min_pause_ms}ms")
+            if cp.max_concurrent is not None:
+                _set("execution.checkpointing.max-concurrent-checkpoints", cp.max_concurrent)
+            if cp.mode:
+                _set("execution.checkpointing.mode", cp.mode)
+            if cp.externalized:
+                _set("execution.checkpointing.externalized-checkpoint-retention", cp.externalized)
+            if cp.unaligned is not None:
+                _set("execution.checkpointing.unaligned.enabled", str(cp.unaligned).lower())
+            if cp.incremental is not None:
+                _set("state.backend.incremental", str(cp.incremental).lower())
 
-            if model.get_flink_config().checkpoint_interval_ms:
-                interval_ms = model.get_flink_config().checkpoint_interval_ms
-                statements.append(f"SET 'execution.checkpointing.interval' = '{interval_ms}ms';")
+        # Restart strategy
+        if fc.restart_strategy:
+            rs = fc.restart_strategy
+            _set("restart-strategy.type", rs.type)
+            if rs.type == "fixed-delay":
+                if rs.attempts is not None:
+                    _set("restart-strategy.fixed-delay.attempts", rs.attempts)
+                if rs.delay_ms is not None:
+                    _set("restart-strategy.fixed-delay.delay", f"{rs.delay_ms}ms")
+            elif rs.type == "failure-rate":
+                if rs.max_failures_per_interval is not None:
+                    _set(
+                        "restart-strategy.failure-rate.max-failures-per-interval",
+                        rs.max_failures_per_interval,
+                    )
+                if rs.failure_rate_interval_ms is not None:
+                    _set(
+                        "restart-strategy.failure-rate.failure-rate-interval",
+                        f"{rs.failure_rate_interval_ms}ms",
+                    )
+                if rs.delay_ms is not None:
+                    _set("restart-strategy.failure-rate.delay", f"{rs.delay_ms}ms")
+            elif rs.type == "exponential-delay":
+                if rs.initial_backoff_ms is not None:
+                    _set(
+                        "restart-strategy.exponential-delay.initial-backoff",
+                        f"{rs.initial_backoff_ms}ms",
+                    )
+                if rs.max_backoff_ms is not None:
+                    _set("restart-strategy.exponential-delay.max-backoff", f"{rs.max_backoff_ms}ms")
+                if rs.backoff_multiplier is not None:
+                    _set(
+                        "restart-strategy.exponential-delay.backoff-multiplier",
+                        rs.backoff_multiplier,
+                    )
 
-        return "\n".join(statements)
+        return "\n".join(stmts)
 
     def _generate_watermark_ddl(self, event_time: EventTimeConfig) -> str:
         """Generate watermark DDL clause for event time configuration."""
         column = event_time.column
 
         if event_time.watermark:
-            if event_time.watermark.strategy == WatermarkStrategy.MONOTONOUSLY_INCREASING:
+            if event_time.watermark.strategy == WatermarkStrategy.CUSTOM:
+                expr = event_time.watermark.expression or f"`{column}`"
+                return f"WATERMARK FOR `{column}` AS {expr}"
+            elif event_time.watermark.strategy == WatermarkStrategy.MONOTONOUSLY_INCREASING:
                 return f"WATERMARK FOR `{column}` AS `{column}`"
             else:
                 delay_ms = event_time.watermark.max_out_of_orderness_ms or 5000
@@ -318,7 +372,15 @@ WHERE {condition}""")
             columns_ddl += f",\n    PRIMARY KEY ({pk_cols}) NOT ENFORCED"
 
         kafka = self.project.runtime.kafka  # type: ignore[attr-defined]
-        with_clause = kafka_with_properties(kafka, topic_name, bootstrap)
+        fc = model.get_flink_config()
+        extra: dict[str, str] = {}
+        connector = "kafka"
+        if fc and fc.changelog_mode == "upsert":
+            connector = "upsert-kafka"
+            extra["key.format"] = "json"
+        with_clause = kafka_with_properties(
+            kafka, topic_name, bootstrap, extra, connector=connector
+        )
         return f"CREATE TABLE IF NOT EXISTS {table_name} (\n    {columns_ddl}\n) {with_clause};"
 
     def _extract_select_columns(self, sql: str) -> list[str]:
