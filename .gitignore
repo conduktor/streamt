@@ -53,6 +53,10 @@ site/
 # Orchestrator analysis (implementation detail)
 .orchestrator/
 
+# Reliability reports and migration findings (generated, not source)
+.reliability-reports/
+MIGRATION_FINDINGS.md
+
 # OS
 .DS_Store
 Thumbs.db
