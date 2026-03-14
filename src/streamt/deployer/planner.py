@@ -372,8 +372,9 @@ class DeploymentPlanner:
         # Declared consumer groups from project exposures
         declared_groups: set[str] = set()
         for exposure in getattr(self.project, "exposures", []):
-            for owner in getattr(exposure, "owners", []):
-                declared_groups.add(owner)
+            cg = getattr(exposure, "consumer_group", None)
+            if cg:
+                declared_groups.add(cg)
 
         for topic_name in changed_topics:
             # Find downstream models (those that depend on this topic)

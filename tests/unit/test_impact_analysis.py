@@ -244,3 +244,66 @@ class TestPlanOutputIncludesImpact:
         # Plan details() or a to_dict() method should include impact
         detail = plan.details()
         assert "impact" in detail.lower() or isinstance(plan.impact_radius, list)
+
+
+class TestDeclaredConsumerGroupMatching:
+    """exposure.consumer_group matches live consumer groups → declared=True."""
+
+    def test_declared_consumer_group_flagged_as_declared(self):
+        """Consumer group declared in exposure.consumer_group is marked declared=True."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from streamt.core.parser import ProjectParser
+        from streamt.deployer.kafka import ConsumerGroupLag
+        from streamt.deployer.planner import DeploymentPlanner
+
+        cfg = {
+            "project": {"name": "test", "version": "1.0.0"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            "sources": [{"name": "raw", "topic": "raw.v1"}],
+            "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
+            "exposures": [
+                {
+                    "name": "fraud_service",
+                    "type": "application",
+                    "consumer_group": "fraud-prod",  # declared in project
+                    "consumes": [{"ref": "clean"}],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
+            project = ProjectParser(Path(d)).parse()
+
+        manifest = _make_manifest()
+        lag = ConsumerGroupLag(group_id="fraud-prod", topic="clean", total_lag=100)
+        kafka_mock = MagicMock()
+        kafka_mock.get_consumer_groups.return_value = ["fraud-prod", "unknown-svc"]
+        kafka_mock.get_consumer_group_lag.side_effect = lambda g, t: (
+            lag if (g, t) == ("fraud-prod", "clean") else None
+        )
+
+        planner = DeploymentPlanner(manifest=manifest, project=project, kafka_deployer=kafka_mock)
+        plan = planner.plan()
+
+        for entry in plan.impact_radius:
+            if entry.resource == "clean":
+                for consumer in entry.consumers:
+                    if consumer["group_id"] == "fraud-prod":
+                        assert consumer["declared"] is True, (
+                            "Known consumer group should be declared=True"
+                        )
+                    if consumer["group_id"] == "unknown-svc":
+                        assert consumer["declared"] is False
+
+    def test_project_none_produces_empty_impact_radius(self):
+        """DeploymentPlanner with project=None skips impact analysis entirely."""
+        from streamt.deployer.planner import DeploymentPlanner
+
+        manifest = _make_manifest(topics=[{"name": "payments"}])
+        planner = DeploymentPlanner(manifest=manifest, project=None)
+        plan = planner.plan()
+        assert plan.impact_radius == []

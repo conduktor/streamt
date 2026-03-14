@@ -287,3 +287,91 @@ class TestContractBreakingChangeDetection:
                 if "BREAKING" in m.code or "breaking" in m.message.lower()
             ]
             assert len(breaking) >= 1
+
+    def test_no_breaking_change_when_exposure_columns_all_in_contract(self):
+        """No breaking change warning when all exposure columns are present in the contract."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {
+                **BASE,
+                "models": [
+                    {
+                        "name": "payments_clean",
+                        "sql": 'SELECT id FROM {{ source("raw") }}',
+                        "contract": {
+                            "enforced": True,
+                            "columns": [
+                                {"name": "id", "type": "STRING"},
+                                {"name": "amount", "type": "STRING"},
+                            ],
+                        },
+                    }
+                ],
+                "exposures": [
+                    {
+                        "name": "fraud_service",
+                        "type": "application",
+                        "consumes": [{"ref": "payments_clean"}],
+                        "columns": [{"name": "id"}, {"name": "amount"}],  # both in contract
+                    }
+                ],
+            }
+            project = _parse(d, cfg)
+            result = ProjectValidator(project).validate()
+            breaking = [
+                m
+                for m in result.messages
+                if "BREAKING" in m.code or "breaking" in m.message.lower()
+            ]
+            assert breaking == [], f"Unexpected breaking change warnings: {breaking}"
+
+    def test_non_enforced_missing_column_is_warning_not_error(self):
+        """enforced: false → missing contract column is a warning, not an error."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {
+                **BASE,
+                "models": [
+                    {
+                        "name": "clean",
+                        "sql": 'SELECT id FROM {{ source("raw") }}',
+                        "contract": {
+                            "enforced": False,
+                            "columns": [
+                                {"name": "id", "type": "STRING"},
+                                {"name": "phantom_col", "type": "INT"},  # missing from SQL
+                            ],
+                        },
+                    }
+                ],
+            }
+            project = _parse(d, cfg)
+            result = ProjectValidator(project).validate()
+            assert result.is_valid, "Non-enforced contract should not block validation"
+            missing_warns = [w for w in result.warnings if "phantom_col" in w.message]
+            assert len(missing_warns) >= 1
+
+    def test_multiple_contract_violations_all_reported(self):
+        """All contract column violations are reported, not just the first."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {
+                **BASE,
+                "models": [
+                    {
+                        "name": "clean",
+                        "sql": 'SELECT id FROM {{ source("raw") }}',
+                        "contract": {
+                            "enforced": True,
+                            "columns": [
+                                {"name": "id", "type": "STRING"},
+                                {"name": "col_a", "type": "INT"},  # missing
+                                {"name": "col_b", "type": "BIGINT"},  # missing
+                            ],
+                        },
+                    }
+                ],
+            }
+            project = _parse(d, cfg)
+            result = ProjectValidator(project).validate()
+            contract_errors = [e for e in result.errors if "CONTRACT" in e.code]
+            missing_cols = {e.message for e in contract_errors}
+            assert any("col_a" in m for m in missing_cols)
+            assert any("col_b" in m for m in missing_cols)

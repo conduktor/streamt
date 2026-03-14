@@ -42,10 +42,10 @@ class TestTestCompilerSQL:
         return TestJobCompiler
 
     def test_not_null_single_column_generates_where_clause(self):
-        """not_null on one column → WHERE col IS NULL filter in generated SQL."""
+        """not_null on one column → WHERE `col` IS NULL filter in generated SQL."""
         TestJobCompiler = self._get_test_compiler()
         sql = TestJobCompiler.assertion_to_where_clause({"not_null": {"columns": ["payment_id"]}})
-        assert "payment_id IS NULL" in sql
+        assert "`payment_id` IS NULL" in sql
 
     def test_not_null_multiple_columns_joined_with_or(self):
         """not_null on multiple columns → multiple IS NULL conditions OR-joined."""
@@ -53,9 +53,9 @@ class TestTestCompilerSQL:
         sql = TestJobCompiler.assertion_to_where_clause(
             {"not_null": {"columns": ["payment_id", "amount", "status"]}}
         )
-        assert "payment_id IS NULL" in sql
-        assert "amount IS NULL" in sql
-        assert "status IS NULL" in sql
+        assert "`payment_id` IS NULL" in sql
+        assert "`amount` IS NULL" in sql
+        assert "`status` IS NULL" in sql
         assert " OR " in sql
 
     def test_range_min_only(self):
@@ -92,8 +92,8 @@ class TestTestCompilerSQL:
             {"range": {"column": "amount", "min": 0}},
         ]
         sql = TestJobCompiler.assertions_to_where_clause(assertions)
-        assert "payment_id IS NULL" in sql
-        assert "amount" in sql
+        assert "`payment_id` IS NULL" in sql
+        assert "`amount`" in sql
         assert " OR " in sql
 
     def test_unknown_assertion_raises(self):
@@ -101,6 +101,62 @@ class TestTestCompilerSQL:
         TestJobCompiler = self._get_test_compiler()
         with pytest.raises((ValueError, NotImplementedError)):
             TestJobCompiler.assertion_to_where_clause({"future_assertion": {"col": "x"}})
+
+    def test_reserved_keyword_column_is_backtick_quoted(self):
+        """Column names that are SQL reserved keywords are backtick-quoted."""
+        TestJobCompiler = self._get_test_compiler()
+        # 'value', 'status', 'timestamp' are Flink SQL reserved keywords
+        sql = TestJobCompiler.assertion_to_where_clause(
+            {"not_null": {"columns": ["value", "status", "timestamp"]}}
+        )
+        assert "`value` IS NULL" in sql
+        assert "`status` IS NULL" in sql
+        assert "`timestamp` IS NULL" in sql
+
+    def test_range_column_is_backtick_quoted(self):
+        """Range assertion column name is backtick-quoted in generated SQL."""
+        TestJobCompiler = self._get_test_compiler()
+        sql = TestJobCompiler.assertion_to_where_clause(
+            {"range": {"column": "value", "min": 0, "max": 100}}
+        )
+        assert "`value` <" in sql or "`value` >" in sql
+
+    def test_only_unsupported_assertions_returns_none(self):
+        """compile_job returns None when all assertions are unsupported types."""
+        from streamt.compiler.test_compiler import TestJobCompiler
+
+        mock_test = type(
+            "T",
+            (),
+            {
+                "name": "t",
+                "model": "m",
+                "assertions": [{"custom_sql": {"name": "c", "where": "x > 1"}}],
+            },
+        )()
+        result = TestJobCompiler.compile_job(mock_test)
+        assert result is None
+
+    def test_mixed_supported_unsupported_assertions_uses_supported_only(self):
+        """compile_job filters out unsupported assertion types, uses supported ones."""
+        from streamt.compiler.test_compiler import TestJobCompiler
+
+        mock_test = type(
+            "T",
+            (),
+            {
+                "name": "t",
+                "model": "m",
+                "flink_cluster": None,
+                "assertions": [
+                    {"custom_sql": {"name": "c", "where": "x > 1"}},  # unsupported
+                    {"not_null": {"columns": ["id"]}},  # supported
+                ],
+            },
+        )()
+        result = TestJobCompiler.compile_job(mock_test)
+        assert result is not None
+        assert "`id` IS NULL" in result.sql
 
 
 class TestTestCompilerJobGeneration:
@@ -159,7 +215,7 @@ class TestTestCompilerJobGeneration:
             assert test_jobs
             job = test_jobs[0]
             sql = job.get("sql") if isinstance(job, dict) else job.sql
-            assert "payment_id IS NULL" in sql
+            assert "`payment_id` IS NULL" in sql
 
     def test_test_job_sql_inserts_into_failures_topic(self):
         """Generated SQL inserts violations into __streamt_test_failures__ topic."""

@@ -27,7 +27,7 @@ class TestJobCompiler:
             columns = config.get("columns", [])
             if not columns:
                 raise ValueError("not_null assertion requires at least one column")
-            return " OR ".join(f"{col} IS NULL" for col in columns)
+            return " OR ".join(f"`{col}` IS NULL" for col in columns)
 
         if assertion_type == "range":
             col = config.get("column")
@@ -37,9 +37,9 @@ class TestJobCompiler:
             max_val = config.get("max")
             conditions = []
             if min_val is not None:
-                conditions.append(f"{col} < {min_val}")
+                conditions.append(f"`{col}` < {min_val}")
             if max_val is not None:
-                conditions.append(f"{col} > {max_val}")
+                conditions.append(f"`{col}` > {max_val}")
             if not conditions:
                 raise ValueError("range assertion requires at least 'min' or 'max'")
             return " OR ".join(conditions)
