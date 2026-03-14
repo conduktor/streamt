@@ -8,6 +8,7 @@ from streamt import __version__
 
 from .commands import (
     apply,
+    build,
     compile,
     diff,
     docs,
@@ -67,4 +68,5 @@ main.add_command(show.show_resource, name="show")
 main.add_command(docs.docs)
 main.add_command(envs.envs)
 main.add_command(diff.diff_resources, name="diff")
+main.add_command(build.build)
 main.add_command(init.init)
