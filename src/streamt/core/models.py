@@ -111,10 +111,12 @@ class TopicRules(BaseModel):
     min_partitions: Optional[int] = None
     max_partitions: Optional[int] = None
     min_replication_factor: Optional[int] = None
+    max_replication_factor: Optional[int] = None
     max_retention_ms: Optional[int] = None
     required_config: list[str] = Field(default_factory=list)
     naming_pattern: Optional[str] = None
     forbidden_prefixes: list[str] = Field(default_factory=list)
+    forbidden_suffixes: list[str] = Field(default_factory=list)
 
 
 class ModelRules(BaseModel):

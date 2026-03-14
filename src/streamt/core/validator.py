@@ -664,35 +664,58 @@ class ProjectValidator:
         if rules.security:
             self._validate_security_rules(rules.security)
 
+    def _check_range(
+        self, name: str, val: Optional[int], limit: int, op: str, rule: str, code: str
+    ) -> None:
+        if val is not None and ((op == ">=" and val < limit) or (op == "<=" and val > limit)):
+            self.result.add_error(
+                code,
+                f"Model '{name}' violates rule 'topics.{rule}': expected {op} {limit}, got {val}",
+            )
+
     def _validate_topic_rules(self, model: Model, rules: TopicRules) -> None:
         """Validate topic rules for a model."""
-        topic_config = model.get_topic_config()
+        tc = model.get_topic_config()
+        partitions = tc.partitions if tc else None
+        rf = tc.replication_factor if tc else None
         if rules.min_partitions is not None:
-            partitions = topic_config.partitions if topic_config else None
-            if partitions is not None and partitions < rules.min_partitions:
-                self.result.add_error(
-                    "RULE_MIN_PARTITIONS",
-                    f"Model '{model.name}' violates rule 'topics.min_partitions': "
-                    f"expected >= {rules.min_partitions}, got {partitions}",
-                )
+            self._check_range(
+                model.name,
+                partitions,
+                rules.min_partitions,
+                ">=",
+                "min_partitions",
+                "RULE_MIN_PARTITIONS",
+            )
         if rules.max_partitions is not None:
-            partitions = topic_config.partitions if topic_config else None
-            if partitions is not None and partitions > rules.max_partitions:
-                self.result.add_error(
-                    "RULE_MAX_PARTITIONS",
-                    f"Model '{model.name}' violates rule 'topics.max_partitions': "
-                    f"expected <= {rules.max_partitions}, got {partitions}",
-                )
+            self._check_range(
+                model.name,
+                partitions,
+                rules.max_partitions,
+                "<=",
+                "max_partitions",
+                "RULE_MAX_PARTITIONS",
+            )
         if rules.min_replication_factor is not None:
-            rf = topic_config.replication_factor if topic_config else None
-            if rf is not None and rf < rules.min_replication_factor:
-                self.result.add_error(
-                    "RULE_MIN_REPLICATION",
-                    f"Model '{model.name}' violates rule 'topics.min_replication_factor': "
-                    f"expected >= {rules.min_replication_factor}, got {rf}",
-                )
-        if rules.max_retention_ms is not None and topic_config:
-            retention = topic_config.config.get("retention.ms") if topic_config.config else None
+            self._check_range(
+                model.name,
+                rf,
+                rules.min_replication_factor,
+                ">=",
+                "min_replication_factor",
+                "RULE_MIN_REPLICATION",
+            )
+        if rules.max_replication_factor is not None:
+            self._check_range(
+                model.name,
+                rf,
+                rules.max_replication_factor,
+                "<=",
+                "max_replication_factor",
+                "RULE_MAX_REPLICATION",
+            )
+        if rules.max_retention_ms is not None and tc:
+            retention = tc.config.get("retention.ms") if tc.config else None
             if retention is not None:
                 try:
                     retention_val = int(retention)
@@ -704,22 +727,24 @@ class ProjectValidator:
                         )
                 except (ValueError, TypeError):
                     pass
-
-        if rules.naming_pattern:
-            topic_name = topic_config.name if topic_config and topic_config.name else model.name
-            if not re.match(rules.naming_pattern, topic_name):
+        topic_name = tc.name if tc and tc.name else model.name
+        if rules.naming_pattern and not re.match(rules.naming_pattern, topic_name):
+            self.result.add_error(
+                "RULE_NAMING_PATTERN",
+                f"Topic name '{topic_name}' does not match pattern '{rules.naming_pattern}'",
+            )
+        for prefix in rules.forbidden_prefixes:
+            if topic_name.startswith(prefix):
                 self.result.add_error(
-                    "RULE_NAMING_PATTERN",
-                    f"Topic name '{topic_name}' does not match pattern '{rules.naming_pattern}'",
+                    "RULE_FORBIDDEN_PREFIX",
+                    f"Topic name '{topic_name}' has forbidden prefix '{prefix}'",
                 )
-        if rules.forbidden_prefixes:
-            topic_name = topic_config.name if topic_config and topic_config.name else model.name
-            for prefix in rules.forbidden_prefixes:
-                if topic_name.startswith(prefix):
-                    self.result.add_error(
-                        "RULE_FORBIDDEN_PREFIX",
-                        f"Topic name '{topic_name}' has forbidden prefix '{prefix}'",
-                    )
+        for suffix in rules.forbidden_suffixes:
+            if topic_name.endswith(suffix):
+                self.result.add_error(
+                    "RULE_FORBIDDEN_SUFFIX",
+                    f"Topic name '{topic_name}' has forbidden suffix '{suffix}'",
+                )
 
     def _validate_model_rules(self, model: Model, rules: ModelRules) -> None:
         """Validate model rules."""
