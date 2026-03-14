@@ -5,7 +5,8 @@ Unimplemented features and planned work.
 ## Production Readiness
 
 - [ ] Flink savepoint handling — graceful upgrades without data loss; trigger savepoints on upgrade, restore from savepoint
-- [ ] HTTP response validation — check status before `.json()` calls in deployers
+- [x] HTTP response validation — Flink polling checks HTTP status before `.json()` calls
+- [ ] HTTP response validation — remaining deployers (Connect, SR, Gateway)
 - [ ] Input validation — Pydantic validators for URLs, topic names, bootstrap servers
 
 ## Core Features
@@ -41,12 +42,12 @@ Unimplemented features and planned work.
 - [ ] Test failure handlers — `on_failure` actions: alert (Slack/PagerDuty), pause model, route to DLQ, block deployment
 - [ ] Global credentials/connections — define Snowflake, S3, etc. once and reference everywhere
 - [ ] `streamt build` — generate self-contained deployable artifacts (topics JSON, Flink SQL, connector configs, manifest with checksums) for debugging, auditing, air-gapped deployments
-- [ ] `streamt diff` — standalone diff between local and deployed state (currently available as `streamt show --diff`)
+- [x] `streamt diff` — standalone diff between local and deployed state
 - [ ] `streamt status --health` — health checks with configurable thresholds
 
 ## Flink Options
 
-`state_backend` is parsed from YAML but not yet applied to Flink jobs (cluster config determines it).
+`state_backend` is parsed and applied as `SET 'execution.state-backend'` in generated Flink SQL.
 
 Not yet implemented:
 
@@ -62,8 +63,8 @@ Not yet implemented:
 
 ## Governance Rules
 
-- [ ] `max_replication_factor` — maximum replication factor enforcement
-- [ ] `forbidden_suffixes` — disallowed topic name suffixes (complement to existing `forbidden_prefixes`)
+- [x] `max_replication_factor` — maximum replication factor enforcement
+- [x] `forbidden_suffixes` — disallowed topic name suffixes (complement to existing `forbidden_prefixes`)
 
 ## Data Governance
 
