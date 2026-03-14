@@ -79,6 +79,47 @@ def _avro_type_to_flink(avro_type: object) -> str:
     return mapping.get(str(avro_type), "STRING")
 
 
+def _json_schema_type_to_flink(prop: dict) -> str:
+    """Convert JSON Schema property to Flink SQL type string."""
+    fmt = prop.get("format")
+    if fmt == "date-time":
+        return "TIMESTAMP(3)"
+    if fmt == "date":
+        return "DATE"
+    js_type = prop.get("type", "string")
+    if isinstance(js_type, list):
+        non_null = [t for t in js_type if t != "null"]
+        js_type = non_null[0] if non_null else "string"
+    mapping = {
+        "string": "STRING",
+        "integer": "INT",
+        "number": "DOUBLE",
+        "boolean": "BOOLEAN",
+    }
+    return mapping.get(js_type, "STRING")
+
+
+def _extract_columns_from_json_schema(schema: dict) -> list[dict]:
+    """Extract columns from a JSON Schema."""
+    columns = []
+    properties = schema.get("properties", {})
+    required_fields = set(schema.get("required", []))
+    for name, prop in properties.items():
+        if not isinstance(prop, dict):
+            continue
+        col: dict[str, object] = {
+            "name": name,
+            "type": _json_schema_type_to_flink(prop),
+        }
+        desc = prop.get("description")
+        if desc:
+            col["description"] = desc
+        if name in required_fields:
+            col["required"] = True
+        columns.append(col)
+    return columns
+
+
 def _extract_columns_from_avro(schema: dict) -> list[dict]:
     """Extract columns from an Avro schema."""
     columns = []
@@ -311,10 +352,15 @@ def _init_discover(
             try:
                 schema_state = sr_deployer.get_schema_state(f"{topic}-value")
                 if schema_state.exists and schema_state.schema:
+                    columns: list[dict] = []
                     if schema_state.schema_type == "AVRO" and "fields" in schema_state.schema:
                         columns = _extract_columns_from_avro(schema_state.schema)
-                        if columns:
-                            source_def["columns"] = columns
+                    elif schema_state.schema_type == "JSON" and "properties" in schema_state.schema:
+                        columns = _extract_columns_from_json_schema(schema_state.schema)
+                    elif schema_state.schema_type == "PROTOBUF":
+                        logger.debug("Protobuf schema for '%s' — skipping column extraction", topic)
+                    if columns:
+                        source_def["columns"] = columns
             except Exception as e:
                 logger.debug("Schema discovery failed for topic '%s': %s", topic, e)
 
