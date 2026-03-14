@@ -376,28 +376,6 @@ tests:
              └─────────────┘           └─────────────┘           └─────────────┘
 ```
 
-## Current Status
-
-**Alpha** — Core functionality works, but not production-tested yet.
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| YAML parsing & validation | Stable | Pydantic models, governance rules |
-| DAG & lineage | Stable | Automatic from SQL refs |
-| SQL parsing & type inference | Stable | sqlglot-based with custom Flink dialect |
-| Automatic backend selection | Stable | Auto-detects stateless vs stateful SQL |
-| Kafka topic deployment | Stable | Create, update partitions, config |
-| Schema Registry | Stable | Avro/JSON/Protobuf, compatibility checks |
-| Flink job generation | Works | SQL generation, REST API deployment |
-| Flink job upgrades | Basic | No savepoint handling yet |
-| Connect deployment | Works | Connector CRUD via REST |
-| Auth/SSL | Stable | SASL, SSL, mTLS, basic auth, Bearer tokens |
-| Testing framework | Works | Schema, sample, continuous tests |
-| Continuous tests | Works | Flink-based monitoring, real-time violations |
-| ML_PREDICT/ML_EVALUATE | Works | Confluent Cloud Flink only |
-| CI/CD pipeline | Works | GitHub Actions for tests and linting |
-| Multi-environment | Stable | Dev/staging/prod profiles, protected envs |
-
 ## License
 
 Apache 2.0
