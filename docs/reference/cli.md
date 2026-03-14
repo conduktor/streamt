@@ -897,7 +897,7 @@ The following commands and options are planned:
 | `streamt diff` | Show diff between local and deployed | Planned |
 | `streamt build` | Generate deployable artifacts | Planned |
 
-See the [roadmap](https://github.com/conduktor/streamt#roadmap) for the full list of planned features.
+See [TODO.md](https://github.com/conduktor/streamt/blob/main/TODO.md) for the full list of planned features.
 
 ## See Also
 

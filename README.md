@@ -398,61 +398,6 @@ tests:
 | CI/CD pipeline | ✅ Works | GitHub Actions for tests and linting |
 | Multi-environment | ✅ Stable | Dev/staging/prod profiles, protected envs |
 
-### What's Missing for Production
-
-- **Flink savepoint handling** — Graceful upgrades without data loss
-- **HTTP response validation** — Add checks before `.json()` calls
-- **Input validation** — Pydantic validators for URLs, topic names, bootstrap servers
-
-## Roadmap
-
-### High Value
-
-- [x] Basic test assertions — `not_null`, `accepted_values`, `range`, `accepted_types`, `custom_sql` (continuous tests)
-- [x] Hide implementation details — Simple YAML surface; `advanced:` section for framework control
-- [x] Multi-environment support — dev/staging/prod profiles with protected environments
-- [ ] Advanced test assertions — `unique_key`, `foreign_key`, `distribution`, `max_lag`, `throughput` (require windowing/aggregation)
-- [ ] Test failure handlers — `on_failure` actions (alert to Slack/PagerDuty, pause model, route to DLQ, block deployment)
-- [x] DLQ support — Dead Letter Queue for failed messages (auto-created by compiler)
-- [ ] Flink savepoint handling — Graceful upgrades without data loss
-- [ ] Global credentials/connections — Define Snowflake, S3, etc. once and reference everywhere
-
-### Operational
-
-- [ ] Build artifacts — `streamt build` generates deployable artifacts for debugging, auditing, air-gapped deployments ([spec](docs/specs/build-artifacts.md))
-- [ ] Prometheus/OpenTelemetry integration — Metrics and alerting
-- [ ] Kubernetes Flink operator support — Native K8s deployment
-- [ ] CI/CD GitHub Actions templates — Automation for deploy pipelines
-- [ ] Curated connector library — Tested configs for Postgres, Snowflake, S3
-- [x] CLI: `streamt init` — Initialize new project from template
-- [x] CLI: `streamt init --discover` — Bootstrap config from existing Kafka/SR infrastructure ([spec](docs/specs/init-command.md))
-- [ ] CLI: `streamt diff` — Show diff between local and deployed state
-- [x] CLI: `streamt rollback` — Rollback to previous deployment
-
-### Data Governance
-
-- [ ] Security policies — Field-level encryption, `allowed_roles`, purpose-based access control, per-consumer column masking
-- [ ] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness` contracts on exposed models
-- [ ] Exposure access control — `allowed_roles`, `purpose` metadata on exposures
-- [ ] Data residency — Region constraints (`region: EU`, `allowed_clusters`, `forbidden_sinks`)
-- [ ] Schema versioning — v1/v2 model versions with compatibility checks and migration paths
-
-### Vision
-
-- [ ] Semantic layer / Streaming API — "give me flux X with max 30s delay"; declarative consumption API
-- [ ] Model templates / packages — Reusable pipeline patterns (e.g., CDC-to-enriched, sessionization) as importable packages
-- [ ] External app support — Register "blackbox" applications (Java, Go) with input/output models for lineage
-- [ ] High-level intent mode — "I want X" and streamt builds the entire pipeline
-- [ ] KStreams runtime — `materialized: kstreams` for users without Flink; SQL→topology conversion via `ksqlDBContext`; K8s auto-scaling
-- [ ] RisingWave runtime — Streaming SQL database alternative to Flink; PostgreSQL-compatible SQL
-- [ ] Materialize runtime — Incremental view maintenance; PostgreSQL-compatible streaming SQL
-
-### Deferred
-
-- [ ] VS Code extension
-- [ ] Additional streaming substrates (Pulsar, Kinesis)
-- [ ] Cloud/SaaS version
-
 ## License
 
 Apache 2.0
