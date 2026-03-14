@@ -58,7 +58,8 @@ def _format_pydantic_error(exc: ValidationError) -> str:
 class ProjectParser:
     """Parser for streamt projects."""
 
-    ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+    # Matches ${VAR} and ${VAR:-default}
+    ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-((?:[^}]|\\})*)?)?\}")
 
     def __init__(
         self,
@@ -177,24 +178,31 @@ class ProjectParser:
         return value
 
     def _resolve_env_var_string(self, value: str) -> str:
-        """Resolve environment variables in a string."""
+        """Resolve environment variables in a string.
+
+        Supports ${VAR} and ${VAR:-default} syntax.
+        """
 
         def replace(match: re.Match[str]) -> str:
             var_name = match.group(1)
+            default = match.group(2)  # None if no :- syntax
             env_value = os.environ.get(var_name)
-            if env_value is None:
-                raise EnvVarError(f"Environment variable '{var_name}' not set")
-            return env_value
+            if env_value is not None:
+                return env_value
+            if default is not None:
+                return default
+            raise EnvVarError(f"Environment variable '{var_name}' not set")
 
         return self.ENV_VAR_PATTERN.sub(replace, value)
 
     def _check_env_vars(self, value: object) -> list[str]:
-        """Check which environment variables are used but not set."""
+        """Check which environment variables are used but not set (ignoring those with defaults)."""
         missing = []
         if isinstance(value, str):
             for match in self.ENV_VAR_PATTERN.finditer(value):
                 var_name = match.group(1)
-                if os.environ.get(var_name) is None:
+                has_default = match.group(2) is not None
+                if os.environ.get(var_name) is None and not has_default:
                     missing.append(var_name)
         elif isinstance(value, dict):
             for v in value.values():

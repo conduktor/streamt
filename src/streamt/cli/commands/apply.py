@@ -38,6 +38,7 @@ from streamt.output import StructuredError
     help="Non-interactive confirm: pass env name (for agents/CI)",
 )
 @click.option("--force", is_flag=True, help="Override safety checks (allow destructive operations)")
+@click.option("--dry-run", is_flag=True, help="Show what would change without applying")
 @click.pass_context
 def apply(
     ctx: click.Context,
@@ -48,6 +49,7 @@ def apply(
     confirm: bool,
     confirm_env: Optional[str],
     force: bool,
+    dry_run: bool,
 ) -> None:
     """Deploy the project."""
     from streamt.compiler import Compiler
@@ -243,6 +245,23 @@ def apply(
                         sys.exit(1)
                     fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
 
+            if dry_run:
+                fmt.print("[yellow]Dry run — no changes applied[/yellow]")
+                fmt.print(deployment_plan.details())
+                fmt.set_data(
+                    {
+                        "dry_run": True,
+                        "summary": deployment_plan.summary(),
+                        "creates": deployment_plan.creates,
+                        "updates": deployment_plan.updates,
+                        "deletes": deployment_plan.deletes,
+                        "has_changes": deployment_plan.has_changes,
+                    }
+                )
+                fmt.flush()
+                close_deployers(sr, kafka, flink, connect, gateway)
+                return
+
             results = planner.apply(deployment_plan)
             fmt.set_data(results)
 
@@ -258,6 +277,19 @@ def apply(
                 fmt.print("\n[dim]Unchanged:[/dim]")
                 for item in results["unchanged"]:
                     fmt.print(f"  = {item}")
+            if results["errors"] and results.get("rollback_candidates"):
+                fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
+                rolled_back, rb_errors = planner.rollback(results["rollback_candidates"])
+                if rolled_back:
+                    results["rolled_back"] = rolled_back
+                    fmt.print(f"  Rolled back {len(rolled_back)} resource(s)")
+                    for item in rolled_back:
+                        fmt.print(f"  ↩ {item}")
+                if rb_errors:
+                    results["rollback_errors"] = rb_errors
+                    fmt.print("\n[red]Rollback failures (manual cleanup needed):[/red]")
+                    for item in rb_errors:
+                        fmt.print_error(item)
             if results["errors"]:
                 fmt.set_status("error")
                 fmt.print("\n[red]Errors:[/red]")

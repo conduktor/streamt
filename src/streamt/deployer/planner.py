@@ -538,6 +538,8 @@ class DeploymentPlanner:
             delete_fn=lambda c: gd.delete(c.name),  # type: ignore[union-attr]
         )
 
+        # Track rollback candidates (newly created resources that could be undone)
+        results["rollback_candidates"] = list(results["created"]) if results["errors"] else []
         results["summary"] = {
             "total": sum(len(v) for v in results.values() if isinstance(v, list)),
             "succeeded": len(results["created"])
@@ -548,3 +550,30 @@ class DeploymentPlanner:
         }
 
         return results
+
+    def rollback(self, labels: list[str]) -> tuple[list[str], list[str]]:
+        """Attempt to delete previously created resources.
+
+        Returns (rolled_back, rollback_errors) lists.
+        """
+        rolled_back: list[str] = []
+        errors: list[str] = []
+        for label in labels:
+            try:
+                self._rollback_resource(label)
+                rolled_back.append(label)
+            except Exception as e:
+                errors.append(f"{label}: {_sanitize_error(e)}")
+        return rolled_back, errors
+
+    def _rollback_resource(self, label: str) -> None:
+        """Attempt to delete a resource by its apply label (e.g. 'topic:foo')."""
+        kind, _, name = label.partition(":")
+        if kind == "schema" and self.schema_registry_deployer:
+            self.schema_registry_deployer.delete_subject(name)
+        elif kind == "topic" and self.kafka_deployer:
+            self.kafka_deployer.delete_topic(name)
+        elif kind == "connector" and self.connect_deployer:
+            self.connect_deployer.delete_connector(name)
+        elif kind == "gateway_rule" and self.gateway_deployer:
+            self.gateway_deployer.delete(name)

@@ -95,10 +95,16 @@ def _extract_columns_from_avro(schema: dict) -> list[dict]:
 
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(), default=".", help="Directory to initialize")
-@click.option("--project-name", type=str, default=None, help="Project name (default: directory name)")
+@click.option(
+    "--project-name", type=str, default=None, help="Project name (default: directory name)"
+)
 @click.option("--force", is_flag=True, help="Overwrite existing project files")
-@click.option("--discover", is_flag=True, help="Discover sources from existing Kafka infrastructure")
-@click.option("--kafka", type=str, default=None, help="Kafka bootstrap servers (required with --discover)")
+@click.option(
+    "--discover", is_flag=True, help="Discover sources from existing Kafka infrastructure"
+)
+@click.option(
+    "--kafka", type=str, default=None, help="Kafka bootstrap servers (required with --discover)"
+)
 @click.option("--schema-registry", type=str, default=None, help="Schema Registry URL")
 @click.option("--include", type=str, default=None, help="Include topics matching glob pattern")
 @click.option("--exclude", type=str, default=None, help="Exclude topics matching glob pattern")
@@ -122,10 +128,12 @@ def init(
 
     project_file = project_path / "stream_project.yml"
     if project_file.exists() and not force and not dry_run:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.ENVIRONMENT_ERROR,
-            message=f"stream_project.yml already exists in {project_path}. Use --force to overwrite.",
-        ))
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.ENVIRONMENT_ERROR,
+                message=f"stream_project.yml already exists in {project_path}. Use --force to overwrite.",
+            )
+        )
         fmt.print_error("stream_project.yml already exists. Use --force to overwrite.")
         fmt.flush()
         sys.exit(1)
@@ -133,18 +141,54 @@ def init(
     name = project_name or project_path.name
 
     if discover:
-        _init_discover(fmt, project_path, name, kafka, schema_registry, include, exclude, dry_run, force)
+        _init_discover(
+            fmt, project_path, name, kafka, schema_registry, include, exclude, dry_run, force
+        )
     else:
         _init_scaffold(fmt, project_path, name, dry_run)
 
 
 def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run: bool) -> None:
-    """Create an empty project scaffold."""
-    created_files = []
+    """Create a project scaffold with example source, model, and test."""
+    created_files: list[str] = []
 
     config = {
         "project": {"name": name, "version": "1.0.0"},
-        "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        "runtime": {
+            "kafka": {"bootstrap_servers": "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"},
+        },
+        "sources": [
+            {
+                "name": "raw_events",
+                "topic": f"{name}.raw.events.v1",
+                "description": "Raw event stream — replace with your actual source topic",
+                "columns": [
+                    {"name": "id", "type": "STRING"},
+                    {"name": "event_type", "type": "STRING"},
+                    {"name": "payload", "type": "STRING"},
+                    {"name": "created_at", "type": "TIMESTAMP(3)"},
+                ],
+            }
+        ],
+        "models": [
+            {
+                "name": "events_clean",
+                "description": "Cleaned events — filters nulls and adds processing timestamp",
+                "sql": (
+                    "SELECT id, event_type, payload, created_at, "
+                    'CURRENT_TIMESTAMP AS processed_at FROM {{ source("raw_events") }} '
+                    "WHERE id IS NOT NULL"
+                ),
+            }
+        ],
+        "tests": [
+            {
+                "name": "events_clean_not_null",
+                "model": "events_clean",
+                "type": "schema",
+                "assertions": [{"not_null": {"columns": ["id", "event_type"]}}],
+            }
+        ],
     }
 
     if not dry_run:
@@ -162,8 +206,13 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
 
         fmt.print(f"[green]Initialized project '{name}'[/green]")
         fmt.print("  stream_project.yml")
+        fmt.print("  1 source (raw_events), 1 model (events_clean), 1 test")
         for d in SCAFFOLD_DIRS:
             fmt.print(f"  {d}/")
+        fmt.print("\nNext steps:")
+        fmt.print("  streamt validate        # Check project is valid")
+        fmt.print("  streamt compile         # Generate deployment artifacts")
+        fmt.print("  streamt plan            # Preview infrastructure changes")
     else:
         fmt.print(f"Would create project '{name}' in {project_path}")
         created_files = ["stream_project.yml"] + [f"{d}/" for d in SCAFFOLD_DIRS]
@@ -186,19 +235,23 @@ def _init_discover(
     """Discover existing infrastructure and generate project."""
     project_file = project_path / "stream_project.yml"
     if project_file.exists() and not force:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.ENVIRONMENT_ERROR,
-            message=f"Project already exists at {project_path}. Use --force to overwrite.",
-        ))
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.ENVIRONMENT_ERROR,
+                message=f"Project already exists at {project_path}. Use --force to overwrite.",
+            )
+        )
         fmt.print_error(f"Project already exists at {project_path}. Use --force to overwrite.")
         fmt.flush()
         sys.exit(1)
 
     if not kafka:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.MISSING_CONFIG,
-            message="--kafka is required with --discover",
-        ))
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.MISSING_CONFIG,
+                message="--kafka is required with --discover",
+            )
+        )
         fmt.print_error("--kafka is required with --discover")
         fmt.flush()
         sys.exit(1)
@@ -210,10 +263,12 @@ def _init_discover(
     try:
         kafka_deployer = KafkaDeployer(kafka)
     except Exception as e:
-        fmt.add_error(StructuredError(
-            code=ErrorCode.ENVIRONMENT_ERROR,
-            message=f"Cannot connect to Kafka at {kafka}: {e}",
-        ))
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.ENVIRONMENT_ERROR,
+                message=f"Cannot connect to Kafka at {kafka}: {e}",
+            )
+        )
         fmt.print_error(f"Cannot connect to Kafka at {kafka}: {e}")
         fmt.flush()
         sys.exit(1)
@@ -263,12 +318,14 @@ def _init_discover(
             except Exception as e:
                 logger.debug("Schema discovery failed for topic '%s': %s", topic, e)
 
-        discovered.append({
-            "source": source_def,
-            "topic": topic,
-            "partitions": state.partitions,
-            "replication_factor": state.replication_factor,
-        })
+        discovered.append(
+            {
+                "source": source_def,
+                "topic": topic,
+                "partitions": state.partitions,
+                "replication_factor": state.replication_factor,
+            }
+        )
 
     fmt.print(f"Discovered {len(discovered)} topic(s) from {kafka}")
     for d in discovered:
@@ -314,12 +371,18 @@ def _init_discover(
     if sr_deployer is not None:
         sr_deployer.close()
 
-    fmt.set_data({
-        "project_name": name,
-        "discovered_topics": [
-            {"topic": d["topic"], "partitions": d["partitions"], "columns": len(d["source"].get("columns", []))}
-            for d in discovered
-        ],
-        "created_files": created_files,
-    })
+    fmt.set_data(
+        {
+            "project_name": name,
+            "discovered_topics": [
+                {
+                    "topic": d["topic"],
+                    "partitions": d["partitions"],
+                    "columns": len(d["source"].get("columns", [])),
+                }
+                for d in discovered
+            ],
+            "created_files": created_files,
+        }
+    )
     fmt.flush()

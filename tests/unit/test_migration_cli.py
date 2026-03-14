@@ -555,3 +555,191 @@ class TestWarningsInJSON:
         result = fmt.get_result()
         assert len(result.warnings) == 1
         assert result.warnings[0].message == "something is off"
+
+
+# ===========================================================================
+# Tier 2 deferred items
+# ===========================================================================
+
+
+class TestApplyDryRun:
+    """COMPILE-1: apply --dry-run shows plan without executing."""
+
+    def test_dry_run_flag_accepted(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        r = runner.invoke(main, ["apply", "--help"])
+        assert "--dry-run" in r.output
+
+    def test_compile_dry_run_flag(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw.v1"}],
+                    "models": [{"name": "a", "sql": 'SELECT id FROM {{ source("raw") }}'}],
+                },
+            )
+            r = runner.invoke(main, ["compile", "--dry-run", "-p", d])
+            assert r.exit_code == 0
+            assert "Dry run" in r.output
+
+
+class TestInitScaffoldContent:
+    """INIT-1: init scaffold creates example source, model, and test."""
+
+    def test_scaffold_has_example_source(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            r = runner.invoke(main, ["init", "-p", d])
+            assert r.exit_code == 0
+            content = (Path(d) / "stream_project.yml").read_text()
+            assert "raw_events" in content
+            assert "events_clean" in content
+
+    def test_scaffold_project_validates(self):
+        from click.testing import CliRunner
+
+        from streamt.cli import main
+
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as d:
+            r = runner.invoke(main, ["init", "-p", d])
+            assert r.exit_code == 0
+            r = runner.invoke(main, ["validate", "-p", d])
+            assert r.exit_code == 0
+
+
+class TestEnvVarDefaults:
+    """ENV-2: ${VAR:-default} interpolation in YAML values."""
+
+    def test_default_value_used_when_var_unset(self):
+        import os
+
+        os.environ.pop("STREAMT_TEST_UNSET_VAR", None)
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {
+                        "kafka": {"bootstrap_servers": "${STREAMT_TEST_UNSET_VAR:-fallback:9092}"}
+                    },
+                },
+            )
+            project = _parse_project(
+                d, yaml.safe_load((Path(d) / "stream_project.yml").read_text())
+            )
+            assert project.runtime.kafka.bootstrap_servers == "fallback:9092"
+
+    def test_env_var_overrides_default(self):
+        import os
+
+        os.environ["STREAMT_TEST_OVERRIDE_VAR"] = "real:9092"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                _write_project(
+                    d,
+                    {
+                        "project": {"name": "test", "version": "1.0.0"},
+                        "runtime": {
+                            "kafka": {
+                                "bootstrap_servers": "${STREAMT_TEST_OVERRIDE_VAR:-fallback:9092}"
+                            }
+                        },
+                    },
+                )
+                project = _parse_project(
+                    d, yaml.safe_load((Path(d) / "stream_project.yml").read_text())
+                )
+                assert project.runtime.kafka.bootstrap_servers == "real:9092"
+        finally:
+            del os.environ["STREAMT_TEST_OVERRIDE_VAR"]
+
+    def test_no_default_still_errors(self):
+        import os
+
+        os.environ.pop("STREAMT_TEST_MISSING_VAR", None)
+        with tempfile.TemporaryDirectory() as d:
+            _write_project(
+                d,
+                {
+                    "project": {"name": "test", "version": "1.0.0"},
+                    "runtime": {"kafka": {"bootstrap_servers": "${STREAMT_TEST_MISSING_VAR}"}},
+                },
+            )
+            from streamt.core.parser import EnvVarError
+
+            with pytest.raises(EnvVarError):
+                _parse_project(d, yaml.safe_load((Path(d) / "stream_project.yml").read_text()))
+
+
+class TestRollbackOnFailure:
+    """APPLY-3: planner tracks rollback candidates on partial failure."""
+
+    def test_rollback_candidates_populated_on_error(self):
+        from unittest.mock import MagicMock
+
+        from streamt.compiler.manifest import Manifest, TopicArtifact
+        from streamt.deployer.planner import (
+            DeploymentPlan,
+            DeploymentPlanner,
+            TopicChange,
+        )
+
+        kafka = MagicMock()
+        kafka.get_topic_state.return_value = MagicMock(exists=False)
+        # First topic succeeds, second fails
+        kafka.apply_topic.side_effect = ["created", RuntimeError("Kafka error")]
+
+        plan = DeploymentPlan(
+            topic_changes=[
+                TopicChange(
+                    topic="ok",
+                    action="create",
+                    desired=TopicArtifact(name="ok", partitions=1, replication_factor=1),
+                ),
+                TopicChange(
+                    topic="fail",
+                    action="create",
+                    desired=TopicArtifact(name="fail", partitions=1, replication_factor=1),
+                ),
+            ],
+        )
+        manifest = Manifest(version="1", project_name="test", sources=[], models=[], artifacts={})
+        planner = DeploymentPlanner(manifest, kafka_deployer=kafka)
+        results = planner.apply(plan)
+
+        assert "topic:ok" in results["created"]
+        assert any("fail" in e for e in results["errors"])
+        # Rollback candidates should include the successfully created topic
+        assert "topic:ok" in results["rollback_candidates"]
+
+    def test_rollback_method_calls_deployer(self):
+        from unittest.mock import MagicMock
+
+        from streamt.compiler.manifest import Manifest
+        from streamt.deployer.planner import DeploymentPlanner
+
+        kafka = MagicMock()
+        manifest = Manifest(version="1", project_name="test", sources=[], models=[], artifacts={})
+        planner = DeploymentPlanner(manifest, kafka_deployer=kafka)
+
+        rolled_back, rb_errors = planner.rollback(["topic:my-topic"])
+        assert "topic:my-topic" in rolled_back
+        assert not rb_errors
+        kafka.delete_topic.assert_called_once_with("my-topic")
