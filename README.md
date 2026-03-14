@@ -48,13 +48,13 @@ models:
 
 | Feature | Description |
 |---------|-------------|
-| 🎯 **Declarative** | Define what you want, not how to build it |
-| 🔗 **Lineage** | Automatic dependency tracking from SQL |
-| 🛡️ **Policy-as-code** | Classification, masking, retention, and owner rules enforced at compile time |
-| 📊 **Testing** | Schema, sample, and continuous tests |
-| 🔄 **Plan/Apply** | Review changes before deployment — like Terraform for streaming |
-| 🤖 **Agent-Friendly** | Structured JSON output for LLM/CI integration |
-| 📖 **Documentation** | Auto-generated docs with lineage diagrams |
+| **Declarative** | Define what you want, not how to build it |
+| **Lineage** | Automatic dependency tracking from SQL |
+| **Policy-as-code** | Classification, masking, retention, and owner rules enforced at compile time |
+| **Testing** | Schema, sample, and continuous tests |
+| **Plan/Apply** | Review changes before deployment — like Terraform for streaming |
+| **Agent-Friendly** | Structured JSON output for LLM/CI integration |
+| **Documentation** | Auto-generated docs with lineage diagrams |
 
 ## How It Works
 
@@ -382,21 +382,21 @@ tests:
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| YAML parsing & validation | ✅ Stable | Pydantic models, governance rules |
-| DAG & lineage | ✅ Stable | Automatic from SQL refs |
-| SQL parsing & type inference | ✅ Stable | sqlglot-based with custom Flink dialect |
-| Automatic backend selection | ✅ Stable | Auto-detects stateless vs stateful SQL |
-| Kafka topic deployment | ✅ Stable | Create, update partitions, config |
-| Schema Registry | ✅ Stable | Avro/JSON/Protobuf, compatibility checks |
-| Flink job generation | ✅ Works | SQL generation, REST API deployment |
-| Flink job upgrades | ⚠️ Basic | No savepoint handling yet |
-| Connect deployment | ✅ Works | Connector CRUD via REST |
-| Auth/SSL | ✅ Stable | SASL, SSL, mTLS, basic auth, Bearer tokens |
-| Testing framework | ✅ Works | Schema, sample, continuous tests |
-| Continuous tests | ✅ Works | Flink-based monitoring, real-time violations |
-| ML_PREDICT/ML_EVALUATE | ✅ Works | Confluent Cloud Flink only |
-| CI/CD pipeline | ✅ Works | GitHub Actions for tests and linting |
-| Multi-environment | ✅ Stable | Dev/staging/prod profiles, protected envs |
+| YAML parsing & validation | Stable | Pydantic models, governance rules |
+| DAG & lineage | Stable | Automatic from SQL refs |
+| SQL parsing & type inference | Stable | sqlglot-based with custom Flink dialect |
+| Automatic backend selection | Stable | Auto-detects stateless vs stateful SQL |
+| Kafka topic deployment | Stable | Create, update partitions, config |
+| Schema Registry | Stable | Avro/JSON/Protobuf, compatibility checks |
+| Flink job generation | Works | SQL generation, REST API deployment |
+| Flink job upgrades | Basic | No savepoint handling yet |
+| Connect deployment | Works | Connector CRUD via REST |
+| Auth/SSL | Stable | SASL, SSL, mTLS, basic auth, Bearer tokens |
+| Testing framework | Works | Schema, sample, continuous tests |
+| Continuous tests | Works | Flink-based monitoring, real-time violations |
+| ML_PREDICT/ML_EVALUATE | Works | Confluent Cloud Flink only |
+| CI/CD pipeline | Works | GitHub Actions for tests and linting |
+| Multi-environment | Stable | Dev/staging/prod profiles, protected envs |
 
 ## License
 

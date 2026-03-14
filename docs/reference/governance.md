@@ -58,14 +58,14 @@ rules:
 
 ### Rule Reference
 
-| Rule | Type | Description | Status |
-|------|------|-------------|--------|
-| `min_partitions` | int | Minimum partition count | ✅ |
-| `max_partitions` | int | Maximum partition count | ✅ |
-| `min_replication_factor` | int | Minimum replication factor | ✅ |
-| `naming_pattern` | regex | Required topic name pattern | ✅ |
-| `forbidden_prefixes` | list | Disallowed name prefixes | ✅ |
-| `required_config` | list | Configs that must be set | ✅ |
+| Rule | Type | Description |
+|------|------|-------------|
+| `min_partitions` | int | Minimum partition count |
+| `max_partitions` | int | Maximum partition count |
+| `min_replication_factor` | int | Minimum replication factor |
+| `naming_pattern` | regex | Required topic name pattern |
+| `forbidden_prefixes` | list | Disallowed name prefixes |
+| `required_config` | list | Configs that must be set |
 
 ### Naming Pattern Examples
 

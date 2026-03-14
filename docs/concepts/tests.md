@@ -100,11 +100,7 @@ streamt test --deploy
 
 ## Assertions Reference
 
-**Status Legend:**
-- ✅ **Implemented** — Available now
-- 🚧 **Planned** — See [TODO.md](https://github.com/conduktor/streamt/blob/main/TODO.md)
-
-### not_null ✅
+### not_null
 
 Check that columns are never null:
 
@@ -113,7 +109,7 @@ Check that columns are never null:
     columns: [order_id, customer_id, amount]
 ```
 
-### accepted_values ✅
+### accepted_values
 
 Check that a column only contains allowed values:
 
@@ -123,7 +119,7 @@ Check that a column only contains allowed values:
     values: [pending, confirmed, shipped, delivered, cancelled]
 ```
 
-### accepted_types ✅
+### accepted_types
 
 Validate column data types:
 
@@ -137,7 +133,7 @@ Validate column data types:
 
 **Supported types:** `string`, `number`, `int`, `bigint`, `boolean`, `timestamp`, `date`, `time`
 
-### range ✅
+### range
 
 Check numeric values are within bounds:
 
@@ -148,7 +144,7 @@ Check numeric values are within bounds:
     max: 1000000
 ```
 
-### unique_key ✅
+### unique_key
 
 Validate uniqueness of a key:
 
@@ -166,62 +162,7 @@ Or with tolerance:
     tolerance: 0.01     # Allow 1% duplicates (for exactly-once issues)
 ```
 
-### foreign_key 🚧
-
-Check referential integrity:
-
-```yaml
-- foreign_key:
-    column: customer_id
-    ref_model: customers       # Referenced model
-    ref_key: id                # Referenced key column
-    window: "1 HOUR"           # Optional: time window for join
-    match_rate: 0.99           # Optional: minimum match rate (0.0-1.0)
-```
-
-### max_lag 🚧
-
-Monitor event time lag (continuous only):
-
-```yaml
-- max_lag:
-    column: event_timestamp    # Event time column
-    max_seconds: 300           # 5 minutes max lag
-```
-
-### throughput 🚧
-
-Monitor message throughput (continuous only):
-
-```yaml
-- throughput:
-    min_per_second: 10         # Minimum messages/second
-    max_per_second: 1000       # Maximum messages/second
-```
-
-### distribution 🚧
-
-Check value distribution using buckets:
-
-```yaml
-- distribution:
-    column: amount
-    buckets:
-      - min: 0
-        max: 100
-        expected_ratio: 0.4     # ~40% in this range
-        tolerance: 0.1          # Allow 10% variance
-      - min: 100
-        max: 1000
-        expected_ratio: 0.5
-        tolerance: 0.1
-      - min: 1000
-        max: 10000
-        expected_ratio: 0.1
-        tolerance: 0.05
-```
-
-### custom_sql ✅
+### custom_sql
 
 Write custom validation SQL that returns the expected result:
 
