@@ -57,6 +57,7 @@ site/
 .reliability-reports/
 MIGRATION_FINDINGS.md
 NOTES.md
+DISCUSSION.md
 
 # OS
 .DS_Store

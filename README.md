@@ -429,8 +429,18 @@ tests:
 - [ ] CLI: `streamt diff` — Show diff between local and deployed state
 - [x] CLI: `streamt rollback` — Rollback to previous deployment
 
+### Data Governance
+
+- [ ] Security policies — Field-level encryption, `allowed_roles`, purpose-based access control, per-consumer column masking
+- [ ] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness` contracts on exposed models
+- [ ] Exposure access control — `allowed_roles`, `purpose` metadata on exposures
+- [ ] Data residency — Region constraints (`region: EU`, `allowed_clusters`, `forbidden_sinks`)
+- [ ] Schema versioning — v1/v2 model versions with compatibility checks and migration paths
+
 ### Vision
 
+- [ ] Semantic layer / Streaming API — "give me flux X with max 30s delay"; declarative consumption API
+- [ ] Model templates / packages — Reusable pipeline patterns (e.g., CDC-to-enriched, sessionization) as importable packages
 - [ ] External app support — Register "blackbox" applications (Java, Go) with input/output models for lineage
 - [ ] High-level intent mode — "I want X" and streamt builds the entire pipeline
 - [ ] KStreams runtime — `materialized: kstreams` for users without Flink; SQL→topology conversion via `ksqlDBContext`; K8s auto-scaling
