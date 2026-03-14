@@ -133,6 +133,9 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 if job:
                     self.test_jobs.append(job)
 
+        # KAFKA-2: Auto-create dead-letter topics from test on_failure DLQ actions
+        self._compile_dlq_topics()
+
         # Create manifest
         manifest = self._create_manifest()
 
@@ -485,6 +488,29 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 cluster=test.flink_cluster,
             )
         )
+
+    def _compile_dlq_topics(self) -> None:
+        """Auto-create dead-letter topics from test on_failure DLQ actions."""
+        existing_names = {t.name for t in self.topics}
+        for test in self.project.tests:
+            if not test.on_failure:
+                continue
+            for action in test.on_failure.actions:
+                if not isinstance(action, dict) or "dlq" not in action:
+                    continue
+                dlq_cfg = action["dlq"]
+                dlq_topic = dlq_cfg.get("topic") if isinstance(dlq_cfg, dict) else None
+                if not dlq_topic:
+                    dlq_topic = f"{test.model}__dlq"
+                if dlq_topic not in existing_names:
+                    self.topics.append(
+                        TopicArtifact(
+                            name=dlq_topic,
+                            partitions=self._topic_defaults.partitions,
+                            replication_factor=self._topic_defaults.replication_factor,
+                        )
+                    )
+                    existing_names.add(dlq_topic)
 
     def _create_manifest(self) -> Manifest:
         """Create the manifest."""

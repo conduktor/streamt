@@ -105,63 +105,72 @@ class DeploymentPlan:
         """Get a summary of the plan."""
         return f"Plan: {self.creates} to create, {self.updates} to update, {self.deletes} to delete"
 
-    def details(self) -> str:
-        """Get detailed plan output."""
+    def details(self, color: bool = True) -> str:
+        """Get detailed plan output with colored diff markers."""
         lines = [self.summary(), ""]
+
+        def _add(prefix: str) -> str:
+            return f"[green]{prefix}[/green]" if color else prefix
+
+        def _upd(prefix: str) -> str:
+            return f"[yellow]{prefix}[/yellow]" if color else prefix
+
+        def _rm(prefix: str) -> str:
+            return f"[red]{prefix}[/red]" if color else prefix
 
         for change in self.schema_changes:
             if change.action == "register":
-                lines.append(f"+ schema: {change.subject}")
+                lines.append(_add(f"+ schema: {change.subject}"))
                 if change.desired:
                     lines.append(f"    type: {change.desired.schema_type}")
             elif change.action == "update":
-                lines.append(f"~ schema: {change.subject}")
+                lines.append(_upd(f"~ schema: {change.subject}"))
                 for key, val in (change.changes or {}).items():
                     if key == "schema":
                         lines.append(f"    version: {val['from_version']} -> {val['to_version']}")
                     elif key == "compatibility":
                         lines.append(f"    compatibility: {val['from']} -> {val['to']}")
             elif change.action == "delete":
-                lines.append(f"- schema: {change.subject}")
+                lines.append(_rm(f"- schema: {change.subject}"))
 
         for change in self.topic_changes:
             if change.action == "create":
-                lines.append(f"+ topic: {change.topic}")
+                lines.append(_add(f"+ topic: {change.topic}"))
                 if change.desired:
                     lines.append(f"    partitions: {change.desired.partitions}")
                     lines.append(f"    replication_factor: {change.desired.replication_factor}")
             elif change.action == "update":
-                lines.append(f"~ topic: {change.topic}")
+                lines.append(_upd(f"~ topic: {change.topic}"))
                 for key, val in (change.changes or {}).items():
                     lines.append(f"    {key}: {val['from']} -> {val['to']}")
             elif change.action == "delete":
-                lines.append(f"- topic: {change.topic}")
+                lines.append(_rm(f"- topic: {change.topic}"))
 
         for change in self.flink_changes:
             if change.action == "submit":
-                lines.append(f"+ flink_job: {change.job_name}")
+                lines.append(_add(f"+ flink_job: {change.job_name}"))
             elif change.action == "cancel":
-                lines.append(f"- flink_job: {change.job_name}")
+                lines.append(_rm(f"- flink_job: {change.job_name}"))
 
         for change in self.connector_changes:
             if change.action == "create":
-                lines.append(f"+ connector: {change.connector_name}")
+                lines.append(_add(f"+ connector: {change.connector_name}"))
             elif change.action == "update":
-                lines.append(f"~ connector: {change.connector_name}")
+                lines.append(_upd(f"~ connector: {change.connector_name}"))
                 for key, val in (change.changes or {}).items():
                     lines.append(f"    {key}: {val['from']} -> {val['to']}")
             elif change.action == "delete":
-                lines.append(f"- connector: {change.connector_name}")
+                lines.append(_rm(f"- connector: {change.connector_name}"))
 
         for change in self.gateway_changes:
             if change.action == "create":
-                lines.append(f"+ gateway_rule: {change.name}")
+                lines.append(_add(f"+ gateway_rule: {change.name}"))
             elif change.action == "update":
-                lines.append(f"~ gateway_rule: {change.name}")
+                lines.append(_upd(f"~ gateway_rule: {change.name}"))
                 for key, val in (change.changes or {}).items():
                     lines.append(f"    {key}: {val['from']} -> {val['to']}")
             elif change.action == "delete":
-                lines.append(f"- gateway_rule: {change.name}")
+                lines.append(_rm(f"- gateway_rule: {change.name}"))
 
         if not self.has_changes:
             lines.append("No changes detected.")
