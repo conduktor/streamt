@@ -10,7 +10,6 @@ from typing import Optional
 
 from streamt.core import errors
 from streamt.core.models import (
-    Classification,
     MaterializedType,
     Model,
     ModelRules,
@@ -139,6 +138,7 @@ class ProjectValidator:
         self._validate_column_types()
         self._validate_model_contracts()
         self._validate_rules()
+        self._validate_schema_versions()
         self._validate_unused_sources()
         self._validate_source_columns()
         return self.result
@@ -663,6 +663,8 @@ class ProjectValidator:
                 self._validate_source_rules(source, rules.sources)
         if rules.security:
             self._validate_security_rules(rules.security)
+        if rules.data_residency:
+            self._validate_data_residency(rules.data_residency)
 
     def _check_range(
         self, name: str, val: Optional[int], limit: int, op: str, rule: str, code: str
@@ -811,65 +813,36 @@ class ProjectValidator:
             )
 
     def _validate_security_rules(self, rules: SecurityRules) -> None:
-        """Validate security rules."""
+        from streamt.core.rule_validators import validate_security_rules
 
-        sensitive_columns: dict[str, list[str]] = {}  # source/model -> columns
+        validate_security_rules(self.project, rules, self.result.add_error)
 
-        # Collect sensitive columns from sources
-        for source in self.project.sources:
-            for col in source.columns:
-                if col.classification in [
-                    Classification.SENSITIVE,
-                    Classification.HIGHLY_SENSITIVE,
-                ]:
-                    if source.name not in sensitive_columns:
-                        sensitive_columns[source.name] = []
-                    sensitive_columns[source.name].append(col.name)
+    def _validate_data_residency(self, rules: object) -> None:
+        from streamt.core.rule_validators import validate_data_residency
 
-        # Collect sensitive columns from models
+        validate_data_residency(self.project, rules.allowed_regions, self.result.add_error)
+
+    def _validate_schema_versions(self) -> None:
+        """Check sequential versioning and no duplicate name+version."""
+        from collections import defaultdict
+
+        versions: dict[str, list[int]] = defaultdict(list)
         for model in self.project.models:
-            if model.security and model.security.classification:
-                for col, classification in model.security.classification.items():
-                    if classification in [
-                        Classification.SENSITIVE,
-                        Classification.HIGHLY_SENSITIVE,
-                    ]:
-                        if model.name not in sensitive_columns:
-                            sensitive_columns[model.name] = []
-                        sensitive_columns[model.name].append(col)
-
-        # Check require_classification (sources must have all columns classified)
-        if rules.require_classification:
-            for source in self.project.sources:
-                if source.columns:
-                    for col in source.columns:
-                        if col.classification is None:
-                            self.result.add_error(
-                                "RULE_REQUIRE_CLASSIFICATION",
-                                f"Column '{col.name}' in source '{source.name}' "
-                                f"missing required classification",
-                            )
-
-        # Check sensitive_columns_require_masking
-        if rules.sensitive_columns_require_masking:
-            for entity_name, columns in sensitive_columns.items():
-                for col in columns:
-                    # Check if any model has masking for this column
-                    has_masking = False
-                    for model in self.project.models:
-                        if model.security and model.security.policies:
-                            for policy in model.security.policies:
-                                if "mask" in policy:
-                                    if policy["mask"].get("column") == col:
-                                        has_masking = True
-                                        break
-
-                    if not has_masking:
-                        self.result.add_error(
-                            "RULE_SENSITIVE_REQUIRES_MASKING",
-                            f"Column '{col}' in '{entity_name}' classified as sensitive "
-                            f"has no masking policy",
-                        )
+            if model.version is not None:
+                versions[model.name].append(model.version)
+        for name, vers in versions.items():
+            if len(vers) != len(set(vers)):
+                self.result.add_error(
+                    "DUPLICATE_VERSION",
+                    f"Model '{name}' has duplicate version numbers",
+                )
+            for v in vers:
+                if v > 1 and (v - 1) not in vers:
+                    self.result.add_warning(
+                        "VERSION_GAP",
+                        f"Model '{name}' has version {v} but no version {v - 1}",
+                        f"model '{name}'",
+                    )
 
     def _validate_sql_syntax(self, model: Model) -> None:
         """Validate SQL syntax using sqlglot; also warn on SELECT *."""
