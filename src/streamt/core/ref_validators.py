@@ -22,7 +22,7 @@ def validate_cluster_refs(
 
     for model in project.models:
         fc = model.flink_cluster
-        if fc and fc not in flink_clusters:
+        if isinstance(fc, str) and fc not in flink_clusters:
             add_error(
                 "INVALID_CLUSTER_REF",
                 errors.invalid_cluster_ref("Model", model.name, fc, "flink", sorted(flink_clusters)),
@@ -30,7 +30,7 @@ def validate_cluster_refs(
             )
 
         cc = model.connect_cluster
-        if cc and cc not in connect_clusters:
+        if isinstance(cc, str) and cc not in connect_clusters:
             add_error(
                 "INVALID_CLUSTER_REF",
                 errors.invalid_cluster_ref("Model", model.name, cc, "connect", sorted(connect_clusters)),
@@ -39,7 +39,7 @@ def validate_cluster_refs(
 
     for test in project.tests:
         fc = test.flink_cluster
-        if fc and fc not in flink_clusters:
+        if isinstance(fc, str) and fc not in flink_clusters:
             add_error(
                 "INVALID_CLUSTER_REF",
                 errors.invalid_cluster_ref("Test", test.name, fc, "flink", sorted(flink_clusters)),
@@ -48,26 +48,24 @@ def validate_cluster_refs(
 
     # Validate defaults (cluster refs)
     if project.defaults:
-        if project.defaults.models and project.defaults.models.cluster:
-            dc = project.defaults.models.cluster
-            if dc not in flink_clusters:
-                add_error(
-                    "INVALID_CLUSTER_REF",
-                    errors.invalid_cluster_ref(
-                        "Default", "defaults.models.cluster", dc, "flink", sorted(flink_clusters)
-                    ),
-                    "defaults.models.cluster",
-                )
-        if project.defaults.tests and project.defaults.tests.flink_cluster:
-            dc = project.defaults.tests.flink_cluster
-            if dc not in flink_clusters:
-                add_error(
-                    "INVALID_CLUSTER_REF",
-                    errors.invalid_cluster_ref(
-                        "Default", "defaults.tests.flink_cluster", dc, "flink", sorted(flink_clusters)
-                    ),
-                    "defaults.tests.flink_cluster",
-                )
+        dc = getattr(project.defaults.models, "cluster", None) if project.defaults.models else None
+        if isinstance(dc, str) and dc not in flink_clusters:
+            add_error(
+                "INVALID_CLUSTER_REF",
+                errors.invalid_cluster_ref(
+                    "Default", "defaults.models.cluster", dc, "flink", sorted(flink_clusters)
+                ),
+                "defaults.models.cluster",
+            )
+        tc = getattr(project.defaults.tests, "flink_cluster", None) if project.defaults.tests else None
+        if isinstance(tc, str) and tc not in flink_clusters:
+            add_error(
+                "INVALID_CLUSTER_REF",
+                errors.invalid_cluster_ref(
+                    "Default", "defaults.tests.flink_cluster", tc, "flink", sorted(flink_clusters)
+                ),
+                "defaults.tests.flink_cluster",
+            )
 
 
 def validate_connection_refs(
@@ -78,7 +76,7 @@ def validate_connection_refs(
 
     for model in project.models:
         sink = model.sink
-        if sink and sink.connection:
+        if sink and isinstance(sink.connection, str):
             if sink.connection not in available:
                 add_error(
                     "INVALID_CONNECTION_REF",
