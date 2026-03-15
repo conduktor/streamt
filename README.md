@@ -140,6 +140,11 @@ runtime:
         rest_url: http://localhost:8082
         sql_gateway_url: http://localhost:8084
 
+defaults:
+  topic:
+    partitions: 6
+    replication_factor: 3
+
 sources:
   - name: events
     topic: events.raw.v1
@@ -150,11 +155,6 @@ models:
       SELECT event_id, user_id, event_type
       FROM {{ source("events") }}
       WHERE event_id IS NOT NULL
-
-    # Optional: only if you need custom settings
-    advanced:
-      topic:
-        partitions: 6
 ```
 
 ### CLI Commands
@@ -267,7 +267,23 @@ Environment variables are loaded with precedence:
 
 ## Examples
 
-### Source with Schema
+### Source with Schema Registry
+
+```yaml
+sources:
+  - name: orders_raw
+    topic: orders.raw.v1
+    schema:
+      registry: confluent          # Pull schema from Schema Registry
+      subject: orders-raw-value    # SR subject name
+    columns:
+      - name: order_id
+        description: Unique order identifier
+      - name: customer_id
+        classification: internal
+```
+
+Inline schemas are also supported when Schema Registry isn't available:
 
 ```yaml
 sources:
@@ -285,11 +301,6 @@ sources:
             {"name": "customer_id", "type": "string"}
           ]
         }
-    columns:
-      - name: order_id
-        description: Unique order identifier
-      - name: customer_id
-        classification: internal
 ```
 
 ### Simple Transform (Auto-Inferred as Topic)

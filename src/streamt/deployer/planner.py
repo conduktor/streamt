@@ -214,6 +214,75 @@ class DeploymentPlanner:
         self.gateway_deployer = gateway_deployer
         self.project = project
 
+    def offline_plan(self) -> DeploymentPlan:
+        """Create a plan assuming no current state (all creates).
+
+        Useful when infrastructure is unavailable — shows what a fresh
+        deployment would look like without connecting to Kafka/SR/Flink.
+        """
+        from streamt.compiler.manifest import (
+            ConnectorArtifact,
+            FlinkJobArtifact,
+            GatewayRuleArtifact,
+            TopicArtifact,
+        )
+        from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
+
+        plan = DeploymentPlan()
+
+        for schema_data in self.manifest.artifacts.get("schemas", []):
+            try:
+                artifact = SRArtifact(
+                    subject=schema_data["subject"],
+                    schema=schema_data["schema"],
+                    schema_type=schema_data.get("schema_type", "AVRO"),
+                    compatibility=schema_data.get("compatibility"),
+                )
+                plan.schema_changes.append(SchemaChange(subject=artifact.subject, action="register", desired=artifact))
+            except KeyError:
+                pass
+
+        for topic_data in self.manifest.artifacts.get("topics", []):
+            try:
+                artifact = TopicArtifact(**topic_data)
+                plan.topic_changes.append(TopicChange(topic=artifact.name, action="create", desired=artifact))
+            except (KeyError, TypeError):
+                pass
+
+        for job_data in self.manifest.artifacts.get("flink_jobs", []):
+            try:
+                artifact = FlinkJobArtifact(**job_data)
+                plan.flink_changes.append(FlinkJobChange(job_name=artifact.name, action="submit", desired=artifact))
+            except (KeyError, TypeError):
+                pass
+
+        for conn_data in self.manifest.artifacts.get("connectors", []):
+            try:
+                cfg = conn_data.get("config", {})
+                artifact = ConnectorArtifact(
+                    name=conn_data["name"],
+                    connector_class=cfg.get("connector.class", ""),
+                    topics=cfg.get("topics", "").split(","),
+                    config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
+                )
+                plan.connector_changes.append(ConnectorChange(connector_name=artifact.name, action="create", desired=artifact))
+            except KeyError:
+                pass
+
+        for rule_data in self.manifest.artifacts.get("gateway_rules", []):
+            try:
+                artifact = GatewayRuleArtifact(
+                    name=rule_data["name"],
+                    virtual_topic=rule_data["virtualTopic"],
+                    physical_topic=rule_data["physicalTopic"],
+                    interceptors=rule_data.get("interceptors", []),
+                )
+                plan.gateway_changes.append(GatewayRuleChange(name=artifact.name, action="create", desired=artifact))
+            except KeyError:
+                pass
+
+        return plan
+
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()

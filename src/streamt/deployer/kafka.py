@@ -89,7 +89,14 @@ class KafkaDeployer:
 
     def __init__(self, bootstrap_servers: str, **kafka_config: dict) -> None:
         """Initialize Kafka deployer."""
-        config = {"bootstrap.servers": bootstrap_servers}
+        config = {
+            "bootstrap.servers": bootstrap_servers,
+            # Suppress librdkafka C library stderr noise on connection failures.
+            # Without this, every connection error floods 150+ lines of raw
+            # %3|...|FAIL|rdkafka#producer-1|... output to stderr.
+            "log_level": 0,
+            "error_cb": lambda err: logger.debug("librdkafka: %s", err),
+        }
         config.update(kafka_config)
         self._config = dict(config)
         self.admin = AdminClient(config)

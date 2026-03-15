@@ -214,12 +214,8 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
         "models": [
             {
                 "name": "events_clean",
-                "description": "Cleaned events — filters nulls and adds processing timestamp",
-                "sql": (
-                    "SELECT id, event_type, payload, created_at, "
-                    'CURRENT_TIMESTAMP AS processed_at FROM {{ source("raw_events") }} '
-                    "WHERE id IS NOT NULL"
-                ),
+                "description": "Events forwarded to a clean topic — add WHERE or transforms as needed",
+                "sql": 'SELECT * FROM {{ source("raw_events") }}',
             }
         ],
         "tests": [

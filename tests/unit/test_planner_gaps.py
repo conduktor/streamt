@@ -408,3 +408,39 @@ class TestPlannerApplyRouting:
         )
         results = DeploymentPlanner(_manifest(), schema_registry_deployer=sr).apply(plan)
         assert "schema:s-value" in results["updated"]
+
+
+# ===========================================================================
+# GROUP 6: Offline plan
+# ===========================================================================
+
+
+class TestOfflinePlan:
+    """offline_plan() should treat all manifest artifacts as creates."""
+
+    def test_topics_are_creates(self):
+        manifest = _manifest(topics=[{"name": "t1", "partitions": 6, "replication_factor": 3, "config": {}}])
+        plan = DeploymentPlanner(manifest).offline_plan()
+        assert len(plan.topic_changes) == 1
+        assert plan.topic_changes[0].action == "create"
+        assert plan.topic_changes[0].topic == "t1"
+
+    def test_flink_jobs_are_submits(self):
+        manifest = _manifest(flink_jobs=[{"name": "j1", "sql": "SELECT 1"}])
+        plan = DeploymentPlanner(manifest).offline_plan()
+        assert len(plan.flink_changes) == 1
+        assert plan.flink_changes[0].action == "submit"
+
+    def test_empty_manifest_empty_plan(self):
+        plan = DeploymentPlanner(_manifest()).offline_plan()
+        assert not plan.has_changes
+
+    def test_plan_summary(self):
+        manifest = _manifest(
+            topics=[{"name": "t1", "partitions": 6, "replication_factor": 3, "config": {}}],
+            flink_jobs=[{"name": "j1", "sql": "SELECT 1"}],
+        )
+        plan = DeploymentPlanner(manifest).offline_plan()
+        assert plan.creates == 2
+        assert plan.updates == 0
+        assert plan.deletes == 0

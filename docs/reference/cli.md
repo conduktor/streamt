@@ -7,6 +7,18 @@ description: Complete reference for all streamt commands
 
 Complete reference for all streamt CLI commands.
 
+## Which Command?
+
+| Goal | Command | Needs Kafka? |
+|------|---------|:------------:|
+| Check YAML is valid | `validate` | No |
+| Generate SQL/JSON artifacts | `compile` | No |
+| Package artifacts + manifest + checksums | `build` | No |
+| View data lineage | `lineage` | No |
+| See what would change on deploy | `plan` | **Yes** |
+| Compare local vs deployed state | `diff` | **Yes** |
+| Deploy to infrastructure | `apply` | **Yes** |
+
 ## Global Options
 
 These options are available for all commands:
@@ -313,6 +325,7 @@ streamt plan [OPTIONS]
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
 | `--target MODEL` | Plan only for specific model |
+| `--offline` | Plan without connecting to infrastructure (assumes fresh deploy) |
 
 **Examples:**
 
@@ -325,7 +338,13 @@ streamt plan --env staging
 
 # Plan specific model
 streamt plan --target order_metrics
+
+# Offline plan (no Kafka/Flink needed)
+streamt plan --offline
 ```
+
+!!! tip "Offline Plan"
+    Use `--offline` to preview what a fresh deployment would create, without connecting to Kafka or other infrastructure. Useful for evaluating the tool, CI validation, or reviewing changes before infrastructure is available. The offline plan assumes no existing resources — all artifacts show as "create".
 
 **Output:**
 
@@ -411,6 +430,16 @@ Flink Jobs:
 
 Summary: 2 created, 1 updated, 0 unchanged
 ```
+
+!!! info "Idempotency & Existing Resources"
+    `apply` is idempotent — running it twice with the same project produces the same result:
+
+    - **Topic already exists, same config** → skipped (`unchanged`)
+    - **Topic already exists, different config** → updated (partitions increased, config altered)
+    - **Topic doesn't exist** → created
+    - **Partitions decreased** → error (Kafka doesn't support partition reduction)
+
+    On partial failure, successfully applied resources remain. Re-run `apply` to retry failed resources — already-applied resources will be detected as `unchanged`. The results include `rollback_candidates` (newly created resources) that can be cleaned up if needed.
 
 ---
 

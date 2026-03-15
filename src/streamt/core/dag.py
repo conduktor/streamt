@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from streamt.core.models import Exposure, Model, StreamtProject
+from streamt.core.models import Exposure, MaterializedType, Model, StreamtProject
 from streamt.core.parser import ProjectParser
 
 
@@ -362,7 +362,7 @@ class DAGBuilder:
                 DAGNode(
                     name=model.name,
                     type=NodeType.MODEL,
-                    materialized=model.get_materialized().value,
+                    materialized=self._resolve_materialized(model).value,
                 )
             )
 
@@ -384,6 +384,23 @@ class DAGBuilder:
             self._build_exposure_edges(dag, exposure)
 
         return dag
+
+    def _resolve_materialized(self, model: Model) -> MaterializedType:
+        """Resolve actual materialization considering configured runtimes.
+
+        If a model's SQL is stateless (auto-inferred as virtual_topic) but
+        no Gateway is configured, fall back to flink — matching what the
+        compiler would actually deploy.
+        """
+        materialized = model.get_materialized()
+        if materialized == MaterializedType.VIRTUAL_TOPIC:
+            has_gateway = (
+                self.project.runtime.conduktor and self.project.runtime.conduktor.gateway
+            )
+            is_explicit = model.gateway and model.gateway.virtual_topic
+            if not has_gateway and not is_explicit:
+                return MaterializedType.FLINK
+        return materialized
 
     def _build_model_edges(self, dag: DAG, model: Model) -> None:
         """Build edges for a model."""

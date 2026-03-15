@@ -222,6 +222,17 @@ my-streaming-project/
     └── events_test.yml     # Test definitions
 ```
 
+### Single-File vs Multi-File
+
+streamt supports both layouts:
+
+| Layout | When to use |
+|--------|-------------|
+| **Single-file** (`stream_project.yml` with everything) | Small projects, quick prototyping, < 5 models |
+| **Multi-file** (separate `sources/`, `models/`, `tests/` dirs) | Team projects, > 5 models, better git diffs |
+
+Both are equivalent — streamt auto-discovers YAML files in subdirectories. You can also mix: keep sources inline in `stream_project.yml` and split models into `models/`. Subdirectory nesting works too (`models/payments/orders.yml`).
+
 ## Bonus: Inspect Your Pipeline
 
 Use `list` and `show` to explore what you've built:
@@ -246,4 +257,5 @@ Congratulations! You've created your first streaming pipeline with streamt.
 - [Learn about concepts](../concepts/overview.md) — Understand sources, models, tests
 - [Explore materializations](../reference/materializations.md) — Topics, Flink jobs, sinks
 - [See examples](../examples/payments.md) — Real-world pipeline examples
+- [CI/CD Integration](../guides/ci-cd.md) — GitHub Actions, validation in PRs
 - [CLI Reference](../reference/cli.md) — All commands and options

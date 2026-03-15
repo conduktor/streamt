@@ -37,10 +37,12 @@ class TestKafkaDeployerStoresConfig:
             assert deployer._config["bootstrap.servers"] == "broker:9093"
 
     def test_plain_config_stores_minimal(self):
-        """Plain config stores only bootstrap.servers."""
+        """Plain config stores bootstrap.servers plus rdkafka noise suppression."""
         with patch("streamt.deployer.kafka.AdminClient"):
             deployer = KafkaDeployer("localhost:9092")
-            assert deployer._config == {"bootstrap.servers": "localhost:9092"}
+            assert deployer._config["bootstrap.servers"] == "localhost:9092"
+            assert deployer._config["log_level"] == 0
+            assert callable(deployer._config["error_cb"])
 
 
 class TestConsumerInheritsAuth:

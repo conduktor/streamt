@@ -126,6 +126,7 @@ nav:
     - Governance Rules: reference/governance.md
   - Guides:
     - Multi-Environment: guides/multi-environment.md
+    - CI/CD Integration: guides/ci-cd.md
     - Conduktor Gateway: guides/gateway.md
     - Windowed Aggregations: guides/windowed-aggregations.md
     - Stream Joins: guides/stream-joins.md
