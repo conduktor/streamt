@@ -702,13 +702,13 @@ class TestInvalidConfigurations:
             error_messages = [e.message for e in result.errors]
             assert any("duplicate" in msg.lower() for msg in error_messages)
 
-    def test_invalid_advanced_config(self):
+    def test_invalid_flink_config(self):
         """
-        SCENARIO: Invalid configuration in advanced section
+        SCENARIO: Invalid Flink configuration values
 
-        Story: Model uses an invalid value in the advanced section.
+        Story: Model uses an invalid value in the flink config.
         Note: With auto-inference, materialization is always valid.
-              This test validates that invalid advanced config values are caught.
+              This test validates that invalid flink config values are caught.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -729,10 +729,8 @@ class TestInvalidConfigurations:
                     {
                         "name": "model_with_invalid_ttl",
                         "sql": "SELECT * FROM {{ source('events') }} GROUP BY event_id",
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": -1000,  # Invalid: negative TTL
-                            }
+                        "flink": {
+                            "state_ttl_ms": -1000,  # Invalid: negative TTL
                         },
                     },
                 ],

@@ -109,10 +109,10 @@ models:
         AND amount > 0
         AND status IN ('pending', 'confirmed', 'shipped', 'delivered')
 
-    advanced:  # Optional: override defaults
-      topic:
-        name: orders.clean.v1
-        partitions: 6
+    # Optional: override defaults
+    topic:
+      name: orders.clean.v1
+      partitions: 6
 ```
 
 This creates a cleaned stream that downstream models can rely on.
@@ -149,13 +149,13 @@ models:
         window_start,
         window_end
 
-    advanced:  # Optional: tune Flink behavior
-      topic:
-        name: orders.stats.hourly.v1
-        partitions: 3
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000  # Checkpoint every minute
+    # Optional: tune Flink behavior
+    topic:
+      name: orders.stats.hourly.v1
+      partitions: 3
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000  # Checkpoint every minute
 ```
 
 **How it works:**
@@ -208,13 +208,13 @@ models:
         window_start,
         window_end
 
-    advanced:  # Optional: tune for larger state
-      topic:
-        name: orders.trends.15min.v1
-        partitions: 3
-      flink:
-        parallelism: 4
-        state_ttl_ms: 7200000  # 2 hours - keep state for trend calculation
+    # Optional: tune for larger state
+    topic:
+      name: orders.trends.15min.v1
+      partitions: 3
+    flink:
+      parallelism: 4
+      state_ttl_ms: 7200000  # 2 hours - keep state for trend calculation
 ```
 
 **How it works:**

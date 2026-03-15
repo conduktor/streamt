@@ -64,10 +64,9 @@ models:
         event_time
       FROM {{ source("card_payments_raw") }}
       WHERE status IN ('AUTHORIZED', 'CAPTURED')
-    advanced:
-      topic:
-        partitions: 6
-        replication_factor: 1
+    topic:
+      partitions: 6
+      replication_factor: 1
 
   - name: customer_balance_5m
     description: "Customer balance aggregated over 5-minute windows"

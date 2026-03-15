@@ -70,9 +70,7 @@ class TestCLI:
                     {
                         "name": "clean",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
-                        "advanced": {
-                            "topic": {"partitions": 6}
-                        }
+                        "topic": {"partitions": 6}
                     }
                 ],
             }

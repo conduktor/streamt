@@ -33,9 +33,7 @@ class TestCompiler:
                     {
                         "name": "payments_clean",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
-                        "advanced": {
-                            "topic": {"partitions": 12, "replication_factor": 3}
-                        }
+                        "topic": {"partitions": 12, "replication_factor": 3}
                     }
                 ],
             }
@@ -146,9 +144,7 @@ class TestCompiler:
                     {
                         "name": "clean",
                         "sql": 'SELECT * FROM {{ source("raw") }}',
-                        "advanced": {
-                            "topic": {"partitions": 6}
-                        }
+                        "topic": {"partitions": 6}
                     }
                 ],
             }
@@ -661,9 +657,7 @@ class TestContinuousTestCompilation:
                             SELECT event_id, user_id, event_type
                             FROM {{ source("events") }}
                         """,
-                        "advanced": {
-                            "topic": {"name": "events.clean.v1"}
-                        }
+                        "topic": {"name": "events.clean.v1"}
                     }
                 ],
                 "tests": [
@@ -714,9 +708,7 @@ class TestContinuousTestCompilation:
                     {
                         "name": "clean",
                         "sql": 'SELECT id, status FROM {{ source("raw") }}',
-                        "advanced": {
-                            "topic": {"name": "clean.v1"}
-                        }
+                        "topic": {"name": "clean.v1"}
                     }
                 ],
                 "tests": [
@@ -773,9 +765,7 @@ class TestContinuousTestCompilation:
                     {
                         "name": "m1",
                         "sql": 'SELECT col_a FROM {{ source("src") }}',
-                        "advanced": {
-                            "topic": {"name": "t2"}
-                        }
+                        "topic": {"name": "t2"}
                     }
                 ],
                 "tests": [
@@ -816,7 +806,7 @@ class TestContinuousTestCompilation:
                     {
                         "name": "m1",
                         "sql": 'SELECT amount, created_at FROM {{ source("src") }}',
-                        "advanced": {"topic": {"name": "t2"}}
+                        "topic": {"name": "t2"}
                     }
                 ],
                 "tests": [
@@ -862,7 +852,7 @@ class TestContinuousTestCompilation:
                     {
                         "name": "m1",
                         "sql": 'SELECT balance, account_id FROM {{ source("src") }}',
-                        "advanced": {"topic": {"name": "t2"}}
+                        "topic": {"name": "t2"}
                     }
                 ],
                 "tests": [
@@ -1185,11 +1175,9 @@ class TestStateTtlConfiguration:
                     {
                         "name": "customer_counts",
                         "sql": 'SELECT customer_id, COUNT(*) FROM {{ source("orders") }} GROUP BY customer_id',
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 86400000  # 24 hours
-                            }
-                        }
+                        "flink": {
+                            "state_ttl_ms": 86400000,  # 24 hours
+                        },
                     }
                 ],
             }
@@ -1222,11 +1210,9 @@ class TestStateTtlConfiguration:
                     {
                         "name": "event_counts",
                         "sql": 'SELECT type, COUNT(*) FROM {{ source("events") }} GROUP BY type',
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 1800000  # 30 minutes
-                            }
-                        }
+                        "flink": {
+                            "state_ttl_ms": 1800000,  # 30 minutes
+                        },
                     }
                 ],
             }
@@ -1259,11 +1245,9 @@ class TestStateTtlConfiguration:
                     {
                         "name": "click_counts",
                         "sql": 'SELECT url, COUNT(*) FROM {{ source("clicks") }} GROUP BY url',
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 60000  # 60 seconds
-                            }
-                        }
+                        "flink": {
+                            "state_ttl_ms": 60000,  # 60 seconds
+                        },
                     }
                 ],
             }
@@ -1296,11 +1280,9 @@ class TestStateTtlConfiguration:
                     {
                         "name": "aggregates",
                         "sql": 'SELECT id, SUM(value) FROM {{ source("data") }} GROUP BY id',
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 604800000  # 7 days
-                            }
-                        }
+                        "flink": {
+                            "state_ttl_ms": 604800000,  # 7 days
+                        },
                     }
                 ],
             }

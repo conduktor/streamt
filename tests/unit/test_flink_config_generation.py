@@ -17,7 +17,7 @@ def _base_config(flink_config: dict | None = None, source_event_time: dict | Non
         "sql": 'SELECT id FROM {{ source("src") }}',
     }
     if flink_config:
-        model["advanced"] = {"flink": flink_config}
+        model["flink"] = flink_config
     source: dict = {"name": "src", "topic": "src.v1", "columns": [{"name": "id"}]}
     if source_event_time:
         source["event_time"] = source_event_time

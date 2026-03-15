@@ -55,7 +55,7 @@ models:
       WHERE amount > 0
 ```
 
-**With advanced overrides:**
+**With overrides:**
 ```yaml
 models:
   - name: orders_clean
@@ -68,15 +68,14 @@ models:
       WHERE amount > 0
 
     # Only when overriding defaults:
-    advanced:
-      topic:
-        name: orders.clean.v1          # Topic name
-        partitions: 12                  # Partition count
-        replication_factor: 3           # Replication
-        config:                         # Topic configs
-          retention.ms: 604800000       # 7 days
-          cleanup.policy: delete
-          min.insync.replicas: 2
+    topic:
+      name: orders.clean.v1          # Topic name
+      partitions: 12                  # Partition count
+      replication_factor: 3           # Replication
+      config:                         # Topic configs
+        retention.ms: 604800000       # 7 days
+        cleanup.policy: delete
+        min.insync.replicas: 2
 ```
 
 ### How It Works
@@ -125,20 +124,24 @@ models:
 
     # Gateway configuration triggers virtual_topic materialization
     gateway:
-      virtual_topic: orders.europe.virtual
+      virtual_topic:
+        name: orders.europe.virtual
 
     # Access control
-    access:
-      level: protected
-      allowed_groups: [europe-team]
+    access: protected
 
     # Security
     security:
-      masking:
-        - column: email
-          policy: hash
-        - column: phone
-          policy: redact
+      classification:
+        email: confidential
+        phone: confidential
+      policies:
+        - mask:
+            column: email
+            method: hash
+        - mask:
+            column: phone
+            method: redact
 
     sql: |
       SELECT *
@@ -220,7 +223,7 @@ models:
         TUMBLE(order_time, INTERVAL '1' HOUR)
 ```
 
-**With advanced overrides:**
+**With overrides:**
 ```yaml
 models:
   - name: hourly_revenue
@@ -239,17 +242,16 @@ models:
         TUMBLE(order_time, INTERVAL '1' HOUR)
 
     # Only when overriding defaults:
-    advanced:
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 60000
-        state_backend: rocksdb
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 60000
+      state_backend: rocksdb
 
-      flink_cluster: production
+    flink_cluster: production
 
-      topic:
-        name: analytics.revenue.v1
-        partitions: 6
+    topic:
+      name: analytics.revenue.v1
+      partitions: 6
 ```
 
 ### Flink SQL Features
@@ -335,13 +337,16 @@ FROM predictions
 
   ml_outputs:
     FraudModel:
-      score: DOUBLE
-      confidence: DOUBLE
+      columns:
+        - name: score
+          type: DOUBLE
+        - name: confidence
+          type: DOUBLE
 ```
 
 ### Flink Settings Reference
 
-All settings are nested under `advanced.flink`:
+All settings are nested under `flink:`:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -350,7 +355,7 @@ All settings are nested under `advanced.flink`:
 | `state_backend` | string | hashmap | `hashmap` or `rocksdb` |
 | `state_ttl_ms` | long | none | State TTL (ms) |
 
-Cluster selection is at `advanced.flink_cluster`.
+Cluster selection is at `flink_cluster:`.
 
 ---
 
@@ -389,7 +394,7 @@ models:
         tasks.max: 4
 ```
 
-**With advanced overrides:**
+**With overrides:**
 ```yaml
 models:
   - name: orders_snowflake
@@ -419,8 +424,7 @@ models:
         pk.fields: order_id
 
     # Only when overriding defaults:
-    advanced:
-      connect_cluster: production
+    connect_cluster: production
 ```
 
 ### Supported Connector Types

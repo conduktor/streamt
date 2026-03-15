@@ -44,12 +44,12 @@ class TestResourceLimits:
                 "models": [
                     {
                         "name": "high_throughput_model",
-                        "advanced": {"flink": {"parallelism": 16}},
+                        "flink": {"parallelism": 16},
                         "sql": "SELECT * FROM {{ source('events') }}",
                     },
                     {
                         "name": "low_throughput_model",
-                        "advanced": {"flink": {"parallelism": 2}},
+                        "flink": {"parallelism": 2},
                         "sql": "SELECT * FROM {{ ref('high_throughput_model') }} WHERE is_special = true",
                     },
                     {
@@ -97,17 +97,17 @@ class TestResourceLimits:
                 "models": [
                     {
                         "name": "high_volume",
-                        "advanced": {"topic": {"partitions": 48}},
+                        "topic": {"partitions": 48},
                         "sql": "SELECT * FROM {{ source('events') }}",
                     },
                     {
                         "name": "low_volume",
-                        "advanced": {"topic": {"partitions": 3}},
+                        "topic": {"partitions": 3},
                         "sql": "SELECT * FROM {{ ref('high_volume') }} WHERE is_rare = true",
                     },
                     {
                         "name": "aggregate_output",
-                        "advanced": {"topic": {"partitions": 1}},
+                        "topic": {"partitions": 1},
                         "sql": """
                             SELECT COUNT(*) as total
                             FROM {{ ref('low_volume') }}

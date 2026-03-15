@@ -72,10 +72,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "daily_user_counts",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 86400000,  # 24 hours
-                        },
+                    "flink": {
+                        "state_ttl_ms": 86400000,  # 24 hours
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -113,10 +111,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "recent_events",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 3600000,  # 1 hour
-                        },
+                    "flink": {
+                        "state_ttl_ms": 3600000,  # 1 hour
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -151,10 +147,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "windowed_counts",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 1800000,  # 30 minutes
-                        },
+                    "flink": {
+                        "state_ttl_ms": 1800000,  # 30 minutes
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -188,10 +182,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "weekly_patterns",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 604800000,  # 7 days
-                        },
+                    "flink": {
+                        "state_ttl_ms": 604800000,  # 7 days
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -227,10 +219,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "short_lived",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 90000,  # 90 seconds
-                        },
+                    "flink": {
+                        "state_ttl_ms": 90000,  # 90 seconds
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -264,10 +254,8 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "precise_ttl",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 5500,  # 5.5 seconds
-                        },
+                    "flink": {
+                        "state_ttl_ms": 5500,  # 5.5 seconds
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -301,12 +289,10 @@ class TestStateTtlConfiguration:
             config = self._create_base_config([
                 {
                     "name": "aggregated",
-                    "advanced": {
-                        "flink": {
-                            "parallelism": 8,
-                            "state_ttl_ms": 86400000,
-                            "checkpoint_interval_ms": 60000,
-                        },
+                    "flink": {
+                        "parallelism": 8,
+                        "state_ttl_ms": 86400000,
+                        "checkpoint_interval_ms": 60000,
                     },
                     "sql": """
                         SELECT user_id, COUNT(*) as event_count
@@ -378,10 +364,8 @@ class TestStateTtlValidation:
             config = self._create_base_config([
                 {
                     "name": "invalid_ttl",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": -1000,
-                        },
+                    "flink": {
+                        "state_ttl_ms": -1000,
                     },
                     "sql": "SELECT * FROM {{ source(\"events\") }}",
                 }
@@ -408,10 +392,8 @@ class TestStateTtlValidation:
             config = self._create_base_config([
                 {
                     "name": "zero_ttl",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 0,
-                        },
+                    "flink": {
+                        "state_ttl_ms": 0,
                     },
                     "sql": "SELECT * FROM {{ source(\"events\") }}",
                 }
@@ -437,10 +419,8 @@ class TestStateTtlValidation:
             config = self._create_base_config([
                 {
                     "name": "short_ttl",
-                    "advanced": {
-                        "flink": {
-                            "state_ttl_ms": 500,  # 500ms - very short
-                        },
+                    "flink": {
+                        "state_ttl_ms": 500,  # 500ms - very short
                     },
                     "sql": "SELECT * FROM {{ source(\"events\") }}",
                 }
@@ -538,10 +518,8 @@ class TestStateTtlMultipleModels:
                     {
                         "name": "hourly_metrics",
 
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 7200000,  # 2 hours for hourly
-                            },
+                        "flink": {
+                            "state_ttl_ms": 7200000,  # 2 hours for hourly
                         },
                         "sql": """
                             SELECT
@@ -554,10 +532,8 @@ class TestStateTtlMultipleModels:
                     {
                         "name": "daily_metrics",
 
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 172800000,  # 48 hours for daily
-                            },
+                        "flink": {
+                            "state_ttl_ms": 172800000,  # 48 hours for daily
                         },
                         "sql": """
                             SELECT
@@ -570,10 +546,8 @@ class TestStateTtlMultipleModels:
                     {
                         "name": "user_sessions",
 
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 3600000,  # 1 hour for session window
-                            },
+                        "flink": {
+                            "state_ttl_ms": 3600000,  # 1 hour for session window
                         },
                         "sql": """
                             SELECT
@@ -647,7 +621,7 @@ class TestStateTtlMultipleModels:
                     {
                         "name": "with_ttl",
                         "sql": "SELECT id, COUNT(*) as count FROM {{ source(\"events\") }} GROUP BY id",
-                        "advanced": {"flink": {"state_ttl_ms": 86400000}},
+                        "flink": {"state_ttl_ms": 86400000},
                     },
                     {
                         "name": "without_ttl",
@@ -738,11 +712,9 @@ class TestStateTtlRealWorldScenarios:
                     {
                         "name": "customer_order_counts",
                         "description": "Order counts per customer for join enrichment",
-                        "advanced": {
-                            "flink": {
-                                "parallelism": 4,
-                                "state_ttl_ms": 86400000,  # 24 hours
-                            },
+                        "flink": {
+                            "parallelism": 4,
+                            "state_ttl_ms": 86400000,  # 24 hours
                         },
                         "sql": """
                             SELECT
@@ -757,11 +729,9 @@ class TestStateTtlRealWorldScenarios:
                     {
                         "name": "customer_order_enriched",
                         "description": "Orders enriched with customer lifetime data",
-                        "advanced": {
-                            "flink": {
-                                "parallelism": 4,
-                                "state_ttl_ms": 3600000,  # 1 hour for join
-                            },
+                        "flink": {
+                            "parallelism": 4,
+                            "state_ttl_ms": 3600000,  # 1 hour for join
                         },
                         "sql": """
                             SELECT
@@ -848,11 +818,9 @@ class TestStateTtlRealWorldScenarios:
                     {
                         "name": "sensor_hourly_stats",
                         "description": "Hourly sensor statistics",
-                        "advanced": {
-                            "flink": {
-                                "parallelism": 2,
-                                "state_ttl_ms": 172800000,  # 48 hours
-                            },
+                        "flink": {
+                            "parallelism": 2,
+                            "state_ttl_ms": 172800000,  # 48 hours
                         },
                         "sql": """
                             SELECT
@@ -873,11 +841,9 @@ class TestStateTtlRealWorldScenarios:
                     {
                         "name": "device_health",
                         "description": "Device health metrics",
-                        "advanced": {
-                            "flink": {
-                                "parallelism": 2,
-                                "state_ttl_ms": 604800000,  # 7 days
-                            },
+                        "flink": {
+                            "parallelism": 2,
+                            "state_ttl_ms": 604800000,  # 7 days
                         },
                         "sql": """
                             SELECT

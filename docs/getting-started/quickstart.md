@@ -55,6 +55,22 @@ runtime:
         sql_gateway_url: http://localhost:8084
 ```
 
+> **Using Confluent Cloud?** Add authentication to your runtime config:
+> ```yaml
+> runtime:
+>   kafka:
+>     bootstrap_servers: pkc-abc12.us-east-1.aws.confluent.cloud:9092
+>     security_protocol: SASL_SSL
+>     sasl_mechanism: PLAIN
+>     sasl_username: my-api-key
+>     sasl_password: my-api-secret
+>   schema_registry:
+>     url: https://psrc-xyz99.us-east-1.aws.confluent.cloud
+>     username: sr-api-key
+>     password: sr-api-secret
+> ```
+> Store credentials in `.env` (gitignored) and reference with `${VAR}` syntax.
+
 ## 3. Define a Source
 
 Create a source representing incoming data:
@@ -95,10 +111,9 @@ models:
         AND user_id IS NOT NULL
 
     # Optional: customize topic settings
-    advanced:
-      topic:
-        name: events.clean.v1
-        partitions: 6
+    topic:
+      name: events.clean.v1
+      partitions: 6
 ```
 
 The model is automatically materialized as a topic since it's a simple SELECT statement.

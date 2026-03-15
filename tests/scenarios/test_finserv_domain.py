@@ -91,10 +91,8 @@ class TestTradingPipeline:
                         "description": "Consolidated quotes from all exchanges",
 
                         "owner": "market-data-team",
-                        "advanced": {
-                            "topic": {"partitions": 24, "config": {"retention.ms": "3600000"}},
-                            "flink": {"parallelism": 12},
-                        },
+                        "topic": {"partitions": 24, "config": {"retention.ms": "3600000"}},
+                        "flink": {"parallelism": 12},
                         "sql": """
                             SELECT
                                 symbol,
@@ -122,9 +120,7 @@ class TestTradingPipeline:
                         "description": "National Best Bid and Offer",
 
                         "owner": "market-data-team",
-                        "advanced": {
-                            "topic": {"partitions": 12},
-                        },
+                        "topic": {"partitions": 12},
                         "sql": """
                             SELECT
                                 symbol,
@@ -143,9 +139,7 @@ class TestTradingPipeline:
                         "description": "Volume Weighted Average Price per symbol",
 
                         "owner": "quant-team",
-                        "advanced": {
-                            "topic": {"partitions": 12},
-                        },
+                        "topic": {"partitions": 12},
                         "sql": """
                             SELECT
                                 symbol,
@@ -165,9 +159,7 @@ class TestTradingPipeline:
                         "description": "Detected price anomalies",
 
                         "owner": "surveillance-team",
-                        "advanced": {
-                            "topic": {"partitions": 6, "config": {"retention.ms": "86400000"}},
-                        },
+                        "topic": {"partitions": 6, "config": {"retention.ms": "86400000"}},
                         "sql": """
                             SELECT
                                 n.symbol,
@@ -194,9 +186,7 @@ class TestTradingPipeline:
                         "description": "End of day market summary",
 
                         "owner": "reporting-team",
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 symbol,

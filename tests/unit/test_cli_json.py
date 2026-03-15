@@ -267,7 +267,7 @@ class TestShowCommand:
                     "name": "clean",
                     "description": "Cleaned events",
                     "sql": 'SELECT * FROM {{ source("raw") }} WHERE id IS NOT NULL',
-                    "advanced": {"topic": {"partitions": 6}},
+                    "topic": {"partitions": 6},
                 },
                 {"name": "agg", "sql": 'SELECT COUNT(*) FROM {{ ref("clean") }} GROUP BY status'},
             ],

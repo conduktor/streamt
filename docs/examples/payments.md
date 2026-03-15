@@ -57,21 +57,21 @@ runtime:
     sasl_password: ${KAFKA_PASSWORD}
 
   schema_registry:
-    url: ${SCHEMA_REGISTRY_URL}
+    url: http://schema-registry:8081
 
   flink:
     default: production
     clusters:
       production:
         type: rest
-        rest_url: ${FLINK_REST_URL}
-        sql_gateway_url: ${FLINK_SQL_GATEWAY_URL}
+        rest_url: http://flink:8081
+        sql_gateway_url: http://flink:8083
 
   connect:
     default: production
     clusters:
       production:
-        rest_url: ${CONNECT_URL}
+        rest_url: http://connect:8083
 
 rules:
   topics:
@@ -186,12 +186,11 @@ models:
         AND status IN ('pending', 'processing', 'completed', 'failed', 'refunded')
 
     # Override defaults only when needed
-    advanced:
-      topic:
-        name: payments.validated.v1
-        partitions: 12
-        config:
-          retention.ms: 604800000
+    topic:
+      name: payments.validated.v1
+      partitions: 12
+      config:
+        retention.ms: 604800000
 ```
 
 ### 2. Enrich with Customer Data
@@ -233,13 +232,12 @@ models:
         ON p.customer_id = c.customer_id
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 30000
-      topic:
-        name: payments.enriched.v1
-        partitions: 12
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 30000
+    topic:
+      name: payments.enriched.v1
+      partitions: 12
 ```
 
 ### 3. Fraud Scoring
@@ -306,13 +304,12 @@ models:
           policy: redact
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 10000
-      topic:
-        name: payments.fraud-scores.v1
-        partitions: 12
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 10000
+    topic:
+      name: payments.fraud-scores.v1
+      partitions: 12
 ```
 
 ### 4. Payment Metrics
@@ -346,13 +343,12 @@ models:
         customer_country
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000
-      topic:
-        name: payments.metrics.v1
-        partitions: 6
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000
+    topic:
+      name: payments.metrics.v1
+      partitions: 6
 ```
 
 ### 5. Export to Warehouse
@@ -442,10 +438,12 @@ tests:
       - throughput:
           min_per_minute: 100
     on_failure:
-      - alert:
-          channel: pagerduty
-          routing_key: ${PAGERDUTY_KEY}
-          severity: critical
+      severity: error
+      actions:
+        - alert:
+            channel: pagerduty
+            routing_key: pd-payments-key
+            severity: critical
 ```
 
 ## Exposures
@@ -468,7 +466,7 @@ exposures:
 
     sla:
       max_end_to_end_latency_ms: 100
-      availability: 99.99
+      availability: "99.99%"
       max_lag_messages: 5000
 
   - name: payments_dashboard
@@ -485,7 +483,7 @@ exposures:
 
     sla:
       max_end_to_end_latency_ms: 5000
-      availability: 99.9
+      availability: "99.9%"
 ```
 
 ## Deployment

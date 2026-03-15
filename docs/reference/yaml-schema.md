@@ -427,17 +427,13 @@ sources:
       - name: user_id
       - name: event_timestamp  # Will be TIMESTAMP(3) in Flink
 
-    # Top-level: just the column name
+    # Event time with watermark configuration
     event_time:
       column: event_timestamp
-
-    # Advanced section: watermark details
-    advanced:
-      event_time:
-        watermark:
-          strategy: bounded_out_of_orderness
-          max_out_of_orderness_ms: 5000   # Allow 5 seconds of late data
-        allowed_lateness_ms: 60000        # Accept data up to 1 minute late
+      watermark:
+        strategy: bounded_out_of_orderness
+        max_out_of_orderness_ms: 5000   # Allow 5 seconds of late data
+      allowed_lateness_ms: 60000        # Accept data up to 1 minute late
 ```
 
 This generates proper Flink SQL watermark declarations:
@@ -499,7 +495,7 @@ Models define transformations that create new data streams.
 | Has `from:` without `sql:` | `sink` |
 | Simple `SELECT`, `WHERE`, projection | `topic` |
 
-### Basic Example (No Advanced Config)
+### Basic Example
 
 ```yaml
 models:
@@ -521,7 +517,7 @@ models:
     # materialized: topic (auto-inferred from simple SELECT)
 ```
 
-### Example With Advanced Overrides
+### Example With Overrides
 
 ```yaml
 models:
@@ -539,22 +535,21 @@ models:
     # materialized: flink (auto-inferred from TUMBLE)
 
     # Only specify when overriding defaults:
-    advanced:
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 60000
-        state_backend: rocksdb
-        state_ttl_ms: 86400000
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 60000
+      state_backend: rocksdb
+      state_ttl_ms: 86400000
 
-      flink_cluster: production
+    flink_cluster: production
 
-      topic:
-        name: analytics.revenue.v1
-        partitions: 12
-        replication_factor: 3
-        config:
-          retention.ms: 604800000
-          cleanup.policy: delete
+    topic:
+      name: analytics.revenue.v1
+      partitions: 12
+      replication_factor: 3
+      config:
+        retention.ms: 604800000
+        cleanup.policy: delete
 
     columns:
       - name: window_start
@@ -587,36 +582,36 @@ models:
       WHERE order_id IS NOT NULL
         AND amount > 0
 
-    # Advanced configuration (optional - only when overriding defaults)
-    advanced:
-      # Flink job settings (for flink materialization)
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000
-        state_backend: rocksdb
-        state_ttl_ms: 86400000
+    # Infrastructure configuration (optional - only when overriding defaults)
 
-      # Target Flink cluster
-      flink_cluster: production
+    # Flink job settings (for flink materialization)
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000
+      state_backend: rocksdb
+      state_ttl_ms: 86400000
 
-      # Output topic configuration
-      topic:
-        name: orders.validated.v1
-        partitions: 12
-        replication_factor: 3
-        config:
-          retention.ms: 604800000
-          cleanup.policy: delete
+    # Target Flink cluster
+    flink_cluster: production
 
-      # Connect cluster (for sink materialization)
-      connect_cluster: production
+    # Output topic configuration
+    topic:
+      name: orders.validated.v1
+      partitions: 12
+      replication_factor: 3
+      config:
+        retention.ms: 604800000
+        cleanup.policy: delete
 
-      # Event time configuration (advanced)
-      event_time:
-        watermark:
-          strategy: bounded_out_of_orderness
-          max_out_of_orderness_ms: 5000
-        allowed_lateness_ms: 60000
+    # Connect cluster (for sink materialization)
+    connect_cluster: production
+
+    # Event time configuration
+    event_time:
+      watermark:
+        strategy: bounded_out_of_orderness
+        max_out_of_orderness_ms: 5000
+      allowed_lateness_ms: 60000
 
     # Column metadata (stays at top level)
     columns:
@@ -739,22 +734,22 @@ models:
 | `nullable` | bool | No | Whether the column allows nulls |
 | `description` | string | No | Column description |
 
-### Model Fields (Advanced Section)
+### Model Fields (Infrastructure)
 
-**Advanced section fields** (optional, infrastructure/tuning):
+**Infrastructure/tuning fields** (optional, top-level on models):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `advanced.flink` | object | Flink job configuration (see below) |
-| `advanced.flink_cluster` | string | Target Flink cluster name |
-| `advanced.topic` | object | Output topic configuration (see below) |
-| `advanced.connect_cluster` | string | Target Kafka Connect cluster |
-| `advanced.event_time` | object | Event time watermark configuration |
-| `advanced.gateway` | object | Gateway-specific settings |
+| `flink` | object | Flink job configuration (see below) |
+| `flink_cluster` | string | Target Flink cluster name |
+| `topic` | object | Output topic configuration (see below) |
+| `connect_cluster` | string | Target Kafka Connect cluster |
+| `event_time` | object | Event time watermark configuration |
+| `gateway` | object | Gateway-specific settings |
 
-### Advanced: Topic Configuration
+### Topic Configuration
 
-Nested under `advanced.topic:`:
+Top-level `topic:` field on models:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -763,9 +758,9 @@ Nested under `advanced.topic:`:
 | `replication_factor` | int | Replication factor |
 | `config` | map | Kafka topic configuration |
 
-### Advanced: Gateway Configuration
+### Gateway Configuration
 
-Nested under `advanced.gateway:` (for virtual topic models):
+Top-level `gateway:` field on models (for virtual topic models):
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -782,19 +777,18 @@ models:
       WHERE region = 'US'
 
     # Gateway virtual topic with compression
-    advanced:
-      gateway:
-        virtual_topic:
-          name: orders.us.filtered
-          compression: lz4
+    gateway:
+      virtual_topic:
+        name: orders.us.filtered
+        compression: lz4
 ```
 
 !!! tip "Virtual Topics"
     Virtual topics are automatically inferred when Gateway is configured. They provide schema transformation and data masking without creating physical Kafka topics. See the [Gateway Guide](../guides/gateway.md).
 
-### Advanced: Flink Configuration
+### Flink Configuration
 
-Nested under `advanced.flink:`:
+Top-level `flink:` field on models:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -853,8 +847,7 @@ models:
         tasks.max: 4
 
     # Only when overriding defaults:
-    advanced:
-      connect_cluster: production
+    connect_cluster: production
 ```
 
 ### Sink Configuration
@@ -1089,9 +1082,8 @@ models:
                              AND c.update_time + INTERVAL '1' HOUR
 
     # Only when overriding defaults:
-    advanced:
-      flink:
-        parallelism: 4
+    flink:
+      parallelism: 4
 ```
 
 ---
@@ -1107,7 +1099,7 @@ runtime:
     sasl_password: ${KAFKA_PASSWORD}
 
   schema_registry:
-    url: ${SCHEMA_REGISTRY_URL}
+    url: https://sr.example.com:8081
 ```
 
 Variables can be set via:

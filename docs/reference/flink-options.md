@@ -7,6 +7,147 @@ description: Complete reference for Flink configuration in streamt
 
 This page documents all Flink-related configuration options in streamt.
 
+## Job Lifecycle on Apply
+
+When you run `streamt apply`, each Flink job goes through a planning phase that
+inspects the cluster and decides what action to take. This section documents the
+exact behavior for every scenario.
+
+### Decision Flow
+
+```
+┌─────────────────────┐
+│  Does the job exist  │
+│  on the cluster?     │
+└──────┬──────┬────────┘
+       │      │
+      No     Yes
+       │      │
+       ▼      ▼
+   SUBMIT   ┌──────────────────┐
+   new job  │ Is it RUNNING or │
+            │ CREATED?         │
+            └──┬───────┬───────┘
+              Yes      No (FAILED, CANCELED, …)
+               │       │
+               ▼       ▼
+         ┌──────────┐  SUBMIT
+         │ Has SQL   │  (re-submit as new job)
+         │ changed?  │
+         └──┬────┬───┘
+           Yes   No
+            │     │
+            ▼     ▼
+        CANCEL   SKIP
+        + SUBMIT (unchanged)
+```
+
+### 1. New Job (no existing job on cluster)
+
+The job is submitted for the first time. The generated SQL is executed as a
+sequence of statements through the Flink SQL Gateway:
+
+1. `SET` statements (parallelism, checkpointing, state backend, etc.)
+2. `CREATE TABLE` for source and sink tables (Kafka connectors)
+3. `INSERT INTO` to start the streaming pipeline
+
+The SQL hash is recorded to local state (`.streamt/flink_hashes.json`) for
+future change detection.
+
+### 2. SQL Changed (existing RUNNING job)
+
+streamt detects SQL changes by comparing a SHA-256 hash of the full generated
+SQL against the hash recorded during the previous apply. The generated SQL
+includes `SET` statements, so **any** configuration change — SQL logic,
+parallelism, checkpointing, state backend, state TTL — produces a different
+hash.
+
+When a change is detected:
+
+1. The running job is **cancelled** via the Flink REST API (`PATCH /jobs/{id}` with state `cancelled`).
+2. The new SQL is submitted through the SQL Gateway.
+3. The new hash is saved to local state.
+
+**There is no savepoint taken before cancellation.** The job is hard-cancelled
+and restarted from scratch (or from the latest externalized checkpoint, if
+configured). If you need to preserve state across redeployments, configure
+externalized checkpoint retention:
+
+```yaml
+flink:
+  checkpoint:
+    externalized: RETAIN_ON_CANCELLATION
+```
+
+With this setting, Flink retains checkpoints after cancellation, and the new
+job can resume from the latest checkpoint automatically (depending on your Flink
+cluster configuration).
+
+### 3. Config Changed (parallelism, checkpointing, etc.)
+
+Config-only changes are **not treated differently** from SQL logic changes.
+Because all Flink options are compiled into `SET` statements within the
+generated SQL, changing any option (parallelism, checkpoint interval, state
+backend, etc.) changes the SQL hash. This triggers the same cancel + resubmit
+path described above.
+
+Examples of changes that trigger redeployment:
+
+- `parallelism: 4` to `parallelism: 8`
+- `checkpoint_interval_ms: 60000` to `checkpoint_interval_ms: 30000`
+- `state_backend: hashmap` to `state_backend: rocksdb`
+- Any modification to the SQL query itself
+
+### 4. Job Failed or Stopped
+
+If the job exists on the cluster but is not in `RUNNING` or `CREATED` state
+(e.g., `FAILED`, `CANCELED`, `FINISHED`), streamt treats it as a fresh
+submission. The job is submitted without attempting to cancel it first.
+
+This means `streamt apply` is self-healing: if a job crashes, re-running apply
+will restart it.
+
+### 5. No Changes Detected
+
+If the job is `RUNNING` and the SQL hash matches the previously recorded hash,
+the job is left untouched. The plan shows `action: none` and apply reports it
+as `unchanged`.
+
+!!! note "First Apply After Import"
+    On the very first apply (or if the local state file is missing), there is no
+    prior hash to compare against. In this case, a running job is reported as
+    `unchanged` and left alone. The hash is recorded for future comparisons. To
+    force redeployment, delete `.streamt/flink_hashes.json` and stop the job
+    manually, or change the SQL.
+
+### 6. Rollback on Failure
+
+If the new SQL fails to submit after the running job was cancelled:
+
+1. The SQL hash for that job is **cleared** from local state.
+2. A `CRITICAL` log message is emitted: `PIPELINE DOWN: job '<name>' was cancelled but resubmit failed.`
+3. The error is re-raised, causing `apply` to report the job under `errors`.
+
+**The old job is not automatically restored.** The pipeline is down until the
+issue is fixed and `streamt apply` is run again. On the next apply, the missing
+hash and non-running state will cause the job to be submitted as new.
+
+To minimize this risk:
+
+- Use `streamt plan` to preview changes before applying.
+- Test SQL changes locally with the Flink SQL CLI first.
+- Configure `checkpoint.externalized: RETAIN_ON_CANCELLATION` so that even
+  after a failed redeploy, manually resubmitting the old SQL can resume from
+  the last checkpoint.
+
+!!! warning "No Savepoints"
+    streamt does **not** trigger savepoints before cancelling jobs. This is a
+    known limitation. If you require zero-data-loss redeployments with state
+    continuity, take a savepoint manually via the Flink REST API before running
+    `streamt apply`, or configure externalized checkpoint retention.
+
+---
+
 ## Current Status
 
 | Category | Status | Notes |
@@ -25,7 +166,7 @@ This page documents all Flink-related configuration options in streamt.
 
 ## Model Flink Configuration
 
-Configure Flink jobs in your model definitions using the `advanced` section:
+Configure Flink jobs in your model definitions using the `flink:` and `flink_cluster:` fields:
 
 ```yaml
 models:
@@ -41,19 +182,18 @@ models:
       GROUP BY customer_id
 
     # Only when overriding defaults:
-    advanced:
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000
-        state_backend: rocksdb
-        state_ttl_ms: 86400000
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000
+      state_backend: rocksdb
+      state_ttl_ms: 86400000
 
-      flink_cluster: production    # Which cluster to deploy to
+    flink_cluster: production    # Which cluster to deploy to
 ```
 
 ### Supported Options
 
-All Flink options are nested under `advanced.flink`:
+All Flink options are nested under `flink:`:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -82,9 +222,8 @@ models:
       FROM {{ ref("orders") }}
       GROUP BY customer_id
 
-    advanced:
-      flink:
-        state_ttl_ms: 86400000  # 24 hours
+    flink:
+      state_ttl_ms: 86400000  # 24 hours
 ```
 
 **When to use State TTL:**
@@ -117,9 +256,8 @@ models:
 The `state_backend` option is applied as `SET 'state.backend'` in the generated Flink SQL.
 
 ```yaml
-advanced:
-  flink:
-    state_backend: rocksdb  # generates: SET 'state.backend' = 'rocksdb'
+flink:
+  state_backend: rocksdb  # generates: SET 'state.backend' = 'rocksdb'
 ```
 
 | Value | Description |
@@ -130,17 +268,16 @@ advanced:
 ### Advanced Checkpointing
 
 ```yaml
-advanced:
-  flink:
-    checkpoint_interval_ms: 60000
-    checkpoint:
-      timeout_ms: 120000
-      min_pause_ms: 500
-      max_concurrent: 1
-      mode: EXACTLY_ONCE
-      externalized: RETAIN_ON_CANCELLATION
-      unaligned: true
-      incremental: true
+flink:
+  checkpoint_interval_ms: 60000
+  checkpoint:
+    timeout_ms: 120000
+    min_pause_ms: 500
+    max_concurrent: 1
+    mode: EXACTLY_ONCE
+    externalized: RETAIN_ON_CANCELLATION
+    unaligned: true
+    incremental: true
 ```
 
 | Field | Type | SET statement | Description |
@@ -155,17 +292,16 @@ advanced:
 
 ### Restart Strategy
 
-Three restart strategy types are supported via `advanced.flink.restart_strategy`:
+Three restart strategy types are supported via `flink.restart_strategy`:
 
 **fixed-delay** — restart a fixed number of times with a delay between attempts:
 
 ```yaml
-advanced:
-  flink:
-    restart_strategy:
-      type: fixed-delay
-      attempts: 3
-      delay_ms: 10000
+flink:
+  restart_strategy:
+    type: fixed-delay
+    attempts: 3
+    delay_ms: 10000
 ```
 
 | SET statement | Value |
@@ -177,25 +313,23 @@ advanced:
 **failure-rate** — restart as long as failure rate stays below threshold:
 
 ```yaml
-advanced:
-  flink:
-    restart_strategy:
-      type: failure-rate
-      max_failures_per_interval: 3
-      failure_rate_interval_ms: 300000
-      delay_ms: 10000
+flink:
+  restart_strategy:
+    type: failure-rate
+    max_failures_per_interval: 3
+    failure_rate_interval_ms: 300000
+    delay_ms: 10000
 ```
 
 **exponential-delay** — restart with exponentially increasing delay:
 
 ```yaml
-advanced:
-  flink:
-    restart_strategy:
-      type: exponential-delay
-      initial_delay_ms: 1000
-      max_delay_ms: 60000
-      backoff_multiplier: 2.0
+flink:
+  restart_strategy:
+    type: exponential-delay
+    initial_delay_ms: 1000
+    max_delay_ms: 60000
+    backoff_multiplier: 2.0
 ```
 
 ### RocksDB Tuning
@@ -203,13 +337,12 @@ advanced:
 When using `state_backend: rocksdb`, tune RocksDB performance:
 
 ```yaml
-advanced:
-  flink:
-    state_backend: rocksdb
-    rocksdb:
-      block_cache_size_mb: 256
-      write_buffer_size_mb: 64
-      predefined_options: FLASH_SSD_OPTIMIZED
+flink:
+  state_backend: rocksdb
+  rocksdb:
+    block_cache_size_mb: 256
+    write_buffer_size_mb: 64
+    predefined_options: FLASH_SSD_OPTIMIZED
 ```
 
 | Field | SET statement | Description |
@@ -223,12 +356,11 @@ advanced:
 Configure TaskManager and JobManager resources:
 
 ```yaml
-advanced:
-  flink:
-    resources:
-      taskmanager_memory_mb: 4096
-      taskmanager_slots: 2
-      jobmanager_memory_mb: 2048
+flink:
+  resources:
+    taskmanager_memory_mb: 4096
+    taskmanager_slots: 2
+    jobmanager_memory_mb: 2048
 ```
 
 | Field | SET statement | Description |
@@ -242,9 +374,8 @@ advanced:
 Controls the connector type for sink tables:
 
 ```yaml
-advanced:
-  flink:
-    changelog_mode: upsert  # switches to upsert-kafka connector
+flink:
+  changelog_mode: upsert  # switches to upsert-kafka connector
 ```
 
 | Value | Connector | Use case |
@@ -264,12 +395,9 @@ sources:
 
     event_time:
       column: event_timestamp
-
-    advanced:
-      event_time:
-        watermark:
-          strategy: bounded_out_of_orderness
-          max_out_of_orderness_ms: 5000
+      watermark:
+        strategy: bounded_out_of_orderness
+        max_out_of_orderness_ms: 5000
 ```
 
 **Custom watermark expression:**
@@ -496,9 +624,8 @@ models:
       SELECT window_start, window_end, SUM(amount) as revenue
       FROM TABLE(TUMBLE(TABLE {{ ref("orders_valid") }}, DESCRIPTOR(order_time), INTERVAL '1' HOUR))
       GROUP BY window_start, window_end
-    advanced:
-      flink:
-        parallelism: 4
+    flink:
+      parallelism: 4
 ```
 
 **Generated Flink SQL:**
@@ -525,7 +652,7 @@ Use `streamt plan --show-sql` to see the full generated SQL for any model.
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | Job fails to start | SQL Gateway not running | Ensure `sql_gateway_url` is correct |
-| State grows unbounded | No TTL configured | Add `state_ttl_ms` in advanced.flink |
+| State grows unbounded | No TTL configured | Add `state_ttl_ms` in `flink:` |
 | Late data dropped | Watermark too aggressive | Increase `max_out_of_orderness_ms` |
 | OOM errors | State too large for heap | Use `rocksdb` state backend |
 | Checkpoint failures | Timeout too short | Tune checkpoint interval |

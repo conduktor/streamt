@@ -480,15 +480,6 @@ class ModelContract(BaseModel):
     columns: list[ContractColumn] = Field(default_factory=list)
 
 
-class AdvancedConfig(BaseModel):
-    """Advanced configuration options for models (nested structure)."""
-
-    flink: Optional[FlinkJobConfig] = None
-    topic: Optional[TopicConfig] = None
-    flink_cluster: Optional[str] = None
-    connect_cluster: Optional[str] = None
-
-
 class Model(BaseModel):
     """Model declaration."""
 
@@ -514,11 +505,17 @@ class Model(BaseModel):
     gateway: Optional[ModelGatewayConfig] = None
 
     # Optional: ML model output schemas (for ML_PREDICT type inference)
-    # Maps model name to its expected output schema
     ml_outputs: Optional[dict[str, MLModelOutput]] = None
 
-    # Advanced section (optional, nested)
-    advanced: Optional[AdvancedConfig] = None
+    # Output topic configuration
+    topic: Optional[TopicConfig] = None
+
+    # Flink job configuration
+    flink: Optional[FlinkJobConfig] = None
+    flink_cluster: Optional[str] = None
+
+    # Connect cluster override
+    connect_cluster: Optional[str] = None
 
     # Materialization is auto-inferred from SQL if not provided
     materialized: Optional[MaterializedType] = None
@@ -535,6 +532,14 @@ class Model(BaseModel):
     # Macro templates (mutually exclusive with sql:)
     macro: Optional[str] = None
     params: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("from_", mode="before")
+    @classmethod
+    def normalize_from(cls, v: object) -> object:
+        """Accept string shorthand: `from: orders_clean` → `[FromRef(ref="orders_clean")]`."""
+        if isinstance(v, str):
+            return [{"ref": v}]
+        return v
 
     @field_validator("sql")
     @classmethod
@@ -692,35 +697,21 @@ class Model(BaseModel):
         return MaterializedType.TOPIC
 
     def get_flink_config(self) -> Optional[FlinkJobConfig]:
-        """Get Flink config from advanced section."""
-        if self.advanced:
-            return self.advanced.flink
-        return None
+        return self.flink
 
     def get_topic_config(self) -> Optional[TopicConfig]:
-        """Get topic config from advanced section."""
-        if self.advanced:
-            return self.advanced.topic
-        return None
+        return self.topic
 
     def get_flink_cluster(self) -> Optional[str]:
-        """Get flink_cluster from advanced section."""
-        if self.advanced:
-            return self.advanced.flink_cluster
-        return None
+        return self.flink_cluster
 
     def get_connect_cluster(self) -> Optional[str]:
-        """Get connect_cluster from advanced section."""
-        if self.advanced:
-            return self.advanced.connect_cluster
-        return None
+        return self.connect_cluster
 
     def get_gateway_config(self) -> Optional[ModelGatewayConfig]:
-        """Get gateway config."""
         return self.gateway
 
     def get_sink_config(self) -> Optional[SinkConfig]:
-        """Get sink config (connector dict is auto-converted to sink by model_validator)."""
         return self.sink
 
 

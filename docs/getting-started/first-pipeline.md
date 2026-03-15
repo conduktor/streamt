@@ -157,12 +157,11 @@ models:
         AND status IN ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled')
 
     # Optional: customize topic settings
-    advanced:
-      topic:
-        name: orders.clean.v1
-        partitions: 12
-        config:
-          retention.ms: 604800000  # 7 days
+    topic:
+      name: orders.clean.v1
+      partitions: 12
+      config:
+        retention.ms: 604800000  # 7 days
 ```
 
 ### 3b. Order Metrics (Flink Materialization)
@@ -189,13 +188,12 @@ models:
       GROUP BY TUMBLE(created_at, INTERVAL '5' MINUTE)
 
     # Optional: tune Flink performance
-    advanced:
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000
-      topic:
-        name: orders.metrics.v1
-        partitions: 6
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000
+    topic:
+      name: orders.metrics.v1
+      partitions: 6
 ```
 
 The `TUMBLE` window function automatically triggers Flink materialization.
@@ -213,19 +211,18 @@ models:
     owner: data-platform
     from: orders_clean
 
-    advanced:
-      connector:
-        type: snowflake-sink
-        config:
-          snowflake.url.name: ${SNOWFLAKE_URL}
-          snowflake.user.name: ${SNOWFLAKE_USER}
-          snowflake.private.key: ${SNOWFLAKE_PRIVATE_KEY}
-          snowflake.database.name: ANALYTICS
-          snowflake.schema.name: ORDERS
-          snowflake.table.name: ORDERS_STREAM
-          key.converter: org.apache.kafka.connect.storage.StringConverter
-          value.converter: io.confluent.connect.avro.AvroConverter
-          value.converter.schema.registry.url: http://localhost:8081
+    connector:
+      type: snowflake-sink
+      config:
+        snowflake.url.name: ${SNOWFLAKE_URL}
+        snowflake.user.name: ${SNOWFLAKE_USER}
+        snowflake.private.key: ${SNOWFLAKE_PRIVATE_KEY}
+        snowflake.database.name: ANALYTICS
+        snowflake.schema.name: ORDERS
+        snowflake.table.name: ORDERS_STREAM
+        key.converter: org.apache.kafka.connect.storage.StringConverter
+        value.converter: io.confluent.connect.avro.AvroConverter
+        value.converter.schema.registry.url: http://localhost:8081
 ```
 
 Using `from:` without `sql:` automatically triggers sink materialization.
@@ -292,9 +289,11 @@ tests:
           min_per_minute: 10  # At least 10 orders/minute
 
     on_failure:
-      - alert:
-          channel: slack
-          webhook: ${SLACK_WEBHOOK_URL}
+      severity: error
+      actions:
+        - alert:
+            channel: slack
+            webhook: https://hooks.slack.com/services/EXAMPLE
 ```
 
 ## Step 5: Document Exposures
@@ -317,7 +316,7 @@ exposures:
 
     sla:
       max_end_to_end_latency_ms: 5000
-      availability: 99.9
+      availability: "99.9%"
 
   - name: billing_service
     type: application

@@ -166,13 +166,13 @@ models:
       LEFT JOIN {{ source("customers_cdc") }} FOR SYSTEM_TIME AS OF o.order_timestamp AS c
         ON o.customer_id = c.id
 
-    advanced:  # Optional: tune state management
-      topic:
-        name: orders.enriched.v1
-        partitions: 6
-      flink:
-        parallelism: 4
-        state_ttl_ms: 86400000  # 24 hours - keep customer versions for a day
+    # Optional: tune state management
+    topic:
+      name: orders.enriched.v1
+      partitions: 6
+    flink:
+      parallelism: 4
+      state_ttl_ms: 86400000  # 24 hours - keep customer versions for a day
 ```
 
 **How temporal joins work:**
@@ -235,12 +235,12 @@ models:
         AND p.payment_timestamp BETWEEN o.order_timestamp
                                     AND o.order_timestamp + INTERVAL '24' HOUR
 
-    advanced:  # Optional: tune parallelism
-      topic:
-        name: orders.payment.matched.v1
-        partitions: 6
-      flink:
-        parallelism: 4
+    # Optional: tune parallelism
+    topic:
+      name: orders.payment.matched.v1
+      partitions: 6
+    flink:
+      parallelism: 4
 ```
 
 **How interval joins work:**
@@ -296,10 +296,10 @@ models:
         -- Only alert for orders older than 1 hour
         AND order_timestamp < CURRENT_TIMESTAMP - INTERVAL '1' HOUR
 
-    advanced:  # Optional: configure output topic
-      topic:
-        name: orders.abandoned.v1
-        partitions: 3
+    # Optional: configure output topic
+    topic:
+      name: orders.abandoned.v1
+      partitions: 3
 ```
 
 ---
@@ -398,9 +398,8 @@ Joins are the most state-intensive operations in streaming:
 ### Configuring State TTL
 
 ```yaml
-advanced:
-  flink:
-    state_ttl_ms: 86400000  # 24 hours
+flink:
+  state_ttl_ms: 86400000  # 24 hours
 ```
 
 For temporal joins, TTL controls how far back you can look up historical versions. For interval joins, the join condition itself bounds the state.

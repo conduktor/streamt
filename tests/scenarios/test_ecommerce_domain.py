@@ -103,15 +103,13 @@ class TestEcommerceOrderPipeline:
                                 event_time
                             FROM {{ source("orders_raw") }}
                         """,
-                        "advanced": {"topic": {"partitions": 12}},
+                        "topic": {"partitions": 12},
                     },
                     {
                         "name": "orders_enriched",
                         "description": "Orders enriched with customer and product data",
 
-                        "advanced": {
-                            "topic": {"partitions": 12},
-                        },
+                        "topic": {"partitions": 12},
                         "sql": """
                             SELECT
                                 o.order_id,
@@ -132,9 +130,7 @@ class TestEcommerceOrderPipeline:
                         "name": "orders_for_fulfillment",
                         "description": "Orders ready for warehouse fulfillment",
 
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 order_id,
@@ -148,9 +144,7 @@ class TestEcommerceOrderPipeline:
                         "name": "orders_for_analytics",
                         "description": "Orders for real-time analytics dashboard",
 
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 TUMBLE_END(event_time, INTERVAL '5' MINUTE) as window_end,
@@ -169,9 +163,7 @@ class TestEcommerceOrderPipeline:
                         "name": "high_value_orders",
                         "description": "High value orders for priority processing",
 
-                        "advanced": {
-                            "topic": {"partitions": 3},
-                        },
+                        "topic": {"partitions": 3},
                         "sql": """
                             SELECT * FROM {{ ref("orders_enriched") }}
                             WHERE total_amount > 1000

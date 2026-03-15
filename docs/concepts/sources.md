@@ -307,6 +307,7 @@ sources/
 
 ```yaml
 - name: orders_raw
+  topic: orders.raw.v1
   owner: checkout-team
   tags: [orders, critical, tier-1]
 ```

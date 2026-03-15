@@ -441,6 +441,9 @@ Summary: 2 created, 1 updated, 0 unchanged
 
     On partial failure, successfully applied resources remain. Re-run `apply` to retry failed resources — already-applied resources will be detected as `unchanged`. The results include `rollback_candidates` (newly created resources) that can be cleaned up if needed.
 
+!!! warning "Flink Job Lifecycle"
+    Running Flink jobs are **cancelled and resubmitted** when their SQL changes (including config-only changes like parallelism). No savepoint is taken. Failed jobs are automatically resubmitted. See [Flink Options Reference — Job Lifecycle on Apply](flink-options.md#job-lifecycle-on-apply) for full details.
+
 ---
 
 ### test

@@ -87,9 +87,11 @@ tests:
           min_per_second: 2  # ~120/minute
 
     on_failure:
-      - alert:
-          channel: slack
-          webhook: ${SLACK_WEBHOOK}
+      severity: error
+      actions:
+        - alert:
+            channel: slack
+            webhook: https://hooks.slack.com/services/EXAMPLE
 ```
 
 Deploy with:
@@ -300,18 +302,20 @@ tests:
           max_per_second: 100        # ~6000/minute
 
     on_failure:
-      - alert:
-          channel: slack
-          webhook: ${SLACK_ALERTS_WEBHOOK}
-          message: |
-            :warning: Orders pipeline issue detected!
-            Model: {{ model.name }}
-            Test: {{ test.name }}
-            Assertion: {{ assertion.name }}
-      - alert:
-          channel: pagerduty
-          routing_key: ${PAGERDUTY_KEY}
-          severity: warning
+      severity: warning
+      actions:
+        - alert:
+            channel: slack
+            webhook: https://hooks.slack.com/services/EXAMPLE
+            message: |
+              Orders pipeline issue detected!
+              Model: {{ model.name }}
+              Test: {{ test.name }}
+              Assertion: {{ assertion.name }}
+        - alert:
+            channel: pagerduty
+            routing_key: pd-routing-key-example
+            severity: warning
 ```
 
 ## Running Tests
@@ -409,6 +413,7 @@ Focus tests on business-critical data:
 # Test payment data rigorously
 - name: payments_critical
   model: payments_validated
+  type: schema
   assertions:
     - not_null: { columns: [payment_id, amount, status] }
     - range: { column: amount, min: 1 }

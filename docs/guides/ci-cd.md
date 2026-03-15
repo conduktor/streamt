@@ -10,6 +10,7 @@ streamt is designed for CI/CD pipelines. Every command supports `--strict` valid
 ## GitHub Actions Example
 
 ```yaml
+# streamt:skip — GitHub Actions workflow, not streamt config
 name: Streaming Pipeline
 
 on:

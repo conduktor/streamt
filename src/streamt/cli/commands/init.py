@@ -147,6 +147,22 @@ def _extract_columns_from_avro(schema: dict) -> list[dict]:
     "--kafka", type=str, default=None, help="Kafka bootstrap servers (required with --discover)"
 )
 @click.option("--schema-registry", type=str, default=None, help="Schema Registry URL")
+@click.option(
+    "--security-protocol",
+    type=str,
+    default=None,
+    help="Kafka security protocol (PLAINTEXT, SSL, SASL_PLAINTEXT, SASL_SSL)",
+)
+@click.option(
+    "--sasl-mechanism",
+    type=str,
+    default=None,
+    help="SASL mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)",
+)
+@click.option("--sasl-username", type=str, default=None, help="SASL username / API key")
+@click.option("--sasl-password", type=str, default=None, help="SASL password / API secret")
+@click.option("--sr-username", type=str, default=None, help="Schema Registry username / API key")
+@click.option("--sr-password", type=str, default=None, help="Schema Registry password / API secret")
 @click.option("--include", type=str, default=None, help="Include topics matching glob pattern")
 @click.option("--exclude", type=str, default=None, help="Exclude topics matching glob pattern")
 @click.option("--dry-run", is_flag=True, help="Show what would be created without writing")
@@ -159,6 +175,12 @@ def init(
     discover: bool,
     kafka: Optional[str],
     schema_registry: Optional[str],
+    security_protocol: Optional[str],
+    sasl_mechanism: Optional[str],
+    sasl_username: Optional[str],
+    sasl_password: Optional[str],
+    sr_username: Optional[str],
+    sr_password: Optional[str],
     include: Optional[str],
     exclude: Optional[str],
     dry_run: bool,
@@ -183,7 +205,21 @@ def init(
 
     if discover:
         _init_discover(
-            fmt, project_path, name, kafka, schema_registry, include, exclude, dry_run, force
+            fmt,
+            project_path,
+            name,
+            kafka,
+            schema_registry,
+            include,
+            exclude,
+            dry_run,
+            force,
+            security_protocol=security_protocol,
+            sasl_mechanism=sasl_mechanism,
+            sasl_username=sasl_username,
+            sasl_password=sasl_password,
+            sr_username=sr_username,
+            sr_password=sr_password,
         )
     else:
         _init_scaffold(fmt, project_path, name, dry_run)
@@ -268,6 +304,13 @@ def _init_discover(
     exclude: Optional[str],
     dry_run: bool,
     force: bool,
+    *,
+    security_protocol: Optional[str] = None,
+    sasl_mechanism: Optional[str] = None,
+    sasl_username: Optional[str] = None,
+    sasl_password: Optional[str] = None,
+    sr_username: Optional[str] = None,
+    sr_password: Optional[str] = None,
 ) -> None:
     """Discover existing infrastructure and generate project."""
     project_file = project_path / "stream_project.yml"
@@ -296,9 +339,20 @@ def _init_discover(
     from streamt.deployer.kafka import KafkaDeployer
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
+    # Build Kafka auth config
+    kafka_config: dict[str, str] = {}
+    if security_protocol:
+        kafka_config["security.protocol"] = security_protocol
+    if sasl_mechanism:
+        kafka_config["sasl.mechanisms"] = sasl_mechanism
+    if sasl_username:
+        kafka_config["sasl.username"] = sasl_username
+    if sasl_password:
+        kafka_config["sasl.password"] = sasl_password
+
     # Connect to Kafka
     try:
-        kafka_deployer = KafkaDeployer(kafka)
+        kafka_deployer = KafkaDeployer(kafka, **kafka_config)
     except Exception as e:
         fmt.add_error(
             StructuredError(
@@ -325,7 +379,9 @@ def _init_discover(
     sr_deployer = None
     if schema_registry:
         try:
-            sr_deployer = SchemaRegistryDeployer(schema_registry)
+            sr_deployer = SchemaRegistryDeployer(
+                schema_registry, username=sr_username, password=sr_password
+            )
             sr_deployer.list_subjects()  # Test connection
         except Exception as e:
             fmt.print_warning(f"Cannot connect to Schema Registry: {e}")

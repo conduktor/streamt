@@ -147,10 +147,9 @@ models:
         SUM(amount) as total_amount
       FROM {{{{ source("events") }}}}
       GROUP BY category, TUMBLE(event_time, INTERVAL '10' SECOND)
-    advanced:
-      topic:
-        name: {output_topic}
-        partitions: 1
+    topic:
+      name: {output_topic}
+      partitions: 1
 """
 
         try:
@@ -427,10 +426,8 @@ class TestStateTTL:
                 "models": [
                     {
                         "name": output_topic,
-                        "advanced": {
-                            "flink": {
-                                "state_ttl_ms": 3600000,  # 1 hour
-                            }
+                        "flink": {
+                            "state_ttl_ms": 3600000,  # 1 hour
                         },
                         "sql": """
                             SELECT
@@ -516,10 +513,9 @@ models:
         FROM {{{{ source("raw_events") }}}}
       )
       WHERE rn = 1
-    advanced:
-      topic:
-        name: {output_topic}
-        partitions: 1
+    topic:
+      name: {output_topic}
+      partitions: 1
 """
 
         try:
@@ -690,10 +686,9 @@ models:
     sql: |
       SELECT event_id, `value`
       FROM {{{{ source("events") }}}}
-    advanced:
-      topic:
-        name: {output_topic}
-        partitions: 1
+    topic:
+      name: {output_topic}
+      partitions: 1
 """
 
         try:

@@ -277,6 +277,7 @@ streamt apply --env prod --confirm  # Uses custom-kafka.example.com:9092
 ### GitHub Actions Example
 
 ```yaml title=".github/workflows/deploy.yml"
+# streamt:skip — GitHub Actions workflow, not streamt config
 name: Deploy
 
 on:
@@ -350,6 +351,7 @@ safety:
 Never commit secrets to environment YAML files. Use variable references:
 
 ```yaml
+# streamt:skip
 # Good: Reference variables
 runtime:
   kafka:
@@ -404,7 +406,8 @@ sources:
 ```
 
 After:
-```yaml title="stream_project.yml"
+```yaml
+# streamt:skip
 project:
   name: my-project
   version: "1.0.0"

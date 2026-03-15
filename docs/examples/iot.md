@@ -42,17 +42,17 @@ runtime:
     clusters:
       edge:
         type: rest
-        rest_url: ${FLINK_EDGE_URL}
-        sql_gateway_url: ${FLINK_EDGE_SQL_URL}
+        rest_url: http://flink-edge:8081
+        sql_gateway_url: http://flink-edge:8083
       cloud:
         type: rest
-        rest_url: ${FLINK_CLOUD_URL}
-        sql_gateway_url: ${FLINK_CLOUD_SQL_URL}
+        rest_url: http://flink-cloud:8081
+        sql_gateway_url: http://flink-cloud:8083
   connect:
     default: cloud
     clusters:
       cloud:
-        rest_url: ${CONNECT_URL}
+        rest_url: http://connect:8083
 
 rules:
   topics:
@@ -141,12 +141,11 @@ models:
         AND value IS NOT NULL
 
     # Override defaults only when needed
-    advanced:
-      topic:
-        name: iot.readings-clean.v1
-        partitions: 48  # High partition count
-        config:
-          retention.ms: 86400000  # 1 day
+    topic:
+      name: iot.readings-clean.v1
+      partitions: 48  # High partition count
+      config:
+        retention.ms: 86400000  # 1 day
 ```
 
 ### Sensor Status (Windowed)
@@ -190,14 +189,13 @@ models:
         TUMBLE(`timestamp`, INTERVAL '1' MINUTE)
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 16
-        checkpoint_interval_ms: 30000
-        cluster: edge
-      topic:
-        name: iot.sensor-status.v1
-        partitions: 24
+    flink:
+      parallelism: 16
+      checkpoint_interval_ms: 30000
+      cluster: edge
+    topic:
+      name: iot.sensor-status.v1
+      partitions: 24
 ```
 
 ### Anomaly Detection
@@ -253,14 +251,13 @@ models:
          OR r.value > m.max_threshold
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 16
-        checkpoint_interval_ms: 10000
-        cluster: edge
-      topic:
-        name: iot.anomalies.v1
-        partitions: 12
+    flink:
+      parallelism: 16
+      checkpoint_interval_ms: 10000
+      cluster: edge
+    topic:
+      name: iot.anomalies.v1
+      partitions: 12
 ```
 
 ### Facility Aggregates
@@ -293,14 +290,13 @@ models:
         TUMBLE(`timestamp`, INTERVAL '5' MINUTE)
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 60000
-        cluster: cloud
-      topic:
-        name: iot.facility-metrics.v1
-        partitions: 6
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 60000
+      cluster: cloud
+    topic:
+      name: iot.facility-metrics.v1
+      partitions: 6
 ```
 
 ### Archive to S3
@@ -370,23 +366,27 @@ tests:
       - throughput:
           min_per_minute: 6000000  # 100K/second
     on_failure:
-      - alert:
-          channel: pagerduty
-          routing_key: ${PAGERDUTY_IOT_KEY}
-          severity: critical
-          message: "IoT pipeline degradation - potential sensor data loss"
+      severity: error
+      actions:
+        - alert:
+            channel: pagerduty
+            routing_key: pd-iot-routing-key
+            severity: critical
+            message: "IoT pipeline degradation - potential sensor data loss"
 
   - name: anomaly_alerting
     model: anomaly_detection
     type: continuous
     assertions:
       - throughput:
-          max_per_minute: 10000  # Alert if too many anomalies
+          max_per_second: 167  # ~10K/minute
     on_failure:
-      - alert:
-          channel: slack
-          webhook: ${SLACK_IOT_ALERTS}
-          message: "High anomaly rate detected - check equipment"
+      severity: warning
+      actions:
+        - alert:
+            channel: slack
+            webhook: https://hooks.slack.com/services/IOT-ALERTS
+            message: "High anomaly rate detected - check equipment"
 ```
 
 ## Exposures
@@ -404,7 +404,7 @@ exposures:
       - ref: anomaly_detection
     sla:
       max_end_to_end_latency_ms: 100
-      availability: 99.99
+      availability: "99.99%"
 
   - name: predictive_maintenance
     type: ml_inference

@@ -379,8 +379,8 @@ Use different rules per environment:
 ```yaml title="stream_project.yml"
 rules:
   topics:
-    min_partitions: ${TOPIC_MIN_PARTITIONS:-3}
-    min_replication_factor: ${TOPIC_MIN_RF:-1}
+    min_partitions: 3
+    min_replication_factor: 1
 ```
 
 ```bash title="Production"

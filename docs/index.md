@@ -22,7 +22,8 @@ description: Build declarative streaming pipelines with Kafka, Flink, and Connec
 
 **streamt** brings the beloved dbt workflow to real-time streaming. Define your streaming pipelines declaratively using YAML and SQL, then let streamt handle compilation, validation, and deployment to Kafka, Flink, and Kafka Connect.
 
-```yaml title="stream_project.yml"
+```yaml
+# streamt:skip
 project:
   name: payments-pipeline
   version: "1.0.0"
@@ -149,12 +150,11 @@ graph LR
           FROM {{ source("payments_raw") }}
           WHERE payment_id IS NOT NULL
             AND amount > 0
-        advanced:
-          topic:
-            name: payments.clean.v1
-            partitions: 12
-            config:
-              retention.ms: 604800000
+        topic:
+          name: payments.clean.v1
+          partitions: 12
+          config:
+            retention.ms: 604800000
     ```
 
 === "Add Tests"

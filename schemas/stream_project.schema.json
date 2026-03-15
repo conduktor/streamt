@@ -1,0 +1,3205 @@
+{
+  "$defs": {
+    "AccessConfig": {
+      "description": "Access configuration.",
+      "properties": {
+        "roles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roles",
+          "type": "array"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Purpose"
+        }
+      },
+      "title": "AccessConfig",
+      "type": "object"
+    },
+    "AccessLevel": {
+      "description": "Access control levels.",
+      "enum": [
+        "private",
+        "protected",
+        "public"
+      ],
+      "title": "AccessLevel",
+      "type": "string"
+    },
+    "CheckpointConfig": {
+      "description": "Advanced checkpointing configuration.",
+      "properties": {
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "min_pause_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Pause Ms"
+        },
+        "max_concurrent": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Concurrent"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "externalized": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Externalized"
+        },
+        "unaligned": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unaligned"
+        },
+        "incremental": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Incremental"
+        }
+      },
+      "title": "CheckpointConfig",
+      "type": "object"
+    },
+    "Classification": {
+      "description": "Data classification levels.",
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "sensitive",
+        "highly_sensitive"
+      ],
+      "title": "Classification",
+      "type": "string"
+    },
+    "ColumnDefinition": {
+      "description": "Column definition with classification.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "classification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Classification"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "proctime": {
+          "default": false,
+          "title": "Proctime",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ColumnDefinition",
+      "type": "object"
+    },
+    "ConduktorConfig": {
+      "description": "Conduktor configuration (Gateway + Console).",
+      "properties": {
+        "gateway": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GatewayConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "console": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsoleConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ConduktorConfig",
+      "type": "object"
+    },
+    "ConnectClusterConfig": {
+      "description": "Connect cluster configuration.",
+      "properties": {
+        "rest_url": {
+          "title": "Rest Url",
+          "type": "string"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Password"
+        },
+        "ssl_ca_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Ca Location"
+        },
+        "ssl_certificate_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Certificate Location"
+        },
+        "ssl_key_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Location"
+        },
+        "ssl_key_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Password"
+        }
+      },
+      "required": [
+        "rest_url"
+      ],
+      "title": "ConnectClusterConfig",
+      "type": "object"
+    },
+    "ConnectConfig": {
+      "description": "Connect runtime configuration.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "clusters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ConnectClusterConfig"
+          },
+          "title": "Clusters",
+          "type": "object"
+        }
+      },
+      "title": "ConnectConfig",
+      "type": "object"
+    },
+    "ConnectionConfig": {
+      "description": "Global connection/credential configuration.",
+      "properties": {
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ConnectionConfig",
+      "type": "object"
+    },
+    "ConsoleConfig": {
+      "description": "Conduktor Console configuration.",
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ConsoleConfig",
+      "type": "object"
+    },
+    "ContractColumn": {
+      "description": "Declared output column in a model contract.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "nullable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nullable"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ContractColumn",
+      "type": "object"
+    },
+    "ContractConfig": {
+      "description": "Contract configuration for producers.",
+      "properties": {
+        "schema": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema"
+        },
+        "compatibility": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compatibility"
+        }
+      },
+      "title": "ContractConfig",
+      "type": "object"
+    },
+    "DataResidencyRules": {
+      "description": "Data residency governance rules.",
+      "properties": {
+        "allowed_regions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Regions",
+          "type": "array"
+        }
+      },
+      "title": "DataResidencyRules",
+      "type": "object"
+    },
+    "DataTest": {
+      "description": "Data test declaration.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/DataTestType"
+        },
+        "assertions": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Assertions",
+          "type": "array"
+        },
+        "sample_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Size"
+        },
+        "flink_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flink Cluster"
+        },
+        "on_failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "model",
+        "type"
+      ],
+      "title": "DataTest",
+      "type": "object"
+    },
+    "DataTestType": {
+      "description": "Types of data tests.",
+      "enum": [
+        "schema",
+        "sample",
+        "continuous"
+      ],
+      "title": "DataTestType",
+      "type": "string"
+    },
+    "Defaults": {
+      "description": "Default values.",
+      "properties": {
+        "models": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tests": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TopicDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Defaults",
+      "type": "object"
+    },
+    "EventTimeConfig": {
+      "description": "Event time configuration for streaming processing.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "watermark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WatermarkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "allowed_lateness_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Lateness Ms"
+        }
+      },
+      "required": [
+        "column"
+      ],
+      "title": "EventTimeConfig",
+      "type": "object"
+    },
+    "Exposure": {
+      "description": "Exposure declaration.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ExposureType"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExposureRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner"
+        },
+        "owners": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owners"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "produces": {
+          "items": {
+            "$ref": "#/$defs/ExposureRef"
+          },
+          "title": "Produces",
+          "type": "array"
+        },
+        "consumes": {
+          "items": {
+            "$ref": "#/$defs/ExposureRef"
+          },
+          "title": "Consumes",
+          "type": "array"
+        },
+        "depends_on": {
+          "items": {
+            "$ref": "#/$defs/ExposureRef"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ExposureColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "consumer_group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consumer Group"
+        },
+        "sla": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SLAConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "contracts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContractConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "access": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FreshnessConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schedule"
+        },
+        "data_requirements": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Requirements"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "Exposure",
+      "type": "object"
+    },
+    "ExposureColumn": {
+      "description": "Column declared on an exposure (for contract breaking-change detection).",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ExposureColumn",
+      "type": "object"
+    },
+    "ExposureRef": {
+      "description": "Reference in exposure.",
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        }
+      },
+      "title": "ExposureRef",
+      "type": "object"
+    },
+    "ExposureRole": {
+      "description": "Roles for application exposures.",
+      "enum": [
+        "producer",
+        "consumer",
+        "both"
+      ],
+      "title": "ExposureRole",
+      "type": "string"
+    },
+    "ExposureType": {
+      "description": "Types of exposures.",
+      "enum": [
+        "application",
+        "dashboard",
+        "ml_training",
+        "ml_inference",
+        "api"
+      ],
+      "title": "ExposureType",
+      "type": "string"
+    },
+    "FlinkClusterConfig": {
+      "description": "Flink cluster configuration.",
+      "properties": {
+        "type": {
+          "default": "rest",
+          "title": "Type",
+          "type": "string"
+        },
+        "rest_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rest Url"
+        },
+        "sql_gateway_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sql Gateway Url"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Password"
+        },
+        "ssl_ca_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Ca Location"
+        },
+        "ssl_certificate_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Certificate Location"
+        },
+        "ssl_key_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Location"
+        },
+        "ssl_key_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Password"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "retries": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retries"
+        },
+        "statement_timeout": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statement Timeout"
+        }
+      },
+      "title": "FlinkClusterConfig",
+      "type": "object"
+    },
+    "FlinkConfig": {
+      "description": "Flink runtime configuration.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "clusters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FlinkClusterConfig"
+          },
+          "title": "Clusters",
+          "type": "object"
+        }
+      },
+      "title": "FlinkConfig",
+      "type": "object"
+    },
+    "FlinkJobConfig": {
+      "description": "Flink job configuration.",
+      "properties": {
+        "parallelism": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parallelism"
+        },
+        "checkpoint_interval_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint Interval Ms"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CheckpointConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state_backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Backend"
+        },
+        "state_ttl_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Ttl Ms"
+        },
+        "restart_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestartStrategyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "changelog_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Changelog Mode"
+        },
+        "rocksdb": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RocksDBConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "FlinkJobConfig",
+      "type": "object"
+    },
+    "FreshnessConfig": {
+      "description": "Freshness SLA configuration.",
+      "properties": {
+        "max_lag_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Lag Seconds"
+        },
+        "warn_after_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warn After Seconds"
+        }
+      },
+      "title": "FreshnessConfig",
+      "type": "object"
+    },
+    "FromRef": {
+      "description": "Reference in from clause.",
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        }
+      },
+      "title": "FromRef",
+      "type": "object"
+    },
+    "GatewayConfig": {
+      "description": "Conduktor Gateway configuration.",
+      "properties": {
+        "admin_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Admin Url"
+        },
+        "proxy_bootstrap": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Proxy Bootstrap"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Password"
+        },
+        "virtual_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Virtual Cluster"
+        },
+        "ssl_ca_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Ca Location"
+        },
+        "ssl_certificate_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Certificate Location"
+        },
+        "ssl_key_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Location"
+        },
+        "ssl_key_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Password"
+        }
+      },
+      "title": "GatewayConfig",
+      "type": "object"
+    },
+    "KafkaConfig": {
+      "description": "Kafka cluster configuration.",
+      "properties": {
+        "bootstrap_servers": {
+          "title": "Bootstrap Servers",
+          "type": "string"
+        },
+        "bootstrap_servers_internal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bootstrap Servers Internal"
+        },
+        "security_protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Security Protocol"
+        },
+        "sasl_mechanism": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sasl Mechanism"
+        },
+        "sasl_username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sasl Username"
+        },
+        "sasl_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sasl Password"
+        },
+        "ssl_ca_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Ca Location"
+        },
+        "ssl_certificate_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Certificate Location"
+        },
+        "ssl_key_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Location"
+        },
+        "ssl_key_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Password"
+        }
+      },
+      "required": [
+        "bootstrap_servers"
+      ],
+      "title": "KafkaConfig",
+      "type": "object"
+    },
+    "MLModelOutput": {
+      "description": "Output schema declaration for ML models used with ML_PREDICT.\n\nWhen using Confluent Flink's ML_PREDICT function, the output schema depends on\nthe model's OUTPUT definition from CREATE MODEL. Since streamt cannot introspect\nthe model registry, users should declare the expected output schema here to enable:\n- Proper type inference for downstream consumers\n- Lineage tracking through ML_PREDICT\n- Schema validation and breaking change detection\n\nExample:\n    ml_outputs:\n      fraud_detector:\n        columns:\n          - name: is_fraud\n            type: BOOLEAN\n          - name: confidence\n            type: DOUBLE",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnDefinition"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "columns"
+      ],
+      "title": "MLModelOutput",
+      "type": "object"
+    },
+    "MaterializedType": {
+      "description": "Types of model materialization.\n\n- TOPIC: Pure passthrough, no transformation (just topic aliasing)\n- VIRTUAL_TOPIC: Stateless transformations via Conduktor Gateway (filters, projections)\n- FLINK: Stateful transformations requiring Flink SQL (aggregations, joins, windows)\n- SINK: Connector sink (from: without sql:)",
+      "enum": [
+        "topic",
+        "virtual_topic",
+        "flink",
+        "sink"
+      ],
+      "title": "MaterializedType",
+      "type": "string"
+    },
+    "Model": {
+      "description": "Model declaration.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "sql": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sql"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FromRef"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ColumnDefinition"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
+        "primary_key": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Primary Key"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "security": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecurityPolicies"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "connector": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connector"
+        },
+        "sink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SinkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gateway": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelGatewayConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ml_outputs": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/MLModelOutput"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ml Outputs"
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TopicConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "flink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlinkJobConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "flink_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flink Cluster"
+        },
+        "connect_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connect Cluster"
+        },
+        "materialized": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaterializedType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "access": {
+          "$ref": "#/$defs/AccessLevel",
+          "default": "private"
+        },
+        "group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Group"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        },
+        "contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "macro": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Macro"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Model",
+      "type": "object"
+    },
+    "ModelContract": {
+      "description": "Schema contract for a model \u2014 declares expected output columns.\n\nWhen enforced=True, the validator errors if SQL-inferred types are\nincompatible with declared types, and warns if downstream exposures\nconsume columns not present in the contract.",
+      "properties": {
+        "enforced": {
+          "default": true,
+          "title": "Enforced",
+          "type": "boolean"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ContractColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "title": "ModelContract",
+      "type": "object"
+    },
+    "ModelDefaults": {
+      "description": "Default values for models.",
+      "properties": {
+        "cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster"
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TopicDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ModelDefaults",
+      "type": "object"
+    },
+    "ModelGatewayConfig": {
+      "description": "Gateway configuration for a model.",
+      "properties": {
+        "virtual_topic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VirtualTopicConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "ModelGatewayConfig",
+      "type": "object"
+    },
+    "ModelRules": {
+      "description": "Rules for model definitions.",
+      "properties": {
+        "require_description": {
+          "default": false,
+          "title": "Require Description",
+          "type": "boolean"
+        },
+        "require_owner": {
+          "default": false,
+          "title": "Require Owner",
+          "type": "boolean"
+        },
+        "require_tests": {
+          "default": false,
+          "title": "Require Tests",
+          "type": "boolean"
+        },
+        "valid_owners": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Valid Owners",
+          "type": "array"
+        },
+        "max_dependencies": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Dependencies"
+        }
+      },
+      "title": "ModelRules",
+      "type": "object"
+    },
+    "OnFailure": {
+      "description": "On failure configuration.",
+      "properties": {
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "default": "error"
+        },
+        "actions": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Actions",
+          "type": "array"
+        }
+      },
+      "title": "OnFailure",
+      "type": "object"
+    },
+    "ProjectInfo": {
+      "description": "Project metadata.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ProjectInfo",
+      "type": "object"
+    },
+    "ResourceConfig": {
+      "description": "Flink resource configuration.",
+      "properties": {
+        "taskmanager_memory_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taskmanager Memory Mb"
+        },
+        "taskmanager_slots": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taskmanager Slots"
+        },
+        "jobmanager_memory_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Jobmanager Memory Mb"
+        }
+      },
+      "title": "ResourceConfig",
+      "type": "object"
+    },
+    "RestartStrategyConfig": {
+      "description": "Restart strategy configuration.",
+      "properties": {
+        "type": {
+          "default": "fixed-delay",
+          "title": "Type",
+          "type": "string"
+        },
+        "attempts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempts"
+        },
+        "delay_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delay Ms"
+        },
+        "max_failures_per_interval": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Failures Per Interval"
+        },
+        "failure_rate_interval_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Rate Interval Ms"
+        },
+        "initial_backoff_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Backoff Ms"
+        },
+        "max_backoff_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Backoff Ms"
+        },
+        "backoff_multiplier": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backoff Multiplier"
+        }
+      },
+      "title": "RestartStrategyConfig",
+      "type": "object"
+    },
+    "RocksDBConfig": {
+      "description": "RocksDB state backend tuning.",
+      "properties": {
+        "block_cache_size_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Cache Size Mb"
+        },
+        "write_buffer_size_mb": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Buffer Size Mb"
+        },
+        "predefined_options": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predefined Options"
+        }
+      },
+      "title": "RocksDBConfig",
+      "type": "object"
+    },
+    "Rules": {
+      "description": "Governance rules.",
+      "properties": {
+        "topics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TopicRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "models": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "security": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecurityRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "data_residency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DataResidencyRules"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Rules",
+      "type": "object"
+    },
+    "RuntimeConfig": {
+      "description": "Runtime configuration for all external systems.",
+      "properties": {
+        "kafka": {
+          "$ref": "#/$defs/KafkaConfig"
+        },
+        "schema_registry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRegistryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "flink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlinkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "connect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConnectConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conduktor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConduktorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kafka"
+      ],
+      "title": "RuntimeConfig",
+      "type": "object"
+    },
+    "SLAConfig": {
+      "description": "SLA configuration.",
+      "properties": {
+        "availability": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availability"
+        },
+        "max_produce_latency_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Produce Latency Ms"
+        },
+        "max_end_to_end_latency_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max End To End Latency Ms"
+        },
+        "max_lag_messages": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Lag Messages"
+        },
+        "max_error_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Error Rate"
+        },
+        "max_lag_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Lag Minutes"
+        },
+        "freshness_minutes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Freshness Minutes"
+        }
+      },
+      "title": "SLAConfig",
+      "type": "object"
+    },
+    "SchemaRef": {
+      "description": "Schema reference.\n\nSupports both registry references (registry/subject/format) and inline field\ndefinitions via `fields:`. When `fields:` is set, Source.columns is populated\nautomatically via a model_validator.",
+      "properties": {
+        "registry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registry"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Format"
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Definition"
+        },
+        "fields": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ColumnDefinition"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fields"
+        }
+      },
+      "title": "SchemaRef",
+      "type": "object"
+    },
+    "SchemaRegistryConfig": {
+      "description": "Schema Registry configuration.",
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Password"
+        },
+        "ssl_ca_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Ca Location"
+        },
+        "ssl_certificate_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Certificate Location"
+        },
+        "ssl_key_location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Location"
+        },
+        "ssl_key_password": {
+          "anyOf": [
+            {
+              "format": "password",
+              "type": "string",
+              "writeOnly": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ssl Key Password"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "SchemaRegistryConfig",
+      "type": "object"
+    },
+    "SecurityPolicies": {
+      "description": "Security policies for a model.",
+      "properties": {
+        "classification": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Classification"
+          },
+          "title": "Classification",
+          "type": "object"
+        },
+        "policies": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Policies",
+          "type": "array"
+        }
+      },
+      "title": "SecurityPolicies",
+      "type": "object"
+    },
+    "SecurityRules": {
+      "description": "Rules for security.",
+      "properties": {
+        "require_classification": {
+          "default": false,
+          "title": "Require Classification",
+          "type": "boolean"
+        },
+        "sensitive_columns_require_masking": {
+          "default": false,
+          "title": "Sensitive Columns Require Masking",
+          "type": "boolean"
+        }
+      },
+      "title": "SecurityRules",
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Alert severity levels.",
+      "enum": [
+        "error",
+        "warning"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "SinkConfig": {
+      "description": "Sink connector configuration.",
+      "properties": {
+        "connector": {
+          "title": "Connector",
+          "type": "string"
+        },
+        "connection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection"
+        },
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        }
+      },
+      "required": [
+        "connector"
+      ],
+      "title": "SinkConfig",
+      "type": "object"
+    },
+    "Source": {
+      "description": "Source declaration.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "topic": {
+          "title": "Topic",
+          "type": "string"
+        },
+        "cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cluster"
+        },
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchemaRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnDefinition"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "freshness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FreshnessConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "event_time": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventTimeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        }
+      },
+      "required": [
+        "name",
+        "topic"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "SourceRules": {
+      "description": "Rules for source definitions.",
+      "properties": {
+        "require_schema": {
+          "default": false,
+          "title": "Require Schema",
+          "type": "boolean"
+        },
+        "require_freshness": {
+          "default": false,
+          "title": "Require Freshness",
+          "type": "boolean"
+        }
+      },
+      "title": "SourceRules",
+      "type": "object"
+    },
+    "TestDefaults": {
+      "description": "Default values for tests.",
+      "properties": {
+        "flink_cluster": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flink Cluster"
+        }
+      },
+      "title": "TestDefaults",
+      "type": "object"
+    },
+    "TopicConfig": {
+      "description": "Topic configuration for model output.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "partitions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Partitions"
+        },
+        "replication_factor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replication Factor"
+        },
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        }
+      },
+      "title": "TopicConfig",
+      "type": "object"
+    },
+    "TopicDefaults": {
+      "description": "Default values for topics.",
+      "properties": {
+        "partitions": {
+          "default": 1,
+          "title": "Partitions",
+          "type": "integer"
+        },
+        "replication_factor": {
+          "default": 1,
+          "title": "Replication Factor",
+          "type": "integer"
+        }
+      },
+      "title": "TopicDefaults",
+      "type": "object"
+    },
+    "TopicRules": {
+      "description": "Rules for topic creation.",
+      "properties": {
+        "min_partitions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Partitions"
+        },
+        "max_partitions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Partitions"
+        },
+        "min_replication_factor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Replication Factor"
+        },
+        "max_replication_factor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Replication Factor"
+        },
+        "max_retention_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Retention Ms"
+        },
+        "required_config": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Config",
+          "type": "array"
+        },
+        "naming_pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Naming Pattern"
+        },
+        "forbidden_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Prefixes",
+          "type": "array"
+        },
+        "forbidden_suffixes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Suffixes",
+          "type": "array"
+        }
+      },
+      "title": "TopicRules",
+      "type": "object"
+    },
+    "UDFDeclaration": {
+      "description": "User-defined function type declaration.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "return_type": {
+          "title": "Return Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "return_type"
+      ],
+      "title": "UDFDeclaration",
+      "type": "object"
+    },
+    "VirtualTopicConfig": {
+      "description": "Virtual topic configuration for Gateway.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "compression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compression"
+        }
+      },
+      "title": "VirtualTopicConfig",
+      "type": "object"
+    },
+    "WatermarkConfig": {
+      "description": "Watermark configuration for event time processing.",
+      "properties": {
+        "strategy": {
+          "$ref": "#/$defs/WatermarkStrategy",
+          "default": "bounded_out_of_orderness"
+        },
+        "max_out_of_orderness_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 5000,
+          "title": "Max Out Of Orderness Ms"
+        },
+        "expression": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expression"
+        }
+      },
+      "title": "WatermarkConfig",
+      "type": "object"
+    },
+    "WatermarkStrategy": {
+      "description": "Watermark strategies for event time processing.",
+      "enum": [
+        "bounded_out_of_orderness",
+        "monotonously_increasing",
+        "custom"
+      ],
+      "title": "WatermarkStrategy",
+      "type": "string"
+    }
+  },
+  "description": "Complete streamt project with all declarations.",
+  "properties": {
+    "project": {
+      "$ref": "#/$defs/ProjectInfo"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeConfig"
+    },
+    "defaults": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Defaults"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rules": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Rules"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "connections": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ConnectionConfig"
+      },
+      "title": "Connections",
+      "type": "object"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/Source"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "models": {
+      "items": {
+        "$ref": "#/$defs/Model"
+      },
+      "title": "Models",
+      "type": "array"
+    },
+    "tests": {
+      "items": {
+        "$ref": "#/$defs/DataTest"
+      },
+      "title": "Tests",
+      "type": "array"
+    },
+    "exposures": {
+      "items": {
+        "$ref": "#/$defs/Exposure"
+      },
+      "title": "Exposures",
+      "type": "array"
+    },
+    "udfs": {
+      "items": {
+        "$ref": "#/$defs/UDFDeclaration"
+      },
+      "title": "Udfs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "project",
+    "runtime"
+  ],
+  "title": "streamt project configuration",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -77,10 +77,8 @@ class TestIndustrialSensorMonitoring:
                         "name": "sensor_readings_cleaned",
                         "description": "Cleaned and normalized sensor readings",
 
-                        "advanced": {
-                            "topic": {"partitions": 24},
-                            "flink": {"parallelism": 8},
-                        },
+                        "topic": {"partitions": 24},
+                        "flink": {"parallelism": 8},
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -105,9 +103,7 @@ class TestIndustrialSensorMonitoring:
                         "name": "sensor_readings_1min",
                         "description": "1-minute aggregated sensor readings",
 
-                        "advanced": {
-                            "topic": {"partitions": 12},
-                        },
+                        "topic": {"partitions": 12},
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -129,9 +125,7 @@ class TestIndustrialSensorMonitoring:
                         "name": "sensor_readings_5min",
                         "description": "5-minute aggregated sensor readings",
 
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -153,9 +147,7 @@ class TestIndustrialSensorMonitoring:
                         "name": "anomaly_detection",
                         "description": "Detected anomalies based on thresholds",
 
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 s.equipment_id,
@@ -183,9 +175,7 @@ class TestIndustrialSensorMonitoring:
                         "name": "equipment_health_score",
                         "description": "Real-time equipment health score (0-100)",
 
-                        "advanced": {
-                            "topic": {"partitions": 6},
-                        },
+                        "topic": {"partitions": 6},
                         "sql": """
                             SELECT
                                 equipment_id,
@@ -202,9 +192,7 @@ class TestIndustrialSensorMonitoring:
                         "name": "maintenance_alerts",
                         "description": "Maintenance alerts for equipment needing attention",
 
-                        "advanced": {
-                            "topic": {"partitions": 3},
-                        },
+                        "topic": {"partitions": 3},
                         "sql": """
                             SELECT
                                 equipment_id,

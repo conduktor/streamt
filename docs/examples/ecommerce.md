@@ -115,10 +115,9 @@ models:
         AND event_type IN ('page_view', 'click', 'add_to_cart', 'remove_from_cart', 'purchase', 'search')
 
     # Override defaults only when needed
-    advanced:
-      topic:
-        name: ecom.events-clean.v1
-        partitions: 24
+    topic:
+      name: ecom.events-clean.v1
+      partitions: 24
 ```
 
 ### Enrich with Product Data
@@ -154,12 +153,11 @@ models:
         ON e.product_id = p.product_id
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 8
-      topic:
-        name: ecom.events-enriched.v1
-        partitions: 24
+    flink:
+      parallelism: 8
+    topic:
+      name: ecom.events-enriched.v1
+      partitions: 24
 ```
 
 ### User Sessions
@@ -201,13 +199,12 @@ models:
         TUMBLE(`timestamp`, INTERVAL '30' MINUTE)
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 60000
-      topic:
-        name: ecom.user-sessions.v1
-        partitions: 12
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 60000
+    topic:
+      name: ecom.user-sessions.v1
+      partitions: 12
 ```
 
 ### Product Popularity
@@ -249,13 +246,12 @@ models:
         TUMBLE(`timestamp`, INTERVAL '5' MINUTE)
 
     # Override defaults only when needed
-    advanced:
-      flink:
-        parallelism: 4
-        checkpoint_interval_ms: 30000
-      topic:
-        name: ecom.product-popularity.v1
-        partitions: 6
+    flink:
+      parallelism: 4
+      checkpoint_interval_ms: 30000
+    topic:
+      name: ecom.product-popularity.v1
+      partitions: 6
 ```
 
 ## Tests
@@ -294,9 +290,11 @@ tests:
       - throughput:
           min_per_minute: 1000
     on_failure:
-      - alert:
-          channel: slack
-          webhook: ${SLACK_WEBHOOK}
+      severity: error
+      actions:
+        - alert:
+            channel: slack
+            webhook: https://hooks.slack.com/services/EXAMPLE
 ```
 
 ## Exposures
@@ -313,7 +311,7 @@ exposures:
       - ref: user_sessions
     sla:
       max_end_to_end_latency_ms: 50
-      availability: 99.95
+      availability: "99.95%"
 
   - name: recommendation_service
     type: ml_inference

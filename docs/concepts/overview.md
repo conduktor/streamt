@@ -105,9 +105,8 @@ Models can reference sources with `{{ source("name") }}` or other models with `{
 # Export to warehouse → Kafka Connect
 - name: orders_warehouse
   from: high_value_orders
-  advanced:
-    connector:
-      type: snowflake-sink
+  connector:
+    type: snowflake-sink
 ```
 
 ## Tests

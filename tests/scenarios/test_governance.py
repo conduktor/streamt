@@ -74,9 +74,7 @@ class TestTopicNamingGovernance:
                         "name": "order_created",
                         "description": "Order created events",
 
-                        "advanced": {
-                            "topic": {"name": "orders.purchase.created.v1"},  # Follows pattern
-                        },
+                        "topic": {"name": "orders.purchase.created.v1"},  # Follows pattern
                         "sql": """
                             SELECT * FROM {{ source("order_events") }}
                             WHERE event_type = 'CREATED'
@@ -86,9 +84,7 @@ class TestTopicNamingGovernance:
                         "name": "order_completed",
                         "description": "Order completed events",
 
-                        "advanced": {
-                            "topic": {"name": "orders.purchase.completed.v1"},  # Follows pattern
-                        },
+                        "topic": {"name": "orders.purchase.completed.v1"},  # Follows pattern
                         "sql": """
                             SELECT * FROM {{ source("order_events") }}
                             WHERE event_type = 'COMPLETED'
@@ -936,21 +932,21 @@ class TestComplianceAndAudit:
                         "name": "user_pii",
                         "description": "User PII - short retention",
                         "tags": ["pii"],
-                        "advanced": {"topic": {"config": {"retention.ms": "7776000000"}}},
+                        "topic": {"config": {"retention.ms": "7776000000"}},
                         "sql": "SELECT user_id, email, name FROM {{ source('events') }}",
                     },
                     {
                         "name": "financial_records",
                         "description": "Financial records - long retention",
                         "tags": ["financial"],
-                        "advanced": {"topic": {"config": {"retention.ms": "-1"}}},
+                        "topic": {"config": {"retention.ms": "-1"}},
                         "sql": "SELECT txn_id, amount, timestamp FROM {{ source('events') }}",
                     },
                     {
                         "name": "operational_metrics",
                         "description": "Operational metrics - default retention",
                         "tags": ["operational"],
-                        "advanced": {"topic": {"config": {"retention.ms": "31536000000"}}},
+                        "topic": {"config": {"retention.ms": "31536000000"}},
                         "sql": "SELECT metric_name, value FROM {{ source('events') }}",
                     },
                 ],

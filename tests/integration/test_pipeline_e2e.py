@@ -143,10 +143,9 @@ models:
       SELECT order_id, category, amount
       FROM {{{{ source("orders") }}}}
       WHERE amount >= 100
-    advanced:
-      topic:
-        name: {stage1_topic}
-        partitions: 3
+    topic:
+      name: {stage1_topic}
+      partitions: 3
 
   - name: enriched_orders
     description: Add premium flag for amount >= 200
@@ -157,10 +156,9 @@ models:
         amount,
         CASE WHEN amount >= 200 THEN TRUE ELSE FALSE END as is_premium
       FROM {{{{ ref("high_value_orders") }}}}
-    advanced:
-      topic:
-        name: {stage2_topic}
-        partitions: 3
+    topic:
+      name: {stage2_topic}
+      partitions: 3
 """
 
         try:
@@ -309,10 +307,9 @@ models:
       FROM {{{{ source("orders") }}}} o
       JOIN {{{{ source("customers") }}}} c
       ON o.customer_id = c.customer_id
-    advanced:
-      topic:
-        name: {output_topic}
-        partitions: 1
+    topic:
+      name: {output_topic}
+      partitions: 1
 """
 
         try:
@@ -434,10 +431,9 @@ models:
       GROUP BY
         TUMBLE(event_time, INTERVAL '10' SECOND),
         user_id
-    advanced:
-      topic:
-        name: {sink_topic}
-        partitions: 1
+    topic:
+      name: {sink_topic}
+      partitions: 1
 """
 
         try:
@@ -569,10 +565,9 @@ models:
     sql: |
       SELECT userid, UPPER(regionid) as region_upper
       FROM {{{{ source("users") }}}}
-    advanced:
-      topic:
-        name: {sink_topic}
-        partitions: 1
+    topic:
+      name: {sink_topic}
+      partitions: 1
 """
 
         try:

@@ -45,6 +45,7 @@ Flink processes it: 10:00:15  ← Processing time
 **When the event actually happened.** This is a timestamp embedded in the event itself, set by the producer.
 
 ```yaml
+# streamt:skip — JSON example, not YAML
 # The event payload
 {
   "order_id": "12345",
@@ -265,9 +266,8 @@ models:
       SELECT customer_id, COUNT(*)
       FROM {{ ref("orders") }}
       GROUP BY customer_id
-    advanced:
-      flink:
-        state_ttl_ms: 86400000  # Expire state after 24 hours
+    flink:
+      state_ttl_ms: 86400000  # Expire state after 24 hours
 ```
 
 **Trade-off**: TTL too short = incorrect results for returning users. TTL too long = memory pressure.
@@ -323,9 +323,8 @@ models:
   - name: revenue_aggregation
     sql: |
       SELECT ...
-    advanced:
-      flink:
-        checkpoint_interval_ms: 60000  # Checkpoint every minute
+    flink:
+      checkpoint_interval_ms: 60000  # Checkpoint every minute
 ```
 
 ---
@@ -417,9 +416,8 @@ models:
   - name: heavy_aggregation
     sql: |
       SELECT ...
-    advanced:
-      flink:
-        parallelism: 8  # Increase parallel tasks
+    flink:
+      parallelism: 8  # Increase parallel tasks
 ```
 
 ---

@@ -91,7 +91,7 @@ exposures:
     # SLA expectations
     sla:
       max_end_to_end_latency_ms: 5000   # 5 second max latency
-      availability: 99.9                 # 99.9% uptime
+      availability: "99.9"               # 99.9% uptime
       max_lag_messages: 50               # Max message lag
 
     # Contacts
@@ -110,6 +110,7 @@ The exposure reads from your data:
 
 ```yaml
 - name: reporting_service
+  type: application
   role: consumer
   consumer_group: reporting-cg
   consumes:
@@ -122,6 +123,7 @@ The exposure writes to your pipeline (usually a source):
 
 ```yaml
 - name: checkout_service
+  type: application
   role: producer
   produces:
     - source: orders_raw
@@ -133,6 +135,7 @@ The exposure both reads and writes:
 
 ```yaml
 - name: enrichment_service
+  type: application
   role: both
   consumes:
     - ref: events_raw
@@ -151,7 +154,7 @@ sla:
   max_end_to_end_latency_ms: 500
 
   # Availability
-  availability: 99.95    # Percentage
+  availability: "99.95"  # Percentage
 
   # Lag and freshness
   max_lag_messages: 1000
@@ -212,7 +215,7 @@ orders_clean (topic)
   sla:
     max_end_to_end_latency_ms: 100
     max_lag_messages: 5000
-    availability: 99.99
+    availability: "99.99"
 
   contacts:
     - name: Fraud Team
@@ -238,7 +241,7 @@ orders_clean (topic)
 
   sla:
     max_end_to_end_latency_ms: 10000
-    availability: 99.5
+    availability: "99.5"
 ```
 
 ### ML Training Pipeline
@@ -282,7 +285,7 @@ orders_clean (topic)
   sla:
     max_end_to_end_latency_ms: 50
     max_lag_messages: 2000
-    availability: 99.9
+    availability: "99.9"
 ```
 
 ### External API
@@ -302,7 +305,7 @@ orders_clean (topic)
 
   sla:
     max_end_to_end_latency_ms: 1000
-    availability: 99.5
+    availability: "99.5"
     max_lag_messages: 100
 ```
 
@@ -358,7 +361,7 @@ contacts:
 # Based on actual requirements
 sla:
   max_end_to_end_latency_ms: 500   # Not aspirational, achievable
-  availability: 99.9                # Match your infrastructure
+  availability: "99.9"              # Match your infrastructure
 ```
 
 ### 4. Link to Documentation

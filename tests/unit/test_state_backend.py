@@ -26,7 +26,7 @@ def _base_config(flink_config: dict) -> dict:
             {
                 "name": "out",
                 "sql": 'SELECT id FROM {{ source("src") }}',
-                "advanced": {"flink": flink_config},
+                "flink": flink_config,
             }
         ],
     }

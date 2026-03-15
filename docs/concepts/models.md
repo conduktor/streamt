@@ -52,13 +52,12 @@ Creates a Kafka topic with stateless transformations:
     FROM {{ source("orders") }}
     WHERE amount > 10000
 
-  # Advanced configuration (optional)
-  advanced:
-    topic:
-      name: orders.high-value.v1
-      partitions: 12
-      config:
-        retention.ms: 604800000
+  # Optional configuration
+  topic:
+    name: orders.high-value.v1
+    partitions: 12
+    config:
+      retention.ms: 604800000
 ```
 
 **Best for:** Filtering, field selection, simple transformations
@@ -93,14 +92,13 @@ Deploys a Flink SQL job for stateful processing:
     FROM {{ ref("orders_clean") }}
     GROUP BY TUMBLE(event_time, INTERVAL '1' HOUR)
 
-  # Advanced configuration (optional)
-  advanced:
-    flink:
-      parallelism: 8
-      checkpoint_interval_ms: 60000
-    topic:
-      name: analytics.revenue.v1
-      partitions: 6
+  # Optional configuration
+  flink:
+    parallelism: 8
+    checkpoint_interval_ms: 60000
+  topic:
+    name: analytics.revenue.v1
+    partitions: 6
 ```
 
 The `TUMBLE` window automatically triggers Flink materialization.
@@ -114,13 +112,12 @@ Creates a Kafka Connect connector to export data:
 ```yaml
 - name: orders_snowflake
   from: orders_clean  # No SQL = sink materialization
-  advanced:
-    connector:
-      type: snowflake-sink
-      config:
-        snowflake.url.name: ${SNOWFLAKE_URL}
-        snowflake.database.name: ANALYTICS
-        snowflake.schema.name: ORDERS
+  connector:
+    type: snowflake-sink
+    config:
+      snowflake.url.name: ${SNOWFLAKE_URL}
+      snowflake.database.name: ANALYTICS
+      snowflake.schema.name: ORDERS
 ```
 
 Using `from:` without `sql:` automatically triggers sink materialization.
@@ -143,8 +140,11 @@ Use `ML_PREDICT` and `ML_EVALUATE` for real-time ML inference:
   # Declare ML output schema for proper type inference
   ml_outputs:
     FraudModel:
-      fraud_score: DOUBLE
-      confidence: DOUBLE
+      columns:
+        - name: fraud_score
+          type: DOUBLE
+        - name: confidence
+          type: DOUBLE
 ```
 
 **Requirements:**
@@ -186,33 +186,31 @@ models:
         phone,
         TUMBLE(event_time, INTERVAL '1' HOUR)
 
-    # Advanced configuration (optional)
-    advanced:
-      # Output topic configuration
-      topic:
-        name: analytics.customer-metrics.v1
-        partitions: 12
-        replication_factor: 3
-        config:
-          retention.ms: 2592000000  # 30 days
-          cleanup.policy: delete
+    # Infrastructure configuration (optional)
 
-      # Flink job configuration
-      flink:
-        parallelism: 8
-        checkpoint_interval_ms: 60000
-        state_backend: rocksdb
-        cluster: production
+    # Output topic configuration
+    topic:
+      name: analytics.customer-metrics.v1
+      partitions: 12
+      replication_factor: 3
+      config:
+        retention.ms: 2592000000  # 30 days
+        cleanup.policy: delete
 
-      # Security policies
-      security:
-        masking:
-          - column: email
-            policy: hash
-          - column: phone
-            policy: partial
-            config:
-              visible_chars: 4
+    # Flink job configuration
+    flink:
+      parallelism: 8
+      checkpoint_interval_ms: 60000
+      state_backend: rocksdb
+      cluster: production
+
+    # Security policies
+    security:
+      masking:
+        - column: email
+          method: hash
+        - column: phone
+          method: partial
 ```
 
 ## SQL Syntax
@@ -265,49 +263,47 @@ FROM {{ source("events") }}
 
 ## Topic Configuration
 
-Configure the output Kafka topic using the `advanced:` section:
+Configure the output Kafka topic using the `topic:` field:
 
 ```yaml
-advanced:
-  topic:
-    name: orders.clean.v1        # Topic name
-    partitions: 12               # Number of partitions
-    replication_factor: 3        # Replication factor
-    config:                      # Topic configs
-      retention.ms: 604800000    # 7 days
-      cleanup.policy: delete     # or compact
-      min.insync.replicas: 2
+topic:
+  name: orders.clean.v1        # Topic name
+  partitions: 12               # Number of partitions
+  replication_factor: 3        # Replication factor
+  config:                      # Topic configs
+    retention.ms: 604800000    # 7 days
+    cleanup.policy: delete     # or compact
+    min.insync.replicas: 2
 ```
 
 ## Flink Configuration
 
-Configure Flink job settings using the `advanced:` section:
+Configure Flink job settings using the `flink:` field:
 
 ```yaml
-advanced:
-  flink:
-    parallelism: 8                  # Job parallelism
-    checkpoint_interval_ms: 60000    # Checkpoint interval (ms)
-    checkpoint_timeout: 300000      # Checkpoint timeout (ms)
-    state_backend: rocksdb          # hashmap or rocksdb
-    restart_strategy: fixed-delay   # Restart strategy
-    cluster: production             # Target Flink cluster
+flink:
+  parallelism: 8                  # Job parallelism
+  checkpoint_interval_ms: 60000    # Checkpoint interval (ms)
+  checkpoint_timeout: 300000      # Checkpoint timeout (ms)
+  state_backend: rocksdb          # hashmap or rocksdb
+  restart_strategy:               # Restart strategy
+    type: fixed-delay
+  cluster: production             # Target Flink cluster
 ```
 
 ## Connector Configuration
 
-Configure Kafka Connect sinks using the `advanced:` section:
+Configure Kafka Connect sinks using the `connector:` field:
 
 ```yaml
-advanced:
-  connector:
-    type: snowflake-sink           # Connector type
-    tasks_max: 4                   # Number of tasks
-    config:
-      # Connector-specific configuration
-      snowflake.url.name: ${SNOWFLAKE_URL}
-      snowflake.user.name: ${SNOWFLAKE_USER}
-      snowflake.database.name: ANALYTICS
+connector:
+  type: snowflake-sink           # Connector type
+  tasks_max: 4                   # Number of tasks
+  config:
+    # Connector-specific configuration
+    snowflake.url.name: ${SNOWFLAKE_URL}
+    snowflake.user.name: ${SNOWFLAKE_USER}
+    snowflake.database.name: ANALYTICS
 ```
 
 Supported connector types:
@@ -349,18 +345,16 @@ Apply masking policies to sensitive columns:
 security:
   masking:
     - column: email
-      policy: hash      # MD5 hash
+      method: hash      # MD5 hash
 
     - column: phone
-      policy: partial   # Show last 4 digits
-      config:
-        visible_chars: 4
+      method: partial   # Show last 4 digits
 
     - column: ssn
-      policy: redact    # Replace with ***
+      method: redact    # Replace with ***
 
     - column: credit_card
-      policy: tokenize  # Replace with token
+      method: tokenize  # Replace with token
 ```
 
 ## Dependencies
@@ -432,14 +426,12 @@ This model depends on both `orders_clean` and the `customers` source. streamt bu
 
 ```yaml
 # High-volume: more partitions for parallelism
-advanced:
-  topic:
-    partitions: 24
+topic:
+  partitions: 24
 
 # Low-volume: fewer partitions
-advanced:
-  topic:
-    partitions: 3
+topic:
+  partitions: 3
 ```
 
 ### 5. Use Keys for Ordering
@@ -481,9 +473,8 @@ models:
   # Stage 4: Export to warehouse (auto-inferred as sink)
   - name: metrics_warehouse
     from: hourly_metrics
-    advanced:
-      connector:
-        type: snowflake-sink
+    connector:
+      type: snowflake-sink
 ```
 
 ## Next Steps

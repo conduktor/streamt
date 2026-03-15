@@ -24,7 +24,7 @@ def _make_project(governance: dict, models: list[dict] | None = None):
                 {
                     "name": "orders",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 6, "replication_factor": 3}},
+                    "topic": {"partitions": 6, "replication_factor": 3},
                 }
             ],
         }
@@ -45,7 +45,7 @@ class TestMaxReplicationFactor:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 1, "replication_factor": 5}},
+                    "topic": {"partitions": 1, "replication_factor": 5},
                 }
             ],
         )
@@ -62,7 +62,7 @@ class TestMaxReplicationFactor:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 1, "replication_factor": 3}},
+                    "topic": {"partitions": 1, "replication_factor": 3},
                 }
             ],
         )
@@ -77,7 +77,7 @@ class TestMaxReplicationFactor:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 6, "replication_factor": 99}},
+                    "topic": {"partitions": 6, "replication_factor": 99},
                 }
             ],
         )
@@ -144,7 +144,7 @@ class TestExistingRulesRegression:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 3, "replication_factor": 1}},
+                    "topic": {"partitions": 3, "replication_factor": 1},
                 }
             ],
         )
@@ -157,7 +157,7 @@ class TestExistingRulesRegression:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 12, "replication_factor": 1}},
+                    "topic": {"partitions": 12, "replication_factor": 1},
                 }
             ],
         )
@@ -170,7 +170,7 @@ class TestExistingRulesRegression:
                 {
                     "name": "m",
                     "sql": 'SELECT * FROM {{ source("raw") }}',
-                    "advanced": {"topic": {"partitions": 1, "replication_factor": 1}},
+                    "topic": {"partitions": 1, "replication_factor": 1},
                 }
             ],
         )

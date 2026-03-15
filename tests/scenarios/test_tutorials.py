@@ -81,11 +81,9 @@ class TestWindowedAggregationScenarios:
                         "name": "order_metrics_5min",
                         "description": "Order metrics in 5-minute windows",
 
-                        "advanced": {
-                            "flink": {
-                                "parallelism": 4,
-                                "state_ttl_ms": 3600000,  # 1 hour
-                            },
+                        "flink": {
+                            "parallelism": 4,
+                            "state_ttl_ms": 3600000,  # 1 hour
                         },
                         "sql": """
                             SELECT
@@ -174,7 +172,7 @@ class TestWindowedAggregationScenarios:
                     {
                         "name": "page_metrics_sliding",
                         "description": "Page metrics with sliding 5-minute window",
-                        "advanced": {"flink": {"parallelism": 2}},
+                        "flink": {"parallelism": 2},
                         "sql": """
                             SELECT
                                 HOP_START(view_time, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE) as window_start,
@@ -251,7 +249,7 @@ class TestWindowedAggregationScenarios:
                         "name": "user_sessions",
                         "description": "User sessions with 30-minute gap",
 
-                        "advanced": {"flink": {"state_ttl_ms": 7200000}},  # 2 hours
+                        "flink": {"state_ttl_ms": 7200000},  # 2 hours
                         "sql": """
                             SELECT
                                 user_id,
@@ -355,7 +353,7 @@ class TestStreamJoinScenarios:
                         "name": "orders_enriched",
                         "description": "Orders enriched with customer data",
 
-                        "advanced": {"flink": {"state_ttl_ms": 86400000}},  # 24 hours
+                        "flink": {"state_ttl_ms": 86400000},  # 24 hours
                         "sql": """
                             SELECT
                                 o.order_id,
@@ -452,7 +450,7 @@ class TestStreamJoinScenarios:
                         "name": "order_payment_matched",
                         "description": "Orders matched with payments within 1 hour",
 
-                        "advanced": {"flink": {"state_ttl_ms": 7200000}},  # 2 hours
+                        "flink": {"state_ttl_ms": 7200000},  # 2 hours
                         "sql": """
                             SELECT
                                 o.order_id,
@@ -549,7 +547,7 @@ class TestStreamJoinScenarios:
                     {
                         "name": "order_360",
                         "description": "Complete order view with all dimensions",
-                        "advanced": {"flink": {"state_ttl_ms": 86400000}},
+                        "flink": {"state_ttl_ms": 86400000},
                         "sql": """
                             SELECT
                                 o.order_id,
@@ -658,7 +656,7 @@ class TestCDCPipelineScenarios:
                         "name": "customer_orders_cdc",
                         "description": "Customer orders from CDC streams",
 
-                        "advanced": {"flink": {"state_ttl_ms": 604800000}},  # 7 days
+                        "flink": {"state_ttl_ms": 604800000},  # 7 days
                         "sql": """
                             SELECT
                                 o.id as order_id,
@@ -752,7 +750,7 @@ class TestCDCPipelineScenarios:
                         "name": "customer_metrics",
                         "description": "Customer lifetime metrics",
 
-                        "advanced": {"flink": {"state_ttl_ms": 2592000000}},  # 30 days
+                        "flink": {"state_ttl_ms": 2592000000},  # 30 days
                         "sql": """
                             SELECT
                                 o.customer_id,
@@ -766,7 +764,7 @@ class TestCDCPipelineScenarios:
                     {
                         "name": "customer_360",
                         "description": "Complete customer 360 view",
-                        "advanced": {"flink": {"state_ttl_ms": 86400000}},
+                        "flink": {"state_ttl_ms": 86400000},
                         "sql": """
                             SELECT
                                 c.id as customer_id,
@@ -857,7 +855,7 @@ class TestCDCPipelineScenarios:
                         "name": "hourly_revenue",
                         "description": "Hourly revenue by region",
 
-                        "advanced": {"flink": {"state_ttl_ms": 172800000}},  # 48 hours
+                        "flink": {"state_ttl_ms": 172800000},  # 48 hours
                         "sql": """
                             SELECT
                                 TUMBLE_START(order_time, INTERVAL '1' HOUR) as hour_start,
@@ -875,7 +873,7 @@ class TestCDCPipelineScenarios:
                         "name": "daily_revenue_summary",
                         "description": "Daily revenue summary",
 
-                        "advanced": {"flink": {"state_ttl_ms": 604800000}},  # 7 days
+                        "flink": {"state_ttl_ms": 604800000},  # 7 days
                         "sql": """
                             SELECT
                                 TUMBLE_START(order_time, INTERVAL '1' DAY) as day_start,

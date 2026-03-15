@@ -46,9 +46,8 @@ models:
       SELECT * FROM {{ source("orders") }}
       WHERE region = 'EU'
 
-    advanced:
-      # Explicit configuration for virtual topics via Gateway
-      virtual_topic: true
+    # Explicit configuration for virtual topics via Gateway
+    virtual_topic: true
 ```
 
 What happens:
@@ -92,26 +91,25 @@ models:
     from:
       - source: customers_raw
 
-    advanced:
-      virtual_topic: true
-      security:
-        policies:
-          # Hash email for analytics team
-          - mask:
-              column: email
-              method: hash
-              for_roles: [analytics]
+    virtual_topic: true
+    security:
+      policies:
+        # Hash email for analytics team
+        - mask:
+            column: email
+            method: hash
+            for_roles: [analytics]
 
-          # Redact SSN for support team
-          - mask:
-              column: ssn
-              method: redact
-              for_roles: [support]
+        # Redact SSN for support team
+        - mask:
+            column: ssn
+            method: redact
+            for_roles: [support]
 
-          # Partial mask phone for everyone else
-          - mask:
-              column: phone
-              method: partial
+        # Partial mask phone for everyone else
+        - mask:
+            column: phone
+            method: partial
 ```
 
 ### Masking Methods
@@ -134,8 +132,7 @@ models:
     from:
       - source: orders_v2
 
-    advanced:
-      virtual_topic: true
+    virtual_topic: true
 ```
 
 Consumers using `orders_v1` through Gateway will read from `orders_v2`.
@@ -151,8 +148,7 @@ models:
       SELECT * FROM {{ source("orders") }}
       WHERE amount > 10000 AND status = 'completed'
 
-    advanced:
-      virtual_topic: true
+    virtual_topic: true
 ```
 
 The WHERE clause becomes a Gateway filter interceptor.
@@ -168,6 +164,7 @@ The WHERE clause becomes a Gateway filter interceptor.
 
 **Workaround for IN**: Use `REGEXP` pattern matching:
 ```yaml
+# streamt:skip — SQL snippet, not streamt config
 # Instead of: WHERE region IN ('US', 'EU')
 # Use:
 WHERE region REGEXP 'US|EU'
@@ -184,16 +181,14 @@ models:
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_a'
 
-    advanced:
-      virtual_topic: true
+    virtual_topic: true
 
   - name: orders_tenant_b
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_b'
 
-    advanced:
-      virtual_topic: true
+    virtual_topic: true
 ```
 
 ## Configuration Reference
@@ -265,7 +260,7 @@ This creates:
 
 ```
 Error: virtual_topic requires Conduktor Gateway.
-Configure runtime.conduktor.gateway or remove advanced.virtual_topic
+Configure runtime.conduktor.gateway or remove virtual_topic
 ```
 
 Add Gateway configuration to your project.
@@ -306,10 +301,9 @@ models:
     from:
       - source: orders_raw
 
-    advanced:
-      virtual_topic: true
-      access:
-        allowed_groups: [data-engineering]
+    virtual_topic: true
+    access:
+      allowed_groups: [data-engineering]
 
   # Masked view for analytics (US region only)
   - name: orders_analytics
@@ -317,18 +311,17 @@ models:
       SELECT * FROM {{ source("orders_raw") }}
       WHERE region REGEXP 'US.*'
 
-    advanced:
-      virtual_topic: true
-      security:
-        policies:
-          - mask:
-              column: customer_email
-              method: hash
-          - mask:
-              column: customer_id
-              method: hash
-      access:
-        allowed_groups: [analytics]
+    virtual_topic: true
+    security:
+      policies:
+        - mask:
+            column: customer_email
+            method: hash
+        - mask:
+            column: customer_id
+            method: hash
+    access:
+      allowed_groups: [analytics]
 
   # Regional view for EU team
   - name: orders_eu
@@ -336,10 +329,9 @@ models:
       SELECT * FROM {{ source("orders_raw") }}
       WHERE region = 'EU'
 
-    advanced:
-      virtual_topic: true
-      access:
-        allowed_groups: [eu-team]
+    virtual_topic: true
+    access:
+      allowed_groups: [eu-team]
 ```
 
 This creates three virtual topics from one physical topic, each with different filtering and masking rules.

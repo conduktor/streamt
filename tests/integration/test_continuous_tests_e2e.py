@@ -24,7 +24,6 @@ from confluent_kafka import Consumer
 from streamt.compiler.compiler import Compiler
 from streamt.compiler.manifest import FlinkJobArtifact
 from streamt.core.models import (
-    AdvancedConfig,
     ColumnDefinition,
     DataTest,
     DataTestType,
@@ -196,9 +195,7 @@ def create_test_project(
     `timestamp`
 FROM {{ source("raw_events") }}
 WHERE event_id IS NOT NULL""",
-        advanced=AdvancedConfig(
-            topic=TopicConfig(name=model_topic),
-        ),
+        topic=TopicConfig(name=model_topic),
     )
 
     # Create continuous test

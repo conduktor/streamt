@@ -10,6 +10,7 @@ Complete reference for the `stream_project.yml` configuration file.
 ## File Structure
 
 ```yaml
+# streamt:skip
 # Project metadata
 project:
   name: my-pipeline
@@ -69,12 +70,7 @@ project:
 ```yaml
 runtime:
   kafka:
-    bootstrap_servers: kafka:9092
-    # Or multiple brokers
-    bootstrap_servers:
-      - kafka-1:9092
-      - kafka-2:9092
-      - kafka-3:9092
+    bootstrap_servers: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
 
     # Security (optional)
     security_protocol: SASL_SSL
@@ -416,44 +412,40 @@ runtime:
     sasl_password: ${KAFKA_PASSWORD}
 
   schema_registry:
-    url: ${SCHEMA_REGISTRY_URL}
-    username: ${SR_USER}
-    password: ${SR_PASSWORD}
-    ssl_ca_location: ${SR_CA_CERT}
+    url: https://schema-registry.example.com
+    username: sr-user
+    password: sr-secret
 
   flink:
     default: production
     clusters:
       production:
         type: rest
-        rest_url: ${FLINK_REST_URL}
-        sql_gateway_url: ${FLINK_SQL_GATEWAY_URL}
-        username: ${FLINK_USER}
-        password: ${FLINK_PASSWORD}
+        rest_url: https://flink.example.com:8081
+        sql_gateway_url: https://flink.example.com:8083
+        username: flink-user
+        password: flink-secret
       staging:
         type: rest
-        rest_url: ${FLINK_STAGING_URL}
-        sql_gateway_url: ${FLINK_STAGING_SQL_URL}
+        rest_url: https://flink-staging.example.com:8081
+        sql_gateway_url: https://flink-staging.example.com:8083
 
   connect:
     default: production
     clusters:
       production:
-        rest_url: ${CONNECT_URL}
-        username: ${CONNECT_USER}
-        password: ${CONNECT_PASSWORD}
+        rest_url: https://connect.example.com:8083
+        username: connect-user
+        password: connect-secret
 
 defaults:
   models:
     topic:
       partitions: 12
       replication_factor: 3
-      config:
-        retention.ms: 604800000
-        min.insync.replicas: 2
 
   tests:
-    sample_size: 5000
+    flink_cluster: production
 
 rules:
   topics:

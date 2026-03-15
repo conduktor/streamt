@@ -163,6 +163,35 @@ def _flink_to_json_type(flink_type: str) -> str:
     return mapping.get(base, "string")
 
 
+@docs.command("schema")
+@click.option(
+    "--output-file", "-o", type=click.Path(), default=None, help="Write to file instead of stdout"
+)
+@click.pass_context
+def docs_schema(ctx: click.Context, output_file: Optional[str]) -> None:
+    """Export JSON Schema for stream_project.yml (derived from Pydantic models)."""
+    from streamt.core.models import StreamtProject
+
+    schema = StreamtProject.model_json_schema(
+        mode="serialization",
+        ref_template="#/$defs/{model}",
+    )
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    schema["title"] = "streamt project configuration"
+
+    text = json.dumps(schema, indent=2) + "\n"
+    if output_file:
+        from pathlib import Path
+
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_file).write_text(text)
+        fmt = make_formatter(ctx, "docs schema")
+        fmt.print(f"Schema written to {output_file}")
+        fmt.flush()
+    else:
+        click.echo(text, nl=False)
+
+
 @docs.command("dictionary")
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option("--env", "-e", "environment", help="Target environment")

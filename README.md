@@ -82,28 +82,27 @@ Materializations are **automatically inferred** from your SQL:
 > *ML functions require Confluent Cloud Flink.
 > **`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/).
 
-### Simple Surface, Advanced Control
+### Simple Surface, Full Control
 
-Most models only need `name` and `sql`. Framework details go in the optional `advanced:` section:
+Most models only need `name` and `sql`. Infrastructure fields like `topic:` and `flink:` are optional top-level overrides:
 
 ```yaml
 # Simple: just the essentials
 - name: valid_orders
   sql: SELECT * FROM {{ source("orders") }} WHERE status = 'valid'
 
-# Advanced: tune performance when needed
+# Full control: tune performance when needed
 - name: hourly_stats
   sql: |
     SELECT window_start, window_end, COUNT(*)
     FROM TABLE(TUMBLE(TABLE {{ ref("valid_orders") }}, DESCRIPTOR(ts), INTERVAL '1' HOUR))
     GROUP BY window_start, window_end
 
-  advanced:
-    flink:
-      parallelism: 4
-      checkpoint_interval: 60000
-    topic:
-      partitions: 12
+  flink:
+    parallelism: 4
+    checkpoint_interval: 60000
+  topic:
+    partitions: 12
 ```
 
 ## Quick Start
@@ -122,6 +121,17 @@ streamt init
 
 # Or discover from existing Kafka infrastructure
 streamt init --discover --kafka localhost:9092 --schema-registry http://localhost:8081
+
+# Discover from Confluent Cloud
+streamt init --discover \
+  --kafka $CC_BOOTSTRAP \
+  --security-protocol SASL_SSL \
+  --sasl-mechanism PLAIN \
+  --sasl-username $CC_API_KEY \
+  --sasl-password $CC_API_SECRET \
+  --schema-registry $CC_SR_URL \
+  --sr-username $CC_SR_KEY \
+  --sr-password $CC_SR_SECRET
 ```
 
 ```yaml
@@ -133,6 +143,11 @@ project:
 runtime:
   kafka:
     bootstrap_servers: localhost:9092
+    # For Confluent Cloud, add:
+    # security_protocol: SASL_SSL
+    # sasl_mechanism: PLAIN
+    # sasl_username: ${CC_API_KEY}
+    # sasl_password: ${CC_API_SECRET}
   flink:
     default: local
     clusters:
@@ -341,8 +356,11 @@ Window TVF syntax (`TABLE(TUMBLE(...))`) is the recommended Flink SQL pattern. L
   # Declare ML output schema for type inference
   ml_outputs:
     FraudModel:
-      fraud_score: DOUBLE
-      confidence: DOUBLE
+      columns:
+        - name: fraud_score
+          type: DOUBLE
+        - name: confidence
+          type: DOUBLE
 ```
 
 `ML_PREDICT` and `ML_EVALUATE` require Confluent Cloud Flink.
@@ -352,11 +370,10 @@ Window TVF syntax (`TABLE(TUMBLE(...))`) is the recommended Flink SQL pattern. L
 ```yaml
 - name: orders_snowflake
   from: orders_clean  # No SQL = sink
-  advanced:
-    connector:
-      type: snowflake-sink
-      config:
-        snowflake.database.name: ANALYTICS
+  connector:
+    type: snowflake-sink
+    config:
+      snowflake.database.name: ANALYTICS
 ```
 
 ### Data Quality Tests

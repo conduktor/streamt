@@ -60,7 +60,7 @@ class TestStatusCommand:
                         {
                             "name": topic_name,
                             "sql": 'SELECT * FROM {{ source("raw") }}',
-                            "advanced": {"topic": {"partitions": 3}},
+                            "topic": {"partitions": 3},
                         }
                     ],
                 }
@@ -132,7 +132,7 @@ class TestStatusCommand:
                         {
                             "name": topic_name,
                             "sql": 'SELECT * FROM {{ source("raw") }}',
-                            "advanced": {"topic": {"partitions": 2}},
+                            "topic": {"partitions": 2},
                         }
                     ],
                 }
@@ -245,7 +245,7 @@ class TestStatusCommand:
                         {
                             "name": topic_name,
                             "sql": 'SELECT * FROM {{ source("raw") }}',
-                            "advanced": {"topic": {"partitions": 2}},
+                            "topic": {"partitions": 2},
                         }
                     ],
                 }
@@ -367,7 +367,7 @@ class TestStatusCommandEdgeCases:
                         {
                             "name": topic_name,
                             "sql": 'SELECT * FROM {{ source("raw") }}',
-                            "advanced": {"topic": {"partitions": 3}},
+                            "topic": {"partitions": 3},
                         }
                     ],
                 }

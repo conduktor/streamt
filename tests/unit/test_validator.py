@@ -246,9 +246,7 @@ class TestProjectValidator:
                         "name": "payments_clean",
                         # Use GROUP BY to ensure FLINK materialization
                         "sql": 'SELECT count(*) FROM {{ source("payments_raw") }} GROUP BY id',
-                        "advanced": {
-                            "topic": {"partitions": 3}  # Less than 6
-                        }
+                        "topic": {"partitions": 3}  # Less than 6
                     }
                 ],
             }
@@ -319,9 +317,7 @@ class TestProjectValidator:
                         "name": "payments_clean",
                         "description": "Cleaned payments",
                         "sql": 'SELECT * FROM {{ source("payments_raw") }}',
-                        "advanced": {
-                            "topic": {"partitions": 6}
-                        }
+                        "topic": {"partitions": 6}
                     }
                 ],
             }
@@ -599,9 +595,7 @@ class TestGovernanceRules:
                     {
                         "name": "m1",
                         "materialized": "flink",
-                        "advanced": {
-                            "topic": {"config": {"retention.ms": "31536000000"}},  # 365 days
-                        },
+                        "topic": {"config": {"retention.ms": "31536000000"}},  # 365 days
                         "sql": 'SELECT * FROM {{ source("src") }}',
                     }
                 ],
@@ -630,9 +624,7 @@ class TestGovernanceRules:
                     {
                         "name": "m1",
                         "materialized": "flink",
-                        "advanced": {
-                            "topic": {"config": {"retention.ms": "86400000"}},  # 1 day
-                        },
+                        "topic": {"config": {"retention.ms": "86400000"}},  # 1 day
                         "sql": 'SELECT * FROM {{ source("src") }}',
                     }
                 ],
@@ -662,9 +654,7 @@ class TestGovernanceRules:
                     {
                         "name": "m1",
                         "materialized": "flink",
-                        "advanced": {
-                            "topic": {"config": {"retention.ms": "-1"}},
-                        },
+                        "topic": {"config": {"retention.ms": "-1"}},
                         "sql": 'SELECT * FROM {{ source("src") }}',
                     }
                 ],

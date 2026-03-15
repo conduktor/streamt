@@ -265,6 +265,7 @@ raw → clean → enriched → aggregated → exported
 ### 1. Keep the DAG Shallow
 
 ```yaml
+# streamt:skip — ASCII diagram, not YAML
 # Prefer: 2-3 levels deep
 raw → clean → metrics
 
@@ -275,6 +276,7 @@ raw → v1 → v2 → v3 → ... → v10
 ### 2. Name for Clarity
 
 ```yaml
+# streamt:skip — ASCII diagram, not YAML
 # Good: Clear lineage from names
 orders_raw → orders_clean → orders_metrics → orders_dashboard
 
@@ -289,10 +291,12 @@ Add descriptions at source entry and exposure exit:
 ```yaml
 sources:
   - name: orders_raw
+    topic: orders.raw.v1
     description: Entry point for order data
 
 exposures:
   - name: ops_dashboard
+    type: dashboard
     description: Final consumption point
 ```
 
@@ -302,9 +306,11 @@ exposures:
 models:
   - name: orders_clean
     tags: [orders, tier-1, critical]
+```
 
-# Then filter lineage
-$ streamt lineage --tag critical
+Then filter lineage:
+```bash
+streamt lineage --tag critical
 ```
 
 ### 5. Review Before Changes
