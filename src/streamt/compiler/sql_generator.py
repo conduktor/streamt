@@ -277,6 +277,26 @@ WHERE {condition}""")
             if cp.incremental is not None:
                 _set("state.backend.incremental", str(cp.incremental).lower())
 
+        # RocksDB tuning
+        if fc.rocksdb:
+            rb = fc.rocksdb
+            if rb.block_cache_size_mb is not None:
+                _set("state.backend.rocksdb.block.cache-size", f"{rb.block_cache_size_mb}mb")
+            if rb.write_buffer_size_mb is not None:
+                _set("state.backend.rocksdb.writebuffer.size", f"{rb.write_buffer_size_mb}mb")
+            if rb.predefined_options:
+                _set("state.backend.rocksdb.predefined-options", rb.predefined_options)
+
+        # Resource configuration
+        if fc.resources:
+            res = fc.resources
+            if res.taskmanager_memory_mb is not None:
+                _set("taskmanager.memory.process.size", f"{res.taskmanager_memory_mb}mb")
+            if res.taskmanager_slots is not None:
+                _set("taskmanager.numberOfTaskSlots", res.taskmanager_slots)
+            if res.jobmanager_memory_mb is not None:
+                _set("jobmanager.memory.process.size", f"{res.jobmanager_memory_mb}mb")
+
         # Restart strategy
         if fc.restart_strategy:
             rs = fc.restart_strategy

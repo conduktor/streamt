@@ -143,6 +143,12 @@ class SecurityRules(BaseModel):
     sensitive_columns_require_masking: bool = False
 
 
+class DataResidencyRules(BaseModel):
+    """Data residency governance rules."""
+
+    allowed_regions: list[str] = Field(default_factory=list)
+
+
 class Rules(BaseModel):
     """Governance rules."""
 
@@ -150,6 +156,7 @@ class Rules(BaseModel):
     models: Optional[ModelRules] = None
     sources: Optional[SourceRules] = None
     security: Optional[SecurityRules] = None
+    data_residency: Optional[DataResidencyRules] = None
 
 
 # ============================================================================
@@ -308,6 +315,7 @@ class Source(BaseModel):
     columns: list[ColumnDefinition] = Field(default_factory=list)
     freshness: Optional[FreshnessConfig] = None
     event_time: Optional[EventTimeConfig] = None
+    region: Optional[str] = None
 
     @model_validator(mode="after")
     def populate_columns_from_schema_fields(self) -> Source:
@@ -356,6 +364,24 @@ class RestartStrategyConfig(BaseModel):
     backoff_multiplier: Optional[float] = None  # exponential-delay
 
 
+class RocksDBConfig(BaseModel):
+    """RocksDB state backend tuning."""
+
+    block_cache_size_mb: Optional[int] = None
+    write_buffer_size_mb: Optional[int] = None
+    predefined_options: Optional[str] = (
+        None  # DEFAULT, SPINNING_DISK_OPTIMIZED, FLASH_SSD_OPTIMIZED
+    )
+
+
+class ResourceConfig(BaseModel):
+    """Flink resource configuration."""
+
+    taskmanager_memory_mb: Optional[int] = None
+    taskmanager_slots: Optional[int] = None
+    jobmanager_memory_mb: Optional[int] = None
+
+
 class FlinkJobConfig(BaseModel):
     """Flink job configuration."""
 
@@ -366,12 +392,22 @@ class FlinkJobConfig(BaseModel):
     state_ttl_ms: Optional[int] = None
     restart_strategy: Optional[RestartStrategyConfig] = None
     changelog_mode: Optional[str] = None  # append | upsert
+    rocksdb: Optional[RocksDBConfig] = None
+    resources: Optional[ResourceConfig] = None
+
+
+class ConnectionConfig(BaseModel):
+    """Global connection/credential configuration."""
+
+    type: str
+    config: dict[str, object] = Field(default_factory=dict)
 
 
 class SinkConfig(BaseModel):
     """Sink connector configuration."""
 
     connector: str
+    connection: Optional[str] = None
     config: dict[str, object] = Field(default_factory=dict)
 
 
@@ -491,6 +527,7 @@ class Model(BaseModel):
     access: AccessLevel = AccessLevel.PRIVATE
     group: Optional[str] = None
     version: Optional[int] = None
+    region: Optional[str] = None
 
     # Data contract (column-level breaking change enforcement)
     contract: Optional[ModelContract] = None
@@ -922,6 +959,7 @@ class StreamtProject(BaseModel):
     runtime: RuntimeConfig
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
+    connections: dict[str, ConnectionConfig] = Field(default_factory=dict)
     sources: list[Source] = Field(default_factory=list)
     models: list[Model] = Field(default_factory=list)
     tests: list[DataTest] = Field(default_factory=list)
