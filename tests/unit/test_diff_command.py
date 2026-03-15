@@ -47,11 +47,11 @@ class TestDiffCommand:
             _write_project(tmpdir)
             result = runner.invoke(main, ["-o", "json", "diff", "-p", tmpdir])
             assert result.exit_code == 0
-            # CliRunner mixes stderr into output; skip non-JSON prefix (e.g. warnings)
+            # CliRunner may capture stderr noise (rdkafka errors contain "{");
+            # find the pretty-printed JSON envelope which starts on its own line.
             raw = result.output
-            idx = raw.find("{")
-            assert idx >= 0, f"No JSON in output: {raw!r}"
-            data = json.loads(raw[idx:])
+            idx = raw.find("\n{")
+            data, _ = json.JSONDecoder().raw_decode(raw, idx + 1)
             assert data["status"] in ("ok", "error")
             assert data["command"] == "diff"
 
