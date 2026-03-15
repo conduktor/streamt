@@ -559,6 +559,48 @@ class TestProjectValidator:
             assert result.is_valid
             assert any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)
 
+    def test_invalid_default_flink_cluster(self):
+        """Defaults referencing nonexistent cluster should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8082"}},
+                    },
+                },
+                "defaults": {"models": {"cluster": "nonexistent"}},
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            assert any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
+
+    def test_invalid_default_test_flink_cluster(self):
+        """Test defaults referencing nonexistent cluster should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8082"}},
+                    },
+                },
+                "defaults": {"tests": {"flink_cluster": "nonexistent"}},
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            assert any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
+
 
 class TestGovernanceRules:
     """Tests for governance rule enforcement."""

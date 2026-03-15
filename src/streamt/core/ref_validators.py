@@ -45,3 +45,26 @@ def validate_cluster_refs(
                 errors.invalid_cluster_ref("Test", test.name, fc, "flink", sorted(flink_clusters)),
                 f"test '{test.name}'",
             )
+
+    # Validate defaults
+    if project.defaults:
+        if project.defaults.models and project.defaults.models.cluster:
+            dc = project.defaults.models.cluster
+            if dc not in flink_clusters:
+                add_error(
+                    "INVALID_CLUSTER_REF",
+                    errors.invalid_cluster_ref(
+                        "Default", "defaults.models.cluster", dc, "flink", sorted(flink_clusters)
+                    ),
+                    "defaults.models.cluster",
+                )
+        if project.defaults.tests and project.defaults.tests.flink_cluster:
+            dc = project.defaults.tests.flink_cluster
+            if dc not in flink_clusters:
+                add_error(
+                    "INVALID_CLUSTER_REF",
+                    errors.invalid_cluster_ref(
+                        "Default", "defaults.tests.flink_cluster", dc, "flink", sorted(flink_clusters)
+                    ),
+                    "defaults.tests.flink_cluster",
+                )
