@@ -657,6 +657,105 @@ class TestProjectValidator:
             assert not result.is_valid
             assert any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
 
+    def test_key_column_not_in_contract(self):
+        """Model key referencing nonexistent column should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "models": [
+                    {
+                        "name": "m1",
+                        "sql": "SELECT 1",
+                        "key": "customer_id",
+                        "contract": {
+                            "enforced": True,
+                            "columns": [
+                                {"name": "order_id", "type": "STRING"},
+                                {"name": "amount", "type": "DOUBLE"},
+                            ],
+                        },
+                    },
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            assert any("INVALID_KEY_COLUMN" in e.code for e in result.errors)
+            assert "customer_id" in result.errors[0].message
+
+    def test_key_column_in_contract(self):
+        """Model key referencing existing contract column should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "models": [
+                    {
+                        "name": "m1",
+                        "sql": "SELECT 1",
+                        "key": "order_id",
+                        "contract": {
+                            "enforced": True,
+                            "columns": [
+                                {"name": "order_id", "type": "STRING"},
+                                {"name": "amount", "type": "DOUBLE"},
+                            ],
+                        },
+                    },
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not any("INVALID_KEY_COLUMN" in e.code for e in result.errors)
+
+    def test_primary_key_column_not_in_columns(self):
+        """Model primary_key referencing nonexistent column should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "models": [
+                    {
+                        "name": "m1",
+                        "sql": "SELECT 1",
+                        "primary_key": ["user_id", "event_id"],
+                        "columns": [
+                            {"name": "user_id", "type": "STRING"},
+                            {"name": "amount", "type": "DOUBLE"},
+                        ],
+                    },
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            key_errors = [e for e in result.errors if "INVALID_KEY_COLUMN" in e.code]
+            assert len(key_errors) >= 1
+            assert "event_id" in key_errors[0].message
+
+    def test_key_without_columns_is_ok(self):
+        """Model key without columns/contract should not error (nothing to check against)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "models": [
+                    {"name": "m1", "sql": "SELECT 1", "key": "customer_id"},
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not any("INVALID_KEY_COLUMN" in e.code for e in result.errors)
+
 
 class TestGovernanceRules:
     """Tests for governance rule enforcement."""

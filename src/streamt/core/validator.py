@@ -641,10 +641,10 @@ class ProjectValidator:
         from streamt.core import ref_validators as rv
         rv.validate_cluster_refs(self.project, self.result.add_error)
         rv.validate_connection_refs(self.project, self.result.add_error)
+        rv.validate_key_columns(self.project, self.result.add_error)
 
     def _validate_rules(self) -> None:
-        rules = self.project.rules
-        if not rules:
+        if not (rules := self.project.rules):
             return
         if rules.topics:
             for model in self.project.models:

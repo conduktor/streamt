@@ -47,6 +47,7 @@ class ErrorCode:
     MISSING_CONFIG = "E208_MISSING_CONFIG"
     INVALID_CLUSTER_REF = "E209_INVALID_CLUSTER_REF"
     INVALID_CONNECTION_REF = "E210_INVALID_CONNECTION_REF"
+    INVALID_KEY_COLUMN = "E211_INVALID_KEY_COLUMN"
 
     # State/TTL errors (E3xx)
     INVALID_STATE_TTL = "E301_INVALID_STATE_TTL"
@@ -723,6 +724,25 @@ def invalid_connection_ref(model_name: str, connection_name: str, available: lis
     config:
       snowflake.url.name: acme.snowflakecomputing.com""",
         docs_path="reference/yaml-schema#connections",
+    )
+
+
+def invalid_key_column(model_name: str, column_name: str, key_type: str, available: list[str]) -> str:
+    """Error when key/primary_key references a column not in schema."""
+    available_str = ", ".join(sorted(available)) if available else "none declared"
+    return format_error(
+        code=ErrorCode.INVALID_KEY_COLUMN,
+        title=f"Model '{model_name}' {key_type} references unknown column '{column_name}'",
+        explanation=f"The column '{column_name}' used in {key_type} is not found in the model's "
+        f"declared columns or contract. Available columns: {available_str}.",
+        suggestion=f"Either fix the column name in {key_type} or add '{column_name}' to your schema:",
+        example=f"""models:
+  - name: {model_name}
+    contract:
+      columns:
+        - name: {column_name}
+          type: STRING""",
+        docs_path="reference/yaml-schema#contract",
     )
 
 

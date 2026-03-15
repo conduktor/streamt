@@ -85,3 +85,37 @@ def validate_connection_refs(
                     errors.invalid_connection_ref(model.name, sink.connection, sorted(available)),
                     f"model '{model.name}'",
                 )
+
+
+def validate_key_columns(
+    project: StreamtProject, add_error: Callable[..., None]
+) -> None:
+    """Validate key and primary_key reference declared columns."""
+    for model in project.models:
+        # Collect known column names from contract and columns
+        known_columns: set[str] = set()
+        if model.contract and model.contract.columns:
+            known_columns.update(c.name for c in model.contract.columns)
+        if model.columns:
+            known_columns.update(c.name for c in model.columns)
+
+        if not known_columns:
+            continue  # No schema to validate against
+
+        if model.key and model.key not in known_columns:
+            add_error(
+                "INVALID_KEY_COLUMN",
+                errors.invalid_key_column(model.name, model.key, "key", sorted(known_columns)),
+                f"model '{model.name}'",
+            )
+
+        if model.primary_key:
+            for pk in model.primary_key:
+                if pk not in known_columns:
+                    add_error(
+                        "INVALID_KEY_COLUMN",
+                        errors.invalid_key_column(
+                            model.name, pk, "primary_key", sorted(known_columns)
+                        ),
+                        f"model '{model.name}'",
+                    )
