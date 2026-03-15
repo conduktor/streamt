@@ -13,8 +13,12 @@ This page documents all Flink-related configuration options in streamt.
 |----------|--------|-------|
 | Basic job submission | Supported | Via REST API and SQL Gateway |
 | Parallelism | Supported | Per-job configuration |
-| Checkpointing | Partial | Interval only, no advanced options |
-| State backend | Partial | Type selection only |
+| Checkpointing | Supported | Full: interval, timeout, mode, externalized, unaligned, incremental |
+| State backend | Supported | Type + RocksDB tuning |
+| Restart strategy | Supported | fixed-delay, failure-rate, exponential-delay |
+| Resources | Supported | TM/JM memory and slots |
+| Changelog mode | Supported | append or upsert |
+| Custom watermark | Supported | Arbitrary SQL expression |
 | MATCH_RECOGNIZE (CEP) | Supported | Complex event processing patterns |
 
 ---
@@ -56,6 +60,12 @@ All Flink options are nested under `advanced.flink`:
 | `parallelism` | int | 1 | Job parallelism (number of parallel tasks) |
 | `checkpoint_interval_ms` | int | 60000 | Checkpoint interval in milliseconds |
 | `state_ttl_ms` | int | none | State TTL in milliseconds (see [State TTL](#state-ttl)) |
+| `state_backend` | string | none | State backend type (`hashmap`, `rocksdb`) |
+| `checkpoint` | object | none | Advanced checkpoint config (see [Advanced Checkpointing](#advanced-checkpointing)) |
+| `restart_strategy` | object | none | Restart strategy config (see [Restart Strategy](#restart-strategy)) |
+| `rocksdb` | object | none | RocksDB tuning (see [RocksDB Tuning](#rocksdb-tuning)) |
+| `resources` | object | none | TM/JM resource config (see [Resource Configuration](#resource-configuration)) |
+| `changelog_mode` | string | append | Changelog mode: `append` or `upsert` |
 
 ### State TTL
 
@@ -102,9 +112,145 @@ models:
 - **TTL too long**: State grows too large → memory pressure, longer recovery times
 - **No TTL**: State grows forever → eventual job failure
 
-### state_backend (Parsed Only)
+### State Backend
 
-The `state_backend` option is parsed from YAML but not yet applied to Flink jobs. The state backend is currently determined by your Flink cluster configuration.
+The `state_backend` option is applied as `SET 'state.backend'` in the generated Flink SQL.
+
+```yaml
+advanced:
+  flink:
+    state_backend: rocksdb  # generates: SET 'state.backend' = 'rocksdb'
+```
+
+| Value | Description |
+|-------|-------------|
+| `hashmap` | In-memory state backend (default Flink behavior) |
+| `rocksdb` | RocksDB-based state backend for large state; combine with `rocksdb` tuning options |
+
+### Advanced Checkpointing
+
+```yaml
+advanced:
+  flink:
+    checkpoint_interval_ms: 60000
+    checkpoint:
+      timeout_ms: 120000
+      min_pause_ms: 500
+      max_concurrent: 1
+      mode: EXACTLY_ONCE
+      externalized: RETAIN_ON_CANCELLATION
+      unaligned: true
+      incremental: true
+```
+
+| Field | Type | SET statement | Description |
+|-------|------|---------------|-------------|
+| `timeout_ms` | int | `execution.checkpointing.timeout` | Checkpoint timeout |
+| `min_pause_ms` | int | `execution.checkpointing.min-pause` | Min pause between checkpoints |
+| `max_concurrent` | int | `execution.checkpointing.max-concurrent-checkpoints` | Max concurrent checkpoints |
+| `mode` | string | `execution.checkpointing.mode` | `EXACTLY_ONCE` or `AT_LEAST_ONCE` |
+| `externalized` | string | `execution.checkpointing.externalized-checkpoint-retention` | `RETAIN_ON_CANCELLATION` or `DELETE_ON_CANCELLATION` |
+| `unaligned` | bool | `execution.checkpointing.unaligned.enabled` | Enable unaligned checkpoints |
+| `incremental` | bool | `execution.checkpointing.incremental` | Enable incremental checkpoints (RocksDB) |
+
+### Restart Strategy
+
+Three restart strategy types are supported via `advanced.flink.restart_strategy`:
+
+**fixed-delay** — restart a fixed number of times with a delay between attempts:
+
+```yaml
+advanced:
+  flink:
+    restart_strategy:
+      type: fixed-delay
+      attempts: 3
+      delay_ms: 10000
+```
+
+| SET statement | Value |
+|---------------|-------|
+| `restart-strategy` | `fixed-delay` |
+| `restart-strategy.fixed-delay.attempts` | `attempts` |
+| `restart-strategy.fixed-delay.delay` | `delay_ms` (converted to duration) |
+
+**failure-rate** — restart as long as failure rate stays below threshold:
+
+```yaml
+advanced:
+  flink:
+    restart_strategy:
+      type: failure-rate
+      max_failures_per_interval: 3
+      failure_rate_interval_ms: 300000
+      delay_ms: 10000
+```
+
+**exponential-delay** — restart with exponentially increasing delay:
+
+```yaml
+advanced:
+  flink:
+    restart_strategy:
+      type: exponential-delay
+      initial_delay_ms: 1000
+      max_delay_ms: 60000
+      backoff_multiplier: 2.0
+```
+
+### RocksDB Tuning
+
+When using `state_backend: rocksdb`, tune RocksDB performance:
+
+```yaml
+advanced:
+  flink:
+    state_backend: rocksdb
+    rocksdb:
+      block_cache_size_mb: 256
+      write_buffer_size_mb: 64
+      predefined_options: FLASH_SSD_OPTIMIZED
+```
+
+| Field | SET statement | Description |
+|-------|---------------|-------------|
+| `block_cache_size_mb` | `state.backend.rocksdb.block.cache-size` | Block cache size |
+| `write_buffer_size_mb` | `state.backend.rocksdb.writebuffer.size` | Write buffer size |
+| `predefined_options` | `state.backend.rocksdb.predefined-options` | `DEFAULT`, `SPINNING_DISK_OPTIMIZED`, `SPINNING_DISK_OPTIMIZED_HIGH_MEM`, `FLASH_SSD_OPTIMIZED` |
+
+### Resource Configuration
+
+Configure TaskManager and JobManager resources:
+
+```yaml
+advanced:
+  flink:
+    resources:
+      taskmanager_memory_mb: 4096
+      taskmanager_slots: 2
+      jobmanager_memory_mb: 2048
+```
+
+| Field | SET statement | Description |
+|-------|---------------|-------------|
+| `taskmanager_memory_mb` | `taskmanager.memory.process.size` | TM process memory |
+| `taskmanager_slots` | `taskmanager.numberOfTaskSlots` | Slots per TM |
+| `jobmanager_memory_mb` | `jobmanager.memory.process.size` | JM process memory |
+
+### Changelog Mode
+
+Controls the connector type for sink tables:
+
+```yaml
+advanced:
+  flink:
+    changelog_mode: upsert  # switches to upsert-kafka connector
+```
+
+| Value | Connector | Use case |
+|-------|-----------|----------|
+| `append` | `kafka` | Append-only streams (default) |
+| `upsert` | `upsert-kafka` | Tables with retractions/updates (requires key) |
 
 ---
 
@@ -116,26 +262,32 @@ sources:
   - name: events
     topic: events.raw.v1
 
-    # Top-level: column name
     event_time:
       column: event_timestamp
 
-    # Advanced section: watermark details
     advanced:
       event_time:
         watermark:
           strategy: bounded_out_of_orderness
           max_out_of_orderness_ms: 5000
-        # OR
-        watermark:
-          strategy: monotonous
+```
+
+**Custom watermark expression:**
+
+```yaml
+event_time:
+  column: event_ts
+  watermark:
+    strategy: custom
+    expression: "CASE WHEN `event_ts` > CURRENT_TIMESTAMP THEN CURRENT_TIMESTAMP ELSE `event_ts` END"
 ```
 
 | Option | Location | Type | Description |
 |--------|----------|------|-------------|
 | `event_time.column` | Top-level | string | Event time column |
-| `event_time.watermark.strategy` | Advanced | string | `bounded_out_of_orderness` or `monotonous` |
+| `event_time.watermark.strategy` | Advanced | string | `bounded_out_of_orderness`, `monotonous`, or `custom` |
 | `event_time.watermark.max_out_of_orderness_ms` | Advanced | int | Max out-of-orderness for bounded strategy |
+| `event_time.watermark.expression` | Advanced | string | SQL expression for `custom` strategy |
 
 ---
 
@@ -334,72 +486,16 @@ MATCH_RECOGNIZE (
 
 streamt generates Flink SQL from your YAML definitions. Understanding the generated SQL helps with debugging.
 
-### Example: Simple Filter
-
-**Input YAML:**
-```yaml
-models:
-  - name: orders_valid
-    description: "Valid orders only"
-    # materialized: topic (auto-inferred from simple SELECT)
-    sql: |
-      SELECT * FROM {{ source("orders_raw") }}
-      WHERE amount > 0
-```
-
-**Generated Flink SQL:**
-```sql
--- Create source table
-CREATE TABLE orders_raw (
-  `order_id` STRING,
-  `customer_id` STRING,
-  `amount` DOUBLE,
-  `created_at` TIMESTAMP(3)
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'orders.raw.v1',
-  'properties.bootstrap.servers' = 'kafka:29092',
-  'scan.startup.mode' = 'earliest-offset',
-  'format' = 'json'
-);
-
--- Create sink table
-CREATE TABLE orders_valid_sink (
-  `order_id` STRING,
-  `customer_id` STRING,
-  `amount` DOUBLE,
-  `created_at` TIMESTAMP(3)
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'orders_valid',
-  'properties.bootstrap.servers' = 'kafka:29092',
-  'format' = 'json'
-);
-
--- Execute transformation
-INSERT INTO orders_valid_sink
-SELECT * FROM orders_raw
-WHERE amount > 0;
-```
-
-### Example: Windowed Aggregation
+### Example: Windowed Aggregation with Parallelism
 
 **Input YAML:**
 ```yaml
 models:
   - name: hourly_revenue
-    description: "Hourly revenue aggregation"
-
-    # materialized: flink (auto-inferred from window TVF)
     sql: |
-      SELECT
-        window_start,
-        window_end,
-        SUM(amount) as revenue
+      SELECT window_start, window_end, SUM(amount) as revenue
       FROM TABLE(TUMBLE(TABLE {{ ref("orders_valid") }}, DESCRIPTOR(order_time), INTERVAL '1' HOUR))
       GROUP BY window_start, window_end
-
-    # Only when overriding defaults:
     advanced:
       flink:
         parallelism: 4
@@ -409,39 +505,16 @@ models:
 ```sql
 SET 'parallelism.default' = '4';
 
-CREATE TABLE orders_valid (
-  `order_id` STRING,
-  `customer_id` STRING,
-  `amount` DOUBLE,
-  `order_time` TIMESTAMP(3),
-  WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'orders_valid',
-  'properties.bootstrap.servers' = 'kafka:29092',
-  'scan.startup.mode' = 'earliest-offset',
-  'format' = 'json'
-);
-
-CREATE TABLE hourly_revenue_sink (
-  `window_start` TIMESTAMP(3),
-  `window_end` TIMESTAMP(3),
-  `revenue` DOUBLE
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'hourly_revenue',
-  'properties.bootstrap.servers' = 'kafka:29092',
-  'format' = 'json'
-);
+CREATE TABLE orders_valid ( ... ) WITH ('connector' = 'kafka', ...);
+CREATE TABLE hourly_revenue_sink ( ... ) WITH ('connector' = 'kafka', ...);
 
 INSERT INTO hourly_revenue_sink
-SELECT
-  window_start,
-  window_end,
-  SUM(amount) as revenue
+SELECT window_start, window_end, SUM(amount) as revenue
 FROM TABLE(TUMBLE(TABLE orders_valid, DESCRIPTOR(order_time), INTERVAL '1' HOUR))
 GROUP BY window_start, window_end;
 ```
+
+Use `streamt plan --show-sql` to see the full generated SQL for any model.
 
 ---
 

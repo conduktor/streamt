@@ -218,6 +218,85 @@ Manifest written to: generated/manifest.json
 
 ---
 
+### build
+
+Compile and package artifacts with manifest and checksums.
+
+```bash
+streamt build [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+| `--output-dir PATH` | Output directory (default: `build/`) |
+
+**Examples:**
+
+```bash
+# Build artifacts
+streamt build
+
+# Build for specific environment
+streamt build --env prod --output-dir ./dist
+```
+
+**Output:**
+
+```
+Building project...
+  flink/order_metrics.sql
+  topics/orders.clean.v1.json
+
+Manifest: build/manifest.json
+Checksums: build/checksums.sha256
+```
+
+The `manifest.json` contains project metadata and file listing. The `checksums.sha256` file contains SHA-256 hashes of all artifacts for verification.
+
+---
+
+### diff
+
+Compare local definitions against deployed state.
+
+```bash
+streamt diff [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# Show all diffs
+streamt diff
+
+# JSON output for CI
+streamt -o json diff
+```
+
+**Output:**
+
+```
+Topics:
+  ~ orders.clean.v1: partitions 6 → 12
+  = orders.metrics.v1: no changes
+
+Flink Jobs:
+  + order_metrics: new
+```
+
+---
+
 ### plan
 
 Show planned changes without applying them (like `terraform plan`).
@@ -461,6 +540,7 @@ streamt status [OPTIONS]
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
 | `--lag` | Show consumer lag and message counts for topics |
+| `--health` | Exit 1 if any resource is MISSING or DRIFT (for CI/monitoring) |
 | `--format FORMAT` | Output format: `text` (default) or `json` |
 | `--filter PATTERN` | Filter resources by name pattern (glob-style) |
 
@@ -484,6 +564,9 @@ streamt status --filter "payments*"
 
 # Combine options
 streamt status --lag --filter "orders*"
+
+# Health check (exit 1 if anything unhealthy)
+streamt status --health
 ```
 
 **Output (text):**
@@ -805,14 +888,21 @@ When using `--output json`, errors include machine-readable codes. These codes f
 #!/bin/bash
 set -e
 
-# Validate (JSON output for parsing)
+# Validate
 streamt -o json validate --strict
 
-# Plan and show diff
-streamt plan
+# Build artifacts (manifest + checksums)
+streamt build
 
-# Apply
+# Show diff against deployed state
+streamt diff
+
+# Plan and apply
+streamt plan
 streamt apply --confirm
+
+# Verify health
+streamt status --health
 
 # Run tests
 streamt test
@@ -875,14 +965,11 @@ streamt test --model my_new_model
 
 ```bash
 #!/bin/bash
-# Check all resources
-streamt status
+# Health check — exit 1 if any resource MISSING or DRIFT
+streamt status --health || notify_team "Unhealthy resources detected"
 
-# Alert on failures
-if ! streamt status --jobs | grep -q "RUNNING"; then
-  echo "Alert: Flink job not running!"
-  exit 1
-fi
+# Detailed check with lag info
+streamt status --lag
 ```
 
 ---

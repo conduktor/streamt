@@ -170,6 +170,39 @@ defaults:
 
 ---
 
+## Connections
+
+Define shared credentials/connections once, reference in sinks:
+
+```yaml
+connections:
+  snowflake_prod:
+    type: snowflake
+    config:
+      snowflake.url.name: acme.snowflakecomputing.com
+      snowflake.user.name: ${SF_USER}
+      snowflake.private.key: ${SF_KEY}
+      snowflake.database.name: ANALYTICS
+```
+
+Reference in sink models via `connection`:
+
+```yaml
+models:
+  - name: users_sink
+    from:
+      - ref: enriched_users
+    sink:
+      connector: snowflake
+      connection: snowflake_prod    # merges config from connection
+      config:
+        snowflake.schema.name: PUBLIC  # sink-specific overrides
+```
+
+Connection config is merged as base, sink config overrides.
+
+---
+
 ## Governance Rules
 
 ### Topic Rules
@@ -186,6 +219,10 @@ rules:
     forbidden_prefixes:
       - "_"
       - "test"
+    forbidden_suffixes:
+      - "_test"
+      - "_temp"
+    max_replication_factor: 3
 ```
 
 | Field | Type | Description |
@@ -193,9 +230,11 @@ rules:
 | `min_partitions` | int | Minimum allowed partitions |
 | `max_partitions` | int | Maximum allowed partitions |
 | `min_replication_factor` | int | Minimum replication factor |
+| `max_replication_factor` | int | Maximum replication factor |
 | `required_config` | list | Required topic config keys |
 | `naming_pattern` | string | Regex pattern for topic names |
 | `forbidden_prefixes` | list | Disallowed topic name prefixes |
+| `forbidden_suffixes` | list | Disallowed topic name suffixes |
 
 ### Model Rules
 
@@ -242,6 +281,20 @@ rules:
 |-------|------|-------------|
 | `require_classification` | bool | Columns must have classification |
 | `sensitive_columns_require_masking` | bool | Sensitive columns require masking policy |
+
+### Data Residency Rules
+
+```yaml
+rules:
+  data_residency:
+    allowed_regions:
+      - EU
+      - US
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `allowed_regions` | list | Regions that models/sources may declare |
 
 ---
 
@@ -298,6 +351,8 @@ sources:
 | `schema` | object | No | Schema definition |
 | `columns` | list | No | Column metadata |
 | `freshness` | object | No | Freshness SLA configuration |
+| `event_time` | object | No | Event time column and watermark strategy |
+| `region` | string | No | Data residency region (validated against governance rules) |
 
 ### Schema Definition
 
@@ -396,8 +451,9 @@ CREATE TABLE events (
 | Field | Location | Type | Description | Required |
 |-------|----------|------|-------------|----------|
 | `column` | Top-level | string | Column name containing event time | Yes |
-| `watermark.strategy` | Advanced | string | `bounded_out_of_orderness` or `monotonously_increasing` | No (default: bounded) |
-| `watermark.max_out_of_orderness_ms` | Advanced | int | Max delay in ms | No (default: 5000) |
+| `watermark.strategy` | Advanced | string | `bounded_out_of_orderness`, `monotonously_increasing`, or `custom` | No (default: bounded) |
+| `watermark.max_out_of_orderness_ms` | Advanced | int | Max delay in ms (bounded strategy) | No (default: 5000) |
+| `watermark.expression` | Advanced | string | Custom SQL expression (custom strategy) | No |
 | `allowed_lateness_ms` | Advanced | int | Accept late events within window | No |
 
 **Watermark Strategies:**
@@ -406,6 +462,16 @@ CREATE TABLE events (
 |----------|----------|
 | `bounded_out_of_orderness` | Events can arrive out of order (most common) |
 | `monotonously_increasing` | Events always arrive in order (rare) |
+| `custom` | Arbitrary SQL expression for watermark generation |
+
+**Custom watermark example:**
+```yaml
+event_time:
+  column: event_ts
+  watermark:
+    strategy: custom
+    expression: "CASE WHEN `event_ts` > CURRENT_TIMESTAMP THEN CURRENT_TIMESTAMP ELSE `event_ts` END"
+```
 
 See [Streaming Fundamentals](../concepts/streaming-fundamentals.md) for more on watermarks.
 
@@ -586,7 +652,8 @@ models:
 | `tags` | list | No | Categorization tags |
 | `access` | string | No | `private`, `protected`, `public` |
 | `group` | string | No | Logical grouping |
-| `version` | int | No | Model version number |
+| `version` | int | No | Model version (duplicate/gap detection in validator) |
+| `region` | string | No | Data residency region |
 | `key` | string | No | Partition key column |
 | `sql` | string | Conditional | SQL transformation (required except for sink) |
 | `from` | string | Conditional | Source model (required for sink) |
@@ -690,12 +757,17 @@ models:
 
 Nested under `advanced.flink:`:
 
-| Field | Type | Description | Status |
-|-------|------|-------------|--------|
-| `parallelism` | int | Job parallelism | Supported |
-| `checkpoint_interval_ms` | int | Checkpoint interval in milliseconds | Supported |
-| `state_backend` | string | `hashmap` or `rocksdb` | Parsed only |
-| `state_ttl_ms` | int | State time-to-live in milliseconds | Supported |
+| Field | Type | Description |
+|-------|------|-------------|
+| `parallelism` | int | Job parallelism |
+| `checkpoint_interval_ms` | int | Checkpoint interval in ms |
+| `state_backend` | string | `hashmap` or `rocksdb` |
+| `state_ttl_ms` | int | State TTL in ms |
+| `checkpoint` | object | Advanced checkpoint config (timeout, mode, etc.) |
+| `restart_strategy` | object | Restart strategy (fixed-delay, failure-rate, exponential-delay) |
+| `changelog_mode` | string | `append` (default) or `upsert` (switches to upsert-kafka) |
+| `rocksdb` | object | RocksDB tuning (block_cache_size_mb, write_buffer_size_mb, predefined_options) |
+| `resources` | object | TM/JM resources (taskmanager_memory_mb, taskmanager_slots, jobmanager_memory_mb) |
 
 See [Flink Options Reference](flink-options.md) for complete Flink configuration.
 
@@ -751,7 +823,8 @@ models:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `connector` | string | Yes | Connector type/class |
-| `config` | map | Yes | Connector configuration |
+| `connection` | string | No | Reference to global connection (see [Connections](#connections)) |
+| `config` | map | Yes | Connector configuration (overrides connection config) |
 
 ### Common Connector Types
 
@@ -928,7 +1001,8 @@ exposures:
 | `max_lag_minutes` | int | Max time lag |
 | `max_produce_latency_ms` | int | Max producer latency |
 | `max_end_to_end_latency_ms` | int | Max E2E latency |
-| `max_error_rate` | float | Max error rate (0.0-1.0) |
+| `max_error_rate` | float | Max error rate (0.0-1.0, validated) |
+| `freshness_minutes` | int | Max data freshness in minutes |
 
 ---
 

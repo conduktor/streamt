@@ -50,6 +50,15 @@ rules:
       - "tmp"
       - "dev"
 
+    # Maximum replication
+    max_replication_factor: 3
+
+    # Suffix restrictions
+    forbidden_suffixes:
+      - "_test"
+      - "_temp"
+      - "_debug"
+
     # Required configurations
     required_config:
       - retention.ms
@@ -65,6 +74,8 @@ rules:
 | `min_replication_factor` | int | Minimum replication factor |
 | `naming_pattern` | regex | Required topic name pattern |
 | `forbidden_prefixes` | list | Disallowed name prefixes |
+| `max_replication_factor` | int | Maximum replication factor |
+| `forbidden_suffixes` | list | Disallowed name suffixes |
 | `required_config` | list | Configs that must be set |
 
 ### Naming Pattern Examples
@@ -226,6 +237,63 @@ rules:
 | `confidential` | Business sensitive | Limited access |
 | `sensitive` | PII, personal data | Masking required |
 | `highly_sensitive` | Regulated (PCI, HIPAA) | Encryption + audit |
+
+---
+
+## Data Residency Rules
+
+Control where data can be processed:
+
+```yaml
+rules:
+  data_residency:
+    allowed_regions:
+      - EU
+      - US
+```
+
+Models and sources declare their region:
+
+```yaml
+models:
+  - name: eu_orders
+    region: EU
+    sql: ...
+
+sources:
+  - name: eu_events
+    region: EU
+    topic: eu.events.v1
+```
+
+The validator errors if a model or source declares a region not in `allowed_regions`.
+
+### Rule Reference
+
+| Rule | Type | Description |
+|------|------|-------------|
+| `allowed_regions` | list | Regions that models/sources may declare |
+
+---
+
+## Schema Versioning
+
+Models support a `version` field for managing schema evolution:
+
+```yaml
+models:
+  - name: users
+    version: 1
+    sql: SELECT id, name FROM {{ source("raw_users") }}
+
+  - name: users
+    version: 2
+    sql: SELECT id, name, email FROM {{ source("raw_users") }}
+```
+
+The validator checks:
+- **Duplicate versions** — error if same model name has duplicate version numbers
+- **Version gaps** — warning if version N exists without version N-1
 
 ---
 
