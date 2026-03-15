@@ -40,7 +40,7 @@ Unimplemented features and planned work.
         - { min: 1000, max: 10000, expected_ratio: 0.1, tolerance: 0.05 }
   ```
 - [ ] Test failure handlers — `on_failure` actions: alert (Slack/PagerDuty), pause model, route to DLQ, block deployment
-- [ ] Global credentials/connections — define Snowflake, S3, etc. once and reference everywhere
+- [x] Global credentials/connections — define once in `connections:`, reference via `connection:` in sinks
 - [x] `streamt build` — compile + package artifacts with manifest and checksums
 - [x] `streamt diff` — standalone diff between local and deployed state
 - [x] `streamt status --health` — exit 1 if any resource MISSING or DRIFT
@@ -51,8 +51,8 @@ Unimplemented features and planned work.
 
 Not yet implemented:
 
-- [ ] State backend advanced — RocksDB tuning (`block_cache_size_mb`, `write_buffer_size_mb`, `predefined_options`), incremental cleanup config
-- [ ] Resource configuration — task manager memory/CPU/slots, job manager memory/CPU
+- [x] State backend advanced — RocksDB tuning (`block_cache_size_mb`, `write_buffer_size_mb`, `predefined_options`)
+- [x] Resource configuration — task manager memory/CPU/slots, job manager memory/CPU
 - [ ] Savepoint management — `savepoint.enabled`, `savepoint.path`, `savepoint.on_upgrade` (trigger_and_restore), `savepoint.on_cancel`
 - [ ] Kubernetes Flink operator — deploy via K8s CRDs instead of REST API; namespace, service account, image, pod template config
 - [ ] Docker cluster type — local Docker deployment
@@ -67,8 +67,8 @@ Not yet implemented:
 - [ ] Security policies — field-level encryption, `allowed_roles`, purpose-based access control, per-consumer column masking
 - [x] Exposure SLOs — `max_end_to_end_latency_ms`, `max_error_rate`, `freshness_minutes` with validation
 - [x] Exposure access control — `allowed_roles`, `purpose` metadata on exposures
-- [ ] Data residency — region constraints (`region: EU`, `allowed_clusters`, `forbidden_sinks`)
-- [ ] Schema versioning — v1/v2 model versions with compatibility checks and migration paths
+- [x] Data residency — `region` on models/sources, `allowed_regions` governance rule
+- [x] Schema versioning — `version` on models, duplicate/gap detection in validator
 
 ## Operational
 
