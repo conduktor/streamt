@@ -46,7 +46,7 @@ def validate_cluster_refs(
                 f"test '{test.name}'",
             )
 
-    # Validate defaults
+    # Validate defaults (cluster refs)
     if project.defaults:
         if project.defaults.models and project.defaults.models.cluster:
             dc = project.defaults.models.cluster
@@ -67,4 +67,21 @@ def validate_cluster_refs(
                         "Default", "defaults.tests.flink_cluster", dc, "flink", sorted(flink_clusters)
                     ),
                     "defaults.tests.flink_cluster",
+                )
+
+
+def validate_connection_refs(
+    project: StreamtProject, add_error: Callable[..., None]
+) -> None:
+    """Validate sink connection references exist in project.connections."""
+    available = set(project.connections.keys())
+
+    for model in project.models:
+        sink = model.sink
+        if sink and sink.connection:
+            if sink.connection not in available:
+                add_error(
+                    "INVALID_CONNECTION_REF",
+                    errors.invalid_connection_ref(model.name, sink.connection, sorted(available)),
+                    f"model '{model.name}'",
                 )

@@ -46,6 +46,7 @@ class ErrorCode:
     CONTINUOUS_TEST_WITHOUT_FLINK = "E207_CONTINUOUS_TEST_WITHOUT_FLINK"
     MISSING_CONFIG = "E208_MISSING_CONFIG"
     INVALID_CLUSTER_REF = "E209_INVALID_CLUSTER_REF"
+    INVALID_CONNECTION_REF = "E210_INVALID_CONNECTION_REF"
 
     # State/TTL errors (E3xx)
     INVALID_STATE_TTL = "E301_INVALID_STATE_TTL"
@@ -704,6 +705,24 @@ def invalid_cluster_ref(
         type: rest
         rest_url: http://your-{cluster_type}:8082""",
         docs_path=f"reference/configuration#{'flink' if cluster_type == 'flink' else 'connect'}",
+    )
+
+
+def invalid_connection_ref(model_name: str, connection_name: str, available: list[str]) -> str:
+    """Error when a sink references a nonexistent connection."""
+    available_str = ", ".join(sorted(available)) if available else "none configured"
+    return format_error(
+        code=ErrorCode.INVALID_CONNECTION_REF,
+        title=f"Model '{model_name}' references unknown connection '{connection_name}'",
+        explanation=f"The connection '{connection_name}' is not defined in project connections. "
+        f"Available connections: {available_str}.",
+        suggestion=f"Either fix the connection name or add '{connection_name}' to your project:",
+        example=f"""connections:
+  {connection_name}:
+    type: snowflake
+    config:
+      snowflake.url.name: acme.snowflakecomputing.com""",
+        docs_path="reference/yaml-schema#connections",
     )
 
 

@@ -467,7 +467,6 @@ class ProjectValidator:
 
     def _validate_dag(self) -> None:
         """Validate DAG has no cycles."""
-        # Build adjacency list
         graph: dict[str, set[str]] = {m.name: set() for m in self.project.models}
 
         for model in self.project.models:
@@ -639,8 +638,9 @@ class ProjectValidator:
                     )
 
     def _validate_references(self) -> None:
-        from streamt.core.ref_validators import validate_cluster_refs
-        validate_cluster_refs(self.project, self.result.add_error)
+        from streamt.core import ref_validators as rv
+        rv.validate_cluster_refs(self.project, self.result.add_error)
+        rv.validate_connection_refs(self.project, self.result.add_error)
 
     def _validate_rules(self) -> None:
         rules = self.project.rules

@@ -580,6 +580,62 @@ class TestProjectValidator:
             assert not result.is_valid
             assert any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
 
+    def test_invalid_sink_connection_reference(self):
+        """Sink referencing nonexistent connection should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "connections": {
+                    "snowflake_prod": {
+                        "type": "snowflake",
+                        "config": {"snowflake.url.name": "acme.snowflakecomputing.com"},
+                    },
+                },
+                "models": [
+                    {
+                        "name": "to_sf",
+                        "from": [{"ref": "clean"}],
+                        "sink": {"connector": "snowflake-sink", "connection": "snowflake_staging"},
+                    },
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            conn_errors = [e for e in result.errors if "INVALID_CONNECTION_REF" in e.code]
+            assert len(conn_errors) >= 1
+            assert "snowflake_staging" in conn_errors[0].message
+            assert "snowflake_prod" in conn_errors[0].message
+
+    def test_valid_sink_connection_reference(self):
+        """Sink referencing existing connection should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "connections": {
+                    "snowflake_prod": {
+                        "type": "snowflake",
+                        "config": {"snowflake.url.name": "acme.snowflakecomputing.com"},
+                    },
+                },
+                "models": [
+                    {
+                        "name": "to_sf",
+                        "from": [{"ref": "clean"}],
+                        "sink": {"connector": "snowflake-sink", "connection": "snowflake_prod"},
+                    },
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not any("INVALID_CONNECTION_REF" in e.code for e in result.errors)
+
     def test_invalid_default_test_flink_cluster(self):
         """Test defaults referencing nonexistent cluster should error."""
         with tempfile.TemporaryDirectory() as tmpdir:
