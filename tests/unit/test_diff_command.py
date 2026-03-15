@@ -47,7 +47,11 @@ class TestDiffCommand:
             _write_project(tmpdir)
             result = runner.invoke(main, ["-o", "json", "diff", "-p", tmpdir])
             assert result.exit_code == 0
-            data = json.loads(result.output)
+            # CliRunner mixes stderr into output; skip non-JSON prefix (e.g. warnings)
+            raw = result.output
+            idx = raw.find("{")
+            assert idx >= 0, f"No JSON in output: {raw!r}"
+            data = json.loads(raw[idx:])
             assert data["status"] in ("ok", "error")
             assert data["command"] == "diff"
 
