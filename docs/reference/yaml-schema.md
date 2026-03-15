@@ -49,6 +49,7 @@ runtime:
 | `sasl_mechanism` | string | No | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
 | `sasl_username` | string | No | SASL username |
 | `sasl_password` | string | No | SASL password |
+| `bootstrap_servers_internal` | string | No | Internal broker address for cross-network routing |
 
 ### Schema Registry
 
@@ -97,6 +98,8 @@ runtime:
 | `version` | string | No | Flink version |
 | `environment` | string | No | Environment identifier |
 | `api_key` | string | No | API key for managed services |
+| `retries` | int | No | Number of retries for failed API calls |
+| `statement_timeout` | int | No | Timeout in ms for SQL statement execution |
 
 ### Connect
 
@@ -658,6 +661,10 @@ models:
 | `sql` | string | Conditional | SQL transformation (required except for sink) |
 | `from` | string | Conditional | Source model (required for sink) |
 | `columns` | list | No | Column metadata and documentation |
+| `primary_key` | list | No | Primary key columns (composite key support) |
+| `contract` | object | No | Schema contract enforcement (see ModelContract below) |
+| `macro` | string | No | SQL macro template name for parameterized models |
+| `params` | dict | No | Parameters for macro-based models |
 | `security` | object | No | Security policies and classification |
 | `ml_outputs` | object | No | ML model output schemas for `ML_PREDICT` (see below) |
 
@@ -699,6 +706,38 @@ models:
 
 !!! note "Confluent Cloud Only"
     `ML_PREDICT` and `ML_EVALUATE` are only available on Confluent Cloud Flink clusters.
+
+### Model Contract
+
+Schema contract enforcement for models. When a contract is defined, the model's output columns must match the declared schema.
+
+```yaml
+models:
+  - name: orders_validated
+    contract:
+      enforced: true
+      columns:
+        - name: order_id
+          type: STRING
+          nullable: false
+        - name: amount
+          type: DOUBLE
+          nullable: false
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enforced` | bool | `true` | Whether the contract is actively enforced |
+| `columns` | list | — | Expected column definitions |
+
+**Contract Column fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Column name |
+| `type` | string | No | Expected Flink SQL type |
+| `nullable` | bool | No | Whether the column allows nulls |
+| `description` | string | No | Column description |
 
 ### Model Fields (Advanced Section)
 
@@ -991,6 +1030,9 @@ exposures:
 | `contracts` | object | No | Schema contracts |
 | `access` | object | No | Access configuration |
 | `schedule` | string | No | Cron schedule (for batch) |
+| `owners` | list | No | Additional owners with role metadata |
+| `depends_on` | list | No | Explicit dependency references |
+| `data_requirements` | dict | No | Data quality requirements |
 
 ### SLA Configuration
 

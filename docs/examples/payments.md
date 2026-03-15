@@ -97,8 +97,8 @@ sources:
       Contains all payment attempts including failed ones.
     owner: checkout-team
     freshness:
-      warn_after: 1m
-      error_after: 5m
+      max_lag_seconds: 300
+      warn_after_seconds: 60
     schema:
       registry: confluent
       subject: payments-raw-value
@@ -236,7 +236,7 @@ models:
     advanced:
       flink:
         parallelism: 8
-        checkpoint_interval: 30000
+        checkpoint_interval_ms: 30000
       topic:
         name: payments.enriched.v1
         partitions: 12
@@ -309,7 +309,7 @@ models:
     advanced:
       flink:
         parallelism: 8
-        checkpoint_interval: 10000
+        checkpoint_interval_ms: 10000
       topic:
         name: payments.fraud-scores.v1
         partitions: 12
@@ -349,7 +349,7 @@ models:
     advanced:
       flink:
         parallelism: 4
-        checkpoint_interval: 60000
+        checkpoint_interval_ms: 60000
       topic:
         name: payments.metrics.v1
         partitions: 6
@@ -467,9 +467,9 @@ exposures:
       - ref: fraud_scores
 
     sla:
-      latency_p99_ms: 100
+      max_end_to_end_latency_ms: 100
       availability: 99.99
-      throughput_per_second: 5000
+      max_lag_messages: 5000
 
   - name: payments_dashboard
     type: dashboard
@@ -484,7 +484,7 @@ exposures:
       - ref: payment_metrics
 
     sla:
-      latency_p99_ms: 5000
+      max_end_to_end_latency_ms: 5000
       availability: 99.9
 ```
 

@@ -72,8 +72,8 @@ sources:
       High volume: ~100K messages/second.
     owner: iot-platform
     freshness:
-      warn_after: 10s
-      error_after: 30s
+      max_lag_seconds: 30
+      warn_after_seconds: 10
     columns:
       - name: reading_id
         description: Unique reading identifier
@@ -193,7 +193,7 @@ models:
     advanced:
       flink:
         parallelism: 16
-        checkpoint_interval: 30000
+        checkpoint_interval_ms: 30000
         cluster: edge
       topic:
         name: iot.sensor-status.v1
@@ -256,7 +256,7 @@ models:
     advanced:
       flink:
         parallelism: 16
-        checkpoint_interval: 10000
+        checkpoint_interval_ms: 10000
         cluster: edge
       topic:
         name: iot.anomalies.v1
@@ -296,7 +296,7 @@ models:
     advanced:
       flink:
         parallelism: 4
-        checkpoint_interval: 60000
+        checkpoint_interval_ms: 60000
         cluster: cloud
       topic:
         name: iot.facility-metrics.v1
@@ -403,7 +403,7 @@ exposures:
       - ref: sensor_status
       - ref: anomaly_detection
     sla:
-      latency_p99_ms: 100
+      max_end_to_end_latency_ms: 100
       availability: 99.99
 
   - name: predictive_maintenance
@@ -415,7 +415,7 @@ exposures:
     consumes:
       - ref: sensor_status
     sla:
-      latency_p99_ms: 500
+      max_end_to_end_latency_ms: 500
 
   - name: ops_dashboard
     type: dashboard

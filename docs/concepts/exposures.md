@@ -90,9 +90,9 @@ exposures:
 
     # SLA expectations
     sla:
-      latency_p99_ms: 5000      # 5 second max latency
-      availability: 99.9         # 99.9% uptime
-      throughput_per_second: 50  # Expected consumption rate
+      max_end_to_end_latency_ms: 5000   # 5 second max latency
+      availability: 99.9                 # 99.9% uptime
+      max_lag_messages: 50               # Max message lag
 
     # Contacts
     contacts:
@@ -147,18 +147,16 @@ Document service level expectations:
 ```yaml
 sla:
   # Latency requirements
-  latency_p50_ms: 100
-  latency_p99_ms: 500
+  max_produce_latency_ms: 100
+  max_end_to_end_latency_ms: 500
 
   # Availability
   availability: 99.95    # Percentage
 
-  # Throughput
-  throughput_per_second: 1000
-  max_lag_seconds: 60
-
-  # Data freshness
-  freshness_seconds: 300
+  # Lag and freshness
+  max_lag_messages: 1000
+  max_lag_minutes: 1
+  freshness_minutes: 5
 ```
 
 ## Lineage Visualization
@@ -212,8 +210,8 @@ orders_clean (topic)
     - ref: transactions_enriched
 
   sla:
-    latency_p99_ms: 100
-    throughput_per_second: 5000
+    max_end_to_end_latency_ms: 100
+    max_lag_messages: 5000
     availability: 99.99
 
   contacts:
@@ -239,7 +237,7 @@ orders_clean (topic)
     - ref: product_performance
 
   sla:
-    latency_p99_ms: 10000
+    max_end_to_end_latency_ms: 10000
     availability: 99.5
 ```
 
@@ -262,7 +260,7 @@ orders_clean (topic)
     - ref: purchase_history
 
   sla:
-    throughput_per_second: 10000  # High throughput for backfill
+    max_lag_messages: 10000  # High throughput for backfill
 ```
 
 ### ML Inference
@@ -282,8 +280,8 @@ orders_clean (topic)
     - ref: product_features
 
   sla:
-    latency_p99_ms: 50
-    throughput_per_second: 2000
+    max_end_to_end_latency_ms: 50
+    max_lag_messages: 2000
     availability: 99.9
 ```
 
@@ -303,9 +301,9 @@ orders_clean (topic)
     - ref: inventory_updates
 
   sla:
-    latency_p99_ms: 1000
+    max_end_to_end_latency_ms: 1000
     availability: 99.5
-    throughput_per_second: 100
+    max_lag_messages: 100
 ```
 
 ## File Organization
@@ -359,8 +357,8 @@ contacts:
 ```yaml
 # Based on actual requirements
 sla:
-  latency_p99_ms: 500     # Not aspirational, achievable
-  availability: 99.9       # Match your infrastructure
+  max_end_to_end_latency_ms: 500   # Not aspirational, achievable
+  availability: 99.9                # Match your infrastructure
 ```
 
 ### 4. Link to Documentation
