@@ -45,6 +45,7 @@ class ErrorCode:
     SQL_GATEWAY_NOT_CONFIGURED = "E206_SQL_GATEWAY_NOT_CONFIGURED"
     CONTINUOUS_TEST_WITHOUT_FLINK = "E207_CONTINUOUS_TEST_WITHOUT_FLINK"
     MISSING_CONFIG = "E208_MISSING_CONFIG"
+    INVALID_CLUSTER_REF = "E209_INVALID_CLUSTER_REF"
 
     # State/TTL errors (E3xx)
     INVALID_STATE_TTL = "E301_INVALID_STATE_TTL"
@@ -682,6 +683,27 @@ def flink_sql_error(error_msg: str, sql_snippet: Optional[str] = None) -> str:
         explanation=f"{error_msg}{sql_info}",
         suggestion=suggestion,
         docs_path="reference/flink-options",
+    )
+
+
+def invalid_cluster_ref(
+    kind: str, resource_name: str, cluster_name: str, cluster_type: str, available: list[str]
+) -> str:
+    """Error when a resource references a nonexistent cluster."""
+    available_str = ", ".join(sorted(available)) if available else "none configured"
+    return format_error(
+        code=ErrorCode.INVALID_CLUSTER_REF,
+        title=f"{kind} '{resource_name}' references unknown {cluster_type} cluster '{cluster_name}'",
+        explanation=f"The {cluster_type} cluster '{cluster_name}' is not defined in runtime.{cluster_type}.clusters. "
+        f"Available clusters: {available_str}.",
+        suggestion=f"Either fix the cluster name or add '{cluster_name}' to your runtime config:",
+        example=f"""runtime:
+  {cluster_type}:
+    clusters:
+      {cluster_name}:
+        type: rest
+        rest_url: http://your-{cluster_type}:8082""",
+        docs_path=f"reference/configuration#{'flink' if cluster_type == 'flink' else 'connect'}",
     )
 
 

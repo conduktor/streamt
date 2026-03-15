@@ -137,6 +137,7 @@ class ProjectValidator:
         self._validate_dag()
         self._validate_column_types()
         self._validate_model_contracts()
+        self._validate_references()
         self._validate_rules()
         self._validate_schema_versions()
         self._validate_unused_sources()
@@ -637,8 +638,11 @@ class ProjectValidator:
                         f"exposure '{exposure.name}'",
                     )
 
+    def _validate_references(self) -> None:
+        from streamt.core.ref_validators import validate_cluster_refs
+        validate_cluster_refs(self.project, self.result.add_error)
+
     def _validate_rules(self) -> None:
-        """Validate governance rules."""
         rules = self.project.rules
         if not rules:
             return
@@ -814,12 +818,10 @@ class ProjectValidator:
 
     def _validate_security_rules(self, rules: SecurityRules) -> None:
         from streamt.core.rule_validators import validate_security_rules
-
         validate_security_rules(self.project, rules, self.result.add_error)
 
     def _validate_data_residency(self, rules: object) -> None:
         from streamt.core.rule_validators import validate_data_residency
-
         validate_data_residency(self.project, rules.allowed_regions, self.result.add_error)
 
     def _validate_schema_versions(self) -> None:

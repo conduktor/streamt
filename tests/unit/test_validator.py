@@ -469,6 +469,69 @@ class TestProjectValidator:
             # Should NOT have ML_PREDICT_OPAQUE_OUTPUT warning
             assert not any("ML_PREDICT_OPAQUE_OUTPUT" in w.code for w in result.warnings)
 
+    def test_invalid_flink_cluster_reference(self):
+        """Model referencing nonexistent flink_cluster should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8082"}},
+                    },
+                },
+                "models": [
+                    {"name": "m1", "sql": "SELECT 1", "flink_cluster": "production"},
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+            assert any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
+            assert "production" in result.errors[0].message
+            assert "local" in result.errors[0].message  # suggests available clusters
+
+    def test_valid_flink_cluster_reference(self):
+        """Model referencing existing flink_cluster should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "localhost:9092"},
+                    "flink": {
+                        "default": "local",
+                        "clusters": {"local": {"type": "rest", "rest_url": "http://localhost:8082"}},
+                    },
+                },
+                "models": [
+                    {"name": "m1", "sql": "SELECT 1", "flink_cluster": "local"},
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not any("INVALID_CLUSTER_REF" in e.code for e in result.errors)
+
+    def test_flink_cluster_without_flink_runtime(self):
+        """Model with flink_cluster but no flink runtime should error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "models": [
+                    {"name": "m1", "sql": "SELECT 1", "flink_cluster": "production"},
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+            validator = ProjectValidator(project)
+            result = validator.validate()
+
+            assert not result.is_valid
+
     def test_ml_evaluate_without_ml_outputs_warns(self):
         """TC-ML-004: ML_EVALUATE without ml_outputs should warn."""
         with tempfile.TemporaryDirectory() as tmpdir:
