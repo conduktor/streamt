@@ -420,7 +420,11 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
         connector_class = CONNECTOR_CLASSES.get(sink_config.connector, sink_config.connector)
 
-        config = dict(sink_config.config)
+        # Merge global connection config (connection base, sink overrides)
+        config: dict[str, object] = {}
+        if sink_config.connection and sink_config.connection in self.project.connections:
+            config.update(self.project.connections[sink_config.connection].config)
+        config.update(sink_config.config)
 
         if model.security and model.security.policies:
             transforms = []

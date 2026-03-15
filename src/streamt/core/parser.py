@@ -16,6 +16,7 @@ from streamt.core.environment import (
     EnvironmentManager,
 )
 from streamt.core.models import (
+    ConnectionConfig,
     DataTest,
     Defaults,
     Exposure,
@@ -135,11 +136,14 @@ class ProjectParser:
         tests = self._parse_tests(project_data)
         exposures = self._parse_exposures(project_data)
 
+        connections = self._parse_connections(project_data)
+
         return StreamtProject(
             project=project_info,
             runtime=runtime,
             defaults=defaults,
             rules=rules,
+            connections=connections,
             sources=sources,
             models=models,
             tests=tests,
@@ -269,6 +273,12 @@ class ProjectParser:
         if "rules" not in data:
             return None
         return Rules(**data["rules"])
+
+    def _parse_connections(self, data: dict[str, object]) -> dict[str, ConnectionConfig]:
+        """Parse global connections section."""
+        if "connections" not in data:
+            return {}
+        return {k: ConnectionConfig(**v) for k, v in data["connections"].items()}
 
     def _parse_sources(self, data: dict[str, object]) -> list[Source]:
         """Parse sources from project file and sources/ directory."""
