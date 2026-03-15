@@ -345,7 +345,7 @@ streamt test --deploy
 ### Check Test Status
 
 ```bash
-streamt status --tests
+streamt test --coverage
 ```
 
 ## Test Output

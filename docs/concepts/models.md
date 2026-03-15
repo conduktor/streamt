@@ -97,7 +97,7 @@ Deploys a Flink SQL job for stateful processing:
   advanced:
     flink:
       parallelism: 8
-      checkpoint_interval: 60000
+      checkpoint_interval_ms: 60000
     topic:
       name: analytics.revenue.v1
       partitions: 6
@@ -200,7 +200,7 @@ models:
       # Flink job configuration
       flink:
         parallelism: 8
-        checkpoint_interval: 60000
+        checkpoint_interval_ms: 60000
         state_backend: rocksdb
         cluster: production
 
@@ -287,7 +287,7 @@ Configure Flink job settings using the `advanced:` section:
 advanced:
   flink:
     parallelism: 8                  # Job parallelism
-    checkpoint_interval: 60000      # Checkpoint interval (ms)
+    checkpoint_interval_ms: 60000    # Checkpoint interval (ms)
     checkpoint_timeout: 300000      # Checkpoint timeout (ms)
     state_backend: rocksdb          # hashmap or rocksdb
     restart_strategy: fixed-delay   # Restart strategy

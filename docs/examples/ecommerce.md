@@ -36,8 +36,8 @@ sources:
     description: Raw user interaction events from web/mobile
     owner: frontend-team
     freshness:
-      warn_after: 30s
-      error_after: 2m
+      max_lag_seconds: 120
+      warn_after_seconds: 30
     columns:
       - name: event_id
         description: Unique event identifier
@@ -204,7 +204,7 @@ models:
     advanced:
       flink:
         parallelism: 8
-        checkpoint_interval: 60000
+        checkpoint_interval_ms: 60000
       topic:
         name: ecom.user-sessions.v1
         partitions: 12
@@ -252,7 +252,7 @@ models:
     advanced:
       flink:
         parallelism: 4
-        checkpoint_interval: 30000
+        checkpoint_interval_ms: 30000
       topic:
         name: ecom.product-popularity.v1
         partitions: 6
@@ -312,7 +312,7 @@ exposures:
     consumes:
       - ref: user_sessions
     sla:
-      latency_p99_ms: 50
+      max_end_to_end_latency_ms: 50
       availability: 99.95
 
   - name: recommendation_service
@@ -325,5 +325,5 @@ exposures:
       - ref: product_popularity
       - ref: user_sessions
     sla:
-      latency_p99_ms: 100
+      max_end_to_end_latency_ms: 100
 ```

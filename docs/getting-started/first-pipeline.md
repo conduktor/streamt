@@ -91,8 +91,8 @@ sources:
       Contains all order attempts including failed ones.
     owner: checkout-team
     freshness:
-      warn_after: 5m
-      error_after: 15m
+      max_lag_seconds: 900
+      warn_after_seconds: 300
 
     schema:
       registry: confluent
@@ -192,7 +192,7 @@ models:
     advanced:
       flink:
         parallelism: 4
-        checkpoint_interval: 60000
+        checkpoint_interval_ms: 60000
       topic:
         name: orders.metrics.v1
         partitions: 6
@@ -316,7 +316,7 @@ exposures:
       - ref: order_metrics
 
     sla:
-      latency_p99_ms: 5000
+      max_end_to_end_latency_ms: 5000
       availability: 99.9
 
   - name: billing_service
@@ -333,7 +333,7 @@ exposures:
       - ref: orders_clean
 
     sla:
-      throughput_per_second: 100
+      max_lag_messages: 100
 ```
 
 ## Step 6: Validate and Deploy

@@ -44,8 +44,8 @@ sources:
 
     # Freshness SLA
     freshness:
-      warn_after: 5m      # Warn if no messages for 5 minutes
-      error_after: 15m    # Error if no messages for 15 minutes
+      max_lag_seconds: 900       # Error if no messages for 15 minutes
+      warn_after_seconds: 300    # Warn if no messages for 5 minutes
 
     # Schema reference
     schema:
@@ -106,11 +106,9 @@ Track how fresh your source data is:
 
 ```yaml
 freshness:
-  warn_after: 5m      # Duration without messages before warning
-  error_after: 15m    # Duration without messages before error
+  max_lag_seconds: 900       # Duration without messages before error (seconds)
+  warn_after_seconds: 300    # Duration without messages before warning (seconds)
 ```
-
-Durations support: `s` (seconds), `m` (minutes), `h` (hours), `d` (days)
 
 Freshness is checked during `streamt test` when configured.
 
@@ -317,8 +315,8 @@ sources/
 
 ```yaml
 freshness:
-  warn_after: 5m
-  error_after: 15m
+  max_lag_seconds: 900
+  warn_after_seconds: 300
 ```
 
 ### 4. Document Columns
@@ -362,8 +360,8 @@ sources:
     description: Product catalog updates
     owner: catalog-team
     freshness:
-      warn_after: 1h
-      error_after: 4h
+      max_lag_seconds: 14400
+      warn_after_seconds: 3600
     columns:
       - name: product_id
         description: Unique product SKU
@@ -376,8 +374,8 @@ sources:
     description: Real-time inventory changes
     owner: warehouse-team
     freshness:
-      warn_after: 5m
-      error_after: 15m
+      max_lag_seconds: 900
+      warn_after_seconds: 300
     columns:
       - name: product_id
       - name: warehouse_id
@@ -388,8 +386,8 @@ sources:
     description: New order events
     owner: checkout-team
     freshness:
-      warn_after: 1m
-      error_after: 5m
+      max_lag_seconds: 300
+      warn_after_seconds: 60
     schema:
       registry: confluent
       subject: orders-created-value

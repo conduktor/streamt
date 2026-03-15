@@ -63,5 +63,9 @@ DISCUSSION.md
 .DS_Store
 Thumbs.db
 
+# Autoresearch
+autoresearch.*
+autoresearch_*
+
 # Docker
 docker-compose.override.yml

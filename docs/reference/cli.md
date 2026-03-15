@@ -124,6 +124,7 @@ streamt validate [OPTIONS]
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
 | `--all-envs` | Validate all environments sequentially |
+| `--model, -m MODEL` | Validate only this model and its dependencies |
 | `--check-schemas` | Fetch and validate schemas from Schema Registry |
 | `--strict` | Treat warnings as errors |
 
@@ -430,6 +431,7 @@ streamt test [OPTIONS]
 | `--model MODEL` | Test specific model only |
 | `--type TYPE` | Filter by type: `schema`, `sample`, `continuous` |
 | `--deploy` | Deploy continuous tests as Flink jobs |
+| `--coverage` | Show test coverage report (which models have tests) |
 
 **Examples:**
 
@@ -486,6 +488,7 @@ streamt lineage [OPTIONS]
 | `--model MODEL` | Focus on specific model |
 | `--upstream` | Show only upstream dependencies |
 | `--downstream` | Show only downstream dependencies |
+| `--columns` | Show column-level lineage (requires `--model`) |
 | `--format FORMAT` | Output format: `ascii`, `json`, `mermaid` |
 
 **Examples:**
@@ -540,6 +543,7 @@ streamt status [OPTIONS]
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
 | `--lag` | Show consumer lag and message counts for topics |
+| `--consumer-groups` | Show per-consumer-group lag |
 | `--health` | Exit 1 if any resource is MISSING or DRIFT (for CI/monitoring) |
 | `--format FORMAT` | Output format: `text` (default) or `json` |
 | `--filter PATTERN` | Filter resources by name pattern (glob-style) |
@@ -634,6 +638,8 @@ streamt list RESOURCE_TYPE [OPTIONS]
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
+| `--select SELECTOR` | Filter by tag or selector expression |
+| `--sort-by FIELD` | Sort results by field: `name` (default), `type`, `upstream` |
 
 **Examples:**
 
@@ -688,6 +694,7 @@ streamt show RESOURCE_TYPE NAME [OPTIONS]
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
+| `--diff` | Show diff between declared and deployed state |
 
 **Examples:**
 
@@ -719,6 +726,37 @@ streamt show test orders_quality
     "topic": {"partitions": 12}
   }
 }
+```
+
+---
+
+### observe
+
+Show live runtime health: consumer lag, Flink job status, backpressure. Connects to Kafka (for consumer group lag) and Flink (for job metrics). Does not modify any infrastructure.
+
+```bash
+streamt observe [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+| `--model MODEL` | Observe a single model by name |
+
+**Examples:**
+
+```bash
+# Full runtime health
+streamt observe
+
+# Observe specific model
+streamt observe --model payments_clean
+
+# JSON output
+streamt -o json observe
 ```
 
 ---
@@ -758,6 +796,60 @@ streamt docs generate --env prod
 
 # Custom output
 streamt docs generate --output ./public
+```
+
+#### docs openapi
+
+Generate AsyncAPI/OpenAPI spec for exposed topics.
+
+```bash
+streamt docs openapi [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# Generate AsyncAPI spec
+streamt docs openapi
+
+# Save to file
+streamt docs openapi > asyncapi.json
+```
+
+#### docs dictionary
+
+Export data dictionary (all sources and models with columns).
+
+```bash
+streamt docs dictionary [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+| `--format FORMAT` | Output format: `csv` (default) or `json` |
+
+**Examples:**
+
+```bash
+# Export CSV data dictionary
+streamt docs dictionary
+
+# Export as JSON
+streamt docs dictionary --format json
+
+# Save to file
+streamt docs dictionary > data-dictionary.csv
 ```
 
 ---
@@ -864,7 +956,9 @@ See [Multi-Environment Support](../guides/multi-environment.md) for details.
 
 ### Structured Error Codes
 
-When using `--output json`, errors include machine-readable codes. These codes follow a taxonomy for programmatic handling:
+When using `--output json`, errors include machine-readable codes. These codes follow a taxonomy for programmatic handling.
+
+**Validation Errors (E1xx):**
 
 | Code | Meaning |
 |------|---------|
@@ -872,13 +966,72 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E102_MODEL_NOT_FOUND` | Referenced model does not exist |
 | `E103_DUPLICATE_NAME` | Duplicate resource name |
 | `E104_CYCLE_DETECTED` | Circular dependency in DAG |
-| `E105_INVALID_REF` | Invalid `ref()` or `source()` reference |
-| `E201_MISSING_CONFIG` | Required configuration is missing |
-| `E202_INVALID_VALUE` | Configuration value is invalid |
-| `E203_ENVIRONMENT_ERROR` | Environment configuration error |
-| `E301_SCHEMA_MISMATCH` | Schema compatibility error |
-| `E401_DEPLOY_FAILED` | Deployment operation failed |
+| `E105_JINJA_SYNTAX_ERROR` | Jinja template syntax error in SQL |
+| `E106_ACCESS_DENIED` | Access denied by governance rules |
+| `E107_TEST_MODEL_NOT_FOUND` | Test references nonexistent model |
+| `E108_EXPOSURE_MODEL_NOT_FOUND` | Exposure references nonexistent model |
+| `E109_EXPOSURE_SOURCE_NOT_FOUND` | Exposure references nonexistent source |
+| `E110_EXPOSURE_DEPENDENCY_NOT_FOUND` | Exposure dependency not found |
+| `E111_NAME_COLLISION` | Name collision between resources |
+
+**Configuration Errors (E2xx):**
+
+| Code | Meaning |
+|------|---------|
+| `E201_GATEWAY_REQUIRED` | Gateway config required for virtual topics |
+| `E202_FLINK_REQUIRED` | Flink config required for Flink materializations |
+| `E203_CONFLUENT_FLINK_REQUIRED` | Confluent Cloud Flink required (e.g., for `ML_PREDICT`) |
+| `E204_MISSING_SINK_CONFIG` | Sink model missing connector configuration |
+| `E205_CONNECT_REQUIRED` | Connect cluster config required for sink connectors |
+| `E206_SQL_GATEWAY_NOT_CONFIGURED` | Flink SQL Gateway URL not configured |
+| `E207_CONTINUOUS_TEST_WITHOUT_FLINK` | Continuous test requires Flink cluster |
+| `E208_MISSING_CONFIG` | Required configuration is missing |
+
+**Schema Errors (E3xx):**
+
+| Code | Meaning |
+|------|---------|
+| `E301_INVALID_STATE_TTL` | Invalid state TTL configuration |
+
+**Deployment Errors (E4xx):**
+
+| Code | Meaning |
+|------|---------|
+| `E401_CANNOT_REDUCE_PARTITIONS` | Cannot reduce topic partition count |
+| `E402_SCHEMA_INCOMPATIBLE` | Schema incompatible with registry |
+| `E403_FLINK_SQL_ERROR` | Flink SQL execution error |
+| `E404_AUTH_FAILED` | Authentication failed |
+| `E405_SSL_ERROR` | SSL/TLS connection error |
+| `E406_CONNECTION_REFUSED` | Connection refused by service |
+| `E407_DEPLOY_ERROR` | General deployment error |
+
+**Parse Errors (E5xx):**
+
+| Code | Meaning |
+|------|---------|
 | `E501_PARSE_ERROR` | YAML/SQL parsing error |
+| `E502_ENV_VAR_ERROR` | Environment variable not set |
+| `E503_ENVIRONMENT_ERROR` | Environment configuration error |
+
+**Governance Errors (E6xx):**
+
+| Code | Meaning |
+|------|---------|
+| `E601_NAMING_VIOLATION` | Resource name violates naming convention |
+
+**Warnings (Wxxx):**
+
+| Code | Meaning |
+|------|---------|
+| `W101_STATE_TTL_RECOMMENDED` | Stateful query should set state TTL |
+| `W102_MISSING_SOURCE_COLUMN` | Source column referenced but not defined |
+| `W103_MISSING_REF_COLUMN` | Referenced model column not found |
+| `W104_RULE_MAX_RETENTION` | Topic retention exceeds governance limit |
+| `W105_RULE_INVALID_OWNER` | Owner not in allowed owners list |
+| `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
+| `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
+| `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |
+| `W301_COLUMN_TYPE_MISMATCH` | Column type mismatch detected |
 
 ## Examples
 

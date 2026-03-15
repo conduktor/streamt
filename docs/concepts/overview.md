@@ -144,7 +144,7 @@ exposures:
     consumes:
       - ref: transactions_clean
     sla:
-      latency_p99_ms: 100
+      max_end_to_end_latency_ms: 100
 ```
 
 [Learn more about Exposures →](exposures.md)
