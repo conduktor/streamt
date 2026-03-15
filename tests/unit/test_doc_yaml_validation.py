@@ -50,10 +50,10 @@ from streamt.core.models import (
     RocksDBConfig,
     Rules,
     RuntimeConfig,
-    SLAConfig,
     SchemaRef,
     SchemaRegistryConfig,
     SinkConfig,
+    SLAConfig,
     Source,
     SourceRules,
     StreamtProject,
@@ -505,7 +505,7 @@ def test_doc_yaml_block(block: tuple[str, int, str]) -> None:
     assert category != "unclassified", (
         f"Unclassified YAML block at {path}:{line}\n"
         f"Data type: {type(data).__name__}\n"
-        f"Keys: {sorted(str(k) for k in data.keys()) if isinstance(data, dict) else 'N/A'}\n"
+        f"Keys: {sorted(str(k) for k in data) if isinstance(data, dict) else 'N/A'}\n"
         f"Preview: {str(data)[:200]}\n"
         "Add a classifier rule or mark the block with '# streamt:skip'"
     )
