@@ -251,6 +251,19 @@ class EnvironmentManager:
                 f"Missing 'runtime' section in environment file '{env_file.name}'"
             )
 
+        # Validate runtime against Pydantic model.
+        # Resolve ${VAR} env-var placeholders first so value validators
+        # (e.g. URL format checks) don't reject raw placeholder strings.
+        from streamt.core.models import RuntimeConfig
+
+        resolved_runtime = _resolve_env_var_placeholders(runtime)
+        try:
+            RuntimeConfig.model_validate(resolved_runtime)
+        except Exception as e:
+            raise EnvironmentError(
+                f"Invalid runtime configuration in '{env_file.name}': {e}"
+            ) from e
+
         # Parse safety config
         safety_data = data.get("safety", {})
         safety = SafetyConfig(
@@ -326,6 +339,43 @@ class EnvironmentManager:
                 logger.debug("Skipping environment '%s': %s", env_name, e)
 
         return environments
+
+
+_ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-((?:[^}]|\\})*)?)?\}")
+
+
+def _resolve_env_var_placeholders(value: object) -> object:
+    """Resolve ${VAR} and ${VAR:-default} placeholders from os.environ.
+
+    Unresolved variables without defaults are replaced with a safe
+    placeholder (``http://placeholder``) so that Pydantic value
+    validators (e.g. URL format) don't reject raw ``${VAR}`` strings
+    while structural validation still catches typos in field names.
+    """
+    if isinstance(value, str):
+        return _resolve_env_var_string(value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_var_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_var_placeholders(v) for v in value]
+    return value
+
+
+def _resolve_env_var_string(value: str) -> str:
+    """Resolve env-var references in a single string."""
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        default = match.group(2)
+        env_value = os.environ.get(var_name)
+        if env_value is not None:
+            return env_value
+        if default is not None:
+            return default
+        # Placeholder that satisfies common validators (URL, host:port)
+        return "http://placeholder"
+
+    return _ENV_VAR_PATTERN.sub(_replace, value)
 
 
 _SECRET_FIELD_NAMES = {
