@@ -121,3 +121,8 @@ jobs:
 
       - name: Build documentation strictly
         run: mkdocs build --strict
+
+      - name: Check generated project schema
+        run: |
+          streamt docs schema --output-file /tmp/stream_project.schema.json
+          diff -u schemas/stream_project.schema.json /tmp/stream_project.schema.json

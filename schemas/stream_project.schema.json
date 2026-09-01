@@ -1,6 +1,7 @@
 {
   "$defs": {
     "AccessConfig": {
+      "additionalProperties": false,
       "description": "Access configuration.",
       "properties": {
         "roles": {
@@ -37,6 +38,7 @@
       "type": "string"
     },
     "CheckpointConfig": {
+      "additionalProperties": false,
       "description": "Advanced checkpointing configuration.",
       "properties": {
         "timeout_ms": {
@@ -140,6 +142,7 @@
       "type": "string"
     },
     "ColumnDefinition": {
+      "additionalProperties": false,
       "description": "Column definition with classification.",
       "properties": {
         "name": {
@@ -199,6 +202,7 @@
       "type": "object"
     },
     "ConduktorConfig": {
+      "additionalProperties": false,
       "description": "Conduktor configuration (Gateway + Console).",
       "properties": {
         "gateway": {
@@ -228,6 +232,7 @@
       "type": "object"
     },
     "ConnectClusterConfig": {
+      "additionalProperties": false,
       "description": "Connect cluster configuration.",
       "properties": {
         "rest_url": {
@@ -318,6 +323,7 @@
       "type": "object"
     },
     "ConnectConfig": {
+      "additionalProperties": false,
       "description": "Connect runtime configuration.",
       "properties": {
         "default": {
@@ -344,6 +350,7 @@
       "type": "object"
     },
     "ConnectionConfig": {
+      "additionalProperties": false,
       "description": "Global connection/credential configuration.",
       "properties": {
         "type": {
@@ -363,6 +370,7 @@
       "type": "object"
     },
     "ConsoleConfig": {
+      "additionalProperties": false,
       "description": "Conduktor Console configuration.",
       "properties": {
         "url": {
@@ -389,6 +397,7 @@
       "type": "object"
     },
     "ContractColumn": {
+      "additionalProperties": false,
       "description": "Declared output column in a model contract.",
       "properties": {
         "name": {
@@ -439,6 +448,7 @@
       "type": "object"
     },
     "ContractConfig": {
+      "additionalProperties": false,
       "description": "Contract configuration for producers.",
       "properties": {
         "schema": {
@@ -470,6 +480,7 @@
       "type": "object"
     },
     "DataResidencyRules": {
+      "additionalProperties": false,
       "description": "Data residency governance rules.",
       "properties": {
         "allowed_regions": {
@@ -484,6 +495,7 @@
       "type": "object"
     },
     "DataTest": {
+      "additionalProperties": false,
       "description": "Data test declaration.",
       "properties": {
         "name": {
@@ -560,6 +572,7 @@
       "type": "string"
     },
     "Defaults": {
+      "additionalProperties": false,
       "description": "Default values.",
       "properties": {
         "models": {
@@ -600,6 +613,7 @@
       "type": "object"
     },
     "EventTimeConfig": {
+      "additionalProperties": false,
       "description": "Event time configuration for streaming processing.",
       "properties": {
         "column": {
@@ -637,6 +651,7 @@
       "type": "object"
     },
     "Exposure": {
+      "additionalProperties": false,
       "description": "Exposure declaration.",
       "properties": {
         "name": {
@@ -865,6 +880,7 @@
       "type": "object"
     },
     "ExposureColumn": {
+      "additionalProperties": false,
       "description": "Column declared on an exposure (for contract breaking-change detection).",
       "properties": {
         "name": {
@@ -891,6 +907,7 @@
       "type": "object"
     },
     "ExposureRef": {
+      "additionalProperties": false,
       "description": "Reference in exposure.",
       "properties": {
         "source": {
@@ -944,6 +961,7 @@
       "type": "string"
     },
     "FlinkClusterConfig": {
+      "additionalProperties": false,
       "description": "Flink cluster configuration.",
       "properties": {
         "type": {
@@ -1130,6 +1148,7 @@
       "type": "object"
     },
     "FlinkConfig": {
+      "additionalProperties": false,
       "description": "Flink runtime configuration.",
       "properties": {
         "default": {
@@ -1156,6 +1175,7 @@
       "type": "object"
     },
     "FlinkJobConfig": {
+      "additionalProperties": false,
       "description": "Flink job configuration.",
       "properties": {
         "parallelism": {
@@ -1267,6 +1287,7 @@
       "type": "object"
     },
     "FreshnessConfig": {
+      "additionalProperties": false,
       "description": "Freshness SLA configuration.",
       "properties": {
         "max_lag_seconds": {
@@ -1298,6 +1319,7 @@
       "type": "object"
     },
     "FromRef": {
+      "additionalProperties": false,
       "description": "Reference in from clause.",
       "properties": {
         "source": {
@@ -1329,6 +1351,7 @@
       "type": "object"
     },
     "GatewayConfig": {
+      "additionalProperties": false,
       "description": "Conduktor Gateway configuration.",
       "properties": {
         "admin_url": {
@@ -1448,6 +1471,7 @@
       "type": "object"
     },
     "KafkaConfig": {
+      "additionalProperties": false,
       "description": "Kafka cluster configuration.",
       "properties": {
         "bootstrap_servers": {
@@ -1573,7 +1597,28 @@
       "title": "KafkaConfig",
       "type": "object"
     },
+    "LegacyConnectorConfig": {
+      "additionalProperties": false,
+      "description": "Legacy connector spelling retained during the alpha migration window.",
+      "properties": {
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "config": {
+          "additionalProperties": true,
+          "title": "Config",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "LegacyConnectorConfig",
+      "type": "object"
+    },
     "MLModelOutput": {
+      "additionalProperties": false,
       "description": "Output schema declaration for ML models used with ML_PREDICT.\n\nWhen using Confluent Flink's ML_PREDICT function, the output schema depends on\nthe model's OUTPUT definition from CREATE MODEL. Since streamt cannot introspect\nthe model registry, users should declare the expected output schema here to enable:\n- Proper type inference for downstream consumers\n- Lineage tracking through ML_PREDICT\n- Schema validation and breaking change detection\n\nExample:\n    ml_outputs:\n      fraud_detector:\n        columns:\n          - name: is_fraud\n            type: BOOLEAN\n          - name: confidence\n            type: DOUBLE",
       "properties": {
         "columns": {
@@ -1614,6 +1659,7 @@
       "type": "string"
     },
     "Model": {
+      "additionalProperties": false,
       "description": "Model declaration.",
       "properties": {
         "name": {
@@ -1734,15 +1780,13 @@
         "connector": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/LegacyConnectorConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Connector"
+          "default": null
         },
         "sink": {
           "anyOf": [
@@ -1916,6 +1960,7 @@
       "type": "object"
     },
     "ModelContract": {
+      "additionalProperties": false,
       "description": "Schema contract for a model \u2014 declares expected output columns.\n\nWhen enforced=True, the validator errors if SQL-inferred types are\nincompatible with declared types, and warns if downstream exposures\nconsume columns not present in the contract.",
       "properties": {
         "enforced": {
@@ -1935,6 +1980,7 @@
       "type": "object"
     },
     "ModelDefaults": {
+      "additionalProperties": false,
       "description": "Default values for models.",
       "properties": {
         "cluster": {
@@ -1965,6 +2011,7 @@
       "type": "object"
     },
     "ModelGatewayConfig": {
+      "additionalProperties": false,
       "description": "Gateway configuration for a model.",
       "properties": {
         "virtual_topic": {
@@ -1983,6 +2030,7 @@
       "type": "object"
     },
     "ModelRules": {
+      "additionalProperties": false,
       "description": "Rules for model definitions.",
       "properties": {
         "require_description": {
@@ -2024,6 +2072,7 @@
       "type": "object"
     },
     "OnFailure": {
+      "additionalProperties": false,
       "description": "On failure configuration.",
       "properties": {
         "severity": {
@@ -2043,6 +2092,7 @@
       "type": "object"
     },
     "ProjectInfo": {
+      "additionalProperties": false,
       "description": "Project metadata.",
       "properties": {
         "name": {
@@ -2081,6 +2131,7 @@
       "type": "object"
     },
     "ResourceConfig": {
+      "additionalProperties": false,
       "description": "Flink resource configuration.",
       "properties": {
         "taskmanager_memory_mb": {
@@ -2124,6 +2175,7 @@
       "type": "object"
     },
     "RestartStrategyConfig": {
+      "additionalProperties": false,
       "description": "Restart strategy configuration.",
       "properties": {
         "type": {
@@ -2220,6 +2272,7 @@
       "type": "object"
     },
     "RocksDBConfig": {
+      "additionalProperties": false,
       "description": "RocksDB state backend tuning.",
       "properties": {
         "block_cache_size_mb": {
@@ -2263,6 +2316,7 @@
       "type": "object"
     },
     "Rules": {
+      "additionalProperties": false,
       "description": "Governance rules.",
       "properties": {
         "topics": {
@@ -2325,6 +2379,7 @@
       "type": "object"
     },
     "RuntimeConfig": {
+      "additionalProperties": false,
       "description": "Runtime configuration for all external systems.",
       "properties": {
         "kafka": {
@@ -2382,6 +2437,7 @@
       "type": "object"
     },
     "SLAConfig": {
+      "additionalProperties": false,
       "description": "SLA configuration.",
       "properties": {
         "availability": {
@@ -2473,6 +2529,7 @@
       "type": "object"
     },
     "SchemaRef": {
+      "additionalProperties": false,
       "description": "Schema reference.\n\nSupports both registry references (registry/subject/format) and inline field\ndefinitions via `fields:`. When `fields:` is set, Source.columns is populated\nautomatically via a model_validator.",
       "properties": {
         "registry": {
@@ -2543,6 +2600,7 @@
       "type": "object"
     },
     "SchemaRegistryConfig": {
+      "additionalProperties": false,
       "description": "Schema Registry configuration.",
       "properties": {
         "url": {
@@ -2633,6 +2691,7 @@
       "type": "object"
     },
     "SecurityPolicies": {
+      "additionalProperties": false,
       "description": "Security policies for a model.",
       "properties": {
         "classification": {
@@ -2655,6 +2714,7 @@
       "type": "object"
     },
     "SecurityRules": {
+      "additionalProperties": false,
       "description": "Rules for security.",
       "properties": {
         "require_classification": {
@@ -2681,6 +2741,7 @@
       "type": "string"
     },
     "SinkConfig": {
+      "additionalProperties": false,
       "description": "Sink connector configuration.",
       "properties": {
         "connector": {
@@ -2712,6 +2773,7 @@
       "type": "object"
     },
     "Source": {
+      "additionalProperties": false,
       "description": "Source declaration.",
       "properties": {
         "name": {
@@ -2826,6 +2888,7 @@
       "type": "object"
     },
     "SourceRules": {
+      "additionalProperties": false,
       "description": "Rules for source definitions.",
       "properties": {
         "require_schema": {
@@ -2843,6 +2906,7 @@
       "type": "object"
     },
     "TestDefaults": {
+      "additionalProperties": false,
       "description": "Default values for tests.",
       "properties": {
         "flink_cluster": {
@@ -2862,6 +2926,7 @@
       "type": "object"
     },
     "TopicConfig": {
+      "additionalProperties": false,
       "description": "Topic configuration for model output.",
       "properties": {
         "name": {
@@ -2910,6 +2975,7 @@
       "type": "object"
     },
     "TopicDefaults": {
+      "additionalProperties": false,
       "description": "Default values for topics.",
       "properties": {
         "partitions": {
@@ -2927,6 +2993,7 @@
       "type": "object"
     },
     "TopicRules": {
+      "additionalProperties": false,
       "description": "Rules for topic creation.",
       "properties": {
         "min_partitions": {
@@ -3027,6 +3094,7 @@
       "type": "object"
     },
     "UDFDeclaration": {
+      "additionalProperties": false,
       "description": "User-defined function type declaration.",
       "properties": {
         "name": {
@@ -3046,6 +3114,7 @@
       "type": "object"
     },
     "VirtualTopicConfig": {
+      "additionalProperties": false,
       "description": "Virtual topic configuration for Gateway.",
       "properties": {
         "name": {
@@ -3077,6 +3146,7 @@
       "type": "object"
     },
     "WatermarkConfig": {
+      "additionalProperties": false,
       "description": "Watermark configuration for event time processing.",
       "properties": {
         "strategy": {
@@ -3122,8 +3192,15 @@
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "description": "Complete streamt project with all declarations.",
   "properties": {
+    "apiVersion": {
+      "const": "streamt.dev/v1alpha1",
+      "default": "streamt.dev/v1alpha1",
+      "title": "Apiversion",
+      "type": "string"
+    },
     "project": {
       "$ref": "#/$defs/ProjectInfo"
     },
