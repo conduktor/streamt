@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -20,6 +21,7 @@ from streamt.cli.helpers import (
     make_sr_deployer,
 )
 from streamt.core.errors import ErrorCode
+from streamt.deployer.plan_file import PLAN_FILE_VERSION, PlanFileError, ReviewedPlanFile
 from streamt.output import StructuredError
 
 
@@ -27,8 +29,20 @@ from streamt.output import StructuredError
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option("--env", "-e", "environment", help="Target environment (reads from STREAMT_ENV if not set)")
 @click.option("--offline", is_flag=True, help="Plan without connecting to infrastructure (assumes fresh deploy)")
+@click.option(
+    "--out",
+    "plan_output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Atomically save a deterministic reviewed plan file",
+)
 @click.pass_context
-def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[str], offline: bool) -> None:
+def plan(
+    ctx: click.Context,
+    project_dir: Optional[str],
+    environment: Optional[str],
+    offline: bool,
+    plan_output: Optional[Path],
+) -> None:
     """Show what would change on apply."""
     from streamt.compiler import Compiler
     from streamt.core.environment import EnvironmentError
@@ -45,6 +59,9 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
+        effective_environment = (
+            parser.env_config.environment.name if parser.env_config else "default"
+        )
 
         validator = ProjectValidator(project)
         result = validator.validate()
@@ -59,7 +76,12 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         manifest = compiler.compile(dry_run=True)
 
         if offline:
-            planner = DeploymentPlanner(manifest)
+            planner = DeploymentPlanner(
+                manifest,
+                project=project,
+                project_name=project.project.name,
+                environment=effective_environment,
+            )
             deployment_plan = planner.offline_plan()
 
             fmt.print("[yellow]Offline plan — assumes no existing resources[/yellow]\n")
@@ -85,29 +107,32 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
                     flink_deployer=flink_deployer,
                     connect_deployer=connect_deployer,
                     gateway_deployer=gateway_deployer,
+                    project=project,
+                    project_name=project.project.name,
+                    environment=effective_environment,
                 )
                 deployment_plan = planner.plan()
             finally:
                 close_deployers(sr_deployer, kafka_deployer, flink_deployer, connect_deployer, gateway_deployer)
 
         changes: list[dict[str, object]] = []
-        for c in deployment_plan.schema_changes:
-            if c.action != "none":
-                changes.append({"type": "schema", "name": c.subject, "action": c.action, "changes": c.changes})
-        for c in deployment_plan.topic_changes:
-            if c.action != "none":
-                changes.append({"type": "topic", "name": c.topic, "action": c.action, "changes": c.changes})
-        for c in deployment_plan.flink_changes:
-            if c.action != "none":
-                changes.append({"type": "flink_job", "name": c.job_name, "action": c.action})
-        for c in deployment_plan.connector_changes:
-            if c.action != "none":
-                changes.append({"type": "connector", "name": c.connector_name, "action": c.action, "changes": c.changes})
-        for c in deployment_plan.gateway_changes:
-            if c.action != "none":
-                changes.append({"type": "gateway_rule", "name": c.name, "action": c.action, "changes": c.changes})
+        for schema_change in deployment_plan.schema_changes:
+            if schema_change.action != "none":
+                changes.append({"type": "schema", "name": schema_change.subject, "action": schema_change.action, "changes": schema_change.changes})
+        for topic_change in deployment_plan.topic_changes:
+            if topic_change.action != "none":
+                changes.append({"type": "topic", "name": topic_change.topic, "action": topic_change.action, "changes": topic_change.changes})
+        for flink_change in deployment_plan.flink_changes:
+            if flink_change.action != "none":
+                changes.append({"type": "flink_job", "name": flink_change.job_name, "action": flink_change.action})
+        for connector_change in deployment_plan.connector_changes:
+            if connector_change.action != "none":
+                changes.append({"type": "connector", "name": connector_change.connector_name, "action": connector_change.action, "changes": connector_change.changes})
+        for gateway_change in deployment_plan.gateway_changes:
+            if gateway_change.action != "none":
+                changes.append({"type": "gateway_rule", "name": gateway_change.name, "action": gateway_change.action, "changes": gateway_change.changes})
 
-        fmt.set_data({
+        plan_data: dict[str, object] = {
             "offline": offline,
             "summary": deployment_plan.summary(),
             "creates": deployment_plan.creates,
@@ -115,12 +140,37 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
             "deletes": deployment_plan.deletes,
             "has_changes": deployment_plan.has_changes,
             "changes": changes,
-        })
+            "ownership_requirements": [
+                requirement.to_dict()
+                for requirement in deployment_plan.ownership_requirements
+            ],
+        }
+        if plan_output:
+            reviewed_plan = ReviewedPlanFile.create(
+                deployment_plan,
+                manifest,
+                project=project.project.name,
+                environment=effective_environment,
+                runtime=project.runtime,
+                offline=offline,
+            )
+            reviewed_plan.save(plan_output)
+            fmt.print(f"[green]Saved reviewed plan to {plan_output.resolve()}[/green]")
+            plan_data["plan_file"] = str(plan_output.resolve())
+            plan_data["plan_checksum"] = reviewed_plan.checksum
+            plan_data["manifest_checksum"] = reviewed_plan.manifest_checksum
+            plan_data["plan_format_version"] = PLAN_FILE_VERSION
+        fmt.set_data(plan_data)
         fmt.print(deployment_plan.details())
         fmt.flush()
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    except PlanFileError as e:
+        fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
     except KeyboardInterrupt:
         fmt.print_error("Interrupted.")
         fmt.flush()
@@ -130,5 +180,3 @@ def plan(ctx: click.Context, project_dir: Optional[str], environment: Optional[s
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)
-
-

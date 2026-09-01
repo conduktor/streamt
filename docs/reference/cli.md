@@ -329,8 +329,8 @@ streamt plan [OPTIONS]
 |--------|-------------|
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
-| `--target MODEL` | Plan only for specific model |
 | `--offline` | Plan without connecting to infrastructure (assumes fresh deploy) |
+| `--out PATH` | Atomically save a deterministic reviewed-plan JSON file |
 
 **Examples:**
 
@@ -341,11 +341,11 @@ streamt plan
 # Plan for specific environment
 streamt plan --env staging
 
-# Plan specific model
-streamt plan --target order_metrics
-
 # Offline plan (no Kafka/Flink needed)
 streamt plan --offline
+
+# Save the exact reviewed actions for a later apply
+streamt plan --env staging --out staging.plan.json
 ```
 
 !!! tip "Offline Plan"
@@ -385,6 +385,7 @@ streamt apply [OPTIONS]
 | `--env ENV` | Target environment (multi-env mode) |
 | `--target MODEL` | Deploy only specific model |
 | `--select SELECTOR` | Filter by tag or selector |
+| `--plan PATH` | Verify and apply a saved reviewed-plan file |
 | `--dry-run` | Show what would be deployed |
 | `--confirm` | Skip confirmation prompt for protected environments |
 | `--confirm-env ENV` | Non-interactive confirm: pass environment name to verify (for agents/CI) |
@@ -413,7 +414,17 @@ streamt apply --target order_metrics
 
 # Deploy by tag
 streamt apply --select tag:critical
+
+# Apply the reviewed plan; target/select cannot be added after review
+streamt apply --env staging --plan staging.plan.json
 ```
+
+A reviewed plan records the project, environment fingerprint, manifest checksum,
+resource actions, ownership requirements, and an integrity checksum. `apply
+--plan` recompiles and replans before making changes, then rejects modified plans
+or drift in the project, environment, resource actions, or ownership decisions.
+The checksum detects accidental or unreviewed modification; it is not a digital
+signature and does not establish author identity.
 
 !!! warning "Protected Environments"
     When deploying to a protected environment, you must confirm interactively (by typing the environment name), use `--confirm`, or use `--confirm-env ENV` (which also verifies the environment name matches). If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.

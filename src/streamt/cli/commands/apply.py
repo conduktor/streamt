@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from pathlib import Path
+from typing import Optional, cast
 
 import click
 
@@ -22,6 +23,7 @@ from streamt.cli.helpers import (
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
+from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
 from streamt.output import StructuredError
 
 _SELECTABLE_ARTIFACT_KINDS = (
@@ -97,6 +99,12 @@ def destructive_operations_allowed(
 )
 @click.option("--force", is_flag=True, help="Override safety checks (allow destructive operations)")
 @click.option("--dry-run", is_flag=True, help="Show what would change without applying")
+@click.option(
+    "--plan",
+    "reviewed_plan_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Apply an integrity-checked reviewed plan file",
+)
 @click.pass_context
 def apply(
     ctx: click.Context,
@@ -108,6 +116,7 @@ def apply(
     confirm_env: Optional[str],
     force: bool,
     dry_run: bool,
+    reviewed_plan_path: Optional[Path],
 ) -> None:
     """Deploy the project."""
     from streamt.compiler import Compiler
@@ -119,6 +128,13 @@ def apply(
 
     fmt = make_formatter(ctx, "apply")
     project_path = get_project_path(project_dir)
+
+    if reviewed_plan_path and (target or select):
+        message = "--plan cannot be combined with --target or --select"
+        fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=message))
+        fmt.print_error(message)
+        fmt.flush()
+        sys.exit(1)
 
     try:
         parser = ProjectParser(
@@ -179,6 +195,18 @@ def apply(
 
         compiler = Compiler(project)
         manifest = compiler.compile()
+        effective_environment = (
+            parser.env_config.environment.name if parser.env_config else "default"
+        )
+        reviewed_plan = None
+        if reviewed_plan_path:
+            reviewed_plan = ReviewedPlanFile.load(reviewed_plan_path)
+            reviewed_plan.verify_context(
+                manifest,
+                project=project.project.name,
+                environment=effective_environment,
+                runtime=project.runtime,
+            )
 
         # --target / --select filtering
         if target or select:
@@ -279,8 +307,42 @@ def apply(
                 flink_deployer=flink,
                 connect_deployer=connect,
                 gateway_deployer=gateway,
+                project=project,
+                project_name=project.project.name,
+                environment=effective_environment,
             )
             deployment_plan = planner.plan()
+            if reviewed_plan:
+                reviewed_plan.verify_current_plan(deployment_plan)
+
+            if deployment_plan.is_apply_blocked is True:
+                all_requirements = [
+                    requirement.to_dict()
+                    for requirement in deployment_plan.ownership_requirements
+                ]
+                blocking_requirements = [
+                    requirement.to_dict()
+                    for requirement in deployment_plan.blocking_ownership_requirements
+                ]
+                message = (
+                    f"Apply blocked: {len(blocking_requirements)} resource(s) require an explicit "
+                    "ownership decision or adoption"
+                )
+                fmt.set_data(
+                    {
+                        "summary": deployment_plan.summary(),
+                        "ownership_requirements": all_requirements,
+                        "blocking_ownership_requirements": blocking_requirements,
+                        "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
+                    }
+                )
+                fmt.add_error(
+                    StructuredError(code=ErrorCode.OWNERSHIP_REQUIRED, message=message)
+                )
+                fmt.print(deployment_plan.details())
+                fmt.print_error(message)
+                fmt.flush()
+                sys.exit(1)
 
             # Destructive safety — only block if plan actually has deletes
             if deployment_plan.deletes > 0:
@@ -316,6 +378,7 @@ def apply(
                         "updates": deployment_plan.updates,
                         "deletes": deployment_plan.deletes,
                         "has_changes": deployment_plan.has_changes,
+                        "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
                 fmt.flush()
@@ -323,23 +386,32 @@ def apply(
                 return
 
             results = planner.apply(deployment_plan)
+            if reviewed_plan and reviewed_plan_path:
+                results["plan_checksum"] = reviewed_plan.checksum
+                results["plan_file"] = str(reviewed_plan_path.resolve())
             fmt.set_data(results)
 
-            if results["created"]:
+            created = cast(list[str], results["created"])
+            updated = cast(list[str], results["updated"])
+            unchanged = cast(list[str], results["unchanged"])
+            errors = cast(list[str], results["errors"])
+            rollback_candidates = cast(list[str], results.get("rollback_candidates", []))
+
+            if created:
                 fmt.print("\n[green]Created:[/green]")
-                for item in results["created"]:
+                for item in created:
                     fmt.print(f"  + {item}")
-            if results["updated"]:
+            if updated:
                 fmt.print("\n[yellow]Updated:[/yellow]")
-                for item in results["updated"]:
+                for item in updated:
                     fmt.print(f"  ~ {item}")
-            if results["unchanged"]:
+            if unchanged:
                 fmt.print("\n[dim]Unchanged:[/dim]")
-                for item in results["unchanged"]:
+                for item in unchanged:
                     fmt.print(f"  = {item}")
-            if results["errors"] and results.get("rollback_candidates"):
+            if errors and rollback_candidates:
                 fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
-                rolled_back, rb_errors = planner.rollback(results["rollback_candidates"])
+                rolled_back, rb_errors = planner.rollback(rollback_candidates)
                 if rolled_back:
                     results["rolled_back"] = rolled_back
                     fmt.print(f"  Rolled back {len(rolled_back)} resource(s)")
@@ -350,10 +422,10 @@ def apply(
                     fmt.print("\n[red]Rollback failures (manual cleanup needed):[/red]")
                     for item in rb_errors:
                         fmt.print_error(item)
-            if results["errors"]:
+            if errors:
                 fmt.set_status("error")
                 fmt.print("\n[red]Errors:[/red]")
-                for item in results["errors"]:
+                for item in errors:
                     fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
                     fmt.print_error(item)
                 fmt.flush()
@@ -366,6 +438,16 @@ def apply(
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    except StalePlanError as e:
+        fmt.add_error(StructuredError(code=ErrorCode.PLAN_STALE, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
+    except PlanFileError as e:
+        fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
     except KeyboardInterrupt:
         fmt.print_error("Interrupted.")
         fmt.flush()

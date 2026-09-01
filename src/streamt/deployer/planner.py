@@ -6,7 +6,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Protocol
 
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
@@ -14,8 +14,15 @@ from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
+from streamt.deployer.state import LocalState, StateIdentityError, resource_id
 
 logger = logging.getLogger(__name__)
+
+
+class _PlannedChange(Protocol):
+    """Common mutable action carried by backend-specific change records."""
+
+    action: str
 
 _SENSITIVE_KV = re.compile(
     r"(password|passwd|secret|token|api_key|apikey)\s*[=:]\s*\S+",
@@ -47,6 +54,33 @@ class ImpactEntry:
     consumers: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class OwnershipRequirement:
+    """A resource that cannot be mutated without an ownership decision."""
+
+    resource_id: str
+    kind: str
+    logical_name: str
+    physical_name: str
+    reason: str
+    observed_action: str
+    ownership_mode: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a stable machine-readable representation."""
+        return {
+            "resource_id": self.resource_id,
+            "kind": self.kind,
+            "logical_name": self.logical_name,
+            "physical_name": self.physical_name,
+            "reason": self.reason,
+            "observed_action": self.observed_action,
+            "ownership_mode": self.ownership_mode,
+            "message": self.message,
+        }
+
+
 @dataclass
 class DeploymentPlan:
     """A deployment plan."""
@@ -57,6 +91,7 @@ class DeploymentPlan:
     connector_changes: list[ConnectorChange] = field(default_factory=list)
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
     impact_radius: list[ImpactEntry] = field(default_factory=list)
+    ownership_requirements: list[OwnershipRequirement] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -86,6 +121,7 @@ class DeploymentPlan:
         return (
             sum(1 for c in self.schema_changes if c.action == "update")
             + sum(1 for c in self.topic_changes if c.action == "update")
+            + sum(1 for c in self.flink_changes if c.action == "update")
             + sum(1 for c in self.connector_changes if c.action == "update")
             + sum(1 for c in self.gateway_changes if c.action == "update")
         )
@@ -101,9 +137,39 @@ class DeploymentPlan:
             + sum(1 for c in self.gateway_changes if c.action == "delete")
         )
 
+    @property
+    def has_ownership_requirements(self) -> bool:
+        """Whether explicit ownership decisions are required before mutation."""
+        return bool(self.ownership_requirements)
+
+    @property
+    def blocking_ownership_requirements(self) -> list[OwnershipRequirement]:
+        """Requirements that must block apply until ownership is resolved.
+
+        ``external`` is an explicit observe-only decision, so it neutralizes
+        that resource without preventing unrelated managed creates or updates.
+        Every other ownership requirement is an apply blocker.
+        """
+        return [
+            requirement
+            for requirement in self.ownership_requirements
+            if requirement.reason != "external"
+        ]
+
+    @property
+    def is_apply_blocked(self) -> bool:
+        """Whether apply must refuse this plan for unresolved ownership."""
+        return bool(self.blocking_ownership_requirements)
+
     def summary(self) -> str:
         """Get a summary of the plan."""
-        return f"Plan: {self.creates} to create, {self.updates} to update, {self.deletes} to delete"
+        summary = (
+            f"Plan: {self.creates} to create, {self.updates} to update, "
+            f"{self.deletes} to delete"
+        )
+        if self.ownership_requirements:
+            summary += f", {len(self.ownership_requirements)} ownership requirement(s)"
+        return summary
 
     def details(self, color: bool = True) -> str:
         """Get detailed plan output with colored diff markers."""
@@ -149,6 +215,8 @@ class DeploymentPlan:
         for change in self.flink_changes:
             if change.action == "submit":
                 lines.append(_add(f"+ flink_job: {change.job_name}"))
+            elif change.action == "update":
+                lines.append(_upd(f"~ flink_job: {change.job_name}"))
             elif change.action == "cancel":
                 lines.append(_rm(f"- flink_job: {change.job_name}"))
 
@@ -174,6 +242,14 @@ class DeploymentPlan:
 
         if not self.has_changes:
             lines.append("No changes detected.")
+
+        if self.ownership_requirements:
+            lines.append("")
+            lines.append("Ownership Requirements:")
+            for requirement in self.ownership_requirements:
+                lines.append(f"  ! {requirement.kind}: {requirement.logical_name}")
+                lines.append(f"    {requirement.message}")
+                lines.append(f"    resource_id: {requirement.resource_id}")
 
         if self.impact_radius:
             lines.append("")
@@ -204,6 +280,9 @@ class DeploymentPlanner:
         connect_deployer: Optional[ConnectDeployer] = None,
         gateway_deployer: Optional[GatewayDeployer] = None,
         project: Optional[object] = None,
+        prior_state: Optional[LocalState] = None,
+        project_name: Optional[str] = None,
+        environment: Optional[str] = None,
     ) -> None:
         """Initialize deployment planner."""
         self.manifest = manifest
@@ -213,6 +292,111 @@ class DeploymentPlanner:
         self.connect_deployer = connect_deployer
         self.gateway_deployer = gateway_deployer
         self.project = project
+        self.prior_state = prior_state
+        self.project_name = project_name or manifest.project_name
+        self.environment = environment or (prior_state.environment if prior_state else "default")
+        if prior_state and prior_state.project != self.project_name:
+            raise StateIdentityError(
+                f"prior state belongs to project {prior_state.project!r}, "
+                f"expected {self.project_name!r}"
+            )
+        if prior_state and prior_state.environment != self.environment:
+            raise StateIdentityError(
+                f"prior state belongs to environment {prior_state.environment!r}, "
+                f"expected {self.environment!r}"
+            )
+
+    @staticmethod
+    def _resource_exists(
+        current: object,
+        observed_action: str,
+        create_actions: frozenset[str],
+    ) -> bool:
+        """Determine existence without confusing Flink re-submission with creation."""
+        if current is not None and hasattr(current, "exists"):
+            return bool(current.exists)  # type: ignore[attr-defined]
+        return observed_action not in create_actions
+
+    def _apply_ownership_policy(
+        self,
+        plan: DeploymentPlan,
+        *,
+        kind: str,
+        logical_name: str,
+        physical_name: str,
+        ownership: ArtifactOwnership | dict[str, str] | None,
+        change: _PlannedChange,
+        current: object = None,
+        create_actions: frozenset[str],
+    ) -> None:
+        """Neutralize changes that lack explicit authority over a live resource."""
+        observed_action = str(change.action)
+        parsed_ownership = ArtifactOwnership.from_dict(ownership)
+        ownership_mode = parsed_ownership.mode if parsed_ownership else "managed"
+        if parsed_ownership:
+            logical_name = parsed_ownership.owner_name
+        resource_uri = resource_id(
+            self.project_name,
+            self.environment,
+            kind,
+            logical_name,
+        )
+
+        reason: str | None = None
+        message: str | None = None
+        if parsed_ownership and parsed_ownership.project != self.project_name:
+            reason = "ownership_mismatch"
+            message = (
+                f"Artifact declares project {parsed_ownership.project!r}, but this plan is for "
+                f"{self.project_name!r}; mutation is blocked."
+            )
+        elif ownership_mode == "external":
+            reason = "external"
+            message = "Resource is declared external and is observe-only."
+        elif ownership_mode not in ("managed", "adopted"):
+            reason = "invalid_ownership"
+            message = f"Unknown ownership mode {ownership_mode!r}; mutation is blocked."
+        else:
+            prior_record = (
+                self.prior_state.resources.get(resource_uri) if self.prior_state else None
+            )
+            exists = self._resource_exists(current, observed_action, create_actions)
+            if ownership_mode == "adopted" and prior_record is None:
+                reason = "requires_adoption"
+                message = (
+                    "Declaring ownership.mode 'adopted' does not grant authority; "
+                    "matching persisted ownership state is required before mutation."
+                )
+            elif exists:
+                if prior_record is None:
+                    reason = "requires_adoption"
+                    message = (
+                        "Live resource has no matching prior streamt ownership; "
+                        "explicit adoption is required before mutation."
+                    )
+                elif prior_record.physical_name != physical_name:
+                    reason = "state_mismatch"
+                    message = (
+                        f"Prior ownership points to {prior_record.physical_name!r}, not "
+                        f"{physical_name!r}; explicit ownership reconciliation is required."
+                    )
+
+        if reason is None or message is None:
+            return
+
+        change.action = "none"
+        plan.ownership_requirements.append(
+            OwnershipRequirement(
+                resource_id=resource_uri,
+                kind=kind,
+                logical_name=logical_name,
+                physical_name=physical_name,
+                reason=reason,
+                observed_action=observed_action,
+                ownership_mode=ownership_mode,
+                message=message,
+            )
+        )
 
     def offline_plan(self) -> DeploymentPlan:
         """Create a plan assuming no current state (all creates).
@@ -239,21 +423,59 @@ class DeploymentPlanner:
                     compatibility=schema_data.get("compatibility"),
                     ownership=ArtifactOwnership.from_dict(schema_data.get("ownership")),
                 )
-                plan.schema_changes.append(SchemaChange(subject=artifact.subject, action="register", desired=artifact))
+                change = SchemaChange(
+                    subject=artifact.subject,
+                    action="register",
+                    desired=artifact,
+                )
+                self._apply_ownership_policy(
+                    plan,
+                    kind="schema",
+                    logical_name=artifact.subject,
+                    physical_name=artifact.subject,
+                    ownership=artifact.ownership,
+                    change=change,
+                    create_actions=frozenset({"register"}),
+                )
+                plan.schema_changes.append(change)
             except KeyError:
                 pass
 
         for topic_data in self.manifest.artifacts.get("topics", []):
             try:
                 artifact = TopicArtifact(**topic_data)
-                plan.topic_changes.append(TopicChange(topic=artifact.name, action="create", desired=artifact))
+                change = TopicChange(topic=artifact.name, action="create", desired=artifact)
+                self._apply_ownership_policy(
+                    plan,
+                    kind="topic",
+                    logical_name=artifact.name,
+                    physical_name=artifact.name,
+                    ownership=artifact.ownership,
+                    change=change,
+                    create_actions=frozenset({"create"}),
+                )
+                plan.topic_changes.append(change)
             except (KeyError, TypeError):
                 pass
 
         for job_data in self.manifest.artifacts.get("flink_jobs", []):
             try:
                 artifact = FlinkJobArtifact(**job_data)
-                plan.flink_changes.append(FlinkJobChange(job_name=artifact.name, action="submit", desired=artifact))
+                change = FlinkJobChange(
+                    job_name=artifact.name,
+                    action="submit",
+                    desired=artifact,
+                )
+                self._apply_ownership_policy(
+                    plan,
+                    kind="flink_job",
+                    logical_name=artifact.name,
+                    physical_name=artifact.name,
+                    ownership=artifact.ownership,
+                    change=change,
+                    create_actions=frozenset({"submit"}),
+                )
+                plan.flink_changes.append(change)
             except (KeyError, TypeError):
                 pass
 
@@ -267,7 +489,21 @@ class DeploymentPlanner:
                     config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
                     ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
                 )
-                plan.connector_changes.append(ConnectorChange(connector_name=artifact.name, action="create", desired=artifact))
+                change = ConnectorChange(
+                    connector_name=artifact.name,
+                    action="create",
+                    desired=artifact,
+                )
+                self._apply_ownership_policy(
+                    plan,
+                    kind="connector",
+                    logical_name=artifact.name,
+                    physical_name=artifact.name,
+                    ownership=artifact.ownership,
+                    change=change,
+                    create_actions=frozenset({"create"}),
+                )
+                plan.connector_changes.append(change)
             except KeyError:
                 pass
 
@@ -280,7 +516,21 @@ class DeploymentPlanner:
                     interceptors=rule_data.get("interceptors", []),
                     ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
                 )
-                plan.gateway_changes.append(GatewayRuleChange(name=artifact.name, action="create", desired=artifact))
+                change = GatewayRuleChange(
+                    name=artifact.name,
+                    action="create",
+                    desired=artifact,
+                )
+                self._apply_ownership_policy(
+                    plan,
+                    kind="gateway_rule",
+                    logical_name=artifact.name,
+                    physical_name=artifact.virtual_topic,
+                    ownership=artifact.ownership,
+                    change=change,
+                    create_actions=frozenset({"create"}),
+                )
+                plan.gateway_changes.append(change)
             except KeyError:
                 pass
 
@@ -304,6 +554,16 @@ class DeploymentPlanner:
                         ownership=ArtifactOwnership.from_dict(schema_data.get("ownership")),
                     )
                     change = self.schema_registry_deployer.plan_schema(artifact)
+                    self._apply_ownership_policy(
+                        plan,
+                        kind="schema",
+                        logical_name=artifact.subject,
+                        physical_name=artifact.subject,
+                        ownership=artifact.ownership,
+                        change=change,
+                        current=change.current,
+                        create_actions=frozenset({"register"}),
+                    )
                     plan.schema_changes.append(change)
                 except KeyError as e:
                     logger.error("Malformed schema artifact, missing key %s: %s", e, schema_data)
@@ -316,6 +576,16 @@ class DeploymentPlanner:
                 try:
                     artifact = TopicArtifact(**topic_data)
                     change = self.kafka_deployer.plan_topic(artifact)
+                    self._apply_ownership_policy(
+                        plan,
+                        kind="topic",
+                        logical_name=artifact.name,
+                        physical_name=artifact.name,
+                        ownership=artifact.ownership,
+                        change=change,
+                        current=change.current,
+                        create_actions=frozenset({"create"}),
+                    )
                     plan.topic_changes.append(change)
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed topic artifact: %s in %s", e, topic_data)
@@ -328,6 +598,16 @@ class DeploymentPlanner:
                 try:
                     artifact = FlinkJobArtifact(**job_data)
                     change = self.flink_deployer.plan_job(artifact)
+                    self._apply_ownership_policy(
+                        plan,
+                        kind="flink_job",
+                        logical_name=artifact.name,
+                        physical_name=artifact.name,
+                        ownership=artifact.ownership,
+                        change=change,
+                        current=change.current,
+                        create_actions=frozenset({"submit"}),
+                    )
                     plan.flink_changes.append(change)
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed flink_job artifact: %s in %s", e, job_data)
@@ -351,6 +631,16 @@ class DeploymentPlanner:
                         ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
                     )
                     change = self.connect_deployer.plan_connector(artifact)
+                    self._apply_ownership_policy(
+                        plan,
+                        kind="connector",
+                        logical_name=artifact.name,
+                        physical_name=artifact.name,
+                        ownership=artifact.ownership,
+                        change=change,
+                        current=change.current,
+                        create_actions=frozenset({"create"}),
+                    )
                     plan.connector_changes.append(change)
                 except KeyError as e:
                     logger.error("Malformed connector artifact, missing key %s: %s", e, conn_data)
@@ -369,6 +659,16 @@ class DeploymentPlanner:
                         ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
                     )
                     change = self.gateway_deployer.plan(artifact)
+                    self._apply_ownership_policy(
+                        plan,
+                        kind="gateway_rule",
+                        logical_name=artifact.name,
+                        physical_name=artifact.virtual_topic,
+                        ownership=artifact.ownership,
+                        change=change,
+                        current=change.current_alias,
+                        create_actions=frozenset({"create"}),
+                    )
                     plan.gateway_changes.append(change)
                 except KeyError as e:
                     logger.error(
