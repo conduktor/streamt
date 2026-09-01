@@ -7,8 +7,9 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 
 ## Status — 2026-09-01
 
-- Milestone A immediate safety stop: implemented. Persisted ownership state and
-  an explicit destroy workflow remain separate Phase 0 work.
+- Milestone A immediate safety stop: implemented. Environment-scoped local
+  ownership state is now persisted after successful direct applies; remote
+  state, locking, explicit adoption, and an explicit destroy workflow remain.
 - Milestone B strict public contract: implemented with `streamt.dev/v1alpha1`
   and parser-backed documentation validation.
 - Milestone C CLI reliability: the broken observe and sample-test paths are
@@ -16,6 +17,9 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 - Milestone D CI gates: unit/scenario matrices, strict docs, wheel installation,
   Ruff, and a mypy non-regression baseline are implemented. Trusted publishing
   and the first public alpha release remain open.
+- Phase 1 foundations now include live Schema Registry reference and
+  compatibility validation, deterministic reviewed plan files, and a
+  validate/plan-only first-party GitHub Action.
 
 ## Work order
 
@@ -81,9 +85,10 @@ Verification:
 
 ## Following milestone
 
-After A-D, implement the minimum viable change-impact plan in
-`docs/specs/change-impact-plan.md`, beginning with real Schema Registry
-resolution and explicit import/adoption.
+Continue the minimum viable change-impact plan in
+`docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
+plan artifacts are implemented; explicit import/adoption and richer impact
+classification are next.
 
 ## Commit strategy
 

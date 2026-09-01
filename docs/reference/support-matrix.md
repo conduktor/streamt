@@ -1,13 +1,14 @@
 # Integration support
 
 This page distinguishes working integration paths from configuration that is
-only planned. "Direct apply" means streamt currently owns the API calls; it
-does not imply persisted state, locking, or production-safe stateful upgrades.
+only planned. "Direct apply" means streamt currently owns the API calls. Local
+ownership state is persisted for development use, but remote locking and
+production-safe stateful upgrades are not implemented.
 
 | System | Compile | Observe or discover | Direct plan/apply | Current boundary |
 | --- | --- | --- | --- | --- |
-| Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag | Topics | Deletion by absence is disabled; no persisted ownership state yet. |
-| Confluent Schema Registry / compatible API | Yes | Subjects during discovery | Register source schemas | Live references and compatibility resolution are not implemented yet. |
+| Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag | Topics | Local ownership state is supported; deletion by absence and shared-CI locking are disabled. |
+| Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility | Register source schemas | Validation is read-only; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit, update, cancel | Savepoint-aware state migration is not yet a safe workflow. |
 | Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Rule state | Virtual-topic interceptor rules | Console catalog publication is a separate planned integration. |
@@ -25,17 +26,15 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Schema Registry subject/version/reference resolution and compatibility
-   checks during validation and planning.
-2. A GitHub Action that publishes the deterministic change-impact plan on pull
-   requests.
-3. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
+1. Explicit resource import and adoption, followed by remote ownership state
+   and locking for shared deployment workflows.
+2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
    output, and Flink Kubernetes Operator resources.
-4. Confluent Cloud Flink Statements as an explicit backend rather than a
+3. Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
-5. OpenLineage events, Conduktor Console metadata publication, and portable
+4. OpenLineage events, Conduktor Console metadata publication, and portable
    catalog exports.
-6. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
+5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
    actions for runtime policy evaluation.
 
 See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the

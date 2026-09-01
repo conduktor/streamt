@@ -34,9 +34,11 @@ Target: the CLI is truthful and safe enough to evaluate against a shared
 development cluster.
 
 - [x] Disable automatic deletion of resources merely absent from a manifest.
-- [ ] Introduce explicit `external`, `managed`, and `adopted` ownership modes.
-- [ ] Persist the last applied state and delete only previously managed
-      resources through an explicit destructive workflow.
+- [x] Introduce explicit `external`, `managed`, and `adopted` ownership modes.
+- [x] Persist environment-scoped local last-applied ownership state for direct
+      development applies.
+- [ ] Delete only previously managed resources through an explicit destructive
+      workflow backed by remote state and locking.
 - [x] Fix `apply --target` and `apply --select` so selection happens using
       artifact ownership metadata.
 - [x] Default destructive operations to disabled.
@@ -59,17 +61,19 @@ Target: streamt provides immediate value in pull requests before it is allowed
 to deploy anything.
 
 - [ ] Add `streamt import` and `streamt adopt` for incremental adoption.
-- [ ] Resolve Schema Registry subjects, versions, references, and compatibility
+- [x] Resolve Schema Registry subjects, versions, references, and compatibility
       rules during validation.
-- [ ] Compare the desired project with both the last applied manifest and live
+- [x] Compare the desired project with both the last applied manifest and live
       infrastructure.
 - [ ] Classify changes as safe, risky, destructive, schema-breaking, or
       state-migration-requiring.
 - [ ] Include downstream models, exposures, owners, and live consumer groups in
       impact analysis.
-- [ ] Emit a deterministic plan file with a checksum and require `apply` to use
-      the reviewed plan.
-- [ ] Ship a first-party GitHub Action with PR summaries and machine-readable
+- [x] Emit a deterministic plan file with an integrity checksum and reject it
+      when project, environment, ownership state, or live actions drift.
+- [ ] Require protected/shared-environment `apply` workflows to use a reviewed
+      plan.
+- [x] Ship a first-party GitHub Action with job summaries and machine-readable
       annotations.
 
 Exit criterion: a breaking schema or stateful SQL change produces a reviewable

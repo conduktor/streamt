@@ -75,6 +75,8 @@ The last applied state records only resources streamt owns or has adopted:
 Local state is acceptable for development but must warn that it is unsuitable
 for shared CI. A production direct-apply backend requires remote state and
 locking. External deployment backends may use their own state authority.
+Local snapshots are isolated by environment at
+`.streamt/state/<environment>.json`.
 
 ## Planning algorithm
 
@@ -145,6 +147,7 @@ forbids them entirely.
 
 ## Immediate compatibility behavior
 
-Until persistent ownership state is implemented, automatic orphan detection is
-disabled. This intentionally trades cleanup convenience for safety.
-
+Local ownership state is persisted after successful direct applies. Automatic
+orphan deletion remains disabled until removal is an explicit, reviewed
+workflow backed by state appropriate to the deployment environment. This
+intentionally trades cleanup convenience for safety.

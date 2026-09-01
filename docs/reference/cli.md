@@ -420,11 +420,19 @@ streamt apply --env staging --plan staging.plan.json
 ```
 
 A reviewed plan records the project, environment fingerprint, manifest checksum,
-resource actions, ownership requirements, and an integrity checksum. `apply
---plan` recompiles and replans before making changes, then rejects modified plans
-or drift in the project, environment, resource actions, or ownership decisions.
+ownership-state serial, resource actions, ownership requirements, and an
+integrity checksum. `apply --plan` recompiles and replans before making changes,
+then rejects modified plans or drift in the project, environment, ownership
+state, resource actions, or ownership decisions.
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
+
+After a successful non-dry-run apply, streamt atomically records resources it
+manages or has adopted in `.streamt/state/<environment>.json`. External,
+unowned, and ownership-blocked resources are never recorded. Local state is
+appropriate for a single-user development checkout only: shared CI needs a
+remote state backend with locking, which is not yet supported. Failed and
+rolled-back applies do not advance state.
 
 !!! warning "Protected Environments"
     When deploying to a protected environment, you must confirm interactively (by typing the environment name), use `--confirm`, or use `--confirm-env ENV` (which also verifies the environment name matches). If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
@@ -1052,6 +1060,10 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E405_SSL_ERROR` | SSL/TLS connection error |
 | `E406_CONNECTION_REFUSED` | Connection refused by service |
 | `E407_DEPLOY_ERROR` | General deployment error |
+| `E408_PLAN_FILE_INVALID` | Reviewed plan is malformed or its integrity checksum fails |
+| `E409_PLAN_STALE` | Project, environment, ownership state, or live actions drifted after review |
+| `E410_OWNERSHIP_REQUIRED` | A live resource needs an explicit ownership decision or adoption |
+| `E411_STATE_INVALID` | Local ownership state is malformed or belongs to another context |
 
 **Parse Errors (E5xx):**
 
@@ -1076,6 +1088,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `W103_MISSING_REF_COLUMN` | Referenced model column not found |
 | `W104_RULE_MAX_RETENTION` | Topic retention exceeds governance limit |
 | `W105_RULE_INVALID_OWNER` | Owner not in allowed owners list |
+| `W106_LOCAL_STATE_ONLY` | Local ownership state is unsafe for shared CI without remote locking |
 | `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
 | `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
 | `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |
