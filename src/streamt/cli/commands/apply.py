@@ -52,7 +52,7 @@ def _artifact_is_selected(
 ) -> bool:
     """Return whether explicit artifact ownership is inside the selection."""
     ownership = ArtifactOwnership.from_dict(artifact.get("ownership"))
-    if not ownership or ownership.mode != "managed":
+    if not ownership or ownership.mode not in ("managed", "adopted"):
         return False
     if ownership.owner_type == "model":
         return ownership.owner_name in selected_models

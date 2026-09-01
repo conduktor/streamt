@@ -91,7 +91,50 @@ class TestSelectiveManifestFiltering:
             "upstream_rule"
         ]
 
-    def test_non_managed_and_unowned_artifacts_are_not_selected(self):
+    def test_adopted_model_and_source_artifacts_are_selected(self):
+        manifest = Manifest(
+            version="1.0",
+            project_name="payments",
+            artifacts={
+                "schemas": [
+                    {
+                        "subject": "raw-value",
+                        "ownership": _ownership("source", "raw", mode="adopted"),
+                    },
+                    {
+                        "subject": "external-value",
+                        "ownership": _ownership(
+                            "source", "raw", mode="external"
+                        ),
+                    },
+                ],
+                "topics": [
+                    {
+                        "name": "target",
+                        "ownership": _ownership("model", "target", mode="adopted"),
+                    },
+                    {
+                        "name": "external",
+                        "ownership": _ownership(
+                            "model", "target", mode="external"
+                        ),
+                    },
+                ],
+            },
+        )
+
+        filter_manifest_for_selection(
+            manifest,
+            selected_models={"target"},
+            selected_sources={"raw"},
+        )
+
+        assert [schema["subject"] for schema in manifest.artifacts["schemas"]] == [
+            "raw-value"
+        ]
+        assert [topic["name"] for topic in manifest.artifacts["topics"]] == ["target"]
+
+    def test_external_and_unowned_artifacts_are_not_selected(self):
         manifest = Manifest(
             version="1.0",
             project_name="payments",
