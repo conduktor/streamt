@@ -49,6 +49,7 @@ htmlcov/
 # Generated
 generated/
 site/
+.streamt/
 
 # Orchestrator analysis (implementation detail)
 .orchestrator/

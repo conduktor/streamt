@@ -22,6 +22,13 @@ from streamt.cli.helpers import (
 )
 from streamt.core.errors import ErrorCode
 from streamt.deployer.plan_file import PLAN_FILE_VERSION, PlanFileError, ReviewedPlanFile
+from streamt.deployer.state import (
+    LOCAL_STATE_CI_WARNING,
+    LocalState,
+    StateError,
+    load_local_state,
+    local_state_path,
+)
 from streamt.output import StructuredError
 
 
@@ -59,8 +66,13 @@ def plan(
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
+        parsed_environment = (
+            parser.env_config.environment.name if parser.env_config else None
+        )
         effective_environment = (
-            parser.env_config.environment.name if parser.env_config else "default"
+            parsed_environment
+            if isinstance(parsed_environment, str) and parsed_environment
+            else "default"
         )
 
         validator = ProjectValidator(project)
@@ -74,6 +86,7 @@ def plan(
 
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
+        prior_state: LocalState | None = None
 
         if offline:
             planner = DeploymentPlanner(
@@ -86,6 +99,17 @@ def plan(
 
             fmt.print("[yellow]Offline plan — assumes no existing resources[/yellow]\n")
         else:
+            prior_state = load_local_state(
+                project_path,
+                project=project.project.name,
+                environment=effective_environment,
+            )
+            fmt.print_warning(
+                f"{LOCAL_STATE_CI_WARNING} State file: "
+                f"{local_state_path(project_path, environment=effective_environment)}",
+                code=ErrorCode.LOCAL_STATE_ONLY,
+            )
+
             # Create deployers
             sr_deployer = make_sr_deployer(project, fmt)
             kafka_deployer = make_kafka_deployer(project, fmt)
@@ -108,6 +132,7 @@ def plan(
                     connect_deployer=connect_deployer,
                     gateway_deployer=gateway_deployer,
                     project=project,
+                    prior_state=prior_state,
                     project_name=project.project.name,
                     environment=effective_environment,
                 )
@@ -139,6 +164,7 @@ def plan(
             "updates": deployment_plan.updates,
             "deletes": deployment_plan.deletes,
             "has_changes": deployment_plan.has_changes,
+            "state_serial": prior_state.serial if prior_state is not None else None,
             "changes": changes,
             "ownership_requirements": [
                 requirement.to_dict()
@@ -153,6 +179,7 @@ def plan(
                 environment=effective_environment,
                 runtime=project.runtime,
                 offline=offline,
+                state_serial=prior_state.serial if prior_state is not None else None,
             )
             reviewed_plan.save(plan_output)
             fmt.print(f"[green]Saved reviewed plan to {plan_output.resolve()}[/green]")
@@ -168,6 +195,11 @@ def plan(
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
     except PlanFileError as e:
         fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
+    except StateError as e:
+        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=str(e)))
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)

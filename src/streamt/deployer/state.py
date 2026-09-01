@@ -15,10 +15,21 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from streamt.compiler.manifest import ArtifactOwnership
+
+if TYPE_CHECKING:
+    from streamt.deployer.planner import DeploymentPlan
 
 CURRENT_STATE_VERSION = 1
+LOCAL_STATE_RELATIVE_DIR = Path(".streamt/state")
+LOCAL_STATE_CI_WARNING = (
+    "Local ownership state is for single-user development only and is unsuitable "
+    "for shared CI. Remote state and locking are not yet supported."
+)
 _CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ENVIRONMENT_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]*$")
 
 
 class StateError(ValueError):
@@ -46,6 +57,17 @@ def _require_segment(value: object, label: str) -> str:
     return value
 
 
+def _require_environment(value: object) -> str:
+    """Validate an environment name for identity and safe path construction."""
+    environment = _require_segment(value, "environment")
+    if not _ENVIRONMENT_PATTERN.fullmatch(environment):
+        raise StateFormatError(
+            "environment must start with an alphanumeric character and contain "
+            "only alphanumeric characters or hyphens"
+        )
+    return environment
+
+
 @dataclass(frozen=True, order=True)
 class ResourceIdentity:
     """Stable logical identity for one runtime resource."""
@@ -57,7 +79,7 @@ class ResourceIdentity:
 
     def __post_init__(self) -> None:
         _require_segment(self.project, "project")
-        _require_segment(self.environment, "environment")
+        _require_environment(self.environment)
         _require_segment(self.kind, "kind")
         _require_segment(self.logical_name, "logical_name")
 
@@ -184,7 +206,7 @@ class LocalState:
 
     def __post_init__(self) -> None:
         _require_segment(self.project, "project")
-        _require_segment(self.environment, "environment")
+        _require_environment(self.environment)
         if type(self.state_version) is not int or self.state_version != CURRENT_STATE_VERSION:
             raise StateVersionError(
                 f"unsupported state version {self.state_version!r}; "
@@ -243,7 +265,7 @@ class LocalState:
                 f"unsupported state version {version!r}; expected {CURRENT_STATE_VERSION}"
             )
         project = _require_segment(data["project"], "project")
-        environment = _require_segment(data["environment"], "environment")
+        environment = _require_environment(data["environment"])
         if expected_project is not None and project != expected_project:
             raise StateIdentityError(
                 f"state belongs to project {project!r}, expected {expected_project!r}"
@@ -302,11 +324,23 @@ class LocalState:
         expected_environment: str | None = None,
     ) -> LocalState:
         """Load and validate a persisted state snapshot."""
+        def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise StateFormatError(f"state contains duplicate field {key!r}")
+                result[key] = value
+            return result
+
         try:
             with Path(path).open(encoding="utf-8") as handle:
-                data = json.load(handle)
+                data = json.load(handle, object_pairs_hook=reject_duplicates)
+        except StateFormatError:
+            raise
         except json.JSONDecodeError as exc:
             raise StateFormatError(f"state is not valid JSON: {exc}") from exc
+        except (OSError, UnicodeError) as exc:
+            raise StateFormatError(f"cannot read state file {str(path)!r}: {exc}") from exc
         return cls.from_dict(
             data,
             expected_project=expected_project,
@@ -347,3 +381,173 @@ class LocalState:
                 )
             result.add(identity.uri)
         return result
+
+
+def local_state_path(project_path: Path, *, environment: str) -> Path:
+    """Return the deterministic environment-namespaced state path."""
+    validated_environment = _require_environment(environment)
+    return Path(project_path) / LOCAL_STATE_RELATIVE_DIR / f"{validated_environment}.json"
+
+
+def load_local_state(
+    project_path: Path,
+    *,
+    project: str,
+    environment: str,
+) -> LocalState:
+    """Load strict local state, or return a new in-memory serial-zero snapshot."""
+    path = local_state_path(project_path, environment=environment)
+    if not path.exists():
+        return LocalState(project=project, environment=environment)
+    return LocalState.load(
+        path,
+        expected_project=project,
+        expected_environment=environment,
+    )
+
+
+def _add_desired_record(
+    resources: dict[str, ManagedResourceRecord],
+    *,
+    project: str,
+    environment: str,
+    kind: str,
+    physical_name: str,
+    backend: str,
+    artifact: object,
+    blocked_resource_ids: set[str],
+) -> None:
+    """Add one explicitly owned, successfully plannable desired artifact."""
+    if artifact is None or not hasattr(artifact, "to_dict"):
+        return
+    raw_artifact = artifact.to_dict()
+    if not isinstance(raw_artifact, dict):
+        raise StateFormatError(f"desired {kind} artifact must serialize to an object")
+    ownership = ArtifactOwnership.from_dict(raw_artifact.get("ownership"))
+    if (
+        ownership is None
+        or ownership.project != project
+        or ownership.mode not in ("managed", "adopted")
+    ):
+        return
+
+    identity = resource_id(project, environment, kind, ownership.owner_name)
+    if identity in blocked_resource_ids:
+        return
+    record = ManagedResourceRecord(
+        physical_name=physical_name,
+        ownership=ownership.mode,  # type: ignore[arg-type]
+        artifact_checksum=artifact_checksum(raw_artifact),
+        backend=backend,
+    )
+    existing = resources.get(identity)
+    if existing is not None and existing != record:
+        raise StateFormatError(
+            f"multiple desired resources resolve to stable identity {identity!r}"
+        )
+    resources[identity] = record
+
+
+def desired_managed_records(
+    plan: DeploymentPlan,
+    *,
+    project: str,
+    environment: str,
+) -> dict[str, ManagedResourceRecord]:
+    """Build records only for explicitly owned desired resources in a live plan."""
+    resources: dict[str, ManagedResourceRecord] = {}
+    blocked_resource_ids = {
+        requirement.resource_id
+        for requirement in getattr(plan, "ownership_requirements", [])
+    }
+
+    for schema_change in getattr(plan, "schema_changes", []):
+        _add_desired_record(
+            resources,
+            project=project,
+            environment=environment,
+            kind="schema",
+            physical_name=schema_change.subject,
+            backend="schema-registry",
+            artifact=schema_change.desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+    for topic_change in getattr(plan, "topic_changes", []):
+        _add_desired_record(
+            resources,
+            project=project,
+            environment=environment,
+            kind="topic",
+            physical_name=topic_change.topic,
+            backend="direct-kafka",
+            artifact=topic_change.desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+    for flink_change in getattr(plan, "flink_changes", []):
+        _add_desired_record(
+            resources,
+            project=project,
+            environment=environment,
+            kind="flink_job",
+            physical_name=flink_change.job_name,
+            backend="flink",
+            artifact=flink_change.desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+    for connector_change in getattr(plan, "connector_changes", []):
+        _add_desired_record(
+            resources,
+            project=project,
+            environment=environment,
+            kind="connector",
+            physical_name=connector_change.connector_name,
+            backend="kafka-connect",
+            artifact=connector_change.desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+    for gateway_change in getattr(plan, "gateway_changes", []):
+        desired = gateway_change.desired
+        physical_name = (
+            desired.virtual_topic if desired is not None else gateway_change.name
+        )
+        _add_desired_record(
+            resources,
+            project=project,
+            environment=environment,
+            kind="gateway_rule",
+            physical_name=physical_name,
+            backend="conduktor-gateway",
+            artifact=desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+    return resources
+
+
+def updated_local_state(
+    prior_state: LocalState,
+    plan: DeploymentPlan,
+) -> LocalState | None:
+    """Return serial+1 state when desired owned records changed, else ``None``.
+
+    Prior records absent from the desired plan are intentionally retained. This
+    helper never infers deletion or ownership relinquishment from absence.
+    """
+    desired = desired_managed_records(
+        plan,
+        project=prior_state.project,
+        environment=prior_state.environment,
+    )
+    resources = dict(prior_state.resources)
+    changed = False
+    for identity, record in desired.items():
+        if resources.get(identity) != record:
+            resources[identity] = record
+            changed = True
+    if not changed:
+        return None
+    return LocalState(
+        project=prior_state.project,
+        environment=prior_state.environment,
+        serial=prior_state.serial + 1,
+        resources=resources,
+    )

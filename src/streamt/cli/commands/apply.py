@@ -24,6 +24,14 @@ from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
+from streamt.deployer.state import (
+    LOCAL_STATE_CI_WARNING,
+    StateError,
+    StateFormatError,
+    load_local_state,
+    local_state_path,
+    updated_local_state,
+)
 from streamt.output import StructuredError
 
 _SELECTABLE_ARTIFACT_KINDS = (
@@ -195,8 +203,26 @@ def apply(
 
         compiler = Compiler(project)
         manifest = compiler.compile()
+        parsed_environment = (
+            parser.env_config.environment.name if parser.env_config else None
+        )
         effective_environment = (
-            parser.env_config.environment.name if parser.env_config else "default"
+            parsed_environment
+            if isinstance(parsed_environment, str) and parsed_environment
+            else "default"
+        )
+        prior_state = load_local_state(
+            project_path,
+            project=project.project.name,
+            environment=effective_environment,
+        )
+        state_path = local_state_path(
+            project_path,
+            environment=effective_environment,
+        )
+        fmt.print_warning(
+            f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
+            code=ErrorCode.LOCAL_STATE_ONLY,
         )
         reviewed_plan = None
         if reviewed_plan_path:
@@ -206,6 +232,7 @@ def apply(
                 project=project.project.name,
                 environment=effective_environment,
                 runtime=project.runtime,
+                state_serial=None if reviewed_plan.offline else prior_state.serial,
             )
 
         # --target / --select filtering
@@ -308,6 +335,7 @@ def apply(
                 connect_deployer=connect,
                 gateway_deployer=gateway,
                 project=project,
+                prior_state=prior_state,
                 project_name=project.project.name,
                 environment=effective_environment,
             )
@@ -385,6 +413,7 @@ def apply(
                 close_deployers(sr, kafka, flink, connect, gateway)
                 return
 
+            next_state = updated_local_state(prior_state, deployment_plan)
             results = planner.apply(deployment_plan)
             if reviewed_plan and reviewed_plan_path:
                 results["plan_checksum"] = reviewed_plan.checksum
@@ -431,6 +460,18 @@ def apply(
                 fmt.flush()
                 sys.exit(1)
 
+            if next_state is not None:
+                try:
+                    next_state.save(state_path)
+                except OSError as error:
+                    raise StateFormatError(
+                        f"deployment succeeded but local ownership state could not be saved: {error}"
+                    ) from error
+                results["state_serial"] = next_state.serial
+                results["state_file"] = str(state_path)
+            else:
+                results["state_serial"] = prior_state.serial
+
             fmt.print("\n[green]Apply complete[/green]")
             fmt.flush()
         finally:
@@ -445,6 +486,11 @@ def apply(
         sys.exit(1)
     except PlanFileError as e:
         fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
+    except StateError as e:
+        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=str(e)))
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)

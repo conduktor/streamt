@@ -8,6 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from streamt.compiler.manifest import ArtifactOwnership, TopicArtifact
+from streamt.deployer.kafka import TopicChange
+from streamt.deployer.planner import DeploymentPlan
 from streamt.deployer.state import (
     CURRENT_STATE_VERSION,
     LocalState,
@@ -17,7 +20,10 @@ from streamt.deployer.state import (
     StateIdentityError,
     StateVersionError,
     artifact_checksum,
+    desired_managed_records,
+    local_state_path,
     resource_id,
+    updated_local_state,
 )
 
 
@@ -76,7 +82,7 @@ class TestStableResourceIdentity:
 
 class TestStatePersistence:
     def test_atomic_save_and_load_round_trip(self, tmp_path: Path):
-        path = tmp_path / ".streamt" / "state.json"
+        path = local_state_path(tmp_path, environment="prod")
         state = _state()
 
         state.save(path)
@@ -89,6 +95,17 @@ class TestStatePersistence:
         assert loaded == state
         assert json.loads(path.read_text())["state_version"] == CURRENT_STATE_VERSION
         assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+    def test_state_paths_are_environment_namespaced_and_filename_safe(self, tmp_path: Path):
+        assert local_state_path(tmp_path, environment="dev") == (
+            tmp_path / ".streamt" / "state" / "dev.json"
+        )
+        assert local_state_path(tmp_path, environment="prod") != local_state_path(
+            tmp_path,
+            environment="dev",
+        )
+        with pytest.raises(StateFormatError, match="environment"):
+            local_state_path(tmp_path, environment="../prod")
 
     def test_failed_atomic_replace_preserves_prior_state(self, tmp_path: Path):
         path = tmp_path / "state.json"
@@ -181,3 +198,78 @@ class TestRemovalCandidates:
 
         with pytest.raises(StateIdentityError, match="does not belong"):
             _state().removal_candidates({other})
+
+
+class TestStateUpdates:
+    @staticmethod
+    def _plan(*, mode: str = "managed", partitions: int = 3) -> DeploymentPlan:
+        ownership = ArtifactOwnership(
+            project="payments",
+            owner_type="model",
+            owner_name="payments_clean",
+            mode=mode,
+        )
+        artifact = TopicArtifact(
+            name="payments.clean.v1",
+            partitions=partitions,
+            replication_factor=1,
+            ownership=ownership,
+        )
+        return DeploymentPlan(
+            topic_changes=[
+                TopicChange(
+                    topic=artifact.name,
+                    action="create",
+                    desired=artifact,
+                )
+            ]
+        )
+
+    def test_update_advances_serial_and_retains_absent_prior_records(self):
+        prior = _state(serial=4)
+        prior_schema_ids = {
+            identity for identity in prior.resources if "/schema/" in identity
+        }
+
+        updated = updated_local_state(prior, self._plan(partitions=6))
+
+        assert updated is not None
+        assert updated.serial == 5
+        assert prior_schema_ids <= set(updated.resources)
+
+    def test_unchanged_records_do_not_advance_serial(self):
+        plan = self._plan()
+        records = desired_managed_records(
+            plan,
+            project="payments",
+            environment="prod",
+        )
+        prior = LocalState(
+            project="payments",
+            environment="prod",
+            serial=2,
+            resources=records,
+        )
+
+        assert updated_local_state(prior, plan) is None
+
+    def test_external_and_unowned_artifacts_are_not_recorded(self):
+        external = self._plan(mode="external")
+        unowned_artifact = TopicArtifact(
+            name="legacy.v1",
+            partitions=1,
+            replication_factor=1,
+        )
+        external.topic_changes.append(
+            TopicChange(
+                topic=unowned_artifact.name,
+                action="create",
+                desired=unowned_artifact,
+            )
+        )
+
+        assert desired_managed_records(
+            external,
+            project="payments",
+            environment="prod",
+        ) == {}

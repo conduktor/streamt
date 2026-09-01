@@ -411,6 +411,7 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
         project=project.project.name,
         environment="default",
         runtime=project.runtime,
+        state_serial=0,
     )
     plan_path = tmp_path / "blocked.plan.json"
     reviewed.save(plan_path)
