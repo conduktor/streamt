@@ -6,7 +6,7 @@ import sys
 
 from mypy import api
 
-MAX_ERRORS = 246
+MAX_ERRORS = 176
 
 
 def main() -> int:
