@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+import requests
 import yaml
 from click.testing import CliRunner, Result
 
 from streamt.cli import main
+from streamt.cli.commands.import_cmd import (
+    ImportCommandError,
+    _install_no_replace,
+    _write_all,
+    _write_exclusive,
+)
 from streamt.core.errors import ErrorCode
 from streamt.core.parser import ProjectParser
 from streamt.deployer.kafka import TopicState
@@ -20,8 +29,14 @@ from streamt.discovery import DiscoveredTopic
 class FakeKafkaReader:
     """Read-only fake: it deliberately exposes no mutation methods or admin client."""
 
-    def __init__(self, topics: list[str]) -> None:
+    def __init__(
+        self,
+        topics: list[str],
+        *,
+        states: dict[str, TopicState | Exception] | None = None,
+    ) -> None:
         self.topics = topics
+        self.states = states or {}
         self.calls: list[tuple[str, str | None]] = []
         self.close_count = 0
 
@@ -31,6 +46,18 @@ class FakeKafkaReader:
 
     def get_topic_state(self, topic_name: str) -> TopicState:
         self.calls.append(("get_topic_state", topic_name))
+        return self._state(topic_name)
+
+    def get_topic_metadata_state(self, topic_name: str) -> TopicState:
+        self.calls.append(("get_topic_metadata_state", topic_name))
+        return self._state(topic_name)
+
+    def _state(self, topic_name: str) -> TopicState:
+        configured = self.states.get(topic_name)
+        if isinstance(configured, Exception):
+            raise configured
+        if configured is not None:
+            return configured
         return TopicState(
             name=topic_name,
             exists=True,
@@ -43,21 +70,34 @@ class FakeKafkaReader:
 
 
 class FakeSchemaReader:
-    def __init__(self, states: dict[str, SchemaState], *, unavailable: bool = False) -> None:
+    def __init__(
+        self,
+        states: dict[str, SchemaState | Exception],
+        *,
+        list_denied: bool = False,
+    ) -> None:
         self.states = states
-        self.unavailable = unavailable
-        self.calls: list[tuple[str, str | None]] = []
+        self.list_denied = list_denied
+        self.calls: list[tuple[object, ...]] = []
         self.close_count = 0
 
     def list_subjects(self) -> list[str]:
-        self.calls.append(("list_subjects", None))
-        if self.unavailable:
-            raise RuntimeError("unavailable")
+        self.calls.append(("list_subjects",))
+        if self.list_denied:
+            raise PermissionError("subject listing denied")
         return sorted(self.states)
 
-    def get_schema_state(self, subject: str) -> SchemaState:
-        self.calls.append(("get_schema_state", subject))
-        return self.states.get(subject, SchemaState(subject=subject, exists=False))
+    def get_schema_state(
+        self,
+        subject: str,
+        *,
+        include_compatibility: bool = True,
+    ) -> SchemaState:
+        self.calls.append(("get_schema_state", subject, include_compatibility))
+        configured = self.states.get(subject)
+        if isinstance(configured, Exception):
+            raise configured
+        return configured or SchemaState(subject=subject, exists=False)
 
     def close(self) -> None:
         self.close_count += 1
@@ -69,6 +109,7 @@ def _write_project(
     sources: list[dict[str, object]] | None = None,
     models: list[dict[str, object]] | None = None,
     schema_registry: bool = False,
+    rules: dict[str, object] | None = None,
 ) -> None:
     runtime: dict[str, object] = {
         "kafka": {
@@ -94,6 +135,8 @@ def _write_project(
         config["sources"] = sources
     if models:
         config["models"] = models
+    if rules:
+        config["rules"] = rules
     (path / "stream_project.yml").write_text(yaml.safe_dump(config, sort_keys=False))
 
 
@@ -182,9 +225,9 @@ def test_import_writes_only_new_external_sources_in_stable_order(tmp_path: Path)
     ]
     assert kafka.calls == [
         ("list_topic_names", None),
-        ("get_topic_state", "a.events"),
-        ("get_topic_state", "orders"),
-        ("get_topic_state", "z.events"),
+        ("get_topic_metadata_state", "a.events"),
+        ("get_topic_metadata_state", "orders"),
+        ("get_topic_metadata_state", "z.events"),
     ]
     assert kafka.close_count == 1
     make_kafka.assert_called_once()
@@ -225,9 +268,7 @@ def test_import_emits_pinned_avro_and_protobuf_value_schema_refs(tmp_path: Path)
     )
 
     assert result.exit_code == 0, result.output
-    sources = yaml.safe_load(
-        (tmp_path / "sources" / "imported.kafka.yml").read_text()
-    )["sources"]
+    sources = yaml.safe_load((tmp_path / "sources" / "imported.kafka.yml").read_text())["sources"]
     by_topic = {source["topic"]: source for source in sources}
     assert by_topic["orders"]["schema"] == {
         "registry": "confluent",
@@ -247,9 +288,8 @@ def test_import_emits_pinned_avro_and_protobuf_value_schema_refs(tmp_path: Path)
         "id": 41,
     }
     assert registry.calls == [
-        ("list_subjects", None),
-        ("get_schema_state", "orders-value"),
-        ("get_schema_state", "proto-value"),
+        ("get_schema_state", "orders-value", False),
+        ("get_schema_state", "proto-value", False),
     ]
     assert registry.close_count == 1
     make_sr.assert_called_once()
@@ -398,9 +438,133 @@ def test_import_rejects_nested_source_path_before_connecting(tmp_path: Path) -> 
     assert not (tmp_path / "sources").exists()
 
 
+def test_exclusive_writer_rejects_sources_symlink_swap_without_artifacts(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "sources"
+    moved_sources = tmp_path / "original-sources"
+    outside = tmp_path / "outside"
+    sources.mkdir()
+    outside.mkdir()
+    target = sources / "imported.kafka.yml"
+
+    def swap_sources(fd: int, content: bytes) -> None:
+        sources.rename(moved_sources)
+        sources.symlink_to(outside, target_is_directory=True)
+        _write_all(fd, content)
+
+    with (
+        patch(
+            "streamt.cli.commands.import_cmd._write_all",
+            side_effect=swap_sources,
+        ),
+        pytest.raises(ImportCommandError) as raised,
+    ):
+        _write_exclusive(target, "sources: []\n")
+
+    assert raised.value.code == ErrorCode.IMPORT_PATH_INVALID
+    assert not (outside / target.name).exists()
+    assert list(moved_sources.iterdir()) == []
+
+
+def test_exclusive_writer_removes_partial_stage_and_final_on_write_failure(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    target = sources / "imported.kafka.yml"
+
+    def partial_write(fd: int, content: bytes) -> None:
+        os.write(fd, content[:7])
+        raise OSError("simulated ENOSPC")
+
+    with (
+        patch(
+            "streamt.cli.commands.import_cmd._write_all",
+            side_effect=partial_write,
+        ),
+        pytest.raises(ImportCommandError) as raised,
+    ):
+        _write_exclusive(target, "sources:\n- name: orders\n")
+
+    assert raised.value.code == ErrorCode.IMPORT_WRITE_FAILED
+    assert list(sources.iterdir()) == []
+
+
+def test_exclusive_writer_removes_final_when_directory_fsync_fails(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    target = sources / "imported.kafka.yml"
+    real_fsync = os.fsync
+    calls = 0
+
+    def fail_directory_fsync(fd: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated directory fsync failure")
+        real_fsync(fd)
+
+    with (
+        patch("streamt.cli.commands.import_cmd.os.fsync", side_effect=fail_directory_fsync),
+        pytest.raises(ImportCommandError) as raised,
+    ):
+        _write_exclusive(target, "sources: []\n")
+
+    assert raised.value.code == ErrorCode.IMPORT_WRITE_FAILED
+    assert list(sources.iterdir()) == []
+
+
+def test_exclusive_writer_removes_stage_on_close_and_interrupt_failures(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    target = sources / "imported.kafka.yml"
+
+    def fail_after_close(fd: int) -> None:
+        os.close(fd)
+        raise OSError("simulated close failure")
+
+    with (
+        patch(
+            "streamt.cli.commands.import_cmd._close_staged_file",
+            side_effect=fail_after_close,
+        ),
+        pytest.raises(ImportCommandError) as close_error,
+    ):
+        _write_exclusive(target, "sources: []\n")
+    assert close_error.value.code == ErrorCode.IMPORT_WRITE_FAILED
+    assert list(sources.iterdir()) == []
+
+    with (
+        patch(
+            "streamt.cli.commands.import_cmd._write_all",
+            side_effect=KeyboardInterrupt,
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _write_exclusive(target, "sources: []\n")
+    assert list(sources.iterdir()) == []
+
+    def link_then_interrupt(directory_fd: int, stage_name: str, filename: str) -> None:
+        _install_no_replace(directory_fd, stage_name, filename)
+        raise KeyboardInterrupt
+
+    with (
+        patch(
+            "streamt.cli.commands.import_cmd._install_no_replace",
+            side_effect=link_then_interrupt,
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        _write_exclusive(target, "sources: []\n")
+    assert list(sources.iterdir()) == []
+
+
 def test_import_schema_registry_failure_warns_and_keeps_kafka_import(tmp_path: Path) -> None:
     _write_project(tmp_path, schema_registry=True)
-    registry = FakeSchemaReader({}, unavailable=True)
+    registry = FakeSchemaReader({"orders-value": requests.ConnectionError("registry unavailable")})
 
     result, _make_kafka, _make_sr = _invoke(
         tmp_path,
@@ -413,8 +577,80 @@ def test_import_schema_registry_failure_warns_and_keeps_kafka_import(tmp_path: P
     assert payload["status"] == "ok"
     assert payload["warnings"][0]["code"] == ErrorCode.SCHEMA_ENRICHMENT_SKIPPED
     assert payload["data"]["sources"][0].get("schema") is None
-    assert registry.calls == [("list_subjects", None)]
+    assert registry.calls == [("get_schema_state", "orders-value", False)]
     assert registry.close_count == 1
+
+
+def test_import_reads_subject_without_list_or_compatibility_permission(tmp_path: Path) -> None:
+    _write_project(tmp_path, schema_registry=True)
+
+    class NarrowSchemaReader(FakeSchemaReader):
+        def get_schema_state(
+            self,
+            subject: str,
+            *,
+            include_compatibility: bool = True,
+        ) -> SchemaState:
+            if include_compatibility:
+                raise PermissionError("compatibility config denied")
+            return super().get_schema_state(
+                subject,
+                include_compatibility=include_compatibility,
+            )
+
+    registry = NarrowSchemaReader(
+        {
+            "orders-value": SchemaState(
+                subject="orders-value",
+                exists=True,
+                version=3,
+                schema_id=30,
+                schema_type="AVRO",
+                schema={"fields": [{"name": "id", "type": "string"}]},
+            )
+        },
+        list_denied=True,
+    )
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["orders"]),
+        schema_registry=registry,
+    )
+
+    assert result.exit_code == 0, result.output
+    source = _payload(result)["data"]["sources"][0]
+    assert source["schema"]["version"] == 3
+    assert registry.calls == [("get_schema_state", "orders-value", False)]
+
+
+def test_import_bounds_schema_requests_after_service_outage(tmp_path: Path) -> None:
+    _write_project(tmp_path, schema_registry=True)
+    registry = FakeSchemaReader(
+        {
+            "a-value": requests.ConnectionError("registry unavailable"),
+            "b-value": SchemaState(
+                subject="b-value",
+                exists=True,
+                version=1,
+                schema_id=2,
+                schema_type="AVRO",
+                schema={"fields": []},
+            ),
+        }
+    )
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["c", "b", "a"]),
+        schema_registry=registry,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert registry.calls == [("get_schema_state", "a-value", False)]
+    payload = _payload(result)
+    assert len(payload["warnings"]) == 1
+    assert all(source.get("schema") is None for source in payload["data"]["sources"])
 
 
 def test_import_no_schemas_never_opens_configured_registry(tmp_path: Path) -> None:
@@ -459,6 +695,76 @@ def test_import_discovery_failure_closes_reader_and_writes_nothing(tmp_path: Pat
     assert not (tmp_path / "sources").exists()
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        TopicState(name="orders", exists=False),
+        TopicState(name="orders", exists=True, partitions=0, replication_factor=1),
+        TopicState(name="orders", exists=True, partitions=1, replication_factor=0),
+    ],
+)
+def test_import_rejects_incomplete_topic_metadata_transactionally(
+    tmp_path: Path,
+    state: TopicState,
+) -> None:
+    _write_project(tmp_path)
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["orders"], states={"orders": state}),
+    )
+
+    assert result.exit_code == 1
+    assert _payload(result)["errors"][-1]["code"] == ErrorCode.IMPORT_DISCOVERY_FAILED
+    assert not (tmp_path / "sources").exists()
+
+
+@pytest.mark.parametrize(
+    "source_rules",
+    [
+        {"require_schema": True},
+        {"require_freshness": True},
+    ],
+)
+def test_import_rejects_new_governance_failures_before_writing(
+    tmp_path: Path,
+    source_rules: dict[str, object],
+) -> None:
+    _write_project(tmp_path, rules={"sources": source_rules})
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["orders"]),
+        "--no-schemas",
+    )
+
+    assert result.exit_code == 1
+    assert _payload(result)["errors"][0]["code"] == ErrorCode.IMPORT_VALIDATION_FAILED
+    assert not (tmp_path / "sources").exists()
+
+
+def test_import_ignores_changed_suggestion_for_preexisting_validation_error(
+    tmp_path: Path,
+) -> None:
+    _write_project(
+        tmp_path,
+        models=[
+            {
+                "name": "already_broken",
+                "sql": 'SELECT * FROM {{ source("ordres") }}',
+            }
+        ],
+    )
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["orders"]),
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "sources" / "imported.kafka.yml").exists()
+
+
 def test_import_strictly_rejects_invalid_generated_source(tmp_path: Path) -> None:
     _write_project(tmp_path)
     malformed = DiscoveredTopic(
@@ -500,6 +806,91 @@ def test_import_json_is_byte_stable_for_identical_dry_runs(tmp_path: Path) -> No
 
     assert first.exit_code == second.exit_code == 0
     assert first.output == second.output
+
+
+def test_import_redacts_unexpected_failures_in_structured_output(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    with patch(
+        "streamt.cli.commands.import_cmd._serialize_strict_sources",
+        side_effect=RuntimeError("password=TOPSECRET url=https://alice:URLSECRET@registry.invalid"),
+    ):
+        result, _make_kafka, _make_sr = _invoke(
+            tmp_path,
+            FakeKafkaReader(["orders"]),
+            "--dry-run",
+        )
+
+    assert result.exit_code == 1
+    assert "TOPSECRET" not in result.output
+    assert "URLSECRET" not in result.output
+    assert _payload(result)["errors"][0]["code"] == ErrorCode.IMPORT_DISCOVERY_FAILED
+
+
+def test_import_redacts_invalid_runtime_url_in_single_environment(tmp_path: Path) -> None:
+    (tmp_path / "stream_project.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "streamt.dev/v1alpha1",
+                "project": {"name": "redaction"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "broker:9092"},
+                    "schema_registry": {"url": "ftp://alice:TOPSECRET@registry.invalid"},
+                },
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", "json", "import", "-p", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 1
+    assert "TOPSECRET" not in result.output
+    assert _payload(result)["errors"][0]["code"] == ErrorCode.PARSE_ERROR
+
+
+def test_import_redacts_invalid_runtime_url_in_selected_environment(tmp_path: Path) -> None:
+    (tmp_path / "stream_project.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "streamt.dev/v1alpha1",
+                "project": {"name": "redaction"},
+            }
+        )
+    )
+    environments = tmp_path / "environments"
+    environments.mkdir()
+    (environments / "prod.yml").write_text(
+        yaml.safe_dump(
+            {
+                "environment": {"name": "prod"},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "broker:9092"},
+                    "schema_registry": {"url": "ftp://alice:TOPSECRET@registry.invalid"},
+                },
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            "json",
+            "import",
+            "-p",
+            str(tmp_path),
+            "--env",
+            "prod",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "TOPSECRET" not in result.output
+    assert _payload(result)["errors"][0]["code"] == ErrorCode.ENVIRONMENT_ERROR
 
 
 def test_import_uses_selected_environment_runtime(tmp_path: Path) -> None:

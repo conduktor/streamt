@@ -163,13 +163,16 @@ streamt import --no-schemas
 
 Import skips topics already declared by exact topic name. Every generated declaration
 contains `ownership: {mode: external}`. The command refuses sanitized source-name
-collisions and never overwrites an existing output file; use `--dry-run` and merge
-manually or select another output path.
+collisions, incomplete live topic metadata, and newly introduced project-validation
+errors. It stages and durably installs a new file with atomic no-replace semantics;
+use `--dry-run` and merge manually or select another output path when the target exists.
 
 Schema enrichment currently checks only the conventional `{topic}-value` subject.
-It pins the resolved numeric version. Avro and JSON Schema can contribute top-level
-columns; Protobuf contributes only its external subject/version/format reference.
-Key subjects and non-topic resources are outside this MVP.
+It reads that subject directly without requiring subject-list or compatibility-config
+permissions and pins the resolved numeric version. Avro and JSON Schema can contribute
+top-level columns; Protobuf contributes only its external subject/version/format
+reference. A service outage stops further enrichment requests while Kafka-only import
+continues. Key subjects and non-topic resources are outside this MVP.
 
 Example generated declaration:
 

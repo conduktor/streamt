@@ -18,7 +18,7 @@ def _validate_http_url(v: str, field_name: str = "url") -> str:
     if not v or not v.strip():
         raise ValueError(f"{field_name} must not be empty")
     if not v.startswith(("http://", "https://")):
-        raise ValueError(f"{field_name} must start with http:// or https://, got '{v}'")
+        raise ValueError(f"{field_name} must start with http:// or https://")
     return v
 
 

@@ -151,9 +151,10 @@ the conventional `{topic}-value` Schema Registry subject. It emits explicit
 `external` source declarations only. Exact topic matches already present in the
 project are skipped; generated-name collisions with sources or models fail the
 whole operation. The output must be a new direct child of `sources/`, is strict-
-validated before creation, and is opened exclusively. Import never overwrites a
-file, mutates infrastructure, or writes ownership state. Avro and JSON Schema
-may populate columns; Protobuf is retained as a pinned external reference.
+validated before creation, and is durably staged then atomically installed without
+replacement through a verified directory handle. Import never overwrites a file,
+mutates infrastructure, or writes ownership state. Avro and JSON Schema may populate
+columns; Protobuf is retained as a pinned external reference.
 
 `streamt adopt`:
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,7 +42,12 @@ class RecordingSchemaReader:
         self.states = states
         self.calls: list[str] = []
 
-    def get_schema_state(self, subject: str) -> SchemaState:
+    def get_schema_state(
+        self,
+        subject: str,
+        *,
+        include_compatibility: bool = True,
+    ) -> SchemaState:
         self.calls.append(subject)
         result = self.states[subject]
         if isinstance(result, Exception):
@@ -106,12 +112,8 @@ def test_discovery_extracts_avro_and_json_columns_but_not_protobuf() -> None:
     resources = discover_topics(kafka, registry)
     by_topic = {resource.topic: resource.source for resource in resources}
 
-    assert by_topic["avro"]["columns"] == [
-        {"name": "id", "type": "STRING", "description": "Key"}
-    ]
-    assert by_topic["json"]["columns"] == [
-        {"name": "count", "type": "INT", "required": True}
-    ]
+    assert by_topic["avro"]["columns"] == [{"name": "id", "type": "STRING", "description": "Key"}]
+    assert by_topic["json"]["columns"] == [{"name": "count", "type": "INT", "required": True}]
     assert "columns" not in by_topic["proto"]
     assert registry.calls == ["avro-value", "json-value", "proto-value"]
 
@@ -144,9 +146,7 @@ def test_malformed_json_required_entries_do_not_break_discovery() -> None:
 
     resources = discover_topics(kafka, registry)
 
-    assert resources[0].source["columns"] == [
-        {"name": "id", "type": "STRING", "required": True}
-    ]
+    assert resources[0].source["columns"] == [{"name": "id", "type": "STRING", "required": True}]
 
 
 def test_kafka_public_topic_listing_is_sorted_and_checks_lifecycle() -> None:
@@ -161,6 +161,52 @@ def test_kafka_public_topic_listing_is_sorted_and_checks_lifecycle() -> None:
     deployer._closed = True
     with pytest.raises(RuntimeError, match="closed"):
         deployer.list_topic_names()
+
+
+def test_kafka_strict_metadata_observation_never_reads_topic_config() -> None:
+    deployer = KafkaDeployer.__new__(KafkaDeployer)
+    deployer._closed = False
+    deployer.admin = MagicMock()
+    deployer.admin.list_topics.return_value = SimpleNamespace(
+        topics={
+            "orders": SimpleNamespace(
+                error=None,
+                partitions={
+                    0: SimpleNamespace(error=None, replicas=[1, 2]),
+                    1: SimpleNamespace(error=None, replicas=[1, 2]),
+                },
+            )
+        }
+    )
+
+    state = deployer.get_topic_metadata_state("orders")
+
+    assert state.exists is True
+    assert state.partitions == 2
+    assert state.replication_factor == 2
+    deployer.admin.describe_configs.assert_not_called()
+
+
+def test_kafka_strict_metadata_observation_rejects_topic_and_partition_errors() -> None:
+    deployer = KafkaDeployer.__new__(KafkaDeployer)
+    deployer._closed = False
+    deployer.admin = MagicMock()
+    deployer.admin.list_topics.return_value = SimpleNamespace(
+        topics={"orders": SimpleNamespace(error=RuntimeError("denied"), partitions={})}
+    )
+    with pytest.raises(RuntimeError, match="invalid metadata"):
+        deployer.get_topic_metadata_state("orders")
+
+    deployer.admin.list_topics.return_value = SimpleNamespace(
+        topics={
+            "orders": SimpleNamespace(
+                error=None,
+                partitions={0: SimpleNamespace(error=RuntimeError("denied"), replicas=[])},
+            )
+        }
+    )
+    with pytest.raises(RuntimeError, match="invalid partition metadata"):
+        deployer.get_topic_metadata_state("orders")
 
 
 def test_init_discover_uses_the_public_reader_boundary(tmp_path: Path) -> None:

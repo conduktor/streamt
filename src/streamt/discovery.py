@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Optional, Protocol
 
+import requests
+
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.schema_registry import SchemaState
 
@@ -35,7 +37,12 @@ class KafkaDiscoveryReader(Protocol):
 class SchemaDiscoveryReader(Protocol):
     """The Schema Registry metadata read required by discovery."""
 
-    def get_schema_state(self, subject: str) -> SchemaState:
+    def get_schema_state(
+        self,
+        subject: str,
+        *,
+        include_compatibility: bool = True,
+    ) -> SchemaState:
         """Return the latest state for one subject."""
 
 
@@ -74,6 +81,10 @@ class DiscoveredTopic:
         """Return the number of inferred columns in the source declaration."""
         columns = self.source.get("columns")
         return len(columns) if isinstance(columns, list) else 0
+
+
+class TopicDiscoveryError(RuntimeError):
+    """A listed Kafka topic could not be observed as a valid import candidate."""
 
 
 def sanitize_source_name(topic: str) -> str:
@@ -264,19 +275,58 @@ def _schema_metadata(
     )
 
 
+def _is_schema_service_outage(exc: Exception) -> bool:
+    """Return whether further per-subject reads would repeat a service outage."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(exc.response, "status_code", None)
+        return isinstance(status, int) and (status in {408, 429} or status >= 500)
+    return False
+
+
+def _strict_topic_state(kafka: KafkaDiscoveryReader, topic: str) -> TopicState:
+    """Read metadata only when supported, then reject incomplete observations."""
+    metadata_reader = getattr(kafka, "get_topic_metadata_state", None)
+    state = metadata_reader(topic) if callable(metadata_reader) else kafka.get_topic_state(topic)
+    if not state.exists:
+        raise TopicDiscoveryError(f"Kafka topic {topic!r} disappeared during discovery")
+    if (
+        not isinstance(state.partitions, int)
+        or isinstance(state.partitions, bool)
+        or state.partitions < 1
+    ):
+        raise TopicDiscoveryError(f"Kafka topic {topic!r} has no positive partition count")
+    if (
+        not isinstance(state.replication_factor, int)
+        or isinstance(state.replication_factor, bool)
+        or state.replication_factor < 1
+    ):
+        raise TopicDiscoveryError(f"Kafka topic {topic!r} has no positive replication factor")
+    return state
+
+
 def discover_topics(
     kafka: KafkaDiscoveryReader,
     schema_registry: Optional[SchemaDiscoveryReader] = None,
     *,
     include: str | Sequence[str] | None = None,
     exclude: str | Sequence[str] | None = None,
+    strict_topic_metadata: bool = False,
+    include_schema_compatibility: bool = True,
+    stop_schema_enrichment_on_outage: bool = False,
 ) -> list[DiscoveredTopic]:
     """Discover Kafka topics and optional value-schema columns without mutation."""
     topics = select_topic_names(kafka.list_topic_names(), include=include, exclude=exclude)
     discovered: list[DiscoveredTopic] = []
+    schema_enrichment_stopped = False
 
     for topic in topics:
-        state = kafka.get_topic_state(topic)
+        state = (
+            _strict_topic_state(kafka, topic)
+            if strict_topic_metadata
+            else kafka.get_topic_state(topic)
+        )
         discovered_schema: Optional[DiscoveredSchema] = None
         schema_error: Optional[str] = None
         source: dict[str, object] = {
@@ -285,9 +335,16 @@ def discover_topics(
             "description": f"Discovered from Kafka ({state.partitions} partitions)",
         }
 
-        if schema_registry is not None:
+        if schema_registry is not None and not schema_enrichment_stopped:
             try:
-                schema_state = schema_registry.get_schema_state(f"{topic}-value")
+                subject = f"{topic}-value"
+                if include_schema_compatibility:
+                    schema_state = schema_registry.get_schema_state(subject)
+                else:
+                    schema_state = schema_registry.get_schema_state(
+                        subject,
+                        include_compatibility=False,
+                    )
                 columns = _schema_columns(schema_state, topic)
                 if columns:
                     source["columns"] = columns
@@ -299,6 +356,9 @@ def discover_topics(
                     type(exc).__name__,
                 )
                 schema_error = f"{type(exc).__name__} while reading {topic}-value"
+                if stop_schema_enrichment_on_outage and _is_schema_service_outage(exc):
+                    schema_error += "; remaining Schema Registry enrichment was skipped"
+                    schema_enrichment_stopped = True
 
         discovered.append(
             DiscoveredTopic(

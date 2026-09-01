@@ -129,6 +129,39 @@ class KafkaDeployer:
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         return sorted(metadata.topics)
 
+    def get_topic_metadata_state(self, topic_name: str) -> TopicState:
+        """Strictly observe topic metadata without requesting topic configuration."""
+        self._check_closed()
+        metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
+        if topic_name not in metadata.topics:
+            return TopicState(name=topic_name, exists=False)
+
+        topic_metadata = metadata.topics[topic_name]
+        if getattr(topic_metadata, "error", None) is not None:
+            raise RuntimeError(f"Kafka returned invalid metadata for topic {topic_name!r}")
+
+        partition_values = list(topic_metadata.partitions.values())
+        replication_factors: list[int] = []
+        for partition in partition_values:
+            if getattr(partition, "error", None) is not None:
+                raise RuntimeError(
+                    f"Kafka returned invalid partition metadata for topic {topic_name!r}"
+                )
+            replicas = getattr(partition, "replicas", None)
+            replication_factors.append(len(replicas) if replicas is not None else 0)
+
+        if any(replication_factor < 1 for replication_factor in replication_factors):
+            raise RuntimeError(
+                f"Kafka returned no positive replication factor for topic {topic_name!r}"
+            )
+
+        return TopicState(
+            name=topic_name,
+            exists=True,
+            partitions=len(partition_values),
+            replication_factor=replication_factors[0] if replication_factors else None,
+        )
+
     def get_topic_state(
         self,
         topic_name: str,
@@ -152,7 +185,9 @@ class KafkaDeployer:
 
         # Get replication factor from first partition
         rf = None
-        partition_values = list(topic_metadata.partitions.values()) if topic_metadata.partitions else []
+        partition_values = (
+            list(topic_metadata.partitions.values()) if topic_metadata.partitions else []
+        )
         if partition_values:
             rf = len(partition_values[0].replicas)
 
@@ -175,9 +210,7 @@ class KafkaDeployer:
                 }
             except Exception as e:
                 if strict_config:
-                    raise RuntimeError(
-                        f"Failed to get config for topic {topic_name!r}: {e}"
-                    ) from e
+                    raise RuntimeError(f"Failed to get config for topic {topic_name!r}: {e}") from e
                 logger.warning(f"Failed to get config for topic '{topic_name}': {e}")
 
         return TopicState(
@@ -275,9 +308,7 @@ class KafkaDeployer:
         # Handle partition increase
         if "partitions" in changes:
             new_partitions = changes["partitions"].get("to", changes.get("partitions"))
-            futures = self.admin.create_partitions(
-                [NewPartitions(artifact.name, new_partitions)]
-            )
+            futures = self.admin.create_partitions([NewPartitions(artifact.name, new_partitions)])
             for topic, future in futures.items():
                 try:
                     future.result(timeout=DEFAULT_TIMEOUT)
@@ -287,7 +318,8 @@ class KafkaDeployer:
         # Handle config changes using incremental_alter_configs (alter_configs is deprecated)
         config_changes = {
             k.replace("config.", ""): v.get("to", v) if isinstance(v, dict) else v
-            for k, v in changes.items() if k.startswith("config.")
+            for k, v in changes.items()
+            if k.startswith("config.")
         }
 
         if config_changes:
@@ -365,9 +397,7 @@ class KafkaDeployer:
         result = future.result(timeout=DEFAULT_TIMEOUT)
         return [g.group_id for g in result.valid]
 
-    def get_consumer_group_lag(
-        self, group_id: str, topic: str
-    ) -> Optional[ConsumerGroupLag]:
+    def get_consumer_group_lag(self, group_id: str, topic: str) -> Optional[ConsumerGroupLag]:
         """Get consumer group lag for a specific topic.
 
         Returns None if the group doesn't exist or has no committed offsets.
@@ -391,9 +421,7 @@ class KafkaDeployer:
             # Use AdminClient to list consumer group offsets (Kafka 2.4+)
             from confluent_kafka.admin import ConsumerGroupTopicPartitions
 
-            topic_partitions = [
-                TopicPartition(topic, p) for p in range(partition_count)
-            ]
+            topic_partitions = [TopicPartition(topic, p) for p in range(partition_count)]
             cgtp = ConsumerGroupTopicPartitions(group_id, topic_partitions)
 
             # Get committed offsets

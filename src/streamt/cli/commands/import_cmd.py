@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import errno
+import os
+import secrets
+import stat
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -16,16 +23,31 @@ from streamt.cli.helpers import (
     make_formatter,
     make_kafka_deployer,
     make_sr_deployer,
+    redact_sensitive_text,
 )
 from streamt.core.errors import ErrorCode
-from streamt.core.models import Source
+from streamt.core.models import Source, StreamtProject
+from streamt.core.validator import ProjectValidator, ValidationMessage
 from streamt.discovery import DiscoveredTopic, discover_topics
 from streamt.output import StructuredError
 
 DEFAULT_IMPORT_FILE = Path("sources/imported.kafka.yml")
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+_FILE_CREATE_FLAGS = (
+    os.O_WRONLY
+    | os.O_CREAT
+    | os.O_EXCL
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
 
 
-@dataclass(frozen=True)
+@dataclass
 class ImportCommandError(ValueError):
     """An import precondition failed before any declaration was written."""
 
@@ -43,9 +65,9 @@ def _plain_parser_warning(message: str) -> str:
 
 
 def _resolve_output_path(project_path: Path, requested: Path) -> tuple[Path, str]:
-    """Resolve a declaration target below the project's sources directory."""
+    """Lexically resolve one direct declaration below the project sources directory."""
     target = requested if requested.is_absolute() else project_path / requested
-    target = target.resolve()
+    target = Path(os.path.abspath(os.fspath(target)))
     try:
         relative = target.relative_to(project_path)
     except ValueError as exc:
@@ -65,11 +87,6 @@ def _resolve_output_path(project_path: Path, requested: Path) -> tuple[Path, str
         raise ImportCommandError(
             ErrorCode.IMPORT_PATH_INVALID,
             f"Import output must use a .yml or .yaml extension: {relative}",
-        )
-    if target.exists() and target.is_dir():
-        raise ImportCommandError(
-            ErrorCode.IMPORT_PATH_INVALID,
-            f"Import output is a directory, not a declaration file: {relative}",
         )
     return target, relative.as_posix()
 
@@ -127,6 +144,50 @@ def _serialize_strict_sources(definitions: list[dict[str, object]]) -> str:
             f"Generated source YAML failed strict round-trip validation: {exc}",
         ) from exc
     return serialized
+
+
+def _validation_key(message: ValidationMessage) -> tuple[str, Optional[str]]:
+    """Use stable validator identity; diagnostic context may change with candidates."""
+    return message.code, message.location
+
+
+def _new_project_validation_errors(
+    project: StreamtProject,
+    definitions: list[dict[str, object]],
+) -> list[ValidationMessage]:
+    """Return only validation errors introduced by the proposed sources."""
+    generated_sources = [Source.model_validate(definition) for definition in definitions]
+    baseline = ProjectValidator(project).validate().errors
+    baseline_counts = Counter(_validation_key(message) for message in baseline)
+
+    candidate = project.model_copy(
+        deep=True,
+        update={"sources": [*project.sources, *generated_sources]},
+    )
+    introduced: list[ValidationMessage] = []
+    for message in ProjectValidator(candidate).validate().errors:
+        key = _validation_key(message)
+        if baseline_counts[key] > 0:
+            baseline_counts[key] -= 1
+        else:
+            introduced.append(message)
+    return introduced
+
+
+def _validate_prospective_project(
+    project: StreamtProject,
+    definitions: list[dict[str, object]],
+) -> None:
+    """Fail before creation when proposed sources introduce project errors."""
+    introduced = _new_project_validation_errors(project, definitions)
+    if not introduced:
+        return
+    details = "; ".join(f"{message.code}: {message.message}" for message in introduced)
+    raise ImportCommandError(
+        ErrorCode.IMPORT_VALIDATION_FAILED,
+        f"Imported sources would make the project invalid: {details}",
+        "Adjust import filters or enrich the declarations in a dry-run preview.",
+    )
 
 
 def _name_collisions(
@@ -209,23 +270,233 @@ def _result_data(
     }
 
 
-def _write_exclusive(target: Path, content: str) -> None:
-    """Create a fully rendered declaration without ever replacing a path."""
+def _close_fd_quietly(fd: int) -> None:
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("x", encoding="utf-8") as output:
-            output.write(content)
-    except FileExistsError as exc:
-        raise ImportCommandError(
-            ErrorCode.IMPORT_TARGET_EXISTS,
-            f"Import target already exists and was not changed: {target}",
-            "Choose another --output-file or merge the preview manually.",
-        ) from exc
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _verify_sources_binding(project_fd: int, sources_fd: int) -> None:
+    """Ensure the opened directory is still the project's direct sources child."""
+    try:
+        current = os.stat("sources", dir_fd=project_fd, follow_symlinks=False)
+        opened = os.fstat(sources_fd)
     except OSError as exc:
         raise ImportCommandError(
-            ErrorCode.IMPORT_WRITE_FAILED,
-            f"Could not create import declaration {target}: {exc}",
+            ErrorCode.IMPORT_PATH_INVALID,
+            "The project sources directory changed while preparing the import.",
+            "Retry after ensuring sources/ is a stable, non-symlink directory.",
         ) from exc
+
+    if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (
+        opened.st_dev,
+        opened.st_ino,
+    ):
+        raise ImportCommandError(
+            ErrorCode.IMPORT_PATH_INVALID,
+            "The project sources directory changed while preparing the import.",
+            "Retry after ensuring sources/ is a stable, non-symlink directory.",
+        )
+
+
+@contextmanager
+def _verified_sources_directory(
+    project_path: Path,
+    *,
+    create: bool,
+) -> Iterator[Optional[tuple[int, int]]]:
+    """Open project/sources without following its final path components."""
+    project_fd = -1
+    sources_fd = -1
+    missing = False
+    try:
+        project_fd = os.open(project_path, _DIRECTORY_OPEN_FLAGS)
+        try:
+            sources_fd = os.open("sources", _DIRECTORY_OPEN_FLAGS, dir_fd=project_fd)
+        except FileNotFoundError:
+            if not create:
+                missing = True
+            else:
+                try:
+                    os.mkdir("sources", mode=0o755, dir_fd=project_fd)
+                except FileExistsError:
+                    pass
+                sources_fd = os.open("sources", _DIRECTORY_OPEN_FLAGS, dir_fd=project_fd)
+        if not missing:
+            _verify_sources_binding(project_fd, sources_fd)
+    except ImportCommandError:
+        if sources_fd >= 0:
+            _close_fd_quietly(sources_fd)
+        if project_fd >= 0:
+            _close_fd_quietly(project_fd)
+        raise
+    except OSError as exc:
+        if sources_fd >= 0:
+            _close_fd_quietly(sources_fd)
+        if project_fd >= 0:
+            _close_fd_quietly(project_fd)
+        path_error = exc.errno in {errno.ELOOP, errno.ENOTDIR}
+        code = (
+            ErrorCode.IMPORT_PATH_INVALID
+            if path_error or not create
+            else ErrorCode.IMPORT_WRITE_FAILED
+        )
+        raise ImportCommandError(
+            code,
+            f"Could not open a verified project sources directory: {exc}",
+            "Ensure sources/ is a real directory inside the project and retry.",
+        ) from exc
+
+    try:
+        yield None if missing else (project_fd, sources_fd)
+    finally:
+        if sources_fd >= 0:
+            _close_fd_quietly(sources_fd)
+        if project_fd >= 0:
+            _close_fd_quietly(project_fd)
+
+
+def _target_exists(project_path: Path, filename: str) -> bool:
+    """Inspect a direct target without following sources/ or the target itself."""
+    with _verified_sources_directory(project_path, create=False) as handles:
+        if handles is None:
+            return False
+        _project_fd, sources_fd = handles
+        try:
+            target_state = os.stat(filename, dir_fd=sources_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise ImportCommandError(
+                ErrorCode.IMPORT_PATH_INVALID,
+                f"Could not inspect import target sources/{filename}: {exc}",
+            ) from exc
+        if stat.S_ISDIR(target_state.st_mode):
+            raise ImportCommandError(
+                ErrorCode.IMPORT_PATH_INVALID,
+                f"Import output is a directory, not a declaration file: sources/{filename}",
+            )
+        return True
+
+
+def _write_all(fd: int, content: bytes) -> None:
+    """Write all bytes or raise without treating a short write as success."""
+    offset = 0
+    while offset < len(content):
+        written = os.write(fd, content[offset:])
+        if written <= 0:
+            raise OSError(errno.EIO, "short write while staging import declaration")
+        offset += written
+
+
+def _close_staged_file(fd: int) -> None:
+    """Close a staged file; kept separate so close failures are testable."""
+    os.close(fd)
+
+
+def _unlink_matching(
+    directory_fd: int,
+    name: str,
+    identity: Optional[tuple[int, int]],
+) -> None:
+    """Remove only the staging inode created by this process."""
+    if identity is None:
+        return
+    try:
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if (current.st_dev, current.st_ino) != identity:
+        return
+    try:
+        os.unlink(name, dir_fd=directory_fd)
+    except OSError:
+        pass
+
+
+def _install_no_replace(directory_fd: int, stage_name: str, filename: str) -> None:
+    """Atomically link the staged inode into its final name without replacement."""
+    os.link(
+        stage_name,
+        filename,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+        follow_symlinks=False,
+    )
+
+
+def _write_exclusive(target: Path, content: str) -> None:
+    """Atomically create a durable declaration without clobber or path traversal."""
+    project_path = target.parent.parent
+    filename = target.name
+    with _verified_sources_directory(project_path, create=True) as handles:
+        assert handles is not None
+        project_fd, sources_fd = handles
+        stage_name = ""
+        stage_fd = -1
+        stage_identity: Optional[tuple[int, int]] = None
+        stage_exists = False
+        try:
+            for _attempt in range(10):
+                stage_name = f".streamt-import-{secrets.token_hex(12)}.tmp"
+                try:
+                    stage_fd = os.open(
+                        stage_name,
+                        _FILE_CREATE_FLAGS,
+                        0o666,
+                        dir_fd=sources_fd,
+                    )
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise OSError(errno.EEXIST, "could not allocate a unique staging file")
+
+            staged = os.fstat(stage_fd)
+            stage_identity = (staged.st_dev, staged.st_ino)
+            stage_exists = True
+            _write_all(stage_fd, content.encode("utf-8"))
+            os.fsync(stage_fd)
+            _close_staged_file(stage_fd)
+            stage_fd = -1
+
+            _verify_sources_binding(project_fd, sources_fd)
+            try:
+                _install_no_replace(sources_fd, stage_name, filename)
+            except FileExistsError as exc:
+                raise ImportCommandError(
+                    ErrorCode.IMPORT_TARGET_EXISTS,
+                    f"Import target already exists and was not changed: {target}",
+                    "Choose another --output-file or merge the preview manually.",
+                ) from exc
+            os.unlink(stage_name, dir_fd=sources_fd)
+            stage_exists = False
+            _verify_sources_binding(project_fd, sources_fd)
+            os.fsync(sources_fd)
+        except BaseException as exc:
+            if stage_fd >= 0:
+                _close_fd_quietly(stage_fd)
+            _unlink_matching(sources_fd, filename, stage_identity)
+            if stage_exists and stage_name:
+                _unlink_matching(sources_fd, stage_name, stage_identity)
+            try:
+                os.fsync(sources_fd)
+            except OSError:
+                pass
+
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            if isinstance(exc, ImportCommandError):
+                raise
+            if isinstance(exc, OSError):
+                raise ImportCommandError(
+                    ErrorCode.IMPORT_WRITE_FAILED,
+                    f"Could not create import declaration {target}: {exc}",
+                ) from exc
+            raise
 
 
 @click.command("import")
@@ -302,7 +573,7 @@ def import_resources(
             else "default"
         )
         target, relative_target = _resolve_output_path(project_path, output_file)
-        target_exists = target.exists()
+        target_exists = _target_exists(project_path, target.name)
 
         kafka = make_kafka_deployer(project, fmt)
         if kafka is None:
@@ -314,17 +585,6 @@ def import_resources(
 
         if schemas and project.runtime.schema_registry is not None:
             schema_registry = make_sr_deployer(project, fmt, required=False)
-            if schema_registry is not None:
-                try:
-                    schema_registry.list_subjects()
-                except Exception as exc:
-                    fmt.print_warning(
-                        "Schema Registry enrichment is unavailable "
-                        f"({type(exc).__name__}); importing Kafka metadata only.",
-                        code=ErrorCode.SCHEMA_ENRICHMENT_SKIPPED,
-                    )
-                    close_deployers(schema_registry)
-                    schema_registry = None
 
         try:
             discovered = discover_topics(
@@ -332,12 +592,14 @@ def import_resources(
                 schema_registry,
                 include=include_patterns or None,
                 exclude=exclude_patterns or None,
+                strict_topic_metadata=True,
+                include_schema_compatibility=False,
+                stop_schema_enrichment_on_outage=True,
             )
         except Exception as exc:
             raise ImportCommandError(
                 ErrorCode.IMPORT_DISCOVERY_FAILED,
-                "Kafka topic discovery failed "
-                f"({type(exc).__name__}); no declaration was written.",
+                f"Kafka topic discovery failed ({type(exc).__name__}); no declaration was written.",
                 "Check runtime.kafka connectivity, authentication, and topic permissions.",
             ) from exc
 
@@ -347,8 +609,7 @@ def import_resources(
         for resource in discovered:
             if resource.schema_error:
                 fmt.print_warning(
-                    f"Schema enrichment skipped for {resource.topic!r}: "
-                    f"{resource.schema_error}.",
+                    f"Schema enrichment skipped for {resource.topic!r}: {resource.schema_error}.",
                     code=ErrorCode.SCHEMA_ENRICHMENT_SKIPPED,
                 )
             existing = existing_by_topic.get(resource.topic)
@@ -385,6 +646,8 @@ def import_resources(
 
         definitions = [_source_definition(resource) for resource in new_resources]
         serialized = _serialize_strict_sources(definitions) if definitions else ""
+        if definitions:
+            _validate_prospective_project(project, definitions)
         data = _result_data(
             environment=effective_environment,
             dry_run=dry_run,
@@ -429,36 +692,54 @@ def import_resources(
         fmt.flush()
 
     except EnvVarError as exc:
-        fmt.add_error(StructuredError(code=ErrorCode.ENV_VAR_ERROR, message=str(exc)))
-        fmt.print_error(str(exc))
+        message = redact_sensitive_text(exc)
+        fmt.add_error(StructuredError(code=ErrorCode.ENV_VAR_ERROR, message=message))
+        fmt.print_error(message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except ParseError as exc:
-        fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=str(exc)))
-        fmt.print_error(str(exc))
+        message = redact_sensitive_text(exc)
+        fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=message))
+        fmt.print_error(message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except EnvironmentError as exc:
-        fmt.add_error(StructuredError(code=ErrorCode.ENVIRONMENT_ERROR, message=str(exc)))
-        fmt.print_error(str(exc))
+        message = redact_sensitive_text(exc)
+        fmt.add_error(StructuredError(code=ErrorCode.ENVIRONMENT_ERROR, message=message))
+        fmt.print_error(message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except ImportCommandError as exc:
+        message = redact_sensitive_text(exc.message)
+        suggestion = redact_sensitive_text(exc.suggestion) if exc.suggestion is not None else None
         if data:
             fmt.set_data(data)
         fmt.add_error(
             StructuredError(
                 code=exc.code,
-                message=exc.message,
-                suggestion=exc.suggestion,
+                message=message,
+                suggestion=suggestion,
             )
         )
-        fmt.print_error(exc.message)
+        fmt.print_error(message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except KeyboardInterrupt as exc:
         fmt.print_error("Interrupted.")
         fmt.flush()
         raise click.exceptions.Exit(130) from exc
+    except Exception as exc:
+        detail = redact_sensitive_text(exc)
+        message = f"Import failed safely ({type(exc).__name__}): {detail}"
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.IMPORT_DISCOVERY_FAILED,
+                message=message,
+                suggestion="Fix the reported project or backend error and retry.",
+            )
+        )
+        fmt.print_error(message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
     finally:
         close_deployers(schema_registry, kafka)
