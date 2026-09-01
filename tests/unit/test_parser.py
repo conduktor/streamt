@@ -142,6 +142,127 @@ class TestProjectParser:
         ):
             ProjectParser(tmp_path).parse()
 
+    @pytest.mark.parametrize("root_value", ["not-a-project", ["not", "a", "mapping"]])
+    def test_project_file_root_must_be_mapping(
+        self, tmp_path: Path, root_value: object
+    ) -> None:
+        """Non-mapping YAML roots fail before section access."""
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(root_value))
+
+        with pytest.raises(
+            ParseError,
+            match=r"YAML file '.*stream_project.yml'.*field 'root' must be a mapping",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    @pytest.mark.parametrize("section", ["project", "runtime", "defaults", "rules"])
+    def test_object_sections_must_be_mappings(self, tmp_path: Path, section: str) -> None:
+        """Object sections report their path instead of failing during unpacking."""
+        config: dict[str, object] = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        config[section] = "wrong-shape"
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=rf"stream_project.yml.*field '{section}' must be a mapping",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    def test_connections_section_must_be_mapping(self, tmp_path: Path) -> None:
+        """The named-connections collection cannot be a sequence."""
+        config = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            "connections": [],
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=r"stream_project.yml.*field 'connections' must be a mapping",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    def test_connection_item_must_be_mapping(self, tmp_path: Path) -> None:
+        """A connection value reports the connection name in its error path."""
+        config = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            "connections": {"warehouse": "wrong-shape"},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=r"field 'connections → warehouse' must be a mapping",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    @pytest.mark.parametrize("section", ["sources", "models", "tests", "exposures", "udfs"])
+    def test_declaration_sections_must_be_lists(
+        self, tmp_path: Path, section: str
+    ) -> None:
+        """Mapping-shaped declaration sections are rejected, even when empty."""
+        config = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            section: {},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=rf"stream_project.yml.*field '{section}' must be a list",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    @pytest.mark.parametrize("section", ["sources", "models", "tests", "exposures", "udfs"])
+    def test_declaration_items_must_be_mappings(
+        self, tmp_path: Path, section: str
+    ) -> None:
+        """Scalar declaration entries report their collection and index."""
+        config = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            section: ["wrong-shape"],
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=rf"field '{section} → 0' must be a mapping",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    @pytest.mark.parametrize(
+        ("contents", "path", "expected"),
+        [
+            ("sources: {}\n", "sources", "a list"),
+            ("sources:\n  - wrong-shape\n", "sources → 0", "a mapping"),
+        ],
+    )
+    def test_split_declaration_shapes_include_file_and_path(
+        self, tmp_path: Path, contents: str, path: str, expected: str
+    ) -> None:
+        """Split declaration shape errors retain their filename and nested path."""
+        config = {
+            "project": {"name": "shape-test"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+        sources_dir = tmp_path / "sources"
+        sources_dir.mkdir()
+        (sources_dir / "broken.yml").write_text(contents)
+
+        with pytest.raises(
+            ParseError,
+            match=rf"sources file 'broken.yml'.*field '{path}' must be {expected}",
+        ):
+            ProjectParser(tmp_path).parse()
+
     def test_project_with_source_valid(self):
         """TC-VAL-002: Project with source should be valid."""
         with tempfile.TemporaryDirectory() as tmpdir:

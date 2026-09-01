@@ -50,6 +50,35 @@ class JinjaError(Exception):
     pass
 
 
+def _require_mapping(value: object, *, context: str, path: str) -> dict[str, object]:
+    """Return a string-keyed mapping or raise a path-aware parsing error."""
+    if not isinstance(value, dict):
+        raise ParseError(f"Invalid {context}: field '{path}' must be a mapping")
+
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ParseError(
+                f"Invalid {context}: field '{path}' must use string keys "
+                f"(found {type(key).__name__})"
+            )
+        result[key] = item
+    return result
+
+
+def _require_declarations(
+    value: object, *, context: str, path: str
+) -> list[dict[str, object]]:
+    """Return a declaration list whose entries are string-keyed mappings."""
+    if not isinstance(value, list):
+        raise ParseError(f"Invalid {context}: field '{path}' must be a list")
+
+    return [
+        _require_mapping(item, context=context, path=f"{path} → {index}")
+        for index, item in enumerate(value)
+    ]
+
+
 def _format_pydantic_error(exc: ValidationError) -> str:
     """Format a Pydantic ValidationError into a user-friendly message."""
     parts = []
@@ -217,9 +246,12 @@ class ProjectParser:
         try:
             with open(path) as f:
                 content = f.read()
-            return yaml.safe_load(content) or {}
+            loaded = yaml.safe_load(content)
         except yaml.YAMLError as e:
             raise ParseError(f"YAML parse error in '{path}': {e}") from e
+        if loaded is None:
+            return {}
+        return _require_mapping(loaded, context=f"YAML file '{path}'", path="root")
 
     def _resolve_env_vars(self, value: object) -> object:
         """Recursively resolve environment variables in a value."""
@@ -270,8 +302,11 @@ class ProjectParser:
         """Parse project info section."""
         if "project" not in data:
             raise ParseError("Missing 'project' section in stream_project.yml")
+        project_data = _require_mapping(
+            data["project"], context="stream_project.yml", path="project"
+        )
         try:
-            return ProjectInfo(**data["project"])
+            return ProjectInfo.model_validate(project_data)
         except ValidationError as e:
             raise ParseError(f"Invalid project metadata: {_format_pydantic_error(e)}") from e
 
@@ -283,7 +318,11 @@ class ProjectParser:
         """
         # In multi-env mode, use runtime from environment config
         if self.env_config is not None:
-            runtime_data = self.env_config.runtime
+            runtime_data = _require_mapping(
+                self.env_config.runtime,
+                context="selected environment",
+                path="runtime",
+            )
 
             # Check for missing env vars
             missing = self._check_env_vars(runtime_data)
@@ -294,9 +333,13 @@ class ProjectParser:
                 )
 
             # Resolve env vars
-            resolved = self._resolve_env_vars(runtime_data)
+            resolved = _require_mapping(
+                self._resolve_env_vars(runtime_data),
+                context="selected environment",
+                path="runtime",
+            )
             try:
-                return RuntimeConfig(**resolved)
+                return RuntimeConfig.model_validate(resolved)
             except ValidationError as e:
                 raise ParseError(f"Invalid runtime: {_format_pydantic_error(e)}") from e
 
@@ -304,7 +347,9 @@ class ProjectParser:
         if "runtime" not in data:
             raise ParseError("Missing 'runtime' section in stream_project.yml")
 
-        runtime_data = data["runtime"]
+        runtime_data = _require_mapping(
+            data["runtime"], context="stream_project.yml", path="runtime"
+        )
 
         # Check for missing env vars but don't resolve yet (for validation)
         missing = self._check_env_vars(runtime_data)
@@ -315,9 +360,13 @@ class ProjectParser:
             )
 
         # Resolve env vars
-        resolved = self._resolve_env_vars(runtime_data)
+        resolved = _require_mapping(
+            self._resolve_env_vars(runtime_data),
+            context="stream_project.yml",
+            path="runtime",
+        )
         try:
-            return RuntimeConfig(**resolved)
+            return RuntimeConfig.model_validate(resolved)
         except ValidationError as e:
             raise ParseError(f"Invalid runtime: {_format_pydantic_error(e)}") from e
 
@@ -325,8 +374,11 @@ class ProjectParser:
         """Parse defaults section."""
         if "defaults" not in data:
             return None
+        defaults_data = _require_mapping(
+            data["defaults"], context="stream_project.yml", path="defaults"
+        )
         try:
-            return Defaults(**data["defaults"])
+            return Defaults.model_validate(defaults_data)
         except ValidationError as e:
             raise ParseError(f"Invalid defaults: {_format_pydantic_error(e)}") from e
 
@@ -334,8 +386,11 @@ class ProjectParser:
         """Parse rules section."""
         if "rules" not in data:
             return None
+        rules_data = _require_mapping(
+            data["rules"], context="stream_project.yml", path="rules"
+        )
         try:
-            return Rules(**data["rules"])
+            return Rules.model_validate(rules_data)
         except ValidationError as e:
             raise ParseError(f"Invalid rules: {_format_pydantic_error(e)}") from e
 
@@ -343,10 +398,18 @@ class ProjectParser:
         """Parse global connections section."""
         if "connections" not in data:
             return {}
-        connections = {}
-        for name, connection_data in data["connections"].items():
+        connections_data = _require_mapping(
+            data["connections"], context="stream_project.yml", path="connections"
+        )
+        connections: dict[str, ConnectionConfig] = {}
+        for name, value in connections_data.items():
+            connection_data = _require_mapping(
+                value,
+                context="stream_project.yml",
+                path=f"connections → {name}",
+            )
             try:
-                connections[name] = ConnectionConfig(**connection_data)
+                connections[name] = ConnectionConfig.model_validate(connection_data)
             except ValidationError as e:
                 raise ParseError(
                     f"Invalid connection '{name}': {_format_pydantic_error(e)}"
@@ -359,9 +422,12 @@ class ProjectParser:
 
         # From main project file
         if "sources" in data:
-            for source_data in data["sources"]:
+            source_items = _require_declarations(
+                data["sources"], context="stream_project.yml", path="sources"
+            )
+            for source_data in source_items:
                 try:
-                    sources.append(Source(**source_data))
+                    sources.append(Source.model_validate(source_data))
                 except ValidationError as e:
                     name = source_data.get("name", "<unknown>")
                     raise ParseError(f"Invalid source '{name}': {_format_pydantic_error(e)}") from e
@@ -373,9 +439,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 self._validate_declaration_file(file_data, yml_file, "sources")
                 if "sources" in file_data:
-                    for source_data in file_data["sources"]:
+                    source_items = _require_declarations(
+                        file_data["sources"],
+                        context=f"sources file '{yml_file.name}'",
+                        path="sources",
+                    )
+                    for source_data in source_items:
                         try:
-                            sources.append(Source(**source_data))
+                            sources.append(Source.model_validate(source_data))
                         except ValidationError as e:
                             name = source_data.get("name", "<unknown>")
                             raise ParseError(
@@ -387,9 +458,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yaml_file)
                 self._validate_declaration_file(file_data, yaml_file, "sources")
                 if "sources" in file_data:
-                    for source_data in file_data["sources"]:
+                    source_items = _require_declarations(
+                        file_data["sources"],
+                        context=f"sources file '{yaml_file.name}'",
+                        path="sources",
+                    )
+                    for source_data in source_items:
                         try:
-                            sources.append(Source(**source_data))
+                            sources.append(Source.model_validate(source_data))
                         except ValidationError as e:
                             name = source_data.get("name", "<unknown>")
                             raise ParseError(
@@ -405,9 +481,12 @@ class ProjectParser:
 
         # From main project file
         if "models" in data:
-            for model_data in data["models"]:
+            model_items = _require_declarations(
+                data["models"], context="stream_project.yml", path="models"
+            )
+            for model_data in model_items:
                 try:
-                    models.append(Model(**model_data))
+                    models.append(Model.model_validate(model_data))
                 except ValidationError as e:
                     name = model_data.get("name", "<unknown>")
                     raise ParseError(f"Invalid model '{name}': {_format_pydantic_error(e)}") from e
@@ -430,9 +509,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 self._validate_declaration_file(file_data, yml_file, "models")
                 if "models" in file_data:
-                    for model_data in file_data["models"]:
+                    model_items = _require_declarations(
+                        file_data["models"],
+                        context=f"models file '{yml_file.name}'",
+                        path="models",
+                    )
+                    for model_data in model_items:
                         try:
-                            models.append(Model(**model_data))
+                            models.append(Model.model_validate(model_data))
                         except ValidationError as e:
                             name = model_data.get("name", "<unknown>")
                             raise ParseError(
@@ -444,9 +528,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yaml_file)
                 self._validate_declaration_file(file_data, yaml_file, "models")
                 if "models" in file_data:
-                    for model_data in file_data["models"]:
+                    model_items = _require_declarations(
+                        file_data["models"],
+                        context=f"models file '{yaml_file.name}'",
+                        path="models",
+                    )
+                    for model_data in model_items:
                         try:
-                            models.append(Model(**model_data))
+                            models.append(Model.model_validate(model_data))
                         except ValidationError as e:
                             name = model_data.get("name", "<unknown>")
                             raise ParseError(
@@ -462,9 +551,12 @@ class ProjectParser:
 
         # From main project file
         if "tests" in data:
-            for test_data in data["tests"]:
+            test_items = _require_declarations(
+                data["tests"], context="stream_project.yml", path="tests"
+            )
+            for test_data in test_items:
                 try:
-                    tests.append(DataTest(**test_data))
+                    tests.append(DataTest.model_validate(test_data))
                 except ValidationError as e:
                     name = test_data.get("name", "<unknown>")
                     raise ParseError(f"Invalid test '{name}': {_format_pydantic_error(e)}") from e
@@ -476,9 +568,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 self._validate_declaration_file(file_data, yml_file, "tests")
                 if "tests" in file_data:
-                    for test_data in file_data["tests"]:
+                    test_items = _require_declarations(
+                        file_data["tests"],
+                        context=f"tests file '{yml_file.name}'",
+                        path="tests",
+                    )
+                    for test_data in test_items:
                         try:
-                            tests.append(DataTest(**test_data))
+                            tests.append(DataTest.model_validate(test_data))
                         except ValidationError as e:
                             name = test_data.get("name", "<unknown>")
                             raise ParseError(
@@ -490,9 +587,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yaml_file)
                 self._validate_declaration_file(file_data, yaml_file, "tests")
                 if "tests" in file_data:
-                    for test_data in file_data["tests"]:
+                    test_items = _require_declarations(
+                        file_data["tests"],
+                        context=f"tests file '{yaml_file.name}'",
+                        path="tests",
+                    )
+                    for test_data in test_items:
                         try:
-                            tests.append(DataTest(**test_data))
+                            tests.append(DataTest.model_validate(test_data))
                         except ValidationError as e:
                             name = test_data.get("name", "<unknown>")
                             raise ParseError(
@@ -508,9 +610,12 @@ class ProjectParser:
 
         # From main project file
         if "exposures" in data:
-            for exposure_data in data["exposures"]:
+            exposure_items = _require_declarations(
+                data["exposures"], context="stream_project.yml", path="exposures"
+            )
+            for exposure_data in exposure_items:
                 try:
-                    exposures.append(Exposure(**exposure_data))
+                    exposures.append(Exposure.model_validate(exposure_data))
                 except ValidationError as e:
                     name = exposure_data.get("name", "<unknown>")
                     raise ParseError(
@@ -524,9 +629,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yml_file)
                 self._validate_declaration_file(file_data, yml_file, "exposures")
                 if "exposures" in file_data:
-                    for exposure_data in file_data["exposures"]:
+                    exposure_items = _require_declarations(
+                        file_data["exposures"],
+                        context=f"exposures file '{yml_file.name}'",
+                        path="exposures",
+                    )
+                    for exposure_data in exposure_items:
                         try:
-                            exposures.append(Exposure(**exposure_data))
+                            exposures.append(Exposure.model_validate(exposure_data))
                         except ValidationError as e:
                             name = exposure_data.get("name", "<unknown>")
                             raise ParseError(
@@ -538,9 +648,14 @@ class ProjectParser:
                 file_data = self._load_yaml(yaml_file)
                 self._validate_declaration_file(file_data, yaml_file, "exposures")
                 if "exposures" in file_data:
-                    for exposure_data in file_data["exposures"]:
+                    exposure_items = _require_declarations(
+                        file_data["exposures"],
+                        context=f"exposures file '{yaml_file.name}'",
+                        path="exposures",
+                    )
+                    for exposure_data in exposure_items:
                         try:
-                            exposures.append(Exposure(**exposure_data))
+                            exposures.append(Exposure.model_validate(exposure_data))
                         except ValidationError as e:
                             name = exposure_data.get("name", "<unknown>")
                             raise ParseError(
@@ -553,9 +668,12 @@ class ProjectParser:
     def _parse_udfs(self, data: dict[str, object]) -> list[UDFDeclaration]:
         """Parse UDF type declarations from the project file."""
         udfs = []
-        for udf_data in data.get("udfs", []):
+        udf_items = _require_declarations(
+            data.get("udfs", []), context="stream_project.yml", path="udfs"
+        )
+        for udf_data in udf_items:
             try:
-                udfs.append(UDFDeclaration(**udf_data))
+                udfs.append(UDFDeclaration.model_validate(udf_data))
             except ValidationError as e:
                 name = udf_data.get("name", "<unknown>")
                 raise ParseError(f"Invalid UDF '{name}': {_format_pydantic_error(e)}") from e
