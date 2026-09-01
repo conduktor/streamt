@@ -6,11 +6,119 @@ import json
 import logging
 import time
 import uuid
-from typing import Optional
+from dataclasses import dataclass
+from typing import TypedDict
 
-from streamt.core.models import DataTest, DataTestType, StreamtProject
+from pydantic import BaseModel, ValidationError
+
+from streamt.core.models import (
+    AcceptedTypesAssertion,
+    AcceptedValuesAssertion,
+    CustomSqlAssertion,
+    DataTest,
+    DataTestType,
+    DistributionAssertion,
+    ForeignKeyAssertion,
+    MaxLagAssertion,
+    NotNullAssertion,
+    RangeAssertion,
+    StreamtProject,
+    ThroughputAssertion,
+    UniqueKeyAssertion,
+)
 
 logger = logging.getLogger(__name__)
+
+JsonRecord = dict[str, object]
+
+
+class AssertionResult(TypedDict, total=False):
+    """Structured result returned by a sample assertion."""
+
+    passed: bool
+    errors: list[str]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _ParsedAssertion:
+    """A shape-checked assertion and its validated configuration."""
+
+    assertion_type: str
+    config: BaseModel | dict[str, object]
+
+
+_ASSERTION_CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "not_null": NotNullAssertion,
+    "unique_key": UniqueKeyAssertion,
+    "accepted_values": AcceptedValuesAssertion,
+    "accepted_types": AcceptedTypesAssertion,
+    "range": RangeAssertion,
+    "max_lag": MaxLagAssertion,
+    "throughput": ThroughputAssertion,
+    "distribution": DistributionAssertion,
+    "foreign_key": ForeignKeyAssertion,
+    "custom_sql": CustomSqlAssertion,
+}
+
+
+def _format_assertion_error(index: int, assertion_type: str, exc: ValidationError) -> str:
+    """Format assertion validation failures with stable collection paths."""
+    details = []
+    for error in exc.errors():
+        location = " → ".join(str(part) for part in error["loc"])
+        path = f"assertions → {index} → {assertion_type}"
+        if location:
+            path = f"{path} → {location}"
+        details.append(f"field '{path}': {error['msg']}")
+    return "; ".join(details)
+
+
+def _parse_assertions(assertions: object) -> tuple[list[_ParsedAssertion], list[str]]:
+    """Validate assertion container/config shapes without trusting model construction."""
+    if not isinstance(assertions, list):
+        return [], ["field 'assertions' must be a list"]
+
+    parsed: list[_ParsedAssertion] = []
+    errors: list[str] = []
+    for index, assertion in enumerate(assertions):
+        if not isinstance(assertion, dict) or len(assertion) != 1:
+            errors.append(
+                f"field 'assertions → {index}' must contain exactly one assertion type"
+            )
+            continue
+
+        assertion_type, raw_config = next(iter(assertion.items()))
+        if not isinstance(assertion_type, str):
+            errors.append(f"field 'assertions → {index}' must use a string assertion type")
+            continue
+
+        config_model = _ASSERTION_CONFIG_MODELS.get(assertion_type)
+        if config_model is not None:
+            try:
+                config: BaseModel | dict[str, object] = config_model.model_validate(raw_config)
+            except ValidationError as exc:
+                errors.append(_format_assertion_error(index, assertion_type, exc))
+                continue
+        elif isinstance(raw_config, dict):
+            config = {
+                key: value for key, value in raw_config.items() if isinstance(key, str)
+            }
+            if len(config) != len(raw_config):
+                errors.append(
+                    f"field 'assertions → {index} → {assertion_type}' "
+                    "must use string keys"
+                )
+                continue
+        else:
+            errors.append(
+                f"field 'assertions → {index} → {assertion_type}' must be a mapping"
+            )
+            continue
+
+        parsed.append(_ParsedAssertion(assertion_type=assertion_type, config=config))
+
+    return parsed, errors
 
 
 class TestRunner:
@@ -29,7 +137,7 @@ class TestRunner:
 
     def run(self, tests: list[DataTest]) -> list[dict[str, object]]:
         """Run a list of tests."""
-        results = []
+        results: list[dict[str, object]] = []
 
         for test in tests:
             if test.type == DataTestType.SCHEMA:
@@ -55,7 +163,7 @@ class TestRunner:
         Schema tests validate that the data conforms to expected types
         and constraints. Ideally checks against Schema Registry.
         """
-        errors = []
+        errors: list[str] = []
 
         # Get the model/source being tested
         model = self.project.get_model(test.model)
@@ -68,25 +176,29 @@ class TestRunner:
                 "errors": [f"Model/source '{test.model}' not found"],
             }
 
+        parsed_assertions, assertion_errors = _parse_assertions(test.assertions)
+        if assertion_errors:
+            return {
+                "name": test.name,
+                "status": "failed",
+                "errors": assertion_errors,
+            }
+
         # Check if Schema Registry is configured
         if self.project.runtime.schema_registry:
             # Would validate against Schema Registry
             # For now, validate assertion structure
-            for assertion in test.assertions:
-                if not assertion:
-                    errors.append("Empty assertion dict")
-                    continue
-                assertion_type = list(assertion.keys())[0]
-                assertion_config = assertion[assertion_type] or {}
-
-                if assertion_type == "not_null":
-                    columns = assertion_config.get("columns", [])
-                    if not columns:
+            for assertion in parsed_assertions:
+                if assertion.assertion_type == "not_null" and isinstance(
+                    assertion.config, NotNullAssertion
+                ):
+                    if not assertion.config.columns:
                         errors.append("not_null assertion requires 'columns' list")
 
-                elif assertion_type == "accepted_types":
-                    types = assertion_config.get("types", {})
-                    if not types:
+                elif assertion.assertion_type == "accepted_types" and isinstance(
+                    assertion.config, AcceptedTypesAssertion
+                ):
+                    if not assertion.config.types:
                         errors.append("accepted_types assertion requires 'types' mapping")
 
         if errors:
@@ -104,8 +216,8 @@ class TestRunner:
 
     def _run_sample_test(self, test: DataTest) -> dict[str, object]:
         """Run a sample test by consuming messages from Kafka."""
-        errors = []
-        warnings = []
+        errors: list[str] = []
+        warnings: list[str] = []
 
         # Get sample size
         sample_size = test.sample_size or 100
@@ -117,6 +229,14 @@ class TestRunner:
                 "name": test.name,
                 "status": "failed",
                 "errors": [f"Cannot determine topic for '{test.model}'"],
+            }
+
+        parsed_assertions, assertion_errors = _parse_assertions(test.assertions)
+        if assertion_errors:
+            return {
+                "name": test.name,
+                "status": "failed",
+                "errors": assertion_errors,
             }
 
         # Sample messages from Kafka
@@ -132,20 +252,14 @@ class TestRunner:
                 }
 
             # Run assertions against sampled messages
-            assertion_results = []
-            for assertion in test.assertions:
-                if not assertion:
-                    continue
-                assertion_type = list(assertion.keys())[0]
-                assertion_config = assertion[assertion_type] or {}
-
-                result = self._run_assertion(assertion_type, assertion_config, messages)
+            assertion_results: list[AssertionResult] = []
+            for assertion in parsed_assertions:
+                result = self._run_assertion(assertion, messages)
                 assertion_results.append(result)
 
-                if not result["passed"]:
+                if not result.get("passed", False):
                     errors.extend(result.get("errors", []))
-                if result.get("warnings"):
-                    warnings.extend(result["warnings"])
+                warnings.extend(result.get("warnings", []))
 
         except ImportError:
             return {
@@ -224,13 +338,14 @@ class TestRunner:
             "message": "Continuous test not deployed. Use 'streamt apply' to deploy.",
         }
 
-    def _get_topic_for_test(self, model_name: str) -> Optional[str]:
+    def _get_topic_for_test(self, model_name: str) -> str | None:
         """Get the Kafka topic for a model or source."""
         # Check models first
         model = self.project.get_model(model_name)
         if model:
-            if model.get_topic_config() and model.get_topic_config().name:
-                return model.get_topic_config().name
+            topic_config = model.get_topic_config()
+            if topic_config and topic_config.name:
+                return topic_config.name
             return model.name
 
         # Check sources
@@ -242,7 +357,7 @@ class TestRunner:
 
     def _sample_messages_from_kafka(
         self, topic: str, sample_size: int, timeout_ms: int = 10000
-    ) -> list[dict]:
+    ) -> list[JsonRecord]:
         """Sample messages from a Kafka topic.
 
         Args:
@@ -271,7 +386,7 @@ class TestRunner:
                 "log_level": 0,
             }
         )
-        messages: list[dict] = []
+        messages: list[JsonRecord] = []
         consumer = Consumer(consumer_config)
         deadline = time.monotonic() + (timeout_ms / 1000)
 
@@ -284,10 +399,11 @@ class TestRunner:
                 msg = consumer.poll(timeout=min(1.0, remaining))
                 if msg is None:
                     continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                message_error = msg.error()
+                if message_error is not None:
+                    if message_error.code() == KafkaError._PARTITION_EOF:
                         continue
-                    raise RuntimeError(f"Kafka consumer error: {msg.error()}")
+                    raise RuntimeError(f"Kafka consumer error: {message_error}")
 
                 raw_value = msg.value()
                 if raw_value is None:
@@ -304,114 +420,129 @@ class TestRunner:
         return messages
 
     def _run_assertion(
-        self, assertion_type: str, config: dict, messages: list[dict]
-    ) -> dict[str, object]:
+        self, assertion: _ParsedAssertion, messages: list[JsonRecord]
+    ) -> AssertionResult:
         """Run a single assertion against sampled messages."""
-        if assertion_type == "not_null":
-            return self._assert_not_null(config, messages)
-        elif assertion_type == "accepted_values":
-            return self._assert_accepted_values(config, messages)
-        elif assertion_type == "range":
-            return self._assert_range(config, messages)
-        elif assertion_type == "unique_key":
-            return self._assert_unique_key(config, messages)
-        else:
-            return {
-                "passed": True,
-                "warnings": [f"Unknown assertion type '{assertion_type}' - skipped"],
-            }
+        if assertion.assertion_type == "not_null" and isinstance(
+            assertion.config, NotNullAssertion
+        ):
+            return self._assert_not_null(assertion.config, messages)
+        if assertion.assertion_type == "accepted_values" and isinstance(
+            assertion.config, AcceptedValuesAssertion
+        ):
+            return self._assert_accepted_values(assertion.config, messages)
+        if assertion.assertion_type == "range" and isinstance(
+            assertion.config, RangeAssertion
+        ):
+            return self._assert_range(assertion.config, messages)
+        if assertion.assertion_type == "unique_key" and isinstance(
+            assertion.config, UniqueKeyAssertion
+        ):
+            return self._assert_unique_key(assertion.config, messages)
+        return {
+            "passed": True,
+            "warnings": [
+                f"Unknown assertion type '{assertion.assertion_type}' - skipped"
+            ],
+        }
 
-    def _assert_not_null(self, config: dict, messages: list[dict]) -> dict[str, object]:
+    def _assert_not_null(
+        self, config: NotNullAssertion, messages: list[JsonRecord]
+    ) -> AssertionResult:
         """Assert that specified columns are not null."""
-        columns = config.get("columns", [])
-        errors = []
-        null_counts = dict.fromkeys(columns, 0)
+        errors: list[str] = []
+        null_counts: dict[str, int] = dict.fromkeys(config.columns, 0)
 
-        for msg in messages:
-            for col in columns:
-                if col in msg and msg[col] is None:
-                    null_counts[col] += 1
+        for message in messages:
+            for column in config.columns:
+                if column in message and message[column] is None:
+                    null_counts[column] += 1
 
-        for col, count in null_counts.items():
+        for column, count in null_counts.items():
             if count > 0:
-                errors.append(f"Column '{col}' has {count} null values in {len(messages)} messages")
+                errors.append(
+                    f"Column '{column}' has {count} null values in {len(messages)} messages"
+                )
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_accepted_values(self, config: dict, messages: list[dict]) -> dict[str, object]:
+    def _assert_accepted_values(
+        self, config: AcceptedValuesAssertion, messages: list[JsonRecord]
+    ) -> AssertionResult:
         """Assert that a column only contains accepted values."""
-        column = config.get("column")
-        accepted = set(config.get("values", []))
-        errors = []
-        invalid_values = set()
+        errors: list[str] = []
+        invalid_values: set[str] = set()
 
-        for msg in messages:
-            if column in msg:
-                val = msg[column]
-                if val not in accepted:
-                    invalid_values.add(str(val))
+        for message in messages:
+            if config.column in message:
+                value = message[config.column]
+                if not any(value == accepted for accepted in config.values):
+                    invalid_values.add(str(value))
 
         if invalid_values:
             sample = list(invalid_values)[:5]
             errors.append(
-                f"Column '{column}' has {len(invalid_values)} invalid values. Sample: {sample}"
+                f"Column '{config.column}' has {len(invalid_values)} invalid values. "
+                f"Sample: {sample}"
             )
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_range(self, config: dict, messages: list[dict]) -> dict[str, object]:
+    def _assert_range(
+        self, config: RangeAssertion, messages: list[JsonRecord]
+    ) -> AssertionResult:
         """Assert that a column's values fall within a range."""
-        column = config.get("column")
-        min_val = config.get("min")
-        max_val = config.get("max")
-        errors = []
-        violations = {"below_min": 0, "above_max": 0}
+        errors: list[str] = []
+        violations: dict[str, int] = {"below_min": 0, "above_max": 0}
 
-        for msg in messages:
-            if column in msg:
-                val = msg[column]
-                if val is not None:
-                    try:
-                        if min_val is not None and val < min_val:
-                            violations["below_min"] += 1
-                        if max_val is not None and val > max_val:
-                            violations["above_max"] += 1
-                    except TypeError:
-                        # Non-comparable types
-                        pass
+        for message in messages:
+            if config.column in message:
+                value = message[config.column]
+                if isinstance(value, (int, float)):
+                    if config.min is not None and value < config.min:
+                        violations["below_min"] += 1
+                    if config.max is not None and value > config.max:
+                        violations["above_max"] += 1
 
         if violations["below_min"] > 0:
             errors.append(
-                f"Column '{column}' has {violations['below_min']} values below min {min_val}"
+                f"Column '{config.column}' has {violations['below_min']} values "
+                f"below min {config.min}"
             )
         if violations["above_max"] > 0:
             errors.append(
-                f"Column '{column}' has {violations['above_max']} values above max {max_val}"
+                f"Column '{config.column}' has {violations['above_max']} values "
+                f"above max {config.max}"
             )
 
         return {"passed": len(errors) == 0, "errors": errors}
 
-    def _assert_unique_key(self, config: dict, messages: list[dict]) -> dict[str, object]:
+    def _assert_unique_key(
+        self, config: UniqueKeyAssertion, messages: list[JsonRecord]
+    ) -> AssertionResult:
         """Assert that a key is unique within the sample."""
-        key = config.get("key")
-        tolerance = config.get("tolerance", 0.0)
-        errors = []
-        seen = {}
+        tolerance = config.tolerance or 0.0
+        errors: list[str] = []
+        seen: dict[object, int] = {}
 
-        for msg in messages:
-            if key in msg:
-                val = msg[key]
-                if val in seen:
-                    seen[val] += 1
-                else:
-                    seen[val] = 1
+        for message in messages:
+            if config.key in message:
+                value = message[config.key]
+                try:
+                    seen[value] = seen.get(value, 0) + 1
+                except TypeError:
+                    errors.append(
+                        f"Key '{config.key}' contains a non-scalar value that cannot be "
+                        "checked for uniqueness"
+                    )
 
         duplicates = sum(1 for count in seen.values() if count > 1)
         duplicate_rate = duplicates / len(messages) if messages else 0
 
         if duplicate_rate > tolerance:
             errors.append(
-                f"Key '{key}' has {duplicate_rate:.2%} duplicate rate (tolerance: {tolerance:.2%})"
+                f"Key '{config.key}' has {duplicate_rate:.2%} duplicate rate "
+                f"(tolerance: {tolerance:.2%})"
             )
 
         return {"passed": len(errors) == 0, "errors": errors}
