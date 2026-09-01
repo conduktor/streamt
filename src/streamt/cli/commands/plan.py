@@ -164,11 +164,16 @@ def plan(
             "updates": deployment_plan.updates,
             "deletes": deployment_plan.deletes,
             "has_changes": deployment_plan.has_changes,
+            "is_apply_blocked": deployment_plan.is_apply_blocked,
             "state_serial": prior_state.serial if prior_state is not None else None,
             "changes": changes,
             "ownership_requirements": [
                 requirement.to_dict()
                 for requirement in deployment_plan.ownership_requirements
+            ],
+            "safety_blockers": [
+                blocker.to_dict()
+                for blocker in deployment_plan.ordered_safety_blockers
             ],
         }
         if plan_output:

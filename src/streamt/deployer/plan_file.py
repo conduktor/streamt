@@ -19,7 +19,7 @@ from streamt.compiler.manifest import Manifest
 from streamt.deployer.planner import DeploymentPlan
 
 PLAN_FILE_KIND = "streamt.reviewed-plan"
-PLAN_FILE_VERSION = 1
+PLAN_FILE_VERSION = 2
 _MAX_PLAN_FILE_BYTES = 10 * 1024 * 1024
 _SENSITIVE_KEY = re.compile(
     r"(^|[._-])(?:password|passwd|secret|token|api[_-]?key|authorization|credentials?"
@@ -193,6 +193,12 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             str(item["observed_action"]),
         )
     )
+    safety_blockers: list[dict[str, object]] = []
+    for blocker in plan.ordered_safety_blockers:
+        normalized = _redact_inline_credentials(blocker.to_dict())
+        if not isinstance(normalized, dict):  # pragma: no cover - to_dict is fixed
+            raise PlanFileError("Safety blocker payload must be an object")
+        safety_blockers.append(normalized)
 
     return {
         "summary": {
@@ -201,10 +207,13 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             "deletes": plan.deletes,
             "has_changes": plan.has_changes,
             "ownership_requirements": len(ownership_requirements),
+            "safety_blockers": len(safety_blockers),
+            "is_apply_blocked": plan.is_apply_blocked,
         },
         "resources": resources,
         "impact": impact,
         "ownership_requirements": ownership_requirements,
+        "safety_blockers": safety_blockers,
     }
 
 
@@ -431,13 +440,15 @@ class ReviewedPlanFile:
         reviewed_live_state = {
             "resources": self.plan.get("resources"),
             "ownership_requirements": self.plan.get("ownership_requirements"),
+            "safety_blockers": self.plan.get("safety_blockers"),
         }
         current_live_state = {
             "resources": current_payload["resources"],
             "ownership_requirements": current_payload["ownership_requirements"],
+            "safety_blockers": current_payload["safety_blockers"],
         }
         if canonical_json(reviewed_live_state) != canonical_json(current_live_state):
             raise StalePlanError(
-                "Reviewed plan is stale; live resource actions, diffs, or ownership "
-                "requirements changed after planning"
+                "Reviewed plan is stale; live resource actions, diffs, ownership "
+                "requirements, or safety blockers changed after planning"
             )

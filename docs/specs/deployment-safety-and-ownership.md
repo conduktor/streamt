@@ -15,6 +15,8 @@ with the current orphan-deletion behavior.
 4. A partial or selected plan cannot alter resources outside its selection.
 5. `apply` executes the exact reviewed plan and rejects stale or modified plans.
 6. Destructive behavior defaults to disabled in every environment mode.
+7. Unsupported migrations are explicit plan blockers and cannot be bypassed by
+   destructive flags.
 
 ## Ownership modes
 
@@ -100,11 +102,35 @@ For every other live resource:
 When the plan is selected or targeted, removal detection is disabled outside
 the selected closure.
 
+## Deterministic safety blockers
+
+Plans carry an ordered, machine-readable `safety_blockers` array. The initial
+blockers are:
+
+- `kafka_partition_reduction` when desired partitions are lower than live
+  partitions.
+- `schema_incompatible` when Schema Registry rejects the desired schema under
+  the subject's compatibility policy.
+- `flink_update_requires_savepoint` for every existing Flink job update until a
+  savepoint-safe or explicitly stateless upgrade workflow exists.
+
+The canonical order follows backend apply order (Schema Registry, Kafka, then
+Flink), followed by physical resource name and blocker code. Creates and no-ops
+do not produce safety blockers. An ownership decision that neutralizes a
+resource to observe-only/no-op also does not produce one.
+
+Planning succeeds when blockers exist so reviewers and automation can inspect
+them. Applying does not: direct apply and reviewed-plan apply both fail with
+`E417_SAFETY_BLOCKED` before any backend mutation. `--force` does not override
+these blockers.
+
 ## Plan/apply protocol
 
-A saved plan contains the desired manifest checksum, prior-state serial,
-environment fingerprint, live-state observations used by the plan, proposed
-actions, policy decisions, and plan checksum.
+A version 2 saved plan contains the desired manifest checksum, prior-state
+serial, environment fingerprint, live-state observations used by the plan,
+proposed actions, ordered ownership and safety decisions, and plan checksum.
+Version 1 files are rejected as unsupported rather than interpreted without
+safety-blocker semantics.
 
 `apply` must reject a plan when:
 
@@ -113,6 +139,7 @@ actions, policy decisions, and plan checksum.
 - The environment differs.
 - The plan is expired under configured policy.
 - Required approval or destructive confirmation is absent.
+- Safety blockers differ from the reviewed plan or remain unresolved.
 
 ## Adoption
 
@@ -169,8 +196,9 @@ equivalent fail-closed workflows.
 
 ## Destructive operations
 
-Topic deletion, subject deletion, connector deletion, state reset, partition
-reduction, and state-incompatible Flink replacement are destructive.
+Topic deletion, subject deletion, connector deletion, state reset, and
+state-incompatible Flink replacement are destructive. Partition reduction is
+not an overridable destructive operation because Kafka does not support it.
 
 They require:
 
@@ -182,6 +210,9 @@ They require:
 
 Topic and stateful-job deletion should support an environment-level policy that
 forbids them entirely.
+
+Until stateful migration semantics land, every planned Flink update is blocked;
+it cannot reach the current cancel-and-resubmit implementation.
 
 ## Immediate compatibility behavior
 

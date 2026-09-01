@@ -78,6 +78,8 @@ to deploy anything.
       plan.
 - [x] Ship a first-party GitHub Action with job summaries and machine-readable
       annotations.
+- [x] Serialize deterministic blockers for Kafka partition reductions,
+      incompatible schemas, and Flink updates, and reject them before apply.
 
 Exit criterion: a breaking schema or stateful SQL change produces a reviewable
 report naming every known downstream consumer and blocks apply by policy.

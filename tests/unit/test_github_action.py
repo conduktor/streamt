@@ -207,6 +207,7 @@ class TestAnnotationsAndSummary:
                 "creates": 1,
                 "updates": 2,
                 "deletes": 0,
+                "is_apply_blocked": True,
                 "changes": [
                     {"action": "create", "type": "topic", "name": "events|raw"}
                 ],
@@ -215,6 +216,14 @@ class TestAnnotationsAndSummary:
                         "kind": "schema",
                         "logical_name": "raw_events",
                         "reason": "requires_adoption",
+                    }
+                ],
+                "safety_blockers": [
+                    {
+                        "code": "kafka_partition_reduction",
+                        "kind": "topic",
+                        "resource": "events|raw",
+                        "message": "partitions cannot be reduced password=hunter2",
                     }
                 ],
                 "plan_file": str(config.plan_path),
@@ -228,6 +237,11 @@ class TestAnnotationsAndSummary:
         assert "| 1 | 2 | 0 |" in summary
         assert "events&#124;raw" in summary
         assert "requires_adoption" in summary
+        assert "Apply: 🚫 blocked" in summary
+        assert "### Safety blockers" in summary
+        assert "kafka_partition_reduction" in summary
+        assert "partitions cannot be reduced password=***" in summary
+        assert "hunter2" not in summary
         assert "sha256:" + "a" * 64 in summary
 
 
@@ -248,8 +262,10 @@ class TestActionExecution:
                     "creates": 1,
                     "updates": 0,
                     "deletes": 0,
+                    "is_apply_blocked": False,
                     "changes": [],
                     "ownership_requirements": [],
+                    "safety_blockers": [],
                     "plan_file": str(config.plan_path),
                     "plan_checksum": "sha256:" + "b" * 64,
                 },
@@ -260,11 +276,51 @@ class TestActionExecution:
         assert result == 0
         assert len(calls) == 2
         assert calls[1][-1] == "--offline"
-        assert "Plan: ✅ created" in config.summary_path.read_text()
+        summary = config.summary_path.read_text()
+        assert "Plan: ✅ created" in summary
+        assert "Apply: ✅ ready" in summary
         assert config.output_path.read_text().splitlines() == [
             f"plan-path={config.plan_path}",
             f"plan-checksum=sha256:{'b' * 64}",
         ]
+
+    def test_blocked_plan_still_returns_success_and_writes_summary(self, tmp_path: Path):
+        config = _config(tmp_path, offline=False)
+
+        def runner(argv) -> CommandExecution:
+            if "validate" in argv:
+                return _execution("validate")
+            config.plan_path.parent.mkdir(parents=True)
+            config.plan_path.write_text('{"kind":"streamt.reviewed-plan"}')
+            return _execution(
+                "plan",
+                data={
+                    "creates": 0,
+                    "updates": 1,
+                    "deletes": 0,
+                    "is_apply_blocked": True,
+                    "changes": [],
+                    "ownership_requirements": [],
+                    "safety_blockers": [
+                        {
+                            "code": "flink_update_requires_savepoint",
+                            "kind": "flink_job",
+                            "resource": "orders_processor",
+                            "message": "safe update workflow required",
+                        }
+                    ],
+                    "plan_file": str(config.plan_path),
+                    "plan_checksum": "sha256:" + "c" * 64,
+                },
+            )
+
+        result = run_action(config, runner=runner)
+
+        assert result == 0
+        summary = config.summary_path.read_text()
+        assert "Plan: ✅ created" in summary
+        assert "Apply: 🚫 blocked" in summary
+        assert "flink_update_requires_savepoint" in summary
 
     def test_validation_failure_emits_summary_and_skips_plan(self, tmp_path: Path, capsys):
         config = _config(tmp_path)

@@ -352,21 +352,35 @@ def apply(
                     requirement.to_dict()
                     for requirement in deployment_plan.blocking_ownership_requirements
                 ]
-                message = (
-                    f"Apply blocked: {len(blocking_requirements)} resource(s) require an explicit "
-                    "ownership decision or adoption"
-                )
+                safety_blockers = [
+                    blocker.to_dict()
+                    for blocker in deployment_plan.ordered_safety_blockers
+                ]
+                if safety_blockers:
+                    error_code = ErrorCode.SAFETY_BLOCKED
+                    message = f"Apply blocked: {len(safety_blockers)} unsafe change(s)"
+                    if blocking_requirements:
+                        message += (
+                            f" and {len(blocking_requirements)} resource(s) with unresolved "
+                            "ownership"
+                        )
+                    message += " require resolution before apply"
+                else:
+                    error_code = ErrorCode.OWNERSHIP_REQUIRED
+                    message = (
+                        f"Apply blocked: {len(blocking_requirements)} resource(s) require an "
+                        "explicit ownership decision or adoption"
+                    )
                 fmt.set_data(
                     {
                         "summary": deployment_plan.summary(),
                         "ownership_requirements": all_requirements,
                         "blocking_ownership_requirements": blocking_requirements,
+                        "safety_blockers": safety_blockers,
                         "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
-                fmt.add_error(
-                    StructuredError(code=ErrorCode.OWNERSHIP_REQUIRED, message=message)
-                )
+                fmt.add_error(StructuredError(code=error_code, message=message))
                 fmt.print(deployment_plan.details())
                 fmt.print_error(message)
                 fmt.flush()

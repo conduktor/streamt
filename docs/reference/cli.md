@@ -424,6 +424,12 @@ streamt plan --env staging --out staging.plan.json
 !!! tip "Offline Plan"
     Use `--offline` to preview what a fresh deployment would create, without connecting to Kafka or other infrastructure. Useful for evaluating the tool, CI validation, or reviewing changes before infrastructure is available. The offline plan assumes no existing resources — all artifacts show as "create".
 
+Online planning reports ordered `safety_blockers` for Kafka partition
+reductions, incompatible schemas, and Flink job updates. A blocked plan still
+exits successfully and can be saved for review; its JSON data sets
+`is_apply_blocked: true`. Reviewed plan format version 2 includes these blockers
+in its integrity checksum. Older version 1 files are rejected explicitly.
+
 **Output:**
 
 ```
@@ -510,6 +516,13 @@ rolled-back applies do not advance state.
 !!! warning "Protected Environments"
     When deploying to a protected environment, you must confirm interactively (by typing the environment name), use `--confirm`, or use `--confirm-env ENV` (which also verifies the environment name matches). If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
 
+!!! danger "Unsupported migrations are not forceable"
+    `apply` rejects Kafka partition reductions, incompatible Schema Registry
+    updates, and every existing Flink job update with
+    `E417_SAFETY_BLOCKED`. This happens before backend mutation for both direct
+    apply and `apply --plan`; `--force` does not bypass it. Flink creates and
+    no-op jobs remain allowed.
+
 !!! tip "LLM/Agent Usage"
     Use `--confirm-env ENV` instead of `--confirm` for programmatic deployments. It provides an extra safety check by verifying the environment name matches, preventing accidental deployments to the wrong environment.
 
@@ -534,12 +547,17 @@ Summary: 2 created, 1 updated, 0 unchanged
     - **Topic already exists, same config** → skipped (`unchanged`)
     - **Topic already exists, different config** → updated (partitions increased, config altered)
     - **Topic doesn't exist** → created
-    - **Partitions decreased** → error (Kafka doesn't support partition reduction)
+    - **Partitions decreased** → plan records `kafka_partition_reduction`; apply
+      is refused before mutation (Kafka does not support partition reduction)
 
     On partial failure, successfully applied resources remain. Re-run `apply` to retry failed resources — already-applied resources will be detected as `unchanged`. The results include `rollback_candidates` (newly created resources) that can be cleaned up if needed.
 
 !!! warning "Flink Job Lifecycle"
-    Running Flink jobs are **cancelled and resubmitted** when their SQL changes (including config-only changes like parallelism). No savepoint is taken. Failed jobs are automatically resubmitted. See [Flink Options Reference — Job Lifecycle on Apply](flink-options.md#job-lifecycle-on-apply) for full details.
+    Existing Flink job updates are currently blocked because the available
+    cancel-and-resubmit path is not savepoint-safe. New jobs may still be
+    submitted and unchanged jobs are left alone. See [Flink Options Reference —
+    Job Lifecycle on Apply](flink-options.md#job-lifecycle-on-apply) for the
+    underlying lifecycle boundary.
 
 ---
 
@@ -1179,6 +1197,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E414_ADOPTION_CONFIRMATION_REQUIRED` | Exact resource and environment confirmation is absent or incorrect |
 | `E415_ADOPTION_STATE_CONFLICT` | Existing ownership state conflicts with the requested claim |
 | `E416_ADOPTION_FAILED` | Live observation or atomic adoption-state persistence failed |
+| `E417_SAFETY_BLOCKED` | Apply refused an unsupported partition, schema, or Flink migration before mutation |
 
 **Parse Errors (E5xx):**
 

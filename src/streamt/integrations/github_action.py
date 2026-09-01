@@ -279,6 +279,8 @@ def render_summary(
         return "\n".join(lines) + "\n"
 
     data = _payload_data(plan)
+    apply_blocked = data.get("is_apply_blocked") is True
+    lines.append(f"- Apply: {'🚫 blocked' if apply_blocked else '✅ ready'}")
     lines.extend(
         [
             "",
@@ -315,6 +317,29 @@ def render_summary(
                 f"{_markdown_cell(requirement.get('logical_name', 'unknown'))}` — "
                 f"{_markdown_cell(requirement.get('reason', 'ownership required'))}"
             )
+
+    safety_blockers = data.get("safety_blockers", [])
+    if isinstance(safety_blockers, list) and safety_blockers:
+        lines.extend(
+            [
+                "",
+                "### Safety blockers",
+                "",
+                "| Code | Type | Resource | Reason |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
+        for blocker in safety_blockers[:20]:
+            if not isinstance(blocker, dict):
+                continue
+            lines.append(
+                f"| {_markdown_cell(blocker.get('code', 'safety_blocked'))} | "
+                f"{_markdown_cell(blocker.get('kind', 'resource'))} | "
+                f"{_markdown_cell(blocker.get('resource', 'unknown'))} | "
+                f"{_markdown_cell(blocker.get('message', 'apply is blocked'))} |"
+            )
+        if len(safety_blockers) > 20:
+            lines.append(f"\n_…and {len(safety_blockers) - 20} more safety blocker(s)._ ")
 
     checksum = data.get("plan_checksum")
     plan_file = data.get("plan_file")

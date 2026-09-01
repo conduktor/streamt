@@ -9,7 +9,7 @@ production-safe stateful upgrades are not implemented.
 | --- | --- | --- | --- | --- |
 | Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
 | Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility | Register source schemas | Validation is read-only; subject deletion is disabled. |
-| Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit, update, cancel | Savepoint-aware state migration is not yet a safe workflow. |
+| Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates are deterministically blocked before cancel/resubmit until a savepoint-safe or explicitly stateless workflow exists. |
 | Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Rule state | Virtual-topic interceptor rules | Console catalog publication is a separate planned integration. |
 | AsyncAPI | AsyncAPI 2.6 export | No | No | Validation and AsyncAPI 3.x output are planned. |

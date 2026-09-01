@@ -81,6 +81,42 @@ class OwnershipRequirement:
         }
 
 
+@dataclass(frozen=True)
+class SafetyBlocker:
+    """A deterministic policy decision that forbids applying one unsafe change."""
+
+    code: str
+    kind: str
+    resource: str
+    action: str
+    message: str
+    details: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a stable machine-readable representation."""
+        return {
+            "code": self.code,
+            "kind": self.kind,
+            "resource": self.resource,
+            "action": self.action,
+            "message": self.message,
+            "details": dict(self.details),
+        }
+
+
+_SAFETY_KIND_ORDER = {"schema": 0, "topic": 1, "flink_job": 2}
+
+
+def _safety_blocker_sort_key(blocker: SafetyBlocker) -> tuple[int, str, str, str]:
+    """Order blockers in backend apply order, then by stable resource identity."""
+    return (
+        _SAFETY_KIND_ORDER.get(blocker.kind, 99),
+        blocker.resource,
+        blocker.code,
+        blocker.action,
+    )
+
+
 @dataclass
 class DeploymentPlan:
     """A deployment plan."""
@@ -92,6 +128,98 @@ class DeploymentPlan:
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
     impact_radius: list[ImpactEntry] = field(default_factory=list)
     ownership_requirements: list[OwnershipRequirement] = field(default_factory=list)
+    safety_blockers: list[SafetyBlocker] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Derive blockers for plans constructed with their changes up front."""
+        if not self.safety_blockers:
+            self.refresh_safety_blockers()
+
+    def refresh_safety_blockers(self) -> None:
+        """Rebuild blockers from final effective backend actions."""
+        blockers: list[SafetyBlocker] = []
+
+        for change in self.schema_changes:
+            changes = change.changes or {}
+            incompatible = changes.get("schema_incompatible")
+            if change.action != "update" or incompatible is None:
+                continue
+            current = change.current
+            desired = change.desired
+            details: dict[str, object] = {}
+            if isinstance(incompatible, dict):
+                current_version = incompatible.get("current_version")
+                if current_version is not None:
+                    details["current_version"] = current_version
+            compatibility = (
+                getattr(current, "compatibility", None)
+                or getattr(desired, "compatibility", None)
+            )
+            if compatibility is not None:
+                details["compatibility"] = compatibility
+            blockers.append(
+                SafetyBlocker(
+                    code="schema_incompatible",
+                    kind="schema",
+                    resource=change.subject,
+                    action=change.action,
+                    message=(
+                        "Schema is incompatible with the subject's configured "
+                        "compatibility policy; apply is blocked."
+                    ),
+                    details=details,
+                )
+            )
+
+        for change in self.topic_changes:
+            changes = change.changes or {}
+            if change.action != "update" or "partitions_error" not in changes:
+                continue
+            details = {"field": "partitions"}
+            current_partitions = getattr(change.current, "partitions", None)
+            desired_partitions = getattr(change.desired, "partitions", None)
+            if current_partitions is not None:
+                details["current"] = current_partitions
+            if desired_partitions is not None:
+                details["desired"] = desired_partitions
+            blockers.append(
+                SafetyBlocker(
+                    code="kafka_partition_reduction",
+                    kind="topic",
+                    resource=change.topic,
+                    action=change.action,
+                    message="Kafka topic partitions cannot be reduced; apply is blocked.",
+                    details=details,
+                )
+            )
+
+        for change in self.flink_changes:
+            if change.action != "update":
+                continue
+            details = {}
+            current_status = getattr(change.current, "status", None)
+            if current_status is not None:
+                details["current_status"] = current_status
+            blockers.append(
+                SafetyBlocker(
+                    code="flink_update_requires_savepoint",
+                    kind="flink_job",
+                    resource=change.job_name,
+                    action=change.action,
+                    message=(
+                        "Flink job updates are blocked until a savepoint-safe or "
+                        "explicitly stateless upgrade workflow is implemented."
+                    ),
+                    details=details,
+                )
+            )
+
+        self.safety_blockers = sorted(blockers, key=_safety_blocker_sort_key)
+
+    @property
+    def ordered_safety_blockers(self) -> list[SafetyBlocker]:
+        """Return blockers in their canonical review and execution order."""
+        return sorted(self.safety_blockers, key=_safety_blocker_sort_key)
 
     @property
     def has_changes(self) -> bool:
@@ -158,8 +286,8 @@ class DeploymentPlan:
 
     @property
     def is_apply_blocked(self) -> bool:
-        """Whether apply must refuse this plan for unresolved ownership."""
-        return bool(self.blocking_ownership_requirements)
+        """Whether apply must refuse this plan for ownership or safety policy."""
+        return bool(self.blocking_ownership_requirements or self.safety_blockers)
 
     def summary(self) -> str:
         """Get a summary of the plan."""
@@ -169,6 +297,8 @@ class DeploymentPlan:
         )
         if self.ownership_requirements:
             summary += f", {len(self.ownership_requirements)} ownership requirement(s)"
+        if self.safety_blockers:
+            summary += f", {len(self.safety_blockers)} safety blocker(s)"
         return summary
 
     def details(self, color: bool = True) -> str:
@@ -196,6 +326,13 @@ class DeploymentPlan:
                         lines.append(f"    version: {val['from_version']} -> {val['to_version']}")
                     elif key == "compatibility":
                         lines.append(f"    compatibility: {val['from']} -> {val['to']}")
+                    elif key == "schema_incompatible":
+                        message = (
+                            val.get("message", "schema is incompatible")
+                            if isinstance(val, dict)
+                            else "schema is incompatible"
+                        )
+                        lines.append(f"    blocked: {message}")
             elif change.action == "delete":
                 lines.append(_rm(f"- schema: {change.subject}"))
 
@@ -208,7 +345,15 @@ class DeploymentPlan:
             elif change.action == "update":
                 lines.append(_upd(f"~ topic: {change.topic}"))
                 for key, val in (change.changes or {}).items():
-                    lines.append(f"    {key}: {val['from']} -> {val['to']}")
+                    if key == "partitions_error":
+                        message = (
+                            val.get("message", "partitions cannot be reduced")
+                            if isinstance(val, dict)
+                            else "partitions cannot be reduced"
+                        )
+                        lines.append(f"    blocked: {message}")
+                    elif isinstance(val, dict) and "from" in val and "to" in val:
+                        lines.append(f"    {key}: {val['from']} -> {val['to']}")
             elif change.action == "delete":
                 lines.append(_rm(f"- topic: {change.topic}"))
 
@@ -250,6 +395,13 @@ class DeploymentPlan:
                 lines.append(f"  ! {requirement.kind}: {requirement.logical_name}")
                 lines.append(f"    {requirement.message}")
                 lines.append(f"    resource_id: {requirement.resource_id}")
+
+        if self.safety_blockers:
+            lines.append("")
+            lines.append("Safety Blockers:")
+            for blocker in self.ordered_safety_blockers:
+                lines.append(f"  ! [{blocker.code}] {blocker.kind}: {blocker.resource}")
+                lines.append(f"    {blocker.message}")
 
         if self.impact_radius:
             lines.append("")
@@ -534,6 +686,7 @@ class DeploymentPlanner:
             except KeyError:
                 pass
 
+        plan.refresh_safety_blockers()
         return plan
 
     def plan(self) -> DeploymentPlan:
@@ -676,6 +829,7 @@ class DeploymentPlanner:
                     )
 
         # Compute impact radius for planned changes
+        plan.refresh_safety_blockers()
         self._compute_impact_radius(plan)
 
         return plan

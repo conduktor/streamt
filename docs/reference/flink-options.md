@@ -13,6 +13,13 @@ When you run `streamt apply`, each Flink job goes through a planning phase that
 inspects the cluster and decides what action to take. This section documents the
 exact behavior for every scenario.
 
+!!! danger "Existing job updates are blocked"
+    The planner detects SQL and configuration changes, but `streamt apply`
+    rejects every resulting existing-job update with
+    `flink_update_requires_savepoint` / `E417_SAFETY_BLOCKED`. The legacy
+    cancel-and-resubmit implementation is not reachable through apply until a
+    savepoint-safe or explicitly stateless migration workflow is implemented.
+
 ### Decision Flow
 
 ```
@@ -38,8 +45,8 @@ exact behavior for every scenario.
            Yes   No
             │     │
             ▼     ▼
-        CANCEL   SKIP
-        + SUBMIT (unchanged)
+        BLOCK    SKIP
+        APPLY    (unchanged)
 ```
 
 ### 1. New Job (no existing job on cluster)
@@ -62,16 +69,13 @@ includes `SET` statements, so **any** configuration change — SQL logic,
 parallelism, checkpointing, state backend, state TTL — produces a different
 hash.
 
-When a change is detected:
+When a change is detected, the plan reports `action: update` and adds
+`flink_update_requires_savepoint`. Apply then fails before cancellation or SQL
+submission. `--force` cannot bypass this decision.
 
-1. The running job is **cancelled** via the Flink REST API (`PATCH /jobs/{id}` with state `cancelled`).
-2. The new SQL is submitted through the SQL Gateway.
-3. The new hash is saved to local state.
-
-**There is no savepoint taken before cancellation.** The job is hard-cancelled
-and restarted from scratch (or from the latest externalized checkpoint, if
-configured). If you need to preserve state across redeployments, configure
-externalized checkpoint retention:
+The deployer still contains a legacy hard-cancel/re-submit implementation, but
+the safety gate intentionally makes it unreachable. Externalized checkpoint
+retention remains useful for manual operational recovery:
 
 ```yaml
 flink:
@@ -88,8 +92,8 @@ cluster configuration).
 Config-only changes are **not treated differently** from SQL logic changes.
 Because all Flink options are compiled into `SET` statements within the
 generated SQL, changing any option (parallelism, checkpoint interval, state
-backend, etc.) changes the SQL hash. This triggers the same cancel + resubmit
-path described above.
+backend, etc.) changes the SQL hash. This triggers the same blocked update
+decision described above.
 
 Examples of changes that trigger redeployment:
 
@@ -120,31 +124,18 @@ as `unchanged`.
     force redeployment, delete `.streamt/flink_hashes.json` and stop the job
     manually, or change the SQL.
 
-### 6. Rollback on Failure
+### 6. Update recovery
 
-If the new SQL fails to submit after the running job was cancelled:
-
-1. The SQL hash for that job is **cleared** from local state.
-2. A `CRITICAL` log message is emitted: `PIPELINE DOWN: job '<name>' was cancelled but resubmit failed.`
-3. The error is re-raised, causing `apply` to report the job under `errors`.
-
-**The old job is not automatically restored.** The pipeline is down until the
-issue is fixed and `streamt apply` is run again. On the next apply, the missing
-hash and non-running state will cause the job to be submitted as new.
-
-To minimize this risk:
-
-- Use `streamt plan` to preview changes before applying.
-- Test SQL changes locally with the Flink SQL CLI first.
-- Configure `checkpoint.externalized: RETAIN_ON_CANCELLATION` so that even
-  after a failed redeploy, manually resubmitting the old SQL can resume from
-  the last checkpoint.
+There is no automated update or rollback workflow yet because the safety gate
+prevents the old job from being cancelled. Produce and review the blocked plan,
+then use an external savepoint-aware operator or a manual migration procedure
+until streamt implements an explicit stateful/stateless update contract.
 
 !!! warning "No Savepoints"
-    streamt does **not** trigger savepoints before cancelling jobs. This is a
-    known limitation. If you require zero-data-loss redeployments with state
-    continuity, take a savepoint manually via the Flink REST API before running
-    `streamt apply`, or configure externalized checkpoint retention.
+    streamt does **not** trigger savepoints and therefore blocks existing-job
+    updates before cancellation. If you require a stateful redeployment, use an
+    external savepoint-aware workflow; taking a savepoint alone does not bypass
+    the streamt safety blocker.
 
 ---
 
