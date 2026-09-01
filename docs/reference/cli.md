@@ -17,6 +17,7 @@ Complete reference for all streamt CLI commands.
 | View data lineage | `lineage` | No |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
+| Claim an existing declared topic | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
 
 ## Global Options
@@ -467,6 +468,43 @@ Summary: 2 created, 1 updated, 0 unchanged
 
 !!! warning "Flink Job Lifecycle"
     Running Flink jobs are **cancelled and resubmitted** when their SQL changes (including config-only changes like parallelism). No savepoint is taken. Failed jobs are automatically resubmitted. See [Flink Options Reference — Job Lifecycle on Apply](flink-options.md#job-lifecycle-on-apply) for full details.
+
+---
+
+### adopt
+
+Explicitly claim one existing Kafka topic for lifecycle management. The initial
+MVP is deliberately topic-only and never changes Kafka.
+
+```bash
+streamt adopt \
+  --project-dir . \
+  --env prod \
+  --kind topic \
+  --name orders \
+  --confirm-resource streamt://payments/prod/topic/orders \
+  --confirm-env prod
+```
+
+`--name` is the stable logical declaration name, not the physical topic name.
+It must resolve to exactly one compiled topic whose declaration explicitly sets
+`ownership.mode: adopted`. Before confirmation, streamt reads and displays the
+physical topic's partitions, replication factor, dynamic configuration, desired
+managed attributes, and pending differences. Credential-shaped values are
+redacted.
+
+Interactive use requires typing an exact token containing both the full
+resource ID and environment. Non-interactive use requires both exact
+`--confirm-resource` and `--confirm-env` values; there is no generic yes/force
+flag. A successful adoption atomically advances only the environment-scoped
+local ownership state. Repeating an identical adoption is a no-op and does not
+advance its serial.
+
+!!! warning "Local state only"
+    Adoption state is stored at `.streamt/state/<environment>.json`. It is safe
+    for a single-user development checkout, not shared CI: remote state and
+    locking are not implemented. Run `streamt plan --out ...` after adoption
+    and review that plan before applying any pending differences.
 
 ---
 
@@ -1064,6 +1102,11 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E409_PLAN_STALE` | Project, environment, ownership state, or live actions drifted after review |
 | `E410_OWNERSHIP_REQUIRED` | A live resource needs an explicit ownership decision or adoption |
 | `E411_STATE_INVALID` | Local ownership state is malformed or belongs to another context |
+| `E412_ADOPTION_TARGET_INVALID` | Adoption target is missing, ambiguous, or not explicitly declared adopted |
+| `E413_ADOPTION_LIVE_NOT_FOUND` | Declared physical topic does not exist in Kafka |
+| `E414_ADOPTION_CONFIRMATION_REQUIRED` | Exact resource and environment confirmation is absent or incorrect |
+| `E415_ADOPTION_STATE_CONFLICT` | Existing ownership state conflicts with the requested claim |
+| `E416_ADOPTION_FAILED` | Live observation or atomic adoption-state persistence failed |
 
 **Parse Errors (E5xx):**
 

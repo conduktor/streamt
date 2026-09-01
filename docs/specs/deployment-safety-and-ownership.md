@@ -129,6 +129,34 @@ actions, policy decisions, and plan checksum.
 Bulk adoption requires a saved selection and non-interactive confirmation token
 suitable for CI review.
 
+### Topic-only MVP
+
+The first implementation intentionally supports one Kafka topic at a time:
+
+```text
+streamt adopt -p PATH -e ENV --kind topic --name LOGICAL_NAME
+```
+
+`LOGICAL_NAME` must resolve through compiled artifact ownership to exactly one
+physical topic, and the declaration must explicitly use
+`ownership.mode: adopted`. The command performs only Kafka topic observation;
+it never creates, updates, or deletes a topic. It shows the live and desired
+managed attributes plus pending differences before confirmation, with secrets
+redacted.
+
+Interactive confirmation uses an exact token containing the canonical resource
+ID and environment. Non-interactive confirmation requires both
+`--confirm-resource streamt://...` and `--confirm-env ENV` to match. On success,
+only the adopted record is added to environment-scoped local state, all other
+records are retained, and the serial advances once. An identical existing claim
+is idempotent. Conflicting state fails closed. Users must produce and review a
+fresh plan before later mutation; normal apply also replans against the new
+state.
+
+Schema Registry, Flink, Kafka Connect, and Gateway adoption remain unsupported
+until their exact management surfaces and compound resource identities have
+equivalent fail-closed workflows.
+
 ## Destructive operations
 
 Topic deletion, subject deletion, connector deletion, state reset, partition

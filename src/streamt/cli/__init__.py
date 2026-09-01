@@ -7,6 +7,7 @@ import click
 from streamt import __version__
 
 from .commands import (
+    adopt,
     apply,
     build,
     compile,
@@ -55,6 +56,7 @@ def main(ctx: click.Context, output: str, quiet: bool, verbose: bool) -> None:
 
 
 # Register all commands
+main.add_command(adopt.adopt)
 main.add_command(validate.validate)
 main.add_command(compile.compile)
 main.add_command(plan.plan)
