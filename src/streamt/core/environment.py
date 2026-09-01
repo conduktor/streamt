@@ -93,7 +93,7 @@ class SafetyConfig:
     """Safety configuration for an environment."""
 
     confirm_apply: bool = True
-    allow_destructive: bool = True
+    allow_destructive: bool = False
 
 
 @dataclass
@@ -268,7 +268,7 @@ class EnvironmentManager:
         safety_data = data.get("safety", {})
         safety = SafetyConfig(
             confirm_apply=safety_data.get("confirm_apply", environment.protected),
-            allow_destructive=safety_data.get("allow_destructive", True),
+            allow_destructive=safety_data.get("allow_destructive", False),
         )
 
         return EnvironmentConfig(

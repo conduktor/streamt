@@ -11,6 +11,67 @@ from pathlib import Path
 from typing import Optional
 
 
+@dataclass(frozen=True)
+class ArtifactOwnership:
+    """Lifecycle ownership for a compiled deployment artifact.
+
+    Only artifacts explicitly emitted by a streamt project are managed.  The
+    owner identifies the source or model whose selection should include the
+    artifact; ``mode`` leaves room for future imported/external resources
+    without treating every resource visible in a cluster as project-owned.
+    """
+
+    project: str
+    owner_type: str
+    owner_name: str
+    mode: str = "managed"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "mode": self.mode,
+            "project": self.project,
+            "type": self.owner_type,
+            "name": self.owner_name,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> ArtifactOwnership | None:
+        """Parse ownership stored in a manifest, tolerating legacy artifacts."""
+        if isinstance(data, cls):
+            return data
+        if not isinstance(data, dict):
+            return None
+        project = data.get("project")
+        owner_type = data.get("type")
+        owner_name = data.get("name")
+        if not isinstance(project, str) or not project:
+            return None
+        if not isinstance(owner_type, str) or not owner_type:
+            return None
+        if not isinstance(owner_name, str) or not owner_name:
+            return None
+        mode = data.get("mode", "managed")
+        if not isinstance(mode, str):
+            return None
+        return cls(
+            project=project,
+            owner_type=owner_type,
+            owner_name=owner_name,
+            mode=mode,
+        )
+
+
+def _with_ownership(
+    data: dict[str, object],
+    ownership: ArtifactOwnership | dict[str, str] | None,
+) -> dict[str, object]:
+    """Add normalized ownership metadata when an artifact has an owner."""
+    parsed = ArtifactOwnership.from_dict(ownership)
+    if parsed:
+        data["ownership"] = parsed.to_dict()
+    return data
+
+
 @dataclass
 class TopicArtifact:
     """Compiled topic artifact."""
@@ -19,14 +80,15 @@ class TopicArtifact:
     partitions: int
     replication_factor: int
     config: dict[str, object] = field(default_factory=dict)
+    ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        return _with_ownership({
             "name": self.name,
             "partitions": self.partitions,
             "replication_factor": self.replication_factor,
             "config": self.config,
-        }
+        }, self.ownership)
 
 
 @dataclass
@@ -40,9 +102,10 @@ class FlinkJobArtifact:
     checkpoint_interval_ms: Optional[int] = None
     state_backend: Optional[str] = None
     state_ttl_ms: Optional[int] = None
+    ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        return _with_ownership({
             "name": self.name,
             "sql": self.sql,
             "cluster": self.cluster,
@@ -50,7 +113,7 @@ class FlinkJobArtifact:
             "checkpoint_interval_ms": self.checkpoint_interval_ms,
             "state_backend": self.state_backend,
             "state_ttl_ms": self.state_ttl_ms,
-        }
+        }, self.ownership)
 
 
 @dataclass
@@ -62,9 +125,10 @@ class ConnectorArtifact:
     topics: list[str]
     config: dict[str, object] = field(default_factory=dict)
     cluster: Optional[str] = None
+    ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        return _with_ownership({
             "name": self.name,
             "connector_class": self.connector_class,
             "topics": self.topics,
@@ -75,7 +139,7 @@ class ConnectorArtifact:
                 "topics": ",".join(self.topics),
                 **self.config,
             },
-        }
+        }, self.ownership)
 
 
 @dataclass
@@ -86,14 +150,15 @@ class GatewayRuleArtifact:
     virtual_topic: str
     physical_topic: str
     interceptors: list[dict[str, object]] = field(default_factory=list)
+    ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        return _with_ownership({
             "name": self.name,
             "virtualTopic": self.virtual_topic,
             "physicalTopic": self.physical_topic,
             "interceptors": self.interceptors,
-        }
+        }, self.ownership)
 
 
 @dataclass
@@ -104,14 +169,15 @@ class SchemaArtifact:
     schema: dict[str, object]
     schema_type: str = "AVRO"  # AVRO, JSON, PROTOBUF
     compatibility: Optional[str] = None  # BACKWARD, FORWARD, FULL, NONE
+    ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        return _with_ownership({
             "subject": self.subject,
             "schema": self.schema,
             "schema_type": self.schema_type,
             "compatibility": self.compatibility,
-        }
+        }, self.ownership)
 
 
 @dataclass

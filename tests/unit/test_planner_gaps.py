@@ -1,8 +1,8 @@
-"""Gap tests for DeploymentPlanner: delete detection, partial failure,
+"""Gap tests for DeploymentPlanner: deletion safety, partial failure,
 plan properties, delegation, and apply behavior.
 
 Groups covered:
-  1. DELETE detection in planner (CRITICAL)
+  1. Safe handling of resources outside the manifest (CRITICAL)
   5. Partial failure reporting in planner apply
   Plus: plan properties, delegation, apply action routing
 """
@@ -65,45 +65,53 @@ def _mock_gw() -> MagicMock:
 # ===========================================================================
 
 
-class TestPlannerDeleteDetection:
-    """Planner should detect orphaned resources in the cluster that are
-    absent from the manifest, and plan DELETE actions."""
+class TestPlannerDeletionSafety:
+    """Cluster resources outside the manifest are never inferred as deletions."""
 
-    def test_orphan_topic_detected_as_delete(self):
-        """Manifest has NO topics, Kafka has 'orphan_topic'."""
+    def test_unrelated_topic_is_not_deleted(self):
+        """A partial topic manifest must not subtract from the whole cluster."""
 
         kafka = _mock_kafka()
-        kafka.list_topics.return_value = ["orphan_topic"]
-        planner = DeploymentPlanner(_manifest(topics=[]), kafka_deployer=kafka)
+        kafka.list_topics.return_value = ["selected_topic", "unrelated_topic"]
+        kafka.plan_topic.return_value = TopicChange(topic="selected_topic", action="none")
+        planner = DeploymentPlanner(
+            _manifest(
+                topics=[
+                    {
+                        "name": "selected_topic",
+                        "partitions": 1,
+                        "replication_factor": 1,
+                    }
+                ]
+            ),
+            kafka_deployer=kafka,
+        )
         plan = planner.plan()
 
-        deletes = [c for c in plan.topic_changes if c.action == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0].topic == "orphan_topic"
+        assert not [c for c in plan.topic_changes if c.action == "delete"]
+        kafka.list_topics.assert_not_called()
 
-    def test_orphan_schema_detected_as_delete(self):
-        """Manifest has NO schemas, SR has 'orphan-value'."""
+    def test_unrelated_schema_is_not_deleted(self):
+        """An undeclared Registry subject is outside project ownership."""
 
         sr = _mock_sr()
-        sr.list_subjects.return_value = ["orphan-value"]
+        sr.list_subjects.return_value = ["unrelated-value"]
         planner = DeploymentPlanner(_manifest(schemas=[]), schema_registry_deployer=sr)
         plan = planner.plan()
 
-        deletes = [c for c in plan.schema_changes if c.action == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0].subject == "orphan-value"
+        assert not [c for c in plan.schema_changes if c.action == "delete"]
+        sr.list_subjects.assert_not_called()
 
-    def test_orphan_connector_detected_as_delete(self):
-        """Manifest has NO connectors, Connect has 'orphan-sink'."""
+    def test_unrelated_connector_is_not_deleted(self):
+        """An undeclared connector is outside project ownership."""
 
         connect = _mock_connect()
-        connect.list_connectors.return_value = ["orphan-sink"]
+        connect.list_connectors.return_value = ["unrelated-sink"]
         planner = DeploymentPlanner(_manifest(connectors=[]), connect_deployer=connect)
         plan = planner.plan()
 
-        deletes = [c for c in plan.connector_changes if c.action == "delete"]
-        assert len(deletes) == 1
-        assert deletes[0].connector_name == "orphan-sink"
+        assert not [c for c in plan.connector_changes if c.action == "delete"]
+        connect.list_connectors.assert_not_called()
 
 
 # ===========================================================================

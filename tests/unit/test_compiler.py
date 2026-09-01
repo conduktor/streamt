@@ -49,6 +49,52 @@ class TestCompiler:
             assert payment_topic["partitions"] == 12
             assert payment_topic["replication_factor"] == 3
 
+    def test_compiled_artifacts_include_stable_owner_metadata(self):
+        """Every deployable artifact identifies its project and logical owner."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "payments", "version": "1.0.0"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "sources": [
+                    {
+                        "name": "raw",
+                        "topic": "raw.v1",
+                        "schema": {
+                            "format": "avro",
+                            "definition": '{"type":"record","name":"Raw","fields":[]}',
+                        },
+                    }
+                ],
+                "models": [
+                    {
+                        "name": "clean",
+                        "sql": 'SELECT * FROM {{ source("raw") }}',
+                        "topic": {"partitions": 3},
+                    }
+                ],
+            }
+
+            manifest = Compiler(self._create_project(tmpdir, config)).compile(dry_run=True)
+
+            schema = manifest.artifacts["schemas"][0]
+            topic = next(t for t in manifest.artifacts["topics"] if t["name"] == "clean")
+            job = next(
+                j for j in manifest.artifacts["flink_jobs"] if j["name"] == "clean_processor"
+            )
+            assert schema["ownership"] == {
+                "mode": "managed",
+                "project": "payments",
+                "type": "source",
+                "name": "raw",
+            }
+            assert topic["ownership"] == {
+                "mode": "managed",
+                "project": "payments",
+                "type": "model",
+                "name": "clean",
+            }
+            assert job["ownership"] == topic["ownership"]
+
     def test_compile_flink_model(self):
         """TC-COMP-002: Flink model should generate SQL and topic."""
         with tempfile.TemporaryDirectory() as tmpdir:

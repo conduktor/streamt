@@ -17,6 +17,7 @@ from jinja2 import (
 )
 
 from streamt.compiler.manifest import (
+    ArtifactOwnership,
     ConnectorArtifact,
     FlinkJobArtifact,
     GatewayRuleArtifact,
@@ -98,6 +99,14 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             return self.project.defaults.models.topic
         return TopicDefaults()
 
+    def _ownership(self, owner_type: str, owner_name: str) -> ArtifactOwnership:
+        """Build managed lifecycle metadata for a compiled artifact."""
+        return ArtifactOwnership(
+            project=self.project.project.name,
+            owner_type=owner_type,
+            owner_name=owner_name,
+        )
+
     def compile(self, dry_run: bool = False) -> Manifest:
         """Compile the project."""
         # Clear previous artifacts
@@ -131,6 +140,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             if test.type.value == "continuous":
                 job = TestJobCompiler.compile_job(test)
                 if job:
+                    job.ownership = self._ownership(
+                        "model" if self.project.get_model(test.model) else "source",
+                        test.model,
+                    )
                     self.test_jobs.append(job)
 
         # KAFKA-2: Auto-create dead-letter topics from test on_failure DLQ actions
@@ -167,6 +180,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                     subject=subject,
                     schema=schema,
                     schema_type=schema_type.upper(),
+                    ownership=self._ownership("source", source.name),
                 )
             )
 
@@ -311,6 +325,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 partitions=partitions,
                 replication_factor=replication_factor,
                 config=config,
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -362,6 +377,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 virtual_topic=virtual_topic_name,
                 physical_topic=source_topic,
                 interceptors=interceptors,
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -383,6 +399,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 partitions=partitions,
                 replication_factor=replication_factor,
                 config=config,
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -405,6 +422,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 state_ttl_ms=model.get_flink_config().state_ttl_ms
                 if model.get_flink_config()
                 else None,
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -451,6 +469,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 topics=source_topics,
                 config=config,
                 cluster=model.get_connect_cluster(),
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -463,6 +482,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 name=f"{model.name}_processor",
                 sql=flink_sql,
                 cluster=model.get_flink_cluster(),
+                ownership=self._ownership("model", model.name),
             )
         )
 
@@ -490,6 +510,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 name=f"test_{test.name}",
                 sql=flink_sql,
                 cluster=test.flink_cluster,
+                ownership=self._ownership(
+                    "model" if model else "source",
+                    test.model,
+                ),
             )
         )
 
@@ -512,6 +536,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                             name=dlq_topic,
                             partitions=self._topic_defaults.partitions,
                             replication_factor=self._topic_defaults.replication_factor,
+                            ownership=self._ownership(
+                                "model" if self.project.get_model(test.model) else "source",
+                                test.model,
+                            ),
                         )
                     )
                     existing_names.add(dlq_topic)

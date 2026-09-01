@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
 
-from streamt.compiler.manifest import Manifest
+from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
@@ -237,6 +237,7 @@ class DeploymentPlanner:
                     schema=schema_data["schema"],
                     schema_type=schema_data.get("schema_type", "AVRO"),
                     compatibility=schema_data.get("compatibility"),
+                    ownership=ArtifactOwnership.from_dict(schema_data.get("ownership")),
                 )
                 plan.schema_changes.append(SchemaChange(subject=artifact.subject, action="register", desired=artifact))
             except KeyError:
@@ -264,6 +265,7 @@ class DeploymentPlanner:
                     connector_class=cfg.get("connector.class", ""),
                     topics=cfg.get("topics", "").split(","),
                     config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
+                    ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
                 )
                 plan.connector_changes.append(ConnectorChange(connector_name=artifact.name, action="create", desired=artifact))
             except KeyError:
@@ -276,6 +278,7 @@ class DeploymentPlanner:
                     virtual_topic=rule_data["virtualTopic"],
                     physical_topic=rule_data["physicalTopic"],
                     interceptors=rule_data.get("interceptors", []),
+                    ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
                 )
                 plan.gateway_changes.append(GatewayRuleChange(name=artifact.name, action="create", desired=artifact))
             except KeyError:
@@ -286,12 +289,6 @@ class DeploymentPlanner:
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()
-        # Track successfully-planned names so orphan detection only considers
-        # artifacts that were actually parsed. Malformed artifacts are excluded
-        # to prevent accidental deletion of real resources.
-        planned_subjects: set[str] = set()
-        planned_topics: set[str] = set()
-        planned_connectors: set[str] = set()
 
         # Plan schemas first (before topics that may depend on them)
         if self.schema_registry_deployer:
@@ -304,10 +301,10 @@ class DeploymentPlanner:
                         schema=schema_data["schema"],
                         schema_type=schema_data.get("schema_type", "AVRO"),
                         compatibility=schema_data.get("compatibility"),
+                        ownership=ArtifactOwnership.from_dict(schema_data.get("ownership")),
                     )
                     change = self.schema_registry_deployer.plan_schema(artifact)
                     plan.schema_changes.append(change)
-                    planned_subjects.add(artifact.subject)
                 except KeyError as e:
                     logger.error("Malformed schema artifact, missing key %s: %s", e, schema_data)
 
@@ -320,7 +317,6 @@ class DeploymentPlanner:
                     artifact = TopicArtifact(**topic_data)
                     change = self.kafka_deployer.plan_topic(artifact)
                     plan.topic_changes.append(change)
-                    planned_topics.add(artifact.name)
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed topic artifact: %s in %s", e, topic_data)
 
@@ -352,10 +348,10 @@ class DeploymentPlanner:
                             for k, v in cfg.items()
                             if k not in ["name", "connector.class", "topics"]
                         },
+                        ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
                     )
                     change = self.connect_deployer.plan_connector(artifact)
                     plan.connector_changes.append(change)
-                    planned_connectors.add(artifact.name)
                 except KeyError as e:
                     logger.error("Malformed connector artifact, missing key %s: %s", e, conn_data)
 
@@ -370,6 +366,7 @@ class DeploymentPlanner:
                         virtual_topic=rule_data["virtualTopic"],
                         physical_topic=rule_data["physicalTopic"],
                         interceptors=rule_data.get("interceptors", []),
+                        ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
                     )
                     change = self.gateway_deployer.plan(artifact)
                     plan.gateway_changes.append(change)
@@ -378,55 +375,10 @@ class DeploymentPlanner:
                         "Malformed gateway_rule artifact, missing key %s: %s", e, rule_data
                     )
 
-        # Detect orphaned resources (exist in cluster but not in manifest)
-        self._detect_orphans(plan, planned_subjects, planned_topics, planned_connectors)
-
         # Compute impact radius for planned changes
         self._compute_impact_radius(plan)
 
         return plan
-
-    def _detect_orphans(
-        self,
-        plan: DeploymentPlan,
-        planned_subjects: set[str],
-        planned_topics: set[str],
-        planned_connectors: set[str],
-    ) -> None:
-        """Detect resources in the cluster that are absent from the manifest.
-
-        Uses the sets of successfully-planned artifact names (not raw manifest
-        data) to avoid marking resources for deletion when their manifest entry
-        was malformed and skipped during planning.
-        """
-        # Orphaned schemas
-        if self.schema_registry_deployer:
-            try:
-                for subject in self.schema_registry_deployer.list_subjects():
-                    if subject not in planned_subjects:
-                        plan.schema_changes.append(SchemaChange(subject=subject, action="delete"))
-            except Exception as e:
-                logger.error("Failed to list subjects for orphan detection: %s", e)
-
-        # Orphaned topics
-        if self.kafka_deployer:
-            try:
-                for topic in self.kafka_deployer.list_topics():
-                    if topic not in planned_topics:
-                        plan.topic_changes.append(TopicChange(topic=topic, action="delete"))
-            except Exception as e:
-                logger.error("Failed to list topics for orphan detection: %s", e)
-
-        # Orphaned connectors
-        if self.connect_deployer:
-            try:
-                for connector in self.connect_deployer.list_connectors():
-                    if connector not in planned_connectors:
-                        plan.connector_changes.append(
-                            ConnectorChange(connector_name=connector, action="delete")
-                        )
-            except Exception as e:
-                logger.error("Failed to list connectors for orphan detection: %s", e)
 
     def _compute_impact_radius(self, plan: DeploymentPlan) -> None:
         """Compute impact_radius for all planned topic creates/updates."""

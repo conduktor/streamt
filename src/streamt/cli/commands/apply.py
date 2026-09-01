@@ -19,8 +19,66 @@ from streamt.cli.helpers import (
     make_kafka_deployer,
     make_sr_deployer,
 )
+from streamt.compiler.manifest import ArtifactOwnership, Manifest
+from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError
+
+_SELECTABLE_ARTIFACT_KINDS = (
+    "schemas",
+    "topics",
+    "flink_jobs",
+    "test_jobs",
+    "connectors",
+    "gateway_rules",
+    "gateway_vclusters",
+)
+
+
+def _artifact_is_selected(
+    artifact: dict[str, object],
+    selected_models: set[str],
+    selected_sources: set[str],
+) -> bool:
+    """Return whether explicit artifact ownership is inside the selection."""
+    ownership = ArtifactOwnership.from_dict(artifact.get("ownership"))
+    if not ownership or ownership.mode != "managed":
+        return False
+    if ownership.owner_type == "model":
+        return ownership.owner_name in selected_models
+    if ownership.owner_type == "source":
+        return ownership.owner_name in selected_sources
+    return False
+
+
+def filter_manifest_for_selection(
+    manifest: Manifest,
+    selected_models: set[str],
+    selected_sources: set[str],
+) -> None:
+    """Restrict a compiled manifest to the explicitly selected ownership closure."""
+    manifest.models = [m for m in manifest.models if m.get("name") in selected_models]
+    manifest.sources = [s for s in manifest.sources if s.get("name") in selected_sources]
+    manifest.tests = [
+        test
+        for test in manifest.tests
+        if test.get("model") in selected_models or test.get("model") in selected_sources
+    ]
+    for kind in _SELECTABLE_ARTIFACT_KINDS:
+        if kind in manifest.artifacts:
+            manifest.artifacts[kind] = [
+                artifact
+                for artifact in manifest.artifacts[kind]
+                if _artifact_is_selected(artifact, selected_models, selected_sources)
+            ]
+
+
+def destructive_operations_allowed(
+    env_config: EnvironmentConfig | None,
+    force: bool,
+) -> bool:
+    """Destructive behavior is opt-in, including in single-environment mode."""
+    return force or bool(env_config and env_config.safety.allow_destructive)
 
 
 @click.command()
@@ -164,44 +222,41 @@ def apply(
                     else:
                         selected_models = tagged
                 else:
-                    fmt.print_warning(f"Unknown select syntax '{select}'. Expected: tag:<value>")
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.PARSE_ERROR,
+                            message=f"Unknown select syntax '{select}'. Expected: tag:<value>",
+                        )
+                    )
+                    fmt.print_error(f"Unknown select syntax '{select}'. Expected: tag:<value>")
+                    fmt.flush()
+                    sys.exit(1)
 
-            if selected_models:
-                # Get source names used by selected models
-                source_names = {s.name for s in project.sources}
-                selected_sources: set[str] = set()
-                for model in project.models:
-                    if model.name in selected_models and model.sql and parser:
-                        srcs, _ = parser.extract_refs_from_sql(model.sql)
-                        selected_sources.update(s for s in srcs if s in source_names)
-
-                # Filter manifest
-                manifest.models = [m for m in manifest.models if m.get("name") in selected_models]
-                manifest.sources = [
-                    s for s in manifest.sources if s.get("name") in selected_sources
-                ]
-                if "topics" in manifest.artifacts:
-                    manifest.artifacts["topics"] = [
-                        t
-                        for t in manifest.artifacts["topics"]
-                        if t.get("model") in selected_models or t.get("source") in selected_sources
-                    ]
-                if "flink_jobs" in manifest.artifacts:
-                    manifest.artifacts["flink_jobs"] = [
-                        j
-                        for j in manifest.artifacts["flink_jobs"]
-                        if j.get("model") in selected_models
-                    ]
-                if "gateway_vclusters" in manifest.artifacts:
-                    manifest.artifacts["gateway_vclusters"] = [
-                        v
-                        for v in manifest.artifacts["gateway_vclusters"]
-                        if v.get("model") in selected_models
-                    ]
-
-                fmt.print(
-                    f"[cyan]Deploying {len(selected_models)} model(s): {', '.join(sorted(selected_models))}[/cyan]"
+            if not selected_models:
+                fmt.add_error(
+                    StructuredError(
+                        code=ErrorCode.PARSE_ERROR,
+                        message="The combined --target/--select expression matched no models",
+                    )
                 )
+                fmt.print_error("The combined --target/--select expression matched no models")
+                fmt.flush()
+                sys.exit(1)
+
+            # Get source names used by selected models
+            source_names = {s.name for s in project.sources}
+            selected_sources: set[str] = set()
+            for model in project.models:
+                if model.name in selected_models and model.sql:
+                    srcs, _ = parser.extract_refs_from_sql(model.sql)
+                    selected_sources.update(s for s in srcs if s in source_names)
+
+            filter_manifest_for_selection(manifest, selected_models, selected_sources)
+
+            fmt.print(
+                f"[cyan]Deploying {len(selected_models)} model(s): "
+                f"{', '.join(sorted(selected_models))}[/cyan]"
+            )
 
         # Create deployers
         sr = make_sr_deployer(project, fmt)
@@ -228,21 +283,26 @@ def apply(
             deployment_plan = planner.plan()
 
             # Destructive safety — only block if plan actually has deletes
-            if parser.env_config and not parser.env_config.safety.allow_destructive:
-                if deployment_plan.deletes > 0:
-                    env_name = parser.env_config.environment.name
-                    if not force:
-                        fmt.add_error(
-                            StructuredError(
-                                code=ErrorCode.ENVIRONMENT_ERROR,
-                                message=f"Destructive ops blocked for '{env_name}'. Plan has {deployment_plan.deletes} delete(s). Use --force.",
-                            )
+            if deployment_plan.deletes > 0:
+                env_name = (
+                    parser.env_config.environment.name if parser.env_config else "default"
+                )
+                if not destructive_operations_allowed(parser.env_config, force):
+                    fmt.add_error(
+                        StructuredError(
+                            code=ErrorCode.ENVIRONMENT_ERROR,
+                            message=(
+                                f"Destructive ops blocked for '{env_name}'. Plan has "
+                                f"{deployment_plan.deletes} delete(s). Use --force."
+                            ),
                         )
-                        fmt.print_error(
-                            f"Destructive ops blocked for '{env_name}'. Use --force to override."
-                        )
-                        fmt.flush()
-                        sys.exit(1)
+                    )
+                    fmt.print_error(
+                        f"Destructive ops blocked for '{env_name}'. Use --force to override."
+                    )
+                    fmt.flush()
+                    sys.exit(1)
+                if force:
                     fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
 
             if dry_run:
