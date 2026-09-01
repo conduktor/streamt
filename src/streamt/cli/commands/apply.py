@@ -462,7 +462,10 @@ def apply(
 
             if next_state is not None:
                 try:
-                    next_state.save(state_path)
+                    next_state.save_if_serial(
+                        state_path,
+                        expected_serial=prior_state.serial,
+                    )
                 except OSError as error:
                     raise StateFormatError(
                         f"deployment succeeded but local ownership state could not be saved: {error}"

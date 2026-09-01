@@ -16,6 +16,7 @@ from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import ReviewedPlanFile
 from streamt.deployer.state import (
     LocalState,
+    ManagedResourceRecord,
     artifact_checksum,
     local_state_path,
     resource_id,
@@ -288,6 +289,50 @@ def test_apply_failure_and_rollback_never_save_state(tmp_path: Path) -> None:
     assert _json(result)["errors"][0]["code"] == "E407_DEPLOY_ERROR"
     assert not local_state_path(tmp_path, environment="default").exists()
     kafka.delete_topic.assert_called_once_with("first.v1")
+
+
+def test_apply_cas_rejects_concurrent_state_and_preserves_newer_snapshot(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    manifest = _manifest(_topic("payments.clean.v1", owner="payments_clean"))
+    state_path = local_state_path(tmp_path, environment="default")
+    other_uri = resource_id("plan-test", "default", "topic", "other")
+    concurrent = LocalState(
+        project="plan-test",
+        environment="default",
+        serial=1,
+        resources={
+            other_uri: ManagedResourceRecord(
+                physical_name="other.v1",
+                ownership="managed",
+                artifact_checksum=artifact_checksum({"name": "other.v1"}),
+                backend="direct-kafka",
+            )
+        },
+    )
+    kafka = _kafka(exists=False)
+
+    def apply_after_concurrent_write(_artifact: object) -> str:
+        concurrent.save(state_path)
+        return "created"
+
+    kafka.apply_topic.side_effect = apply_after_concurrent_write
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=kafka,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 1
+    assert _json(result)["errors"][0]["code"] == "E411_STATE_INVALID"
+    assert LocalState.load(state_path) == concurrent
 
 
 def test_offline_plan_does_not_read_or_create_local_state(tmp_path: Path) -> None:

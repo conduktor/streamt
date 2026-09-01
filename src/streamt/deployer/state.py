@@ -7,6 +7,7 @@ removal candidates for a later, explicit destructive workflow.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ CURRENT_STATE_VERSION = 1
 LOCAL_STATE_RELATIVE_DIR = Path(".streamt/state")
 LOCAL_STATE_CI_WARNING = (
     "Local ownership state is for single-user development only and is unsuitable "
-    "for shared CI. Remote state and locking are not yet supported."
+    "for shared CI. Remote state and distributed locking are not yet supported."
 )
 _CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ENVIRONMENT_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]*$")
@@ -46,6 +47,10 @@ class StateVersionError(StateError):
 
 class StateIdentityError(StateError):
     """Persisted state belongs to a different project or environment."""
+
+
+class StateConflictError(StateError):
+    """Persisted state changed after a caller loaded its prior snapshot."""
 
 
 def _require_segment(value: object, label: str) -> str:
@@ -314,6 +319,41 @@ class LocalState:
             if temp_name:
                 Path(temp_name).unlink(missing_ok=True)
             raise
+
+    def save_if_serial(self, path: Path, *, expected_serial: int) -> None:
+        """Lock, compare the current serial, and atomically save this snapshot."""
+        if type(expected_serial) is not int or expected_serial < 0:
+            raise StateFormatError("expected_serial must be a non-negative integer")
+        if self.serial != expected_serial + 1:
+            raise StateFormatError(
+                "replacement state serial must be exactly expected_serial + 1"
+            )
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f".{path.name}.lock")
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if path.exists():
+                current_serial = LocalState.load(
+                    path,
+                    expected_project=self.project,
+                    expected_environment=self.environment,
+                ).serial
+            else:
+                current_serial = 0
+            if current_serial != expected_serial:
+                raise StateConflictError(
+                    f"state serial changed from {expected_serial} to {current_serial}; "
+                    "reload state and produce a fresh plan"
+                )
+            self.save(path)
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
     @classmethod
     def load(

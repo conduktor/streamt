@@ -129,8 +129,18 @@ class KafkaDeployer:
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
         return sorted(metadata.topics)
 
-    def get_topic_state(self, topic_name: str) -> TopicState:
-        """Get current state of a topic."""
+    def get_topic_state(
+        self,
+        topic_name: str,
+        *,
+        strict_config: bool = False,
+    ) -> TopicState:
+        """Get current state of a topic.
+
+        ``strict_config`` makes configuration observation fail closed. It is
+        required for workflows such as adoption that grant future mutation
+        authority based on the attributes shown to the user.
+        """
         self._check_closed()
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
 
@@ -149,6 +159,10 @@ class KafkaDeployer:
         # Get topic config
         config_resource = ConfigResource(ResourceType.TOPIC, topic_name)
         configs = self.admin.describe_configs([config_resource])
+        if strict_config and not configs:
+            raise RuntimeError(
+                f"Failed to get config for topic {topic_name!r}: broker returned no result"
+            )
         topic_config = {}
 
         for _resource, future in configs.items():
@@ -160,6 +174,10 @@ class KafkaDeployer:
                     if not entry.is_default
                 }
             except Exception as e:
+                if strict_config:
+                    raise RuntimeError(
+                        f"Failed to get config for topic {topic_name!r}: {e}"
+                    ) from e
                 logger.warning(f"Failed to get config for topic '{topic_name}': {e}")
 
         return TopicState(

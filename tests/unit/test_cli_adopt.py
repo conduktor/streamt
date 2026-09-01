@@ -182,7 +182,7 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
         "--project-dir",
         str(tmp_path),
         "--out",
-        "<reviewed-plan.json>",
+        str(tmp_path / ".streamt" / "plans" / "default-reviewed-plan.json"),
     ]
     serialized = json.dumps(payload)
     for secret in (
@@ -203,7 +203,7 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
         artifact_checksum=artifact_checksum(artifact.to_dict()),
         backend="direct-kafka",
     )
-    kafka.get_topic_state.assert_called_once_with("orders.v1")
+    kafka.get_topic_state.assert_called_once_with("orders.v1", strict_config=True)
     for method in (
         "apply_topic",
         "create_topic",
@@ -245,6 +245,27 @@ def test_missing_live_topic_never_writes_or_mutates(tmp_path: Path) -> None:
     assert _payload(result)["errors"][0]["code"] == "E413_ADOPTION_LIVE_NOT_FOUND"
     assert not local_state_path(tmp_path, environment="default").exists()
     kafka.apply_topic.assert_not_called()
+
+
+def test_config_observation_failure_fails_before_confirmation_or_save(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    kafka = _kafka()
+    kafka.get_topic_state.side_effect = RuntimeError(
+        "config read failed password=live-secret"
+    )
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), kafka)
+
+    with compiler_patch, kafka_patch:
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == "E416_ADOPTION_FAILED"
+    assert "live-secret" not in result.output
+    assert not local_state_path(tmp_path, environment="default").exists()
+    kafka.get_topic_state.assert_called_once_with("orders.v1", strict_config=True)
 
 
 @pytest.mark.parametrize(
@@ -378,7 +399,7 @@ def test_identical_prior_record_is_idempotent_without_confirmation_or_serial_cha
     assert result.exit_code == 0, result.output
     assert _payload(result)["data"]["already_owned"] is True
     assert LocalState.load(local_state_path(tmp_path, environment="default")).serial == 7
-    kafka.get_topic_state.assert_called_once_with("orders.v1")
+    kafka.get_topic_state.assert_called_once_with("orders.v1", strict_config=True)
 
 
 def test_adoption_retains_unrelated_state_records(tmp_path: Path) -> None:
@@ -409,6 +430,46 @@ def test_adoption_retains_unrelated_state_records(tmp_path: Path) -> None:
     assert len(state.resources) == 2
 
 
+def test_concurrent_state_change_fails_conflict_and_preserves_newer_snapshot(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    state_path = local_state_path(tmp_path, environment="default")
+    other_uri = resource_id("adoption-test", "default", "topic", "payments")
+    newer = LocalState(
+        project="adoption-test",
+        environment="default",
+        serial=1,
+        resources={
+            other_uri: ManagedResourceRecord(
+                physical_name="payments.v1",
+                ownership="managed",
+                artifact_checksum=artifact_checksum({"name": "payments.v1"}),
+                backend="direct-kafka",
+            )
+        },
+    )
+    kafka = _kafka()
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), kafka)
+
+    def write_concurrent_state(**_kwargs: object) -> None:
+        newer.save(state_path)
+
+    with (
+        compiler_patch,
+        kafka_patch,
+        patch(
+            "streamt.cli.commands.adopt._require_confirmation",
+            side_effect=write_concurrent_state,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    assert _payload(result)["errors"][0]["code"] == "E415_ADOPTION_STATE_CONFLICT"
+    assert LocalState.load(state_path) == newer
+
+
 def test_environment_states_are_isolated(tmp_path: Path) -> None:
     _write_multi_environment_project(tmp_path)
     artifact = _topic()
@@ -420,6 +481,9 @@ def test_environment_states_are_isolated(tmp_path: Path) -> None:
         assert result.exit_code == 0, result.output
         next_command = _payload(result)["data"]["next_command"]
         assert next_command[next_command.index("--env") + 1] == environment
+        assert next_command[-1].endswith(
+            f"/.streamt/plans/{environment}-reviewed-plan.json"
+        )
 
     dev = LocalState.load(local_state_path(tmp_path, environment="dev"))
     prod = LocalState.load(local_state_path(tmp_path, environment="prod"))
@@ -451,3 +515,43 @@ def test_atomic_save_failure_reports_error_and_leaves_no_state(tmp_path: Path) -
     assert payload["errors"][0]["code"] == "E416_ADOPTION_FAILED"
     assert "state-secret" not in json.dumps(payload)
     assert not local_state_path(tmp_path, environment="default").exists()
+
+
+def test_unexpected_compiler_failure_is_structured_and_redacted(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    with patch(
+        "streamt.compiler.Compiler.compile",
+        side_effect=RuntimeError(
+            "compile exploded password=compile-secret at "
+            "https://alice:url-secret@example.test"
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == "E416_ADOPTION_FAILED"
+    assert "compile-secret" not in result.output
+    assert "url-secret" not in result.output
+    assert not local_state_path(tmp_path, environment="default").exists()
+
+
+def test_next_command_uses_real_safe_path_and_is_executable(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), _kafka())
+    with compiler_patch, kafka_patch:
+        adopted = _invoke(tmp_path)
+
+    next_command = _payload(adopted)["data"]["next_command"]
+    plan_path = tmp_path / ".streamt" / "plans" / "default-reviewed-plan.json"
+    assert next_command[-1] == str(plan_path)
+    assert "--env" not in next_command
+
+    with patch(
+        "streamt.cli.commands.plan.make_kafka_deployer",
+        return_value=MagicMock(),
+    ):
+        planned = CliRunner().invoke(main, next_command[1:])
+
+    assert planned.exit_code == 0, planned.output
+    assert plan_path.exists()

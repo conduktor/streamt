@@ -121,6 +121,18 @@ class TestTopicConfigRemovedKeys:
             change = deployer.plan_topic(artifact)
             assert change.action == "create"
 
+    def test_strict_topic_observation_propagates_config_read_failure(self, deployer):
+        topic_metadata = MagicMock()
+        topic_metadata.partitions = {0: MagicMock(replicas=[1, 2, 3])}
+        metadata = MagicMock(topics={"events": topic_metadata})
+        deployer.admin.list_topics.return_value = metadata
+        future = MagicMock()
+        future.result.side_effect = RuntimeError("describe config failed")
+        deployer.admin.describe_configs.return_value = {MagicMock(): future}
+
+        with pytest.raises(RuntimeError, match="Failed to get config"):
+            deployer.get_topic_state("events", strict_config=True)
+
 
 # ===========================================================================
 # GROUP 8: Schema compatibility order

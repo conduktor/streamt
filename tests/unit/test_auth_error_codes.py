@@ -75,6 +75,26 @@ class TestClassifyConnectionError:
         _, msg = _classify_connection_error(e, "Flink")
         assert "ssl_ca_location" in msg
 
+    def test_connection_errors_redact_urls_key_values_and_jaas(self):
+        cases = [
+            (
+                "failed at https://alice:url-secret@example.test",
+                ("alice", "url-secret"),
+            ),
+            ("connection failed password=kv-secret", ("kv-secret",)),
+            (
+                'SASL failed sasl.jaas.config=required username="alice" '
+                'password="jaas-secret";',
+                ("alice", "jaas-secret"),
+            ),
+        ]
+
+        for raw_message, secrets in cases:
+            _, message = _classify_connection_error(Exception(raw_message), "Kafka")
+            assert "<redacted>" in message
+            for secret in secrets:
+                assert secret not in message
+
 
 class TestWarnDeployerError:
     """_warn_deployer_error adds structured error to formatter."""

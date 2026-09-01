@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,21 @@ if TYPE_CHECKING:
     from streamt.deployer.gateway import GatewayDeployer
     from streamt.deployer.kafka import KafkaDeployer
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
+
+_CREDENTIAL_URL = re.compile(r"://([^:@/\s]+):([^@/\s]+)@")
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)(?:password|passwd|secret|token|api[._-]?key|authorization|credentials?"
+    r"|basic[._-]auth[._-]user[._-]info|sasl[._-]jaas[._-]config"
+    r"|ssl[._-]key[._-]password)\s*[:=]\s*"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\r\n,;]+)"
+)
+
+
+def redact_sensitive_text(value: object) -> str:
+    """Redact credential URLs and assignment-shaped secrets from error text."""
+    text = str(value)
+    text = _CREDENTIAL_URL.sub(r"://<redacted>:<redacted>@", text)
+    return _SENSITIVE_ASSIGNMENT.sub("<redacted>", text)
 
 
 def get_project_path(project_dir: Optional[str]) -> Path:
@@ -56,7 +72,11 @@ def close_deployers(*deployers: object) -> None:
             try:
                 d.close()
             except Exception as e:
-                logger.debug("Failed to close deployer %s: %s", type(d).__name__, e)
+                logger.debug(
+                    "Failed to close deployer %s: %s",
+                    type(d).__name__,
+                    redact_sensitive_text(e),
+                )
 
 
 def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
@@ -64,12 +84,13 @@ def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
     from streamt.core.errors import ErrorCode
 
     msg = str(e).lower()
+    safe_error = redact_sensitive_text(e)
 
     # SSL/TLS errors
     if any(kw in msg for kw in ("ssl", "certificate", "tls", "handshake")):
         return (
             ErrorCode.SSL_ERROR,
-            f"SSL/TLS error connecting to {service}: {e}. "
+            f"SSL/TLS error connecting to {service}: {safe_error}. "
             f"Check ssl_ca_location, ssl_certificate_location, and ssl_key_location in your runtime config.",
         )
 
@@ -79,7 +100,7 @@ def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
     ):
         return (
             ErrorCode.AUTH_FAILED,
-            f"Authentication failed for {service}: {e}. "
+            f"Authentication failed for {service}: {safe_error}. "
             f"Check your username/password or API key in your runtime config.",
         )
 
@@ -96,11 +117,11 @@ def _classify_connection_error(e: Exception, service: str) -> tuple[str, str]:
     ):
         return (
             ErrorCode.CONNECTION_REFUSED,
-            f"Cannot reach {service}: {e}. Check that the URL/bootstrap_servers is correct and the service is running.",
+            f"Cannot reach {service}: {safe_error}. Check that the URL/bootstrap_servers is correct and the service is running.",
         )
 
     # Fallback
-    return ("", f"Cannot connect to {service}: {e}")
+    return ("", f"Cannot connect to {service}: {safe_error}")
 
 
 def _warn_deployer_error(fmt: OutputFormatter, e: Exception, service: str) -> None:

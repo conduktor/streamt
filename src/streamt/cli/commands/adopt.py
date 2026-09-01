@@ -17,6 +17,7 @@ from streamt.cli.helpers import (
     handle_parse_error,
     make_formatter,
     make_kafka_deployer,
+    redact_sensitive_text,
 )
 from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
 from streamt.core.errors import ErrorCode
@@ -25,6 +26,7 @@ from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     LocalState,
     ManagedResourceRecord,
+    StateConflictError,
     StateError,
     artifact_checksum,
     load_local_state,
@@ -38,14 +40,6 @@ _SENSITIVE_KEY = re.compile(
     r"|basic[._-]auth[._-]user[._-]info|sasl[._-]jaas[._-]config)($|[._-])",
     re.IGNORECASE,
 )
-_SENSITIVE_VALUE = re.compile(
-    r"(password|passwd|secret|token|api[._-]?key|authorization"
-    r"|basic[._-]auth[._-]user[._-]info|sasl[._-]jaas[._-]config)\s*[=:]\s*\S+",
-    re.IGNORECASE,
-)
-_CREDENTIAL_URL = re.compile(r"://([^:@/\s]+):([^@/\s]+)@")
-
-
 @dataclass(frozen=True)
 class AdoptionError(ValueError):
     """A fail-closed adoption precondition was not met."""
@@ -67,8 +61,7 @@ def _redact(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_redact(item) for item in value]
     if isinstance(value, str):
-        redacted = _SENSITIVE_VALUE.sub(r"\1=***", value)
-        return _CREDENTIAL_URL.sub(r"://***:***@", redacted)
+        return redact_sensitive_text(value)
     return value
 
 
@@ -422,7 +415,7 @@ def adopt(
                 "Kafka is not configured or reachable; adoption requires live observation",
             )
         try:
-            current = kafka.get_topic_state(artifact.name)
+            current = kafka.get_topic_state(artifact.name, strict_config=True)
         except Exception as exc:
             raise AdoptionError(
                 ErrorCode.ADOPTION_FAILED,
@@ -476,7 +469,15 @@ def adopt(
             resources=resources,
         )
         try:
-            next_state.save(state_path)
+            next_state.save_if_serial(
+                state_path,
+                expected_serial=prior_state.serial,
+            )
+        except StateConflictError as exc:
+            raise AdoptionError(
+                ErrorCode.ADOPTION_STATE_CONFLICT,
+                str(exc),
+            ) from exc
         except OSError as exc:
             raise AdoptionError(
                 ErrorCode.ADOPTION_FAILED,
@@ -494,7 +495,13 @@ def adopt(
         ]
         if parser_environment is not None:
             next_command.extend(["--env", effective_environment])
-        next_command.extend(["--out", "<reviewed-plan.json>"])
+        reviewed_plan_path = (
+            project_path
+            / ".streamt"
+            / "plans"
+            / f"{effective_environment}-reviewed-plan.json"
+        )
+        next_command.extend(["--out", str(reviewed_plan_path)])
         data["next_command"] = next_command
         fmt.set_data(data)
         fmt.print("[green]Ownership adopted. Kafka was not modified.[/green]")
@@ -519,5 +526,13 @@ def adopt(
         fmt.print_error("Interrupted.")
         fmt.flush()
         raise click.exceptions.Exit(130) from exc
+    except Exception as exc:
+        message = f"Adoption failed unexpectedly: {redact_sensitive_text(exc)}"
+        fmt.add_error(
+            StructuredError(code=ErrorCode.ADOPTION_FAILED, message=message)
+        )
+        fmt.print_error(message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
     finally:
         close_deployers(kafka)

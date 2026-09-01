@@ -16,6 +16,7 @@ from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
     ResourceIdentity,
+    StateConflictError,
     StateFormatError,
     StateIdentityError,
     StateVersionError,
@@ -123,6 +124,30 @@ class TestStatePersistence:
         assert path.read_bytes() == before
         assert LocalState.load(path).serial == 1
         assert not list(tmp_path.glob(f".{path.name}.*.tmp"))
+
+    def test_locked_save_rejects_stale_expected_serial_and_preserves_newer_state(
+        self,
+        tmp_path: Path,
+    ):
+        path = local_state_path(tmp_path, environment="prod")
+        newer = _state(serial=2)
+        newer.save(path)
+        before = path.read_bytes()
+        stale_replacement = _state(serial=2)
+
+        with pytest.raises(StateConflictError, match="changed from 1 to 2"):
+            stale_replacement.save_if_serial(path, expected_serial=1)
+
+        assert path.read_bytes() == before
+
+    def test_locked_save_advances_exact_expected_serial(self, tmp_path: Path):
+        path = local_state_path(tmp_path, environment="prod")
+        _state(serial=1).save(path)
+        replacement = _state(serial=2)
+
+        replacement.save_if_serial(path, expected_serial=1)
+
+        assert LocalState.load(path).serial == 2
 
     def test_invalid_json_is_reported_as_state_error(self, tmp_path: Path):
         path = tmp_path / "state.json"
