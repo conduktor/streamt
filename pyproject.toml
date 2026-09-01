@@ -43,7 +43,7 @@ dev = [
     "ruff>=0.1",
     "mypy==1.19.1",
     "types-pyyaml",
-    "types-requests",
+    "types-requests==2.33.0.20260712",
 ]
 docs = [
     "mkdocs>=1.5",

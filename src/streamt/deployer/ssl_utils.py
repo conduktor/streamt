@@ -17,9 +17,20 @@ class SSLAdapter(HTTPAdapter):
         self._ssl_context = ssl_context
         super().__init__(**kwargs)  # type: ignore[arg-type]
 
-    def init_poolmanager(self, *args: object, **kwargs: object) -> None:
-        kwargs["ssl_context"] = self._ssl_context
-        super().init_poolmanager(*args, **kwargs)  # type: ignore[no-untyped-call]
+    def init_poolmanager(
+        self,
+        connections: int,
+        maxsize: int,
+        block: bool = False,
+        **pool_kwargs: object,
+    ) -> None:
+        pool_kwargs["ssl_context"] = self._ssl_context
+        super().init_poolmanager(
+            connections,
+            maxsize,
+            block=block,
+            **pool_kwargs,
+        )
 
 
 def configure_session_ssl(
