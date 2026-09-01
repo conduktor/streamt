@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional
 
 from streamt.core import errors
 from streamt.core.models import (
+    DataResidencyRules,
     MaterializedType,
     Model,
     ModelRules,
@@ -927,7 +928,7 @@ class ProjectValidator:
         from streamt.core.rule_validators import validate_security_rules
         validate_security_rules(self.project, rules, self.result.add_error)
 
-    def _validate_data_residency(self, rules: object) -> None:
+    def _validate_data_residency(self, rules: DataResidencyRules) -> None:
         from streamt.core.rule_validators import validate_data_residency
         validate_data_residency(self.project, rules.allowed_regions, self.result.add_error)
 

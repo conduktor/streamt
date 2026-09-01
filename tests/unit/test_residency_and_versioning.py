@@ -96,6 +96,20 @@ class TestDataResidency:
         result = ProjectValidator(p).validate()
         assert not any("RESIDENCY" in e.code for e in result.errors)
 
+    def test_reports_each_out_of_region_entity(self):
+        p = _project(
+            models=[{"name": "out", "sql": "SELECT 1", "region": "APAC"}],
+            sources=[{"region": "US"}],
+            rules={"data_residency": {"allowed_regions": ["EU"]}},
+        )
+
+        result = ProjectValidator(p).validate()
+
+        errors = [e for e in result.errors if e.code == "RULE_DATA_RESIDENCY"]
+        assert len(errors) == 2
+        assert any("Model 'out'" in error.message for error in errors)
+        assert any("Source 'raw'" in error.message for error in errors)
+
 
 class TestSchemaVersioning:
     def test_sequential_versions_ok(self):
