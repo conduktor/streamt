@@ -56,25 +56,30 @@ def observe(
       streamt observe --model payments_clean
       streamt -o json observe
     """
+    from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.deployer.observer import Observer
 
-    fmt = make_formatter(ctx)
+    fmt = make_formatter(ctx, "observe")
     is_text = get_output_format_from_context(ctx) == "text"
-
     project_path = get_project_path(project_dir)
-    project, parse_err = handle_parse_error(project_path, environment, fmt)
-    if parse_err:
-        fmt.flush()
-        sys.exit(1)
-
-    kafka_deployer = make_kafka_deployer(project, fmt)
-    flink_deployer = make_flink_deployer(project, fmt)
+    kafka_deployer = None
+    flink_deployer = None
 
     try:
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda msg: fmt.print(msg),
+        )
+        project = parser.parse()
+
         # Compile to get the manifest (tells us what topics/jobs exist)
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
 
+        kafka_deployer = make_kafka_deployer(project, fmt)
+        flink_deployer = make_flink_deployer(project, fmt)
         observer = Observer(manifest, kafka_deployer, flink_deployer)
         observations = observer.observe()
 
@@ -121,9 +126,10 @@ def observe(
                     ]
                 }
             )
-
+    except (EnvVarError, ParseError, EnvironmentError) as e:
+        handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
     finally:
-        close_deployers(kafka_deployer=kafka_deployer, flink_deployer=flink_deployer)
+        close_deployers(kafka_deployer, flink_deployer)
 
     fmt.flush()
 
@@ -142,11 +148,10 @@ def _render_text(fmt: OutputFormatter, observations: list) -> None:
         color = _health_color(obs.health)
         bullet = {"ok": "●", "warning": "◐", "degraded": "✗"}.get(obs.health, "○")
 
-        fmt.print(f"  [{color}]{bullet}[/{color}] [bold]{obs.model_name}[/bold]", end="")
-
+        line = f"  [{color}]{bullet}[/{color}] [bold]{obs.model_name}[/bold]"
         if obs.topic:
-            fmt.print(f"  [dim]topic:[/dim] {obs.topic}", end="")
-        fmt.print("")
+            line += f"  [dim]topic:[/dim] {obs.topic}"
+        fmt.print(line)
 
         # Flink job
         if obs.flink:

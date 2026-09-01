@@ -71,19 +71,7 @@ class Observer:
         """Return one ModelObservation per Flink job or topic artifact in the manifest."""
         observations: list[ModelObservation] = []
 
-        # Build index: model_name → topic_name (from topic artifacts)
-        topic_by_model: dict[str, str] = {}
-        for t in self._manifest.artifacts.get("topics", []):
-            name = t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
-            if name:
-                topic_by_model[name] = name
-
-        # Build index: model_name → flink job name (from flink_jobs artifacts)
-        flink_jobs_by_model: dict[str, str] = {}
-        for j in self._manifest.artifacts.get("flink_jobs", []):
-            name = j.get("name") if isinstance(j, dict) else getattr(j, "name", None)
-            if name:
-                flink_jobs_by_model[name] = name
+        topic_by_model, flink_jobs_by_model = self._resource_indexes()
 
         all_models = set(topic_by_model) | set(flink_jobs_by_model)
 
@@ -101,7 +89,7 @@ class Observer:
 
             consumers = self._fetch_consumers(topic, all_groups) if topic else []
             if model_name in flink_jobs_by_model:
-                flink_metrics = self._fetch_flink_metrics(model_name)
+                flink_metrics = self._fetch_flink_metrics(flink_jobs_by_model[model_name])
 
             observations.append(
                 ModelObservation(
@@ -113,6 +101,62 @@ class Observer:
             )
 
         return observations
+
+    def _resource_indexes(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Map manifest model names to their compiled topic and Flink job names."""
+        topic_artifacts = {
+            str(t["name"]): t
+            for t in self._manifest.artifacts.get("topics", [])
+            if isinstance(t, dict) and t.get("name")
+        }
+        flink_artifacts = {
+            str(j["name"]): j
+            for j in self._manifest.artifacts.get("flink_jobs", [])
+            if isinstance(j, dict) and j.get("name")
+        }
+
+        topic_by_model: dict[str, str] = {}
+        flink_by_model: dict[str, str] = {}
+        models = [m for m in self._manifest.models if isinstance(m, dict) and m.get("name")]
+
+        for model in models:
+            model_name = str(model["name"])
+            topic_config = model.get("topic")
+            configured_topic = (
+                topic_config.get("name") if isinstance(topic_config, dict) else None
+            )
+            topic_name = str(configured_topic or model_name)
+            if topic_name in topic_artifacts:
+                topic_by_model[model_name] = topic_name
+
+            for job_name in (model_name, f"{model_name}_processor"):
+                if job_name in flink_artifacts:
+                    flink_by_model[model_name] = job_name
+                    break
+
+        # Ownership metadata provides a fallback for manifests whose artifact
+        # names do not follow the legacy naming convention. setdefault keeps a
+        # model's primary topic/job from being replaced by a DLQ or test job.
+        for topic_name, artifact in topic_artifacts.items():
+            ownership = artifact.get("ownership")
+            owner = (
+                ownership.get("name")
+                if isinstance(ownership, dict) and ownership.get("type") == "model"
+                else artifact.get("model") or artifact.get("owner_model")
+            )
+            if owner:
+                topic_by_model.setdefault(str(owner), topic_name)
+        for job_name, artifact in flink_artifacts.items():
+            ownership = artifact.get("ownership")
+            owner = (
+                ownership.get("name")
+                if isinstance(ownership, dict) and ownership.get("type") == "model"
+                else artifact.get("model") or artifact.get("owner_model")
+            )
+            if owner:
+                flink_by_model.setdefault(str(owner), job_name)
+
+        return topic_by_model, flink_by_model
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -142,13 +186,13 @@ class Observer:
 
         return result
 
-    def _fetch_flink_metrics(self, model_name: str) -> Optional[FlinkMetrics]:
+    def _fetch_flink_metrics(self, job_name: str) -> Optional[FlinkMetrics]:
         """Fetch job state and optional throughput metrics from the Flink REST API."""
         if not self._flink:
             return None
 
         try:
-            job_state = self._flink.get_job_state(f"{model_name}_processor")
+            job_state = self._flink.get_job_state(job_name)
             if not job_state.exists:
                 return None
 
@@ -176,10 +220,10 @@ class Observer:
                             elif mid == "isBackPressured" and val is not None:
                                 metrics.is_backpressured = str(val).lower() in ("true", "1")
                 except Exception as e:
-                    logger.debug("Could not fetch Flink metrics for %s: %s", model_name, e)
+                    logger.debug("Could not fetch Flink metrics for %s: %s", job_name, e)
 
             return metrics
 
         except Exception as e:
-            logger.debug("Could not fetch Flink job state for %s: %s", model_name, e)
+            logger.debug("Could not fetch Flink job state for %s: %s", job_name, e)
             return None

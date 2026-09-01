@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from typing import Optional
 
 from streamt.core.models import DataTest, DataTestType, StreamtProject
@@ -149,7 +151,7 @@ class TestRunner:
             return {
                 "name": test.name,
                 "status": "failed",
-                "errors": ["kafka-python not installed. Run: pip install kafka-python"],
+                "errors": ["confluent-kafka is not installed. Reinstall streamt."],
             }
         except Exception as e:
             return {
@@ -251,28 +253,51 @@ class TestRunner:
         Returns:
             List of deserialized messages (JSON parsed)
         """
-        from kafka import KafkaConsumer
+        from confluent_kafka import Consumer, KafkaError
 
-        bootstrap_servers = self.project.runtime.kafka.bootstrap_servers
-        messages = []
+        if sample_size <= 0:
+            return []
+        if timeout_ms < 0:
+            raise ValueError("timeout_ms must be non-negative")
 
-        consumer = KafkaConsumer(
-            topic,
-            bootstrap_servers=bootstrap_servers,
-            auto_offset_reset="earliest",
-            consumer_timeout_ms=timeout_ms,
-            value_deserializer=lambda m: json.loads(m.decode("utf-8")) if m else None,
-            max_poll_records=sample_size,
+        consumer_config: dict[str, object] = dict(
+            self.project.runtime.kafka.to_confluent_config()
         )
+        consumer_config.update(
+            {
+                "group.id": f"streamt-sample-{uuid.uuid4()}",
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+                "log_level": 0,
+            }
+        )
+        messages: list[dict] = []
+        consumer = Consumer(consumer_config)
+        deadline = time.monotonic() + (timeout_ms / 1000)
 
         try:
-            count = 0
-            for msg in consumer:
-                if msg.value is not None:
-                    messages.append(msg.value)
-                    count += 1
-                    if count >= sample_size:
-                        break
+            consumer.subscribe([topic])
+            while len(messages) < sample_size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                msg = consumer.poll(timeout=min(1.0, remaining))
+                if msg is None:
+                    continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    raise RuntimeError(f"Kafka consumer error: {msg.error()}")
+
+                raw_value = msg.value()
+                if raw_value is None:
+                    continue
+                value = json.loads(raw_value.decode("utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError(
+                        f"Expected a JSON object in topic '{topic}', got {type(value).__name__}"
+                    )
+                messages.append(value)
         finally:
             consumer.close()
 
