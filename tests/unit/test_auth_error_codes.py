@@ -1,7 +1,8 @@
 """Tests for structured auth/connection error codes in deployer factories."""
 
+from unittest.mock import MagicMock
 
-from streamt.cli.helpers import _classify_connection_error
+from streamt.cli.helpers import _classify_connection_error, _try_create_deployer
 from streamt.core.errors import ErrorCode
 
 
@@ -100,7 +101,6 @@ class TestWarnDeployerError:
     """_warn_deployer_error adds structured error to formatter."""
 
     def test_auth_error_adds_structured_error(self):
-        from unittest.mock import MagicMock
         fmt = MagicMock()
         fmt.print_warning = MagicMock()
         fmt.add_error = MagicMock()
@@ -114,7 +114,6 @@ class TestWarnDeployerError:
         fmt.print_warning.assert_called_once()
 
     def test_generic_error_no_structured_error(self):
-        from unittest.mock import MagicMock
         fmt = MagicMock()
         fmt.print_warning = MagicMock()
         fmt.add_error = MagicMock()
@@ -124,6 +123,30 @@ class TestWarnDeployerError:
 
         fmt.add_error.assert_not_called()
         fmt.print_warning.assert_called_once()
+
+
+class TestTryCreateDeployer:
+    """Factory failures are warning-only and never expose credentials."""
+
+    def test_returns_concrete_deployer_value(self):
+        deployer = object()
+        fmt = MagicMock()
+
+        assert _try_create_deployer(lambda: deployer, fmt, "Kafka") is deployer
+        fmt.print_warning.assert_not_called()
+
+    def test_failure_is_redacted_and_returns_none(self):
+        fmt = MagicMock()
+
+        def fail() -> object:
+            raise RuntimeError("401 password=factory-secret")
+
+        assert _try_create_deployer(fail, fmt, "Kafka") is None
+        warning = fmt.print_warning.call_args.args[0]
+        structured = fmt.add_error.call_args.args[0]
+        assert "factory-secret" not in warning
+        assert "factory-secret" not in structured.message
+        assert "<redacted>" in warning
 
 
 class TestErrorCodesExist:

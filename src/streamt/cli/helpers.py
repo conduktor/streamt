@@ -6,9 +6,10 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, TypeVar
 
 import click
+from pydantic import SecretStr
 
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
 
@@ -27,6 +28,8 @@ _SENSITIVE_ASSIGNMENT = re.compile(
     r"|ssl[._-]key[._-]password)\s*[:=]\s*"
     r"(?:\"[^\"]*\"|'[^']*'|[^\r\n,;]+)"
 )
+
+_DeployerT = TypeVar("_DeployerT")
 
 
 def redact_sensitive_text(value: object) -> str:
@@ -132,11 +135,9 @@ def _warn_deployer_error(fmt: OutputFormatter, e: Exception, service: str) -> No
     fmt.print_warning(message)
 
 
-def _resolve_secret(val: object) -> object:
+def _resolve_secret(val: SecretStr | str | None) -> str | None:
     """Resolve SecretStr to plain string for deployer constructors."""
-    if val is None:
-        return None
-    return val.get_secret_value() if hasattr(val, "get_secret_value") else val
+    return val.get_secret_value() if isinstance(val, SecretStr) else val
 
 
 def check_required_deployers(
@@ -185,8 +186,8 @@ def check_required_deployers(
 
 
 def _try_create_deployer(
-    create_fn: Callable, fmt: OutputFormatter, service: str
-) -> Optional[object]:
+    create_fn: Callable[[], _DeployerT], fmt: OutputFormatter, service: str
+) -> Optional[_DeployerT]:
     """Run create_fn(), warn on failure, return None on exception."""
     try:
         return create_fn()
@@ -261,12 +262,13 @@ def make_flink_deployer(
     if not (default and default in project.runtime.flink.clusters):
         return None
     cfg = project.runtime.flink.clusters[default]
-    if not cfg.rest_url:
+    rest_url = cfg.rest_url
+    if not rest_url:
         return None
 
     def _create() -> FlinkDeployer:
         return FlinkDeployer(
-            rest_url=cfg.rest_url,
+            rest_url=rest_url,
             sql_gateway_url=cfg.sql_gateway_url,
             username=cfg.username,
             password=_resolve_secret(cfg.password),
@@ -295,12 +297,13 @@ def make_gateway_deployer(
     if not (project.runtime.conduktor and project.runtime.conduktor.gateway):
         return None
     gw = project.runtime.conduktor.gateway
-    if not gw.admin_url:
+    admin_url = gw.admin_url
+    if not admin_url:
         return None
 
     def _create() -> GatewayDeployer:
         return GatewayDeployer(
-            gw.admin_url,
+            admin_url,
             username=gw.username,
             password=_resolve_secret(gw.password),
             virtual_cluster=gw.virtual_cluster,

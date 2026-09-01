@@ -627,6 +627,7 @@ class TestDeployerFactoryAuthWiring:
             ssl_ca_location="/certs/ca.pem",
             ssl_certificate_location="/certs/client.pem",
             ssl_key_location="/certs/client.key",
+            ssl_key_password="sr-key-pass",
         )
         fmt = MagicMock()
 
@@ -639,6 +640,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_ca_location"] == "/certs/ca.pem"
             assert kwargs["ssl_certificate_location"] == "/certs/client.pem"
             assert kwargs["ssl_key_location"] == "/certs/client.key"
+            assert kwargs["ssl_key_password"] == "sr-key-pass"
 
     def test_make_flink_deployer_passes_auth(self):
         from streamt.cli.helpers import make_flink_deployer
@@ -656,6 +658,7 @@ class TestDeployerFactoryAuthWiring:
                     ssl_ca_location="/certs/flink-ca.pem",
                     ssl_certificate_location="/certs/flink-client.pem",
                     ssl_key_location="/certs/flink-client.key",
+                    ssl_key_password="flink-key-pass",
                 ),
             },
         )
@@ -671,6 +674,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_ca_location"] == "/certs/flink-ca.pem"
             assert kwargs["ssl_certificate_location"] == "/certs/flink-client.pem"
             assert kwargs["ssl_key_location"] == "/certs/flink-client.key"
+            assert kwargs["ssl_key_password"] == "flink-key-pass"
 
     def test_make_connect_deployer_passes_auth(self):
         from streamt.cli.helpers import make_connect_deployer
@@ -686,6 +690,7 @@ class TestDeployerFactoryAuthWiring:
                     ssl_ca_location="/certs/connect-ca.pem",
                     ssl_certificate_location="/certs/connect-client.pem",
                     ssl_key_location="/certs/connect-client.key",
+                    ssl_key_password="connect-key-pass",
                 ),
             },
         )
@@ -700,6 +705,7 @@ class TestDeployerFactoryAuthWiring:
             assert kwargs["ssl_ca_location"] == "/certs/connect-ca.pem"
             assert kwargs["ssl_certificate_location"] == "/certs/connect-client.pem"
             assert kwargs["ssl_key_location"] == "/certs/connect-client.key"
+            assert kwargs["ssl_key_password"] == "connect-key-pass"
 
     def test_make_kafka_deployer_passes_mtls(self):
         from streamt.cli.helpers import make_kafka_deployer

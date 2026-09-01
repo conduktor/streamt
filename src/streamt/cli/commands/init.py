@@ -9,7 +9,7 @@ from typing import Optional
 import click
 import yaml
 
-from streamt.cli.helpers import make_formatter
+from streamt.cli.helpers import close_deployers, make_formatter, redact_sensitive_text
 from streamt.core.errors import ErrorCode
 from streamt.discovery import (
     INTERNAL_TOPIC_PREFIXES as _INTERNAL_TOPIC_PREFIXES,
@@ -271,13 +271,15 @@ def _init_discover(
     try:
         kafka_deployer = KafkaDeployer(kafka, **kafka_config)
     except Exception as e:
+        safe_kafka = redact_sensitive_text(kafka)
+        safe_error = redact_sensitive_text(e)
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.ENVIRONMENT_ERROR,
-                message=f"Cannot connect to Kafka at {kafka}: {e}",
+                message=f"Cannot connect to Kafka at {safe_kafka}: {safe_error}",
             )
         )
-        fmt.print_error(f"Cannot connect to Kafka at {kafka}: {e}")
+        fmt.print_error(f"Cannot connect to Kafka at {safe_kafka}: {safe_error}")
         fmt.flush()
         sys.exit(1)
 
@@ -290,7 +292,10 @@ def _init_discover(
             )
             sr_deployer.list_subjects()  # Test connection
         except Exception as e:
-            fmt.print_warning(f"Cannot connect to Schema Registry: {e}")
+            fmt.print_warning(
+                f"Cannot connect to Schema Registry: {redact_sensitive_text(e)}"
+            )
+            close_deployers(sr_deployer)
             sr_deployer = None
 
     discovered = discover_topics(

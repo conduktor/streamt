@@ -87,9 +87,9 @@ class KafkaDeployer:
             deployer.list_topic_names()
     """
 
-    def __init__(self, bootstrap_servers: str, **kafka_config: dict) -> None:
+    def __init__(self, bootstrap_servers: str, **kafka_config: object) -> None:
         """Initialize Kafka deployer."""
-        config = {
+        config: dict[str, object] = {
             "bootstrap.servers": bootstrap_servers,
             # Suppress librdkafka C library stderr noise on connection failures.
             # Without this, every connection error floods 150+ lines of raw

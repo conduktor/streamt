@@ -241,3 +241,69 @@ def test_init_discover_uses_the_public_reader_boundary(tmp_path: Path) -> None:
         ("get_topic_state", "z.events"),
     ]
     kafka.close.assert_called_once()
+
+
+def test_init_discover_redacts_kafka_connection_credentials(tmp_path: Path) -> None:
+    with patch(
+        "streamt.deployer.kafka.KafkaDeployer",
+        side_effect=RuntimeError("401 password=constructor-secret"),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "--output",
+                "json",
+                "init",
+                "--discover",
+                "--dry-run",
+                "--kafka",
+                "https://alice:target-secret@broker.test:9092",
+                "--project-dir",
+                str(tmp_path),
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert "constructor-secret" not in result.output
+    assert "target-secret" not in result.output
+    assert "alice" not in result.output
+    assert "<redacted>" in result.output
+
+
+def test_init_discover_closes_and_redacts_failed_schema_registry_probe(
+    tmp_path: Path,
+) -> None:
+    kafka = RecordingKafkaReader([])
+    kafka.close = MagicMock()  # type: ignore[attr-defined]
+    schema_registry = MagicMock()
+    schema_registry.list_subjects.side_effect = RuntimeError(
+        "403 password=registry-secret"
+    )
+
+    with (
+        patch("streamt.deployer.kafka.KafkaDeployer", return_value=kafka),
+        patch(
+            "streamt.deployer.schema_registry.SchemaRegistryDeployer",
+            return_value=schema_registry,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "init",
+                "--discover",
+                "--dry-run",
+                "--kafka",
+                "broker:9092",
+                "--schema-registry",
+                "https://registry.test",
+                "--project-dir",
+                str(tmp_path),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "registry-secret" not in result.output
+    assert "<redacted>" in result.output
+    schema_registry.close.assert_called_once()
+    kafka.close.assert_called_once()

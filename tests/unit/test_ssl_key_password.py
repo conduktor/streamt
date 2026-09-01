@@ -35,10 +35,14 @@ class TestConfigureSessionSsl:
     def test_no_ssl_noop(self):
         import requests
         session = requests.Session()
-        from streamt.deployer.ssl_utils import configure_session_ssl
+        from streamt.deployer.ssl_utils import SSLAdapter, configure_session_ssl
         configure_session_ssl(session)
         assert session.verify is True  # default
         assert session.cert is None
+        http_adapter = session.get_adapter("http://example.com")
+        https_adapter = session.get_adapter("https://example.com")
+        assert http_adapter is https_adapter
+        assert not isinstance(https_adapter, SSLAdapter)
 
     def test_ca_only(self):
         import requests

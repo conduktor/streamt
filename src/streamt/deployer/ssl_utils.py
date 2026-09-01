@@ -7,15 +7,28 @@ from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from urllib3.util.ssl_ import create_urllib3_context
 
 
 class SSLAdapter(HTTPAdapter):
     """HTTPAdapter that uses a custom ssl.SSLContext (supports key passwords)."""
 
-    def __init__(self, ssl_context: ssl.SSLContext, **kwargs: object) -> None:
+    def __init__(
+        self,
+        ssl_context: ssl.SSLContext,
+        pool_connections: int = 10,
+        pool_maxsize: int = 10,
+        max_retries: Retry | int | None = 0,
+        pool_block: bool = False,
+    ) -> None:
         self._ssl_context = ssl_context
-        super().__init__(**kwargs)  # type: ignore[arg-type]
+        super().__init__(
+            pool_connections=pool_connections,
+            pool_maxsize=pool_maxsize,
+            max_retries=max_retries,
+            pool_block=pool_block,
+        )
 
     def init_poolmanager(
         self,
@@ -57,8 +70,8 @@ def configure_session_ssl(
             keyfile=ssl_key_location,
             password=ssl_key_password,
         )
-        adapter = SSLAdapter(ctx, pool_connections=5, pool_maxsize=10)
-        session.mount("https://", adapter)
+        ssl_adapter = SSLAdapter(ctx, pool_connections=5, pool_maxsize=10)
+        session.mount("https://", ssl_adapter)
     elif ssl_certificate_location and ssl_key_location:
         session.cert = (ssl_certificate_location, ssl_key_location)
     elif ssl_certificate_location:
@@ -66,6 +79,6 @@ def configure_session_ssl(
 
     # Set connection pool limits if no custom adapter was mounted
     if not any(isinstance(v, SSLAdapter) for v in session.adapters.values()):
-        adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+        default_adapter = HTTPAdapter(pool_connections=5, pool_maxsize=10)
+        session.mount("http://", default_adapter)
+        session.mount("https://", default_adapter)
