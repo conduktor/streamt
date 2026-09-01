@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
-import logging
-import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -14,11 +11,29 @@ import yaml
 
 from streamt.cli.helpers import make_formatter
 from streamt.core.errors import ErrorCode
+from streamt.discovery import (
+    INTERNAL_TOPIC_PREFIXES as _INTERNAL_TOPIC_PREFIXES,
+)
+from streamt.discovery import (
+    avro_type_to_flink,
+    discover_topics,
+    extract_columns_from_avro,
+    extract_columns_from_json_schema,
+    is_internal_topic,
+    json_schema_type_to_flink,
+    sanitize_source_name,
+)
 from streamt.output import OutputFormatter, StructuredError
 
-logger = logging.getLogger(__name__)
-
-INTERNAL_TOPIC_PREFIXES = ("__", "_schemas", "_confluent", "_streamt-connect-")
+# Preserve the original helper imports while keeping their implementation in
+# the reusable discovery module.
+_sanitize_name = sanitize_source_name
+_is_internal_topic = is_internal_topic
+_avro_type_to_flink = avro_type_to_flink
+_json_schema_type_to_flink = json_schema_type_to_flink
+_extract_columns_from_json_schema = extract_columns_from_json_schema
+_extract_columns_from_avro = extract_columns_from_avro
+INTERNAL_TOPIC_PREFIXES = _INTERNAL_TOPIC_PREFIXES
 
 DEFAULT_PROJECT_TEMPLATE = {
     "project": {
@@ -33,105 +48,6 @@ DEFAULT_PROJECT_TEMPLATE = {
 }
 
 SCAFFOLD_DIRS = ["sources", "models", "tests"]
-
-
-def _sanitize_name(topic: str) -> str:
-    """Convert topic name to a valid source name."""
-    return re.sub(r"[^a-zA-Z0-9_]", "_", topic)
-
-
-def _is_internal_topic(topic: str) -> bool:
-    """Check if a topic is internal."""
-    return any(topic.startswith(p) for p in INTERNAL_TOPIC_PREFIXES)
-
-
-def _avro_type_to_flink(avro_type: object) -> str:
-    """Convert Avro type to Flink SQL type string."""
-    if isinstance(avro_type, dict):
-        logical = avro_type.get("logicalType")
-        if logical == "timestamp-millis":
-            return "TIMESTAMP(3)"
-        if logical == "timestamp-micros":
-            return "TIMESTAMP(6)"
-        if logical == "date":
-            return "DATE"
-        if logical == "decimal":
-            precision = avro_type.get("precision", 10)
-            scale = avro_type.get("scale", 2)
-            return f"DECIMAL({precision},{scale})"
-        base = avro_type.get("type", "string")
-        return _avro_type_to_flink(base)
-    if isinstance(avro_type, list):
-        # Union type — pick first non-null
-        non_null = [t for t in avro_type if t != "null"]
-        if non_null:
-            return _avro_type_to_flink(non_null[0])
-        return "STRING"
-    mapping = {
-        "string": "STRING",
-        "int": "INT",
-        "long": "BIGINT",
-        "float": "FLOAT",
-        "double": "DOUBLE",
-        "boolean": "BOOLEAN",
-        "bytes": "BYTES",
-    }
-    return mapping.get(str(avro_type), "STRING")
-
-
-def _json_schema_type_to_flink(prop: dict) -> str:
-    """Convert JSON Schema property to Flink SQL type string."""
-    fmt = prop.get("format")
-    if fmt == "date-time":
-        return "TIMESTAMP(3)"
-    if fmt == "date":
-        return "DATE"
-    js_type = prop.get("type", "string")
-    if isinstance(js_type, list):
-        non_null = [t for t in js_type if t != "null"]
-        js_type = non_null[0] if non_null else "string"
-    mapping = {
-        "string": "STRING",
-        "integer": "INT",
-        "number": "DOUBLE",
-        "boolean": "BOOLEAN",
-    }
-    return mapping.get(js_type, "STRING")
-
-
-def _extract_columns_from_json_schema(schema: dict) -> list[dict]:
-    """Extract columns from a JSON Schema."""
-    columns = []
-    properties = schema.get("properties", {})
-    required_fields = set(schema.get("required", []))
-    for name, prop in properties.items():
-        if not isinstance(prop, dict):
-            continue
-        col: dict[str, object] = {
-            "name": name,
-            "type": _json_schema_type_to_flink(prop),
-        }
-        desc = prop.get("description")
-        if desc:
-            col["description"] = desc
-        if name in required_fields:
-            col["required"] = True
-        columns.append(col)
-    return columns
-
-
-def _extract_columns_from_avro(schema: dict) -> list[dict]:
-    """Extract columns from an Avro schema."""
-    columns = []
-    for field in schema.get("fields", []):
-        name = field.get("name")
-        if not name:
-            continue
-        col = {"name": name, "type": _avro_type_to_flink(field.get("type", "string"))}
-        if field.get("doc"):
-            col["description"] = field["doc"]
-        columns.append(col)
-    return columns
 
 
 @click.command()
@@ -365,17 +281,6 @@ def _init_discover(
         fmt.flush()
         sys.exit(1)
 
-    # Get all topics (including internal, then filter)
-    metadata = kafka_deployer.admin.list_topics(timeout=10)
-    all_topics = sorted(metadata.topics.keys())
-
-    # Filter topics
-    topics = [t for t in all_topics if not _is_internal_topic(t)]
-    if include:
-        topics = [t for t in topics if fnmatch.fnmatch(t, include)]
-    if exclude:
-        topics = [t for t in topics if not fnmatch.fnmatch(t, exclude)]
-
     # Connect to Schema Registry (optional)
     sr_deployer = None
     if schema_registry:
@@ -388,49 +293,18 @@ def _init_discover(
             fmt.print_warning(f"Cannot connect to Schema Registry: {e}")
             sr_deployer = None
 
-    # Discover topic details and schemas
-    discovered = []
-    for topic in topics:
-        state = kafka_deployer.get_topic_state(topic)
-        source_name = _sanitize_name(topic)
-
-        source_def: dict[str, object] = {
-            "name": source_name,
-            "topic": topic,
-            "description": f"Discovered from Kafka ({state.partitions} partitions)",
-        }
-
-        # Try to get schema
-        if sr_deployer:
-            try:
-                schema_state = sr_deployer.get_schema_state(f"{topic}-value")
-                if schema_state.exists and schema_state.schema:
-                    columns: list[dict] = []
-                    if schema_state.schema_type == "AVRO" and "fields" in schema_state.schema:
-                        columns = _extract_columns_from_avro(schema_state.schema)
-                    elif schema_state.schema_type == "JSON" and "properties" in schema_state.schema:
-                        columns = _extract_columns_from_json_schema(schema_state.schema)
-                    elif schema_state.schema_type == "PROTOBUF":
-                        logger.debug("Protobuf schema for '%s' — skipping column extraction", topic)
-                    if columns:
-                        source_def["columns"] = columns
-            except Exception as e:
-                logger.debug("Schema discovery failed for topic '%s': %s", topic, e)
-
-        discovered.append(
-            {
-                "source": source_def,
-                "topic": topic,
-                "partitions": state.partitions,
-                "replication_factor": state.replication_factor,
-            }
-        )
+    discovered = discover_topics(
+        kafka_deployer,
+        sr_deployer,
+        include=include,
+        exclude=exclude,
+    )
 
     fmt.print(f"Discovered {len(discovered)} topic(s) from {kafka}")
     for d in discovered:
-        cols = len(d["source"].get("columns", []))
+        cols = d.column_count
         schema_info = f" ({cols} columns from schema)" if cols else ""
-        fmt.print(f"  {d['topic']} ({d['partitions']} partitions){schema_info}")
+        fmt.print(f"  {d.topic} ({d.partitions} partitions){schema_info}")
 
     created_files = []
 
@@ -438,32 +312,33 @@ def _init_discover(
         project_path.mkdir(parents=True, exist_ok=True)
 
         # Write stream_project.yml
+        runtime: dict[str, object] = {"kafka": {"bootstrap_servers": kafka}}
         config: dict[str, object] = {
             "apiVersion": "streamt.dev/v1alpha1",
             "project": {"name": name, "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": kafka}},
+            "runtime": runtime,
         }
         if schema_registry:
-            config["runtime"]["schema_registry"] = {"url": schema_registry}
+            runtime["schema_registry"] = {"url": schema_registry}
 
         with open(project_path / "stream_project.yml", "w") as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
         created_files.append("stream_project.yml")
 
         # Create directories
-        for d in SCAFFOLD_DIRS:
-            (project_path / d).mkdir(exist_ok=True)
+        for directory in SCAFFOLD_DIRS:
+            (project_path / directory).mkdir(exist_ok=True)
 
         # Write sources
         if discovered:
-            sources_data = {"sources": [d["source"] for d in discovered]}
+            sources_data = {"sources": [d.source for d in discovered]}
             with open(project_path / "sources" / "discovered.yml", "w") as f:
                 yaml.dump(sources_data, f, default_flow_style=False, sort_keys=False)
             created_files.append("sources/discovered.yml")
 
-        for d in SCAFFOLD_DIRS:
-            (project_path / d / ".gitkeep").touch()
-            created_files.append(f"{d}/")
+        for directory in SCAFFOLD_DIRS:
+            (project_path / directory / ".gitkeep").touch()
+            created_files.append(f"{directory}/")
 
         fmt.print(f"\n[green]Initialized project '{name}' with {len(discovered)} source(s)[/green]")
 
@@ -476,9 +351,9 @@ def _init_discover(
             "project_name": name,
             "discovered_topics": [
                 {
-                    "topic": d["topic"],
-                    "partitions": d["partitions"],
-                    "columns": len(d["source"].get("columns", [])),
+                    "topic": d.topic,
+                    "partitions": d.partitions,
+                    "columns": d.column_count,
                 }
                 for d in discovered
             ],

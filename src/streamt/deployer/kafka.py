@@ -84,7 +84,7 @@ class KafkaDeployer:
     Supports context manager protocol for proper resource cleanup:
 
         with KafkaDeployer(bootstrap_servers) as deployer:
-            deployer.list_topics()
+            deployer.list_topic_names()
     """
 
     def __init__(self, bootstrap_servers: str, **kafka_config: dict) -> None:
@@ -122,6 +122,12 @@ class KafkaDeployer:
     def _check_closed(self) -> None:
         if self._closed:
             raise RuntimeError("KafkaDeployer is closed")
+
+    def list_topic_names(self) -> list[str]:
+        """List visible Kafka topic names in deterministic order."""
+        self._check_closed()
+        metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
+        return sorted(metadata.topics)
 
     def get_topic_state(self, topic_name: str) -> TopicState:
         """Get current state of a topic."""
