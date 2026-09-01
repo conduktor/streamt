@@ -312,6 +312,8 @@ sources:
     description: "Raw order events"     # Optional
     cluster: production                 # Optional: Kafka cluster
     owner: orders-team                  # Optional
+    ownership:                         # Optional; defaults to external
+      mode: external                    # external, managed, adopted
     tags:                               # Optional
       - orders
       - raw
@@ -351,6 +353,7 @@ sources:
 | `description` | string | No | Human-readable description |
 | `cluster` | string | No | Kafka cluster name |
 | `owner` | string | No | Team or person responsible |
+| `ownership.mode` | string | No | Lifecycle mode; defaults to `external` |
 | `tags` | list | No | Categorization tags |
 | `schema` | object | No | Schema definition |
 | `columns` | list | No | Column metadata |
@@ -534,6 +537,8 @@ models:
   - name: hourly_revenue
     description: "Hourly revenue aggregation"
     owner: analytics-team
+    ownership:
+      mode: managed                    # Default for model output resources
 
     sql: |
       SELECT
@@ -646,6 +651,7 @@ models:
 | `name` | string | Yes | Unique model identifier |
 | `description` | string | No | Human-readable description |
 | `owner` | string | No | Team or person responsible |
+| `ownership.mode` | string | No | `external`, `managed`, or `adopted`; defaults to `managed` |
 | `tags` | list | No | Categorization tags |
 | `access` | string | No | `private`, `protected`, `public` |
 | `group` | string | No | Logical grouping |
@@ -663,6 +669,12 @@ models:
 | `ml_outputs` | object | No | ML model output schemas for `ML_PREDICT` (see below) |
 
 **Note:** The `materialized` field is **no longer specified** - it's auto-inferred from your SQL and configuration.
+
+Lifecycle ownership is distinct from the human `owner`. `external` artifacts are
+observe-only. `managed` artifacts may be created, but live resources without
+matching prior state still require adoption. Declaring `adopted` is not an
+adoption operation; the planner requires matching persisted state before any
+mutation.
 
 ### ML Output Schemas
 

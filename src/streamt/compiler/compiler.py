@@ -99,12 +99,29 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             return self.project.defaults.models.topic
         return TopicDefaults()
 
-    def _ownership(self, owner_type: str, owner_name: str) -> ArtifactOwnership:
-        """Build managed lifecycle metadata for a compiled artifact."""
+    def _ownership(
+        self,
+        owner_type: str,
+        owner_name: str,
+        *,
+        mode: Optional[str] = None,
+    ) -> ArtifactOwnership:
+        """Build lifecycle metadata from a declaration or an explicit output default."""
+        if mode is None:
+            declaration = (
+                self.project.get_source(owner_name)
+                if owner_type == "source"
+                else self.project.get_model(owner_name)
+            )
+            if declaration is not None:
+                mode = declaration.ownership.mode.value
+            else:
+                mode = "external" if owner_type == "source" else "managed"
         return ArtifactOwnership(
             project=self.project.project.name,
             owner_type=owner_type,
             owner_name=owner_name,
+            mode=mode,
         )
 
     def compile(self, dry_run: bool = False) -> Manifest:
@@ -143,6 +160,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                     job.ownership = self._ownership(
                         "model" if self.project.get_model(test.model) else "source",
                         test.model,
+                        mode="managed",
                     )
                     self.test_jobs.append(job)
 
@@ -513,6 +531,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 ownership=self._ownership(
                     "model" if model else "source",
                     test.model,
+                    mode="managed",
                 ),
             )
         )
@@ -539,6 +558,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                             ownership=self._ownership(
                                 "model" if self.project.get_model(test.model) else "source",
                                 test.model,
+                                mode="managed",
                             ),
                         )
                     )

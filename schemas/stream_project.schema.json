@@ -1617,6 +1617,20 @@
       "title": "LegacyConnectorConfig",
       "type": "object"
     },
+    "LifecycleOwnership": {
+      "additionalProperties": false,
+      "description": "Lifecycle mode, distinct from the human/team `owner` field.",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/OwnershipMode"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "LifecycleOwnership",
+      "type": "object"
+    },
     "MLModelOutput": {
       "additionalProperties": false,
       "description": "Output schema declaration for ML models used with ML_PREDICT.\n\nWhen using Confluent Flink's ML_PREDICT function, the output schema depends on\nthe model's OUTPUT definition from CREATE MODEL. Since streamt cannot introspect\nthe model registry, users should declare the expected output schema here to enable:\n- Proper type inference for downstream consumers\n- Lineage tracking through ML_PREDICT\n- Schema validation and breaking change detection\n\nExample:\n    ml_outputs:\n      fraud_detector:\n        columns:\n          - name: is_fraud\n            type: BOOLEAN\n          - name: confidence\n            type: DOUBLE",
@@ -1758,6 +1772,12 @@
           ],
           "default": null,
           "title": "Owner"
+        },
+        "ownership": {
+          "$ref": "#/$defs/LifecycleOwnership",
+          "default": {
+            "mode": "managed"
+          }
         },
         "tags": {
           "items": {
@@ -2090,6 +2110,16 @@
       },
       "title": "OnFailure",
       "type": "object"
+    },
+    "OwnershipMode": {
+      "description": "Lifecycle authority for resources emitted from a declaration.",
+      "enum": [
+        "external",
+        "managed",
+        "adopted"
+      ],
+      "title": "OwnershipMode",
+      "type": "string"
     },
     "ProjectInfo": {
       "additionalProperties": false,
@@ -2849,6 +2879,12 @@
           ],
           "default": null,
           "title": "Owner"
+        },
+        "ownership": {
+          "$ref": "#/$defs/LifecycleOwnership",
+          "default": {
+            "mode": "external"
+          }
         },
         "tags": {
           "items": {

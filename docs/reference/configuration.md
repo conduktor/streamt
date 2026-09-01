@@ -44,6 +44,20 @@ tests: [...]
 exposures: [...]
 ```
 
+## Lifecycle Ownership
+
+`owner` names the responsible person or team. The separate strict
+`ownership.mode` field controls resource lifecycle authority:
+
+| Mode | Meaning |
+|------|---------|
+| `external` | Observe only; streamt never creates, updates, or deletes the resource |
+| `managed` | streamt may create it; an existing live resource still requires prior ownership state |
+| `adopted` | Manage an existing resource only after matching persisted adoption state exists |
+
+Sources default to `external`; model output resources default to `managed`.
+Writing `ownership: {mode: adopted}` does not perform adoption or grant authority.
+
 ## Project
 
 Basic project metadata:

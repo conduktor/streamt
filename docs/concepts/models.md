@@ -22,6 +22,8 @@ A **model** is a named transformation that:
 models:
   - name: orders_clean
     description: Cleaned and validated orders
+    ownership:
+      mode: managed  # Default for model output resources
     sql: |
       SELECT order_id, customer_id, amount
       FROM {{ source("orders_raw") }}
@@ -29,6 +31,14 @@ models:
 ```
 
 The `materialized` property is automatically inferred from your SQL. Simple transforms become topics; windowed aggregations become Flink jobs.
+
+## Lifecycle Ownership
+
+Model output topics, Flink jobs, connectors, and Gateway rules default to
+`ownership.mode: managed`. Use `external` for observe-only outputs. Use `adopted`
+only to describe a resource already recorded in persisted ownership state;
+declaring the mode does not adopt a live resource or authorize mutation. The
+human/team `owner` field is independent metadata.
 
 ## Materializations
 
@@ -164,6 +174,8 @@ models:
 
     # Ownership and organization
     owner: analytics-team
+    ownership:
+      mode: managed
     tags: [analytics, customer, kpi]
     access: protected  # public, protected, private
 

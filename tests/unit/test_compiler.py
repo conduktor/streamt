@@ -82,7 +82,7 @@ class TestCompiler:
                 j for j in manifest.artifacts["flink_jobs"] if j["name"] == "clean_processor"
             )
             assert schema["ownership"] == {
-                "mode": "managed",
+                "mode": "external",
                 "project": "payments",
                 "type": "source",
                 "name": "raw",

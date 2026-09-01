@@ -15,10 +15,9 @@ from typing import Optional
 class ArtifactOwnership:
     """Lifecycle ownership for a compiled deployment artifact.
 
-    Only artifacts explicitly emitted by a streamt project are managed.  The
-    owner identifies the source or model whose selection should include the
-    artifact; ``mode`` leaves room for future imported/external resources
-    without treating every resource visible in a cluster as project-owned.
+    The owner identifies the source or model whose selection should include the
+    artifact. ``mode`` preserves the declaration's lifecycle authority so an
+    emitted external artifact remains observe-only.
     """
 
     project: str

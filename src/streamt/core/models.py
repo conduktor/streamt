@@ -71,6 +71,14 @@ class AccessLevel(str, Enum):
     PUBLIC = "public"
 
 
+class OwnershipMode(str, Enum):
+    """Lifecycle authority for resources emitted from a declaration."""
+
+    EXTERNAL = "external"
+    MANAGED = "managed"
+    ADOPTED = "adopted"
+
+
 class Classification(str, Enum):
     """Data classification levels."""
 
@@ -235,6 +243,12 @@ class Project(BaseModel):
 # ============================================================================
 
 
+class LifecycleOwnership(BaseModel):
+    """Lifecycle mode, distinct from the human/team `owner` field."""
+
+    mode: OwnershipMode
+
+
 class ColumnDefinition(BaseModel):
     """Column definition with classification."""
 
@@ -340,6 +354,10 @@ class Source(BaseModel):
     cluster: Optional[str] = None
     schema_: Optional[SchemaRef] = Field(default=None, alias="schema")
     owner: Optional[str] = None
+    ownership: LifecycleOwnership = Field(
+        default_factory=lambda: LifecycleOwnership(mode=OwnershipMode.EXTERNAL),
+        json_schema_extra={"default": {"mode": "external"}},
+    )
     tags: list[str] = Field(default_factory=list)
     columns: list[ColumnDefinition] = Field(default_factory=list)
     freshness: Optional[FreshnessConfig] = None
@@ -554,6 +572,10 @@ class Model(BaseModel):
     columns: Optional[list[ColumnDefinition]] = None
     primary_key: Optional[list[str]] = None
     owner: Optional[str] = None
+    ownership: LifecycleOwnership = Field(
+        default_factory=lambda: LifecycleOwnership(mode=OwnershipMode.MANAGED),
+        json_schema_extra={"default": {"mode": "managed"}},
+    )
     tags: list[str] = Field(default_factory=list)
     security: Optional[SecurityPolicies] = None
 

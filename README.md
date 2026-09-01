@@ -294,6 +294,8 @@ Environment variables are loaded with precedence:
 sources:
   - name: orders_raw
     topic: orders.raw.v1
+    ownership:
+      mode: external              # Sources are observe-only by default
     schema:
       registry: confluent          # Pull schema from Schema Registry
       subject: orders-raw-value    # SR subject name
@@ -312,6 +314,8 @@ Inline schemas are also supported when Schema Registry isn't available:
 sources:
   - name: orders_raw
     topic: orders.raw.v1
+    ownership:
+      mode: managed               # Explicitly lifecycle-manage this schema artifact
     schema:
       format: avro
       definition: |

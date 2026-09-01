@@ -38,8 +38,10 @@ sources:
       Raw order events from the checkout service.
       Contains all order attempts including failed ones.
 
-    # Ownership
+    # Human ownership and lifecycle authority are separate
     owner: checkout-team
+    ownership:
+      mode: external              # Default for sources; observe-only
     tags: [orders, checkout, critical]
 
     # Freshness SLA
@@ -88,10 +90,20 @@ sources:
 |----------|------|-------------|
 | `description` | string | Human-readable description |
 | `owner` | string | Team/person responsible |
+| `ownership` | object | Lifecycle mode; defaults to `{mode: external}` |
 | `tags` | list | Labels for organization |
 | `freshness` | object | SLA monitoring settings |
 | `schema` | object | Schema Registry reference |
 | `columns` | list | Column definitions |
+
+## Lifecycle Ownership
+
+Sources are external inputs by default, so their emitted schema artifacts are
+observe-only unless you explicitly set `ownership.mode: managed`. The supported
+modes are `external`, `managed`, and `adopted`. `owner: checkout-team` remains
+human responsibility metadata and grants no deployment authority. Declaring
+`adopted` also grants nothing by itself; matching persisted adoption state is
+required before the planner permits mutation.
 
 ## Freshness Monitoring
 
@@ -186,9 +198,9 @@ This generates:
 
 When you run `streamt apply`:
 
-1. Schemas are registered **before** topics are created
-2. Compatibility is checked against existing versions
-3. If incompatible, deployment fails with an error
+1. Source schema artifacts default to `external` and remain observe-only
+2. Explicitly `managed` schemas are registered **before** output topics are created
+3. Compatibility is checked against existing versions before a managed update
 4. Schema artifacts are written to `generated/schemas/`
 
 When `--check-schemas` is passed to `streamt validate`, external subjects and
@@ -297,12 +309,14 @@ sources/
   topic: orders.raw.v1
 ```
 
-### 2. Define Ownership
+### 2. Define Human Ownership
 
 ```yaml
 - name: orders_raw
   topic: orders.raw.v1
   owner: checkout-team
+  ownership:
+    mode: external
   tags: [orders, critical, tier-1]
 ```
 
