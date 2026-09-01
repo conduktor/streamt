@@ -137,7 +137,7 @@ streamt validate [OPTIONS]
 | `--env ENV` | Target environment (multi-env mode) |
 | `--all-envs` | Validate all environments sequentially |
 | `--model, -m MODEL` | Validate only this model and its dependencies |
-| `--check-schemas` | Fetch and validate schemas from Schema Registry |
+| `--check-schemas` | Read external subjects, versions, formats, and references from Schema Registry |
 | `--strict` | Treat warnings as errors |
 
 **Examples:**
@@ -159,6 +159,11 @@ streamt validate --check-schemas
 # Strict mode (fail on warnings)
 streamt validate --strict
 ```
+
+Without `--check-schemas`, validation is offline. The live check never registers
+or changes schemas. It decodes Avro and JSON Schema content and resolves their
+version-pinned references. For Protobuf it verifies subject/version/type and the
+reference graph, but does not parse messages or infer columns.
 
 **Output:**
 

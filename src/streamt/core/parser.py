@@ -17,6 +17,7 @@ from streamt.core.environment import (
 )
 from streamt.core.models import (
     CURRENT_API_VERSION,
+    ApiVersion,
     ConnectionConfig,
     DataTest,
     Defaults,
@@ -174,7 +175,7 @@ class ProjectParser:
             )
             raise ParseError(f"Invalid stream_project.yml: {details}")
 
-    def _parse_api_version(self, data: dict[str, object]) -> str:
+    def _parse_api_version(self, data: dict[str, object]) -> ApiVersion:
         """Validate the DSL version while allowing legacy unversioned projects."""
         if "apiVersion" not in data:
             self.warn_callback(

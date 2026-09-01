@@ -7,7 +7,13 @@ from typing import Optional
 
 import click
 
-from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
+from streamt.cli.helpers import (
+    close_deployers,
+    get_project_path,
+    handle_parse_error,
+    make_formatter,
+    make_sr_deployer,
+)
 from streamt.core.environment import EnvironmentError, EnvironmentManager
 from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError, StructuredWarning
@@ -39,8 +45,6 @@ def validate(
     fmt = make_formatter(ctx, "validate")
     project_path = get_project_path(project_dir)
 
-    if check_schemas:
-        fmt.print_warning("--check-schemas is not yet implemented; skipping registry validation")
     if target_model:
         fmt.print_warning(
             f"--model '{target_model}' filtering is not yet implemented; validating all models"
@@ -57,8 +61,40 @@ def validate(
                 warn_callback=lambda msg: fmt.print(msg),
             )
             project = parser.parse()
-            validator = ProjectValidator(project)
-            result = validator.validate()
+            sr_deployer = None
+            if check_schemas and project.runtime.schema_registry:
+                sr_deployer = make_sr_deployer(project, fmt)
+            try:
+                validator = ProjectValidator(project, schema_registry_deployer=sr_deployer)
+                result = validator.validate()
+                if check_schemas and not project.runtime.schema_registry:
+                    result.add_error(
+                        "SCHEMA_REGISTRY_NOT_CONFIGURED",
+                        "--check-schemas requires runtime.schema_registry with a URL and "
+                        "any required credentials.",
+                        "runtime.schema_registry",
+                    )
+                elif check_schemas and sr_deployer is None:
+                    result.add_error(
+                        "SCHEMA_REGISTRY_UNAVAILABLE",
+                        "Schema Registry validation could not start. Check "
+                        "runtime.schema_registry URL, TLS, and credentials.",
+                        "runtime.schema_registry",
+                    )
+            finally:
+                close_deployers(sr_deployer)
+
+            infos: list[dict[str, object]] = []
+            for info in result.infos:
+                item: dict[str, object] = {"message": info.message}
+                if info.location:
+                    item["location"] = info.location
+                infos.append(item)
+                fmt.print(f"[cyan]{info.message}[/cyan]")
+                if info.location:
+                    fmt.print(f"  Location: {info.location}")
+            if infos:
+                result_data["infos"] = infos
 
             warns: list[dict[str, object]] = []
             for warning in result.warnings:

@@ -2556,9 +2556,28 @@
           "default": null,
           "title": "Subject"
         },
+        "version": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "const": "latest",
+              "type": "string"
+            }
+          ],
+          "default": "latest",
+          "title": "Version"
+        },
         "format": {
           "anyOf": [
             {
+              "enum": [
+                "avro",
+                "json",
+                "protobuf"
+              ],
               "type": "string"
             },
             {

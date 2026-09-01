@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+from urllib.parse import quote
 
 import requests
 
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 # Default timeouts (in seconds)
 DEFAULT_TIMEOUT = 30
 HEALTH_CHECK_TIMEOUT = 10
+SchemaVersion = int | Literal["latest"]
+
+
+class SchemaRegistryResolutionError(RuntimeError):
+    """A Schema Registry subject or reference graph could not be resolved."""
+
+
+@dataclass(frozen=True)
+class SchemaReference:
+    """A version-pinned Schema Registry reference."""
+
+    name: str
+    subject: str
+    version: int
 
 
 @dataclass
@@ -28,9 +43,11 @@ class SchemaState:
     exists: bool
     version: Optional[int] = None
     schema_id: Optional[int] = None
-    schema: Optional[dict[str, object]] = None
+    schema: object | None = None
     schema_type: Optional[str] = None
     compatibility: Optional[str] = None
+    references: list[SchemaReference] = field(default_factory=list)
+    resolved_references: list[SchemaState] = field(default_factory=list)
 
 
 @dataclass
@@ -152,33 +169,179 @@ class SchemaRegistryDeployer:
         """List all subjects."""
         return self._request("GET", "/subjects")
 
-    def get_schema_state(self, subject: str) -> SchemaState:
-        """Get current state of a schema subject."""
-        data = self._request("GET", f"/subjects/{subject}/versions/latest", not_found_ok=True)
+    @staticmethod
+    def _subject_path(subject: str) -> str:
+        """Encode a subject as one Schema Registry URL path segment."""
+        return quote(subject, safe="")
+
+    @staticmethod
+    def _validate_version(version: SchemaVersion) -> SchemaVersion:
+        if version == "latest" or (
+            isinstance(version, int) and not isinstance(version, bool) and version > 0
+        ):
+            return version
+        raise ValueError("Schema version must be a positive integer or 'latest'")
+
+    def get_schema_state(
+        self,
+        subject: str,
+        version: SchemaVersion = "latest",
+        *,
+        include_compatibility: bool = True,
+    ) -> SchemaState:
+        """Read one subject version and its reference metadata without mutation.
+
+        Avro and JSON documents are decoded from JSON. Protobuf is retained as
+        raw schema text; its version and references remain available for validation.
+        """
+        requested_version = self._validate_version(version)
+        encoded_subject = self._subject_path(subject)
+        data = self._request(
+            "GET",
+            f"/subjects/{encoded_subject}/versions/{requested_version}",
+            not_found_ok=True,
+        )
 
         if data is None:
             return SchemaState(subject=subject, exists=False)
+        if not isinstance(data, dict):
+            raise SchemaRegistryResolutionError(
+                f"Schema Registry returned invalid metadata for subject '{subject}' "
+                f"version '{requested_version}'"
+            )
 
-        # Parse schema JSON string
-        try:
-            schema = json.loads(data.get("schema", "{}"))
-        except json.JSONDecodeError:
-            logger.warning("Malformed schema JSON for subject '%s'", subject)
-            schema = {}
+        schema_type = str(data.get("schemaType", "AVRO")).upper()
+        resolved_version = data.get("version")
+        schema_id = data.get("id")
+        if not isinstance(resolved_version, int) or resolved_version < 1:
+            raise SchemaRegistryResolutionError(
+                f"Schema Registry returned no positive version for subject '{subject}' "
+                f"requested as '{requested_version}'"
+            )
+        if not isinstance(schema_id, int):
+            raise SchemaRegistryResolutionError(
+                f"Schema Registry returned no schema id for subject '{subject}' "
+                f"version {resolved_version}"
+            )
+        raw_schema = data.get("schema")
+        if not isinstance(raw_schema, str):
+            raise SchemaRegistryResolutionError(
+                f"Schema Registry response for subject '{subject}' version "
+                f"'{requested_version}' has no schema text"
+            )
 
-        # Get compatibility level
-        compat_data = self._request("GET", f"/config/{subject}", not_found_ok=True)
-        compatibility = compat_data.get("compatibilityLevel") if compat_data else None
+        if schema_type in {"AVRO", "JSON"}:
+            try:
+                schema: object = json.loads(raw_schema)
+            except json.JSONDecodeError as e:
+                raise SchemaRegistryResolutionError(
+                    f"Subject '{subject}' version '{requested_version}' contains malformed "
+                    f"{schema_type} schema JSON: {e.msg}"
+                ) from e
+        else:
+            schema = raw_schema
+
+        references: list[SchemaReference] = []
+        raw_references = data.get("references", [])
+        if not isinstance(raw_references, list):
+            raise SchemaRegistryResolutionError(
+                f"Schema Registry returned invalid references for subject '{subject}' "
+                f"version '{requested_version}'"
+            )
+        for index, reference in enumerate(raw_references):
+            if not isinstance(reference, dict):
+                raise SchemaRegistryResolutionError(
+                    f"Reference {index} on subject '{subject}' version "
+                    f"'{requested_version}' is not an object"
+                )
+            name = reference.get("name")
+            referenced_subject = reference.get("subject")
+            referenced_version = reference.get("version")
+            if (
+                not isinstance(name, str)
+                or not isinstance(referenced_subject, str)
+                or not isinstance(referenced_version, int)
+                or referenced_version < 1
+            ):
+                raise SchemaRegistryResolutionError(
+                    f"Reference {index} on subject '{subject}' version "
+                    f"'{requested_version}' must contain name, subject, and a positive version"
+                )
+            references.append(
+                SchemaReference(
+                    name=name,
+                    subject=referenced_subject,
+                    version=referenced_version,
+                )
+            )
+
+        compatibility = None
+        if include_compatibility:
+            compat_data = self._request(
+                "GET",
+                f"/config/{encoded_subject}?defaultToGlobal=true",
+                not_found_ok=True,
+            )
+            compatibility = (
+                compat_data.get("compatibilityLevel") if isinstance(compat_data, dict) else None
+            )
 
         return SchemaState(
             subject=subject,
             exists=True,
-            version=data.get("version"),
-            schema_id=data.get("id"),
+            version=resolved_version,
+            schema_id=schema_id,
             schema=schema,
-            schema_type=data.get("schemaType", "AVRO"),
+            schema_type=schema_type,
             compatibility=compatibility,
+            references=references,
         )
+
+    def resolve_schema_state(
+        self,
+        subject: str,
+        version: SchemaVersion = "latest",
+        *,
+        max_reference_depth: int = 20,
+    ) -> SchemaState:
+        """Resolve a subject plus all version-pinned references using GET requests only."""
+        if max_reference_depth < 1:
+            raise ValueError("max_reference_depth must be a positive integer")
+        root = self.get_schema_state(subject, version)
+        if not root.exists:
+            return root
+
+        seen: set[tuple[str, int]] = set()
+        if root.version is not None:
+            seen.add((root.subject, root.version))
+
+        def resolve_references(state: SchemaState, depth: int) -> None:
+            for reference in state.references:
+                if depth >= max_reference_depth:
+                    raise SchemaRegistryResolutionError(
+                        f"Schema reference graph for subject '{subject}' exceeds "
+                        f"maximum depth {max_reference_depth}"
+                    )
+                key = (reference.subject, reference.version)
+                if key in seen:
+                    continue
+                seen.add(key)
+                referenced = self.get_schema_state(
+                    reference.subject,
+                    reference.version,
+                    include_compatibility=False,
+                )
+                if not referenced.exists:
+                    raise SchemaRegistryResolutionError(
+                        f"Subject '{state.subject}' version {state.version} reference "
+                        f"'{reference.name}' points to missing subject "
+                        f"'{reference.subject}' version {reference.version}"
+                    )
+                state.resolved_references.append(referenced)
+                resolve_references(referenced, depth + 1)
+
+        resolve_references(root, 0)
+        return root
 
     def register_schema(
         self,

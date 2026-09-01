@@ -191,7 +191,12 @@ When you run `streamt apply`:
 3. If incompatible, deployment fails with an error
 4. Schema artifacts are written to `generated/schemas/`
 
-When `--check-schemas` is passed to `streamt validate`, the schema is fetched and column definitions are validated.
+When `--check-schemas` is passed to `streamt validate`, external subjects and
+selected versions are fetched with read-only requests. The declared format and
+all version-pinned references are checked. Avro and JSON Schema documents are
+decoded as JSON; Protobuf is currently limited to Registry metadata and reference
+validation. Column inference and Protobuf message-semantic validation are not part
+of this check.
 
 ## Column Definitions
 

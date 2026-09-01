@@ -15,7 +15,10 @@ from streamt.deployer.connect import ConnectDeployer
 from streamt.deployer.flink import FlinkDeployer
 from streamt.deployer.gateway import GatewayDeployer
 from streamt.deployer.planner import _sanitize_error
-from streamt.deployer.schema_registry import SchemaRegistryDeployer
+from streamt.deployer.schema_registry import (
+    SchemaRegistryDeployer,
+    SchemaRegistryResolutionError,
+)
 
 # ===================================================================
 # URL Validation
@@ -154,9 +157,11 @@ class TestJsonParseResilience:
         )
         resp.raise_for_status = Mock()
         deployer._http_session.request = Mock(return_value=resp)
-        state = deployer.get_schema_state("test-value")
-        assert state.exists
-        assert state.schema == {}  # Fallback on parse error
+        with pytest.raises(
+            SchemaRegistryResolutionError,
+            match="malformed AVRO schema JSON",
+        ):
+            deployer.get_schema_state("test-value")
 
 
 # ===================================================================

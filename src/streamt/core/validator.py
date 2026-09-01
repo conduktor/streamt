@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from streamt.core import errors
 from streamt.core.models import (
@@ -20,6 +20,9 @@ from streamt.core.models import (
     TopicRules,
 )
 from streamt.core.parser import ProjectParser
+
+if TYPE_CHECKING:
+    from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +118,14 @@ class ValidationResult:
 class ProjectValidator:
     """Validator for streamt projects."""
 
-    def __init__(self, project: StreamtProject) -> None:
+    def __init__(
+        self,
+        project: StreamtProject,
+        schema_registry_deployer: Optional[SchemaRegistryDeployer] = None,
+    ) -> None:
         """Initialize validator with project."""
         self.project = project
+        self.schema_registry_deployer = schema_registry_deployer
         self.parser = ProjectParser(project.project_path) if project.project_path else None
         self.result = ValidationResult()
 
@@ -131,6 +139,7 @@ class ProjectValidator:
         """Run all validations."""
         self._validate_duplicates()
         self._validate_sources()
+        self._validate_live_schemas()
         self._validate_models()
         self._validate_tests()
         self._validate_exposures()
@@ -205,6 +214,104 @@ class ProjectValidator:
                     "MISSING_TOPIC",
                     f"Source '{source.name}' missing required field 'topic'",
                 )
+
+    def _validate_live_schemas(self) -> None:
+        """Resolve external source schemas when an opt-in Registry client is provided.
+
+        Inline definitions and field-generated schemas are deployable desired state, so
+        their subjects are not required to exist yet. External references are read-only:
+        the resolver fetches the selected version and its pinned reference graph.
+        """
+        deployer = self.schema_registry_deployer
+        if deployer is None:
+            return
+
+        from streamt.deployer.schema_registry import SchemaRegistryResolutionError
+
+        supported_schema_types = {"AVRO", "JSON", "PROTOBUF"}
+        for source in self.project.sources:
+            schema_ref = source.schema_
+            if schema_ref is None:
+                continue
+            if schema_ref.definition is not None or schema_ref.fields is not None:
+                continue
+            if schema_ref.subject is None and schema_ref.registry is None:
+                continue
+
+            location = f"source '{source.name}'.schema"
+            if schema_ref.registry not in (None, "confluent"):
+                self.result.add_error(
+                    "SCHEMA_REGISTRY_SELECTOR_UNSUPPORTED",
+                    f"Source '{source.name}' selects schema registry "
+                    f"'{schema_ref.registry}', but this runtime has one Confluent-compatible "
+                    "Schema Registry client. Use 'confluent' or omit schema.registry.",
+                    location,
+                )
+                continue
+
+            subject = schema_ref.subject or f"{source.topic}-value"
+            try:
+                state = deployer.resolve_schema_state(subject, schema_ref.version)
+            except SchemaRegistryResolutionError as e:
+                self.result.add_error(
+                    "SCHEMA_REGISTRY_RESOLUTION_FAILED",
+                    f"Could not resolve Schema Registry subject '{subject}' for source "
+                    f"'{source.name}': {e}",
+                    location,
+                )
+                continue
+            except Exception as e:
+                self.result.add_error(
+                    "SCHEMA_REGISTRY_UNAVAILABLE",
+                    f"Could not read Schema Registry subject '{subject}' for source "
+                    f"'{source.name}': {e}. Check runtime.schema_registry URL, TLS, and "
+                    "credentials, then retry with --check-schemas.",
+                    location,
+                )
+                continue
+
+            if not state.exists:
+                self.result.add_error(
+                    "SCHEMA_SUBJECT_NOT_FOUND",
+                    f"Schema Registry subject '{subject}' version '{schema_ref.version}' "
+                    f"does not exist for source '{source.name}'. Check schema.subject and "
+                    "schema.version, or provide an inline schema for a new subject.",
+                    location,
+                )
+                continue
+
+            schema_type = (state.schema_type or "AVRO").upper()
+            if schema_type not in supported_schema_types:
+                self.result.add_error(
+                    "SCHEMA_TYPE_UNSUPPORTED",
+                    f"Schema Registry subject '{subject}' resolved to unsupported type "
+                    f"'{schema_type}'. streamt validates Avro, JSON Schema, and Protobuf "
+                    "subject/version metadata and references.",
+                    location,
+                )
+                continue
+
+            expected_type = schema_ref.format.upper() if schema_ref.format else None
+            if expected_type is not None and expected_type != schema_type:
+                self.result.add_error(
+                    "SCHEMA_FORMAT_MISMATCH",
+                    f"Source '{source.name}' declares schema format "
+                    f"'{schema_ref.format}', but subject '{subject}' version "
+                    f"{state.version} is '{schema_type.lower()}'.",
+                    location,
+                )
+                continue
+
+            compatibility = (
+                f", compatibility {state.compatibility}" if state.compatibility else ""
+            )
+            self.result.add_info(
+                "SCHEMA_SUBJECT_RESOLVED",
+                f"Resolved Schema Registry subject '{subject}' version {state.version} "
+                f"(id {state.schema_id}, type {schema_type}, "
+                f"{len(state.references)} direct reference(s){compatibility}).",
+                location,
+            )
 
     def _validate_models(self) -> None:
         """Validate model declarations."""

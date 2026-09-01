@@ -319,6 +319,7 @@ sources:
     schema:                             # Optional: Schema definition
       registry: confluent               # Schema registry type
       subject: orders-raw-value         # Subject name
+      version: latest                   # latest or a positive integer (default: latest)
       format: avro                      # avro, json, protobuf
       definition: |                     # Inline schema (alternative to registry)
         {
@@ -361,10 +362,19 @@ sources:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `registry` | string | `confluent` or custom registry type |
+| `registry` | string | `confluent` (the current Confluent-compatible Registry client) |
 | `subject` | string | Schema Registry subject name |
+| `version` | integer or `latest` | Subject version; defaults to `latest` |
 | `format` | string | `avro`, `json`, `protobuf` |
 | `definition` | string | Inline schema definition |
+
+`streamt validate` remains fully offline by default. With `--check-schemas`,
+external references (a `subject`/`registry` without `definition` or `fields`) are
+resolved using read-only requests. The check verifies subject and version
+existence, the declared format, and every version-pinned reference. Avro and JSON
+Schema documents are decoded as JSON. Protobuf schema text is retained as-is;
+streamt currently validates only its Registry metadata/reference graph and does
+not infer columns or validate Protobuf message semantics.
 
 ### Column Definition
 

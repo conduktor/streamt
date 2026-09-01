@@ -6,7 +6,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    PositiveInt,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from streamt.core.base import StreamtBaseModel as BaseModel
 
@@ -199,8 +206,8 @@ class Defaults(BaseModel):
 # ============================================================================
 
 
-CURRENT_API_VERSION = "streamt.dev/v1alpha1"
 ApiVersion = Literal["streamt.dev/v1alpha1"]
+CURRENT_API_VERSION: ApiVersion = "streamt.dev/v1alpha1"
 
 
 class ProjectInfo(BaseModel):
@@ -249,9 +256,22 @@ class SchemaRef(BaseModel):
 
     registry: Optional[str] = None
     subject: Optional[str] = None
-    format: Optional[str] = None  # avro, json, protobuf
+    version: PositiveInt | Literal["latest"] = "latest"
+    format: Optional[Literal["avro", "json", "protobuf"]] = None
     definition: Optional[str] = None
     fields: Optional[list[ColumnDefinition]] = None
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def validate_version(cls, value: object) -> object:
+        if isinstance(value, bool) or (isinstance(value, int) and value < 1):
+            raise ValueError("version must be a positive integer or 'latest'")
+        return value
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def normalize_format(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
 
 
 class MLModelOutput(BaseModel):
@@ -460,7 +480,11 @@ class SecurityPolicies(BaseModel):
         """Validate each tagged policy while preserving the compiler's dict API."""
         if not isinstance(value, list):
             return value
-        policy_models = {"mask": MaskPolicy, "allow": AllowPolicy, "deny": DenyPolicy}
+        policy_models: dict[str, type[BaseModel]] = {
+            "mask": MaskPolicy,
+            "allow": AllowPolicy,
+            "deny": DenyPolicy,
+        }
         for index, policy in enumerate(value):
             if not isinstance(policy, dict) or len(policy) != 1:
                 raise ValueError(f"policy at index {index} must contain exactly one policy type")
@@ -898,7 +922,7 @@ class DataTest(BaseModel):
         """Validate tagged assertion configs while preserving their dict API."""
         if not isinstance(value, list):
             return value
-        assertion_models = {
+        assertion_models: dict[str, type[BaseModel]] = {
             "not_null": NotNullAssertion,
             "unique_key": UniqueKeyAssertion,
             "accepted_values": AcceptedValuesAssertion,

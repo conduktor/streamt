@@ -9,6 +9,7 @@ from streamt.compiler.manifest import SchemaArtifact
 from streamt.deployer.schema_registry import (
     SchemaChange,
     SchemaRegistryDeployer,
+    SchemaRegistryResolutionError,
     SchemaState,
 )
 
@@ -219,6 +220,116 @@ class TestSchemaRegistryDeployerMocked:
         assert state.version == 2
         assert state.schema_id == 42
         assert state.compatibility == "BACKWARD"
+
+    def test_resolves_specific_version_and_references_read_only(self, deployer, sample_schema):
+        """A selected version and all pinned references are resolved with GETs only."""
+        referenced_schema = {"type": "record", "name": "Money", "fields": []}
+        deployer._request = Mock(
+            side_effect=[
+                {
+                    "subject": "orders/team-value",
+                    "version": 3,
+                    "id": 42,
+                    "schema": json.dumps(sample_schema),
+                    "schemaType": "AVRO",
+                    "references": [{"name": "money.avsc", "subject": "common/money", "version": 2}],
+                },
+                {"compatibilityLevel": "FULL_TRANSITIVE"},
+                {
+                    "subject": "common/money",
+                    "version": 2,
+                    "id": 7,
+                    "schema": json.dumps(referenced_schema),
+                    "schemaType": "AVRO",
+                },
+            ]
+        )
+
+        state = deployer.resolve_schema_state("orders/team-value", 3)
+
+        assert state.version == 3
+        assert state.compatibility == "FULL_TRANSITIVE"
+        assert state.references[0].subject == "common/money"
+        assert state.resolved_references[0].schema == referenced_schema
+        calls = deployer._request.call_args_list
+        assert calls[0].args[:2] == (
+            "GET",
+            "/subjects/orders%2Fteam-value/versions/3",
+        )
+        assert calls[2].args[:2] == (
+            "GET",
+            "/subjects/common%2Fmoney/versions/2",
+        )
+        assert all(call.args[0] == "GET" for call in calls)
+
+    def test_retains_protobuf_text_while_resolving_metadata(self, deployer):
+        """Protobuf content stays raw; version, type, and references remain inspectable."""
+        proto = 'syntax = "proto3"; message Order { string id = 1; }'
+        deployer._request = Mock(
+            side_effect=[
+                {
+                    "subject": "orders-proto-value",
+                    "version": 4,
+                    "id": 88,
+                    "schema": proto,
+                    "schemaType": "PROTOBUF",
+                    "references": [],
+                },
+                {"compatibilityLevel": "BACKWARD"},
+            ]
+        )
+
+        state = deployer.get_schema_state("orders-proto-value")
+
+        assert state.schema == proto
+        assert state.schema_type == "PROTOBUF"
+        assert state.version == 4
+
+    def test_decodes_json_schema_content(self, deployer):
+        json_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+        }
+        deployer._request = Mock(
+            side_effect=[
+                {
+                    "subject": "orders-json-value",
+                    "version": 2,
+                    "id": 89,
+                    "schema": json.dumps(json_schema),
+                    "schemaType": "JSON",
+                },
+                {"compatibilityLevel": "BACKWARD"},
+            ]
+        )
+
+        state = deployer.get_schema_state("orders-json-value", 2)
+
+        assert state.schema == json_schema
+        assert state.schema_type == "JSON"
+
+    def test_missing_pinned_reference_is_actionable(self, deployer, sample_schema):
+        deployer._request = Mock(
+            side_effect=[
+                {
+                    "subject": "orders-value",
+                    "version": 3,
+                    "id": 42,
+                    "schema": json.dumps(sample_schema),
+                    "schemaType": "AVRO",
+                    "references": [{"name": "money.avsc", "subject": "common-money", "version": 9}],
+                },
+                {"compatibilityLevel": "BACKWARD"},
+                None,
+            ]
+        )
+
+        with pytest.raises(
+            SchemaRegistryResolutionError,
+            match=r"money.avsc.*missing subject 'common-money' version 9",
+        ):
+            deployer.resolve_schema_state("orders-value")
 
     def test_register_schema(self, deployer, sample_schema):
         """Test registering a new schema."""

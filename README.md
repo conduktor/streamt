@@ -297,6 +297,8 @@ sources:
     schema:
       registry: confluent          # Pull schema from Schema Registry
       subject: orders-raw-value    # SR subject name
+      version: latest              # Or a positive, pinned version number
+      format: avro                 # Must match the registered schema type
     columns:
       - name: order_id
         description: Unique order identifier
@@ -323,6 +325,12 @@ sources:
           ]
         }
 ```
+
+Run `streamt validate --check-schemas` to verify external subjects, selected
+versions, declared formats, and version-pinned reference graphs using read-only
+Schema Registry requests. Avro and JSON Schema documents are decoded as JSON;
+Protobuf content remains raw text, so this check does not infer columns from
+Protobuf or validate message semantics.
 
 ### Simple Transform (Auto-Inferred as Topic)
 
