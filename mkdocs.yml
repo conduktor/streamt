@@ -135,3 +135,8 @@ nav:
     - Payments Pipeline: examples/payments.md
     - E-commerce Events: examples/ecommerce.md
     - IoT Sensors: examples/iot.md
+  - Project:
+    - Product Direction: specs/product-direction.md
+    - Deployment Safety: specs/deployment-safety-and-ownership.md
+    - Configuration Contract: specs/configuration-contract.md
+    - Change-Impact Plan: specs/change-impact-plan.md

@@ -2,6 +2,10 @@
 
 Unimplemented features and planned work.
 
+> The ordered project roadmap is maintained in [ROADMAP.md](ROADMAP.md). This
+> file remains a feature inventory; roadmap safety and release gates take
+> precedence over adding items from the inventory below.
+
 ## Production Readiness
 
 - [ ] Flink savepoint handling — graceful upgrades without data loss; trigger savepoints on upgrade, restore from savepoint
