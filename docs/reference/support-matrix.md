@@ -1,0 +1,42 @@
+# Integration support
+
+This page distinguishes working integration paths from configuration that is
+only planned. "Direct apply" means streamt currently owns the API calls; it
+does not imply persisted state, locking, or production-safe stateful upgrades.
+
+| System | Compile | Observe or discover | Direct plan/apply | Current boundary |
+| --- | --- | --- | --- | --- |
+| Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag | Topics | Deletion by absence is disabled; no persisted ownership state yet. |
+| Confluent Schema Registry / compatible API | Yes | Subjects during discovery | Register source schemas | Live references and compatibility resolution are not implemented yet. |
+| Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit, update, cancel | Savepoint-aware state migration is not yet a safe workflow. |
+| Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |
+| Conduktor Gateway | Yes | Rule state | Virtual-topic interceptor rules | Console catalog publication is a separate planned integration. |
+| AsyncAPI | AsyncAPI 2.6 export | No | No | Validation and AsyncAPI 3.x output are planned. |
+
+## Not supported as deployment backends
+
+Docker is supported for local development infrastructure, not as a streamt
+deployment backend. Kubernetes, the Flink Kubernetes Operator, Strimzi,
+Terraform/OpenTofu, and Confluent Cloud Flink Statements are not accepted as
+working targets today.
+
+## Integration priorities
+
+The next integrations are ordered by how much safety or interoperability they
+unlock:
+
+1. Schema Registry subject/version/reference resolution and compatibility
+   checks during validation and planning.
+2. A GitHub Action that publishes the deterministic change-impact plan on pull
+   requests.
+3. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
+   output, and Flink Kubernetes Operator resources.
+4. Confluent Cloud Flink Statements as an explicit backend rather than a
+   REST-shaped configuration claim.
+5. OpenLineage events, Conduktor Console metadata publication, and portable
+   catalog exports.
+6. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
+   actions for runtime policy evaluation.
+
+See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the
+repository root for sequencing and release gates.

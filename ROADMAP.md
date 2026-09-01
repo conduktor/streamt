@@ -33,19 +33,19 @@ No release may be called production-ready until all of the following hold:
 Target: the CLI is truthful and safe enough to evaluate against a shared
 development cluster.
 
-- [ ] Disable automatic deletion of resources merely absent from a manifest.
+- [x] Disable automatic deletion of resources merely absent from a manifest.
 - [ ] Introduce explicit `external`, `managed`, and `adopted` ownership modes.
 - [ ] Persist the last applied state and delete only previously managed
       resources through an explicit destructive workflow.
-- [ ] Fix `apply --target` and `apply --select` so selection happens using
+- [x] Fix `apply --target` and `apply --select` so selection happens using
       artifact ownership metadata.
-- [ ] Default destructive operations to disabled.
-- [ ] Reject unknown YAML keys at every configuration level.
-- [ ] Add a versioned configuration envelope and migration policy.
-- [ ] Make all documentation examples parse through the same strict parser as
+- [x] Default destructive operations to disabled.
+- [x] Reject unknown YAML keys at every configuration level.
+- [x] Add a versioned configuration envelope and migration policy.
+- [x] Make all documentation examples parse through the same strict parser as
       real projects.
-- [ ] Fix or temporarily remove non-working CLI paths and unsupported claims.
-- [ ] Add CLI smoke tests, packaging checks, scenario tests, and a type-check
+- [x] Fix or temporarily remove non-working CLI paths and unsupported claims.
+- [x] Add CLI smoke tests, packaging checks, scenario tests, and a type-check
       baseline to CI.
 - [ ] Publish an installable alpha release.
 
@@ -113,4 +113,3 @@ Target: close the loop between declared intent and runtime evidence.
 - Additional transports such as Pulsar and Kinesis.
 - A VS Code extension, hosted SaaS, and high-level intent generation.
 - New ML syntax that is not backed by an executable target integration.
-

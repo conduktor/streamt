@@ -5,6 +5,18 @@
 Reach a trustworthy alpha in which configuration is strict, partial adoption is
 safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 
+## Status — 2026-09-01
+
+- Milestone A immediate safety stop: implemented. Persisted ownership state and
+  an explicit destroy workflow remain separate Phase 0 work.
+- Milestone B strict public contract: implemented with `streamt.dev/v1alpha1`
+  and parser-backed documentation validation.
+- Milestone C CLI reliability: the broken observe and sample-test paths are
+  repaired and all top-level commands have smoke coverage.
+- Milestone D CI gates: unit/scenario matrices, strict docs, wheel installation,
+  Ruff, and a mypy non-regression baseline are implemented. Trusted publishing
+  and the first public alpha release remain open.
+
 ## Work order
 
 ### Milestone A: safety stop
@@ -78,4 +90,3 @@ resolution and explicit import/adoption.
 Commit each milestone or independently releasable subset after its focused and
 broad tests pass. Never mix generated documentation cleanup or unrelated user
 workspace changes into stabilization commits.
-
