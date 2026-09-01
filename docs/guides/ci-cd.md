@@ -7,7 +7,37 @@ description: Integrate streamt into GitHub Actions, GitLab CI, or any CI pipelin
 
 streamt is designed for CI/CD pipelines. Every command supports `--strict` validation, `-o json` structured output, and `--confirm-env` for non-interactive deploys.
 
-## GitHub Actions Example
+## First-party GitHub Action
+
+The repository includes a composite Action that validates the project, creates
+a deterministic reviewed plan, writes a concise job summary, and exposes the
+plan path and checksum as outputs. It never applies the plan.
+
+```yaml
+# streamt:skip — GitHub Actions workflow, not streamt config
+jobs:
+  streamt-plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - id: streamt
+        uses: conduktor/streamt@<release-tag-or-commit-sha>
+        with:
+          project-directory: .
+          environment: staging
+          offline: true
+          plan-path: .streamt/staging.plan.json
+```
+
+Offline planning is the safe default and does not contact Kafka, Schema
+Registry, Flink, Connect, or Gateway. Set `offline: false` only when the runner
+has network connectivity to every configured backend and the required
+credentials are provided through GitHub secrets or environment variables.
+Pin the Action to a release tag or immutable commit in production workflows.
+
+## Manual GitHub Actions Example
 
 ```yaml
 # streamt:skip — GitHub Actions workflow, not streamt config
