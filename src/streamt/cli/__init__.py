@@ -14,6 +14,7 @@ from .commands import (
     diff,
     docs,
     envs,
+    import_cmd,
     init,
     lineage,
     list_cmd,
@@ -72,3 +73,4 @@ main.add_command(envs.envs)
 main.add_command(diff.diff_resources, name="diff")
 main.add_command(build.build)
 main.add_command(init.init)
+main.add_command(import_cmd.import_resources)

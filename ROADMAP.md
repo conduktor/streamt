@@ -60,7 +60,7 @@ topics can plan and apply without proposing or performing changes to the other
 Target: streamt provides immediate value in pull requests before it is allowed
 to deploy anything.
 
-- [ ] Add no-clobber `streamt import` for external declarations.
+- [x] Add no-clobber `streamt import` for external Kafka source declarations.
 - [x] Add explicit, fail-closed adoption for one existing Kafka topic at a time.
 - [ ] Extend adoption to schemas, jobs, connectors, and Gateway rules after
       their exact management surfaces and compound identities are specified.

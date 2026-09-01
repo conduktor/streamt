@@ -284,6 +284,19 @@ sources/
 └── users.yml        # User-related sources
 ```
 
+## Import Existing Kafka Topics
+
+For an existing project, `streamt import --dry-run` previews Kafka topics as strict
+external source declarations using the selected environment's runtime configuration.
+Run without `--dry-run` to create `sources/imported.kafka.yml`. Import is additive:
+it skips exact topic matches, rejects generated-name collisions, and refuses to
+overwrite any existing declaration file.
+
+When Schema Registry is configured, import reads the conventional `{topic}-value`
+subject and pins its resolved version. Avro and JSON Schema can populate top-level
+columns. Protobuf is retained as an external schema reference without column
+inference. Use `--no-schemas` for Kafka-only discovery.
+
 ## Source vs Model
 
 | Aspect | Source | Model |

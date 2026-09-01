@@ -8,8 +8,9 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 ## Status — 2026-09-01
 
 - Milestone A immediate safety stop: implemented. Environment-scoped local
-  ownership state is now persisted after successful direct applies; remote
-  state, locking, explicit adoption, and an explicit destroy workflow remain.
+  ownership state is now persisted after successful direct applies, with local
+  writer locking and explicit topic adoption. Remote state, distributed
+  locking, broader adoption, and an explicit destroy workflow remain.
 - Milestone B strict public contract: implemented with `streamt.dev/v1alpha1`
   and parser-backed documentation validation.
 - Milestone C CLI reliability: the broken observe and sample-test paths are
@@ -19,7 +20,8 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
   and the first public alpha release remain open.
 - Phase 1 foundations now include live Schema Registry reference and
   compatibility validation, deterministic reviewed plan files, and a
-  validate/plan-only first-party GitHub Action.
+  validate/plan-only first-party GitHub Action. No-clobber Kafka source import
+  and fail-closed single-topic adoption are also implemented.
 
 ## Work order
 
@@ -87,8 +89,9 @@ Verification:
 
 Continue the minimum viable change-impact plan in
 `docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
-plan artifacts are implemented; explicit import/adoption and richer impact
-classification are next.
+plan artifacts, Kafka source import, and single-topic adoption are implemented;
+richer impact classification, apply blockers, and broader backend adoption are
+next.
 
 ## Commit strategy
 

@@ -15,6 +15,7 @@ Complete reference for all streamt CLI commands.
 | Generate SQL/JSON artifacts | `compile` | No |
 | Package artifacts + manifest + checksums | `build` | No |
 | View data lineage | `lineage` | No |
+| Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
 | Claim an existing declared topic | `adopt` | **Yes** |
@@ -119,6 +120,77 @@ streamt init --discover --kafka localhost:9092 --include "orders.*"
 # Preview without writing
 streamt init --discover --kafka localhost:9092 --dry-run
 ```
+
+---
+
+### import
+
+Add existing Kafka topics to an existing project as external source declarations.
+Infrastructure access is read-only: import reads topic metadata and, when configured,
+Schema Registry metadata. It never creates or changes Kafka topics, registers schemas,
+or writes ownership state.
+
+```bash
+streamt import [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Existing project directory (default: current) |
+| `--env ENV` | Target environment in multi-environment mode |
+| `--include PATTERN` | Include topics matching a glob; repeatable |
+| `--exclude PATTERN` | Exclude topics matching a glob; repeatable |
+| `--output-file PATH` | New declaration directly in `sources/` (default: `sources/imported.kafka.yml`) |
+| `--schemas / --no-schemas` | Use configured Schema Registry enrichment (default: enabled) |
+| `--dry-run` | Return the complete deterministic preview without writing |
+
+```bash
+# Preview existing topics using runtime credentials from the project
+streamt import --dry-run
+
+# Import selected domains into a new declaration file
+streamt import \
+  --include "orders.*" \
+  --include "payments.*" \
+  --exclude "*.retry" \
+  --output-file sources/commerce.kafka.yml
+
+# Import Kafka metadata without Schema Registry enrichment
+streamt import --no-schemas
+```
+
+Import skips topics already declared by exact topic name. Every generated declaration
+contains `ownership: {mode: external}`. The command refuses sanitized source-name
+collisions and never overwrites an existing output file; use `--dry-run` and merge
+manually or select another output path.
+
+Schema enrichment currently checks only the conventional `{topic}-value` subject.
+It pins the resolved numeric version. Avro and JSON Schema can contribute top-level
+columns; Protobuf contributes only its external subject/version/format reference.
+Key subjects and non-topic resources are outside this MVP.
+
+Example generated declaration:
+
+```yaml
+sources:
+  - name: orders_events
+    topic: orders.events
+    ownership:
+      mode: external
+    schema:
+      registry: confluent
+      subject: orders.events-value
+      version: 4
+      format: avro
+    columns:
+      - name: order_id
+        type: STRING
+```
+
+With global `--output json`, resources, declarations, counts, warnings, and created
+files are emitted in stable topic order for automation.
 
 ---
 
@@ -1122,6 +1194,17 @@ When using `--output json`, errors include machine-readable codes. These codes f
 |------|---------|
 | `E601_NAMING_VIOLATION` | Resource name violates naming convention |
 
+**Import Errors (E7xx):**
+
+| Code | Meaning |
+|------|---------|
+| `E701_IMPORT_DISCOVERY_FAILED` | Kafka discovery failed before any declaration was written |
+| `E702_IMPORT_TARGET_EXISTS` | Import target already exists and was not changed |
+| `E703_IMPORT_NAME_COLLISION` | Generated name collides with another generated source or an existing source/model |
+| `E704_IMPORT_PATH_INVALID` | Output is not a direct YAML declaration under `sources/` |
+| `E705_IMPORT_VALIDATION_FAILED` | Generated declaration failed strict validation |
+| `E706_IMPORT_WRITE_FAILED` | Exclusive declaration creation failed |
+
 **Warnings (Wxxx):**
 
 | Code | Meaning |
@@ -1132,6 +1215,8 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `W104_RULE_MAX_RETENTION` | Topic retention exceeds governance limit |
 | `W105_RULE_INVALID_OWNER` | Owner not in allowed owners list |
 | `W106_LOCAL_STATE_ONLY` | Local ownership state is unsafe for shared CI without remote locking |
+| `W107_SCHEMA_ENRICHMENT_SKIPPED` | Optional Schema Registry enrichment was unavailable or unsupported |
+| `W108_IMPORT_TARGET_EXISTS` | Dry-run target exists; a real import would refuse to overwrite it |
 | `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
 | `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
 | `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |

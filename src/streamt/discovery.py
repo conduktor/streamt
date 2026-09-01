@@ -10,8 +10,9 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Literal, Optional, Protocol
 
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.schema_registry import SchemaState
@@ -39,6 +40,25 @@ class SchemaDiscoveryReader(Protocol):
 
 
 @dataclass(frozen=True)
+class DiscoveredSchema:
+    """Pinned metadata for a discovered value-schema subject."""
+
+    subject: str
+    version: int
+    schema_id: int
+    format: Literal["avro", "json", "protobuf"]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return deterministic machine-readable schema metadata."""
+        return {
+            "subject": self.subject,
+            "version": self.version,
+            "format": self.format,
+            "id": self.schema_id,
+        }
+
+
+@dataclass(frozen=True)
 class DiscoveredTopic:
     """A source declaration and the Kafka metadata that produced it."""
 
@@ -46,6 +66,8 @@ class DiscoveredTopic:
     topic: str
     partitions: Optional[int]
     replication_factor: Optional[int]
+    schema: Optional[DiscoveredSchema] = None
+    schema_error: Optional[str] = None
 
     @property
     def column_count(self) -> int:
@@ -67,15 +89,25 @@ def is_internal_topic(topic: str) -> bool:
 def select_topic_names(
     topic_names: list[str],
     *,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
 ) -> list[str]:
     """Filter and deterministically order topic names for discovery."""
     selected = (topic for topic in topic_names if not is_internal_topic(topic))
     if include:
-        selected = (topic for topic in selected if fnmatch.fnmatch(topic, include))
+        includes = (include,) if isinstance(include, str) else tuple(include)
+        selected = (
+            topic
+            for topic in selected
+            if any(fnmatch.fnmatch(topic, pattern) for pattern in includes)
+        )
     if exclude:
-        selected = (topic for topic in selected if not fnmatch.fnmatch(topic, exclude))
+        excludes = (exclude,) if isinstance(exclude, str) else tuple(exclude)
+        selected = (
+            topic
+            for topic in selected
+            if not any(fnmatch.fnmatch(topic, pattern) for pattern in excludes)
+        )
     return sorted(selected)
 
 
@@ -201,12 +233,43 @@ def _schema_columns(schema_state: SchemaState, topic: str) -> list[dict[str, obj
     return []
 
 
+def _schema_metadata(
+    schema_state: SchemaState,
+) -> tuple[Optional[DiscoveredSchema], Optional[str]]:
+    """Return pinned supported metadata or a non-sensitive diagnostic."""
+    if not schema_state.exists:
+        return None, None
+
+    schema_type = (schema_state.schema_type or "").upper()
+    formats: dict[str, Literal["avro", "json", "protobuf"]] = {
+        "AVRO": "avro",
+        "JSON": "json",
+        "PROTOBUF": "protobuf",
+    }
+    schema_format = formats.get(schema_type)
+    if schema_format is None:
+        return None, f"unsupported schema type {schema_type or '<missing>'}"
+    if not isinstance(schema_state.version, int) or schema_state.version < 1:
+        return None, "Schema Registry returned no positive resolved version"
+    if not isinstance(schema_state.schema_id, int):
+        return None, "Schema Registry returned no schema id"
+    return (
+        DiscoveredSchema(
+            subject=schema_state.subject,
+            version=schema_state.version,
+            schema_id=schema_state.schema_id,
+            format=schema_format,
+        ),
+        None,
+    )
+
+
 def discover_topics(
     kafka: KafkaDiscoveryReader,
     schema_registry: Optional[SchemaDiscoveryReader] = None,
     *,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | Sequence[str] | None = None,
+    exclude: str | Sequence[str] | None = None,
 ) -> list[DiscoveredTopic]:
     """Discover Kafka topics and optional value-schema columns without mutation."""
     topics = select_topic_names(kafka.list_topic_names(), include=include, exclude=exclude)
@@ -214,6 +277,8 @@ def discover_topics(
 
     for topic in topics:
         state = kafka.get_topic_state(topic)
+        discovered_schema: Optional[DiscoveredSchema] = None
+        schema_error: Optional[str] = None
         source: dict[str, object] = {
             "name": sanitize_source_name(topic),
             "topic": topic,
@@ -222,13 +287,18 @@ def discover_topics(
 
         if schema_registry is not None:
             try:
-                columns = _schema_columns(
-                    schema_registry.get_schema_state(f"{topic}-value"), topic
-                )
+                schema_state = schema_registry.get_schema_state(f"{topic}-value")
+                columns = _schema_columns(schema_state, topic)
                 if columns:
                     source["columns"] = columns
-            except Exception as exc:
-                logger.debug("Schema discovery failed for topic '%s': %s", topic, exc)
+                discovered_schema, schema_error = _schema_metadata(schema_state)
+            except Exception as exc:  # The topic remains useful without schema enrichment.
+                logger.debug(
+                    "Schema discovery failed for topic '%s' (%s)",
+                    topic,
+                    type(exc).__name__,
+                )
+                schema_error = f"{type(exc).__name__} while reading {topic}-value"
 
         discovered.append(
             DiscoveredTopic(
@@ -236,6 +306,8 @@ def discover_topics(
                 topic=topic,
                 partitions=state.partitions,
                 replication_factor=state.replication_factor,
+                schema=discovered_schema,
+                schema_error=schema_error,
             )
         )
 

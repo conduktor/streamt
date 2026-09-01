@@ -118,6 +118,16 @@ actions, policy decisions, and plan checksum.
 
 `streamt import` discovers resources and emits `external` declarations.
 
+The Kafka import MVP reads the selected environment's runtime configuration,
+discovers topics with repeatable include/exclude filters, and optionally reads
+the conventional `{topic}-value` Schema Registry subject. It emits explicit
+`external` source declarations only. Exact topic matches already present in the
+project are skipped; generated-name collisions with sources or models fail the
+whole operation. The output must be a new direct child of `sources/`, is strict-
+validated before creation, and is opened exclusively. Import never overwrites a
+file, mutates infrastructure, or writes ownership state. Avro and JSON Schema
+may populate columns; Protobuf is retained as a pinned external reference.
+
 `streamt adopt`:
 
 1. Reads the live resource.

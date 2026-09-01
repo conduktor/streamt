@@ -208,9 +208,16 @@ def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Option
 
 
 def make_sr_deployer(
-    project: StreamtProject, fmt: OutputFormatter
+    project: StreamtProject,
+    fmt: OutputFormatter,
+    *,
+    required: bool = True,
 ) -> Optional[SchemaRegistryDeployer]:
-    """Create SchemaRegistryDeployer from project config. Returns None on failure."""
+    """Create SchemaRegistryDeployer from project config.
+
+    Optional callers can request warning-only failure handling when Schema
+    Registry enriches a result but is not required for the primary operation.
+    """
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
     if not project.runtime.schema_registry:
@@ -228,7 +235,16 @@ def make_sr_deployer(
             ssl_key_password=_resolve_secret(sr.ssl_key_password),
         )
 
-    return _try_create_deployer(_create, fmt, "Schema Registry")
+    if required:
+        return _try_create_deployer(_create, fmt, "Schema Registry")
+    try:
+        return _create()
+    except Exception as e:
+        from streamt.core.errors import ErrorCode
+
+        _code, message = _classify_connection_error(e, "Schema Registry")
+        fmt.print_warning(message, code=ErrorCode.SCHEMA_ENRICHMENT_SKIPPED)
+        return None
 
 
 def make_flink_deployer(
