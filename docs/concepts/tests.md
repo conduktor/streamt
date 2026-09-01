@@ -49,7 +49,6 @@ tests:
     model: orders_clean
     type: sample
     sample_size: 1000        # Consume 1000 messages
-    timeout: 30s             # Max wait time
 
     assertions:
       - range:
@@ -86,12 +85,6 @@ tests:
       - throughput:
           min_per_second: 2  # ~120/minute
 
-    on_failure:
-      severity: error
-      actions:
-        - alert:
-            channel: slack
-            webhook: https://hooks.slack.com/services/EXAMPLE
 ```
 
 Deploy with:
@@ -166,69 +159,32 @@ Or with tolerance:
 
 ### custom_sql
 
-Write custom validation SQL that returns the expected result:
+Write a SQL predicate that identifies invalid rows in a continuous test:
 
 ```yaml
 - custom_sql:
-    sql: |
-      SELECT COUNT(*) FROM {{ ref("orders") }}
-      WHERE amount < 0
-    expect: 0                  # Expected result (0 negative amounts)
+    name: negative_amount
+    where: amount < 0
+    detail_column: order_id
 ```
 
-**Note:** The `sql` field contains the validation query, and `expect` is the expected result value.
+`where` is compiled into the monitoring query; `detail_column` identifies the
+value included with a violation.
 
 ## Failure Actions
 
 Define what happens when tests fail:
 
-### Alert
-
-Send notifications:
-
-```yaml
-on_failure:
-  - alert:
-      channel: slack
-      webhook: ${SLACK_WEBHOOK}
-      message: "Data quality issue in {{ model.name }}"
-```
-
-Supported channels:
-
-- `slack` — Slack webhook
-- `pagerduty` — PagerDuty events
-- `webhook` — Custom HTTP webhook
-- `email` — Email notification
-
-### Pause Model
-
-Pause the model's processing:
-
-```yaml
-on_failure:
-  - pause:
-      model: orders_clean
-```
-
 ### Route to DLQ
 
-Send failing records to a dead letter queue:
+Declare a dead-letter topic for failed records:
 
 ```yaml
 on_failure:
-  - dlq:
-      topic: orders.dlq.v1
-      include_error: true
-```
-
-### Block Deployment
-
-Prevent deployment if tests fail:
-
-```yaml
-on_failure:
-  - block_deploy: true
+  severity: error
+  actions:
+    - dlq:
+        topic: orders.dlq.v1
 ```
 
 ## Complete Test Example
@@ -239,7 +195,6 @@ tests:
   - name: orders_schema_validation
     model: orders_clean
     type: schema
-    description: Validate orders schema constraints
 
     assertions:
       - not_null:
@@ -258,7 +213,6 @@ tests:
     model: orders_clean
     type: sample
     sample_size: 5000
-    description: Validate data quality on sample
 
     assertions:
       - range:
@@ -290,7 +244,6 @@ tests:
   - name: orders_monitoring
     model: orders_clean
     type: continuous
-    description: Real-time monitoring for orders pipeline
 
     assertions:
       - max_lag:
@@ -301,21 +254,6 @@ tests:
           min_per_second: 1          # ~60/minute
           max_per_second: 100        # ~6000/minute
 
-    on_failure:
-      severity: warning
-      actions:
-        - alert:
-            channel: slack
-            webhook: https://hooks.slack.com/services/EXAMPLE
-            message: |
-              Orders pipeline issue detected!
-              Model: {{ model.name }}
-              Test: {{ test.name }}
-              Assertion: {{ assertion.name }}
-        - alert:
-            channel: pagerduty
-            routing_key: pd-routing-key-example
-            severity: warning
 ```
 
 ## Running Tests
@@ -433,11 +371,8 @@ on_failure:
 ### 5. Alert Appropriately
 
 ```yaml
-# Warning: Slack
-# Critical: PagerDuty
-on_failure:
-  - alert: { channel: slack, ... }       # First notification
-  - alert: { channel: pagerduty, ... }   # Escalation
+# Alert integrations are not implemented yet. Route failures to a DLQ and
+# connect your existing monitoring system to that topic.
 ```
 
 ## Next Steps

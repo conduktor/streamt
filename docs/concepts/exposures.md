@@ -70,7 +70,6 @@ exposures:
 
     # Ownership
     owner: analytics-team
-    tags: [analytics, customer, kpi]
 
     # URL to the exposure
     url: https://grafana.company.com/d/customer-metrics
@@ -94,12 +93,6 @@ exposures:
       availability: "99.9"               # 99.9% uptime
       max_lag_messages: 50               # Max message lag
 
-    # Contacts
-    contacts:
-      - name: Jane Smith
-        email: jane@company.com
-      - name: Analytics Team
-        slack: "#analytics-team"
 ```
 
 ## Roles
@@ -217,9 +210,6 @@ orders_clean (topic)
     max_lag_messages: 5000
     availability: "99.99"
 
-  contacts:
-    - name: Fraud Team
-      slack: "#fraud-alerts"
 ```
 
 ### Dashboard Exposure
@@ -340,22 +330,12 @@ Every consumer should have an exposure:
 ```yaml
 # Don't leave mystery consumer groups
 - name: unknown_consumer
+  type: application
   description: "Legacy checkout service — migrating to v2 in Q3"
   consumer_group: legacy-consumer-123
 ```
 
-### 2. Include Contact Information
-
-```yaml
-contacts:
-  - name: Primary Owner
-    email: owner@company.com
-    slack: "#team-channel"
-  - name: Oncall
-    pagerduty: team-oncall
-```
-
-### 3. Set Realistic SLAs
+### 2. Set Realistic SLAs
 
 ```yaml
 # Based on actual requirements
@@ -364,28 +344,10 @@ sla:
   availability: "99.9"              # Match your infrastructure
 ```
 
-### 4. Link to Documentation
+### 3. Link to Documentation
 
 ```yaml
 url: https://wiki.company.com/services/fraud-detection
-```
-
-### 5. Tag Appropriately
-
-```yaml
-tags: [critical, tier-1, pci-compliant]
-```
-
-## Validation
-
-With governance rules, validate exposure completeness:
-
-```yaml title="stream_project.yml"
-rules:
-  exposures:
-    require_owner: true
-    require_sla: true
-    require_contacts: true
 ```
 
 ## Next Steps

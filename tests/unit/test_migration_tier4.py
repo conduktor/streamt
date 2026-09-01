@@ -319,7 +319,7 @@ class TestDLQAutoCreation:
                             "name": "t1",
                             "model": "clean",
                             "type": "schema",
-                            "assertions": [{"not_null": "user_id"}],
+                            "assertions": [{"not_null": {"columns": ["user_id"]}}],
                             "on_failure": {
                                 "severity": "error",
                                 "actions": [{"dlq": {"topic": "clean__dead_letters"}}],
@@ -348,7 +348,7 @@ class TestDLQAutoCreation:
                             "name": "t1",
                             "model": "clean",
                             "type": "schema",
-                            "assertions": [{"not_null": "uid"}],
+                            "assertions": [{"not_null": {"columns": ["uid"]}}],
                             "on_failure": {"severity": "error", "actions": [{"dlq": True}]},
                         }
                     ],
@@ -374,7 +374,7 @@ class TestDLQAutoCreation:
                             "name": "t1",
                             "model": "clean",
                             "type": "schema",
-                            "assertions": [{"not_null": "a"}],
+                            "assertions": [{"not_null": {"columns": ["a"]}}],
                             "on_failure": {
                                 "severity": "error",
                                 "actions": [{"dlq": {"topic": "shared"}}],
@@ -384,7 +384,7 @@ class TestDLQAutoCreation:
                             "name": "t2",
                             "model": "clean",
                             "type": "schema",
-                            "assertions": [{"not_null": "b"}],
+                            "assertions": [{"not_null": {"columns": ["b"]}}],
                             "on_failure": {
                                 "severity": "error",
                                 "actions": [{"dlq": {"topic": "shared"}}],
@@ -413,7 +413,7 @@ class TestDLQAutoCreation:
                             "name": "t1",
                             "model": "clean",
                             "type": "schema",
-                            "assertions": [{"not_null": "uid"}],
+                            "assertions": [{"not_null": {"columns": ["uid"]}}],
                         }
                     ],
                 },

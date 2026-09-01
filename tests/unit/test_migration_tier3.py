@@ -24,6 +24,7 @@ from streamt.core.parser import ProjectParser
 
 def _write_project(tmpdir: str, config: dict) -> Path:
     p = Path(tmpdir)
+    config.setdefault("apiVersion", "streamt.dev/v1alpha1")
     (p / "stream_project.yml").write_text(yaml.dump(config))
     return p
 

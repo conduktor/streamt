@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
+from streamt.core.base import StreamtBaseModel as BaseModel
 from streamt.core.validators import validate_ssl_path as _validate_ssl_path
 
 _VALID_SECURITY_PROTOCOLS = {"PLAINTEXT", "SSL", "SASL_PLAINTEXT", "SASL_SSL"}

@@ -202,15 +202,17 @@ models:
       parallelism: 8
       checkpoint_interval_ms: 60000
       state_backend: rocksdb
-      cluster: production
+    flink_cluster: production
 
     # Security policies
     security:
-      masking:
-        - column: email
-          method: hash
-        - column: phone
-          method: partial
+      policies:
+        - mask:
+            column: email
+            method: hash
+        - mask:
+            column: phone
+            method: partial
 ```
 
 ## SQL Syntax
@@ -284,22 +286,24 @@ Configure Flink job settings using the `flink:` field:
 flink:
   parallelism: 8                  # Job parallelism
   checkpoint_interval_ms: 60000    # Checkpoint interval (ms)
-  checkpoint_timeout: 300000      # Checkpoint timeout (ms)
+  checkpoint:
+    timeout_ms: 300000            # Checkpoint timeout (ms)
   state_backend: rocksdb          # hashmap or rocksdb
   restart_strategy:               # Restart strategy
     type: fixed-delay
-  cluster: production             # Target Flink cluster
 ```
+
+Set `flink_cluster: production` on the model to select a configured target.
 
 ## Connector Configuration
 
-Configure Kafka Connect sinks using the `connector:` field:
+Configure Kafka Connect sinks using the `sink:` field:
 
 ```yaml
-connector:
-  type: snowflake-sink           # Connector type
-  tasks_max: 4                   # Number of tasks
+sink:
+  connector: snowflake-sink      # Connector type
   config:
+    tasks.max: 4
     # Connector-specific configuration
     snowflake.url.name: ${SNOWFLAKE_URL}
     snowflake.user.name: ${SNOWFLAKE_USER}
@@ -343,18 +347,22 @@ Apply masking policies to sensitive columns:
 
 ```yaml
 security:
-  masking:
-    - column: email
-      method: hash      # MD5 hash
+  policies:
+    - mask:
+        column: email
+        method: hash      # MD5 hash
 
-    - column: phone
-      method: partial   # Show last 4 digits
+    - mask:
+        column: phone
+        method: partial   # Show last 4 digits
 
-    - column: ssn
-      method: redact    # Replace with ***
+    - mask:
+        column: ssn
+        method: redact    # Replace with ***
 
-    - column: credit_card
-      method: tokenize  # Replace with token
+    - mask:
+        column: credit_card
+        method: tokenize  # Replace with token
 ```
 
 ## Dependencies
@@ -420,6 +428,7 @@ This model depends on both `orders_clean` and the `customers` source. streamt bu
     Updated every 5 seconds based on recent patterns.
   owner: fraud-team
   tags: [fraud, ml, real-time]
+  sql: 'SELECT * FROM {{ source("transactions") }}'
 ```
 
 ### 4. Set Appropriate Partitions

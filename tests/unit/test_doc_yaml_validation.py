@@ -44,6 +44,7 @@ from streamt.core.models import (
     Model,
     ModelContract,
     ModelRules,
+    OnFailure,
     ProjectInfo,
     ResourceConfig,
     RestartStrategyConfig,
@@ -52,6 +53,7 @@ from streamt.core.models import (
     RuntimeConfig,
     SchemaRef,
     SchemaRegistryConfig,
+    SecurityPolicies,
     SinkConfig,
     SLAConfig,
     Source,
@@ -91,6 +93,11 @@ FLINK_WRAPPER_MODELS: dict[str, type] = {
 # Single-key wrappers validated directly
 DIRECT_WRAPPER_MODELS: dict[str, type] = {
     "event_time": EventTimeConfig,
+    "freshness": FreshnessConfig,
+    "on_failure": OnFailure,
+    "schema": SchemaRef,
+    "security": SecurityPolicies,
+    "sink": SinkConfig,
     "sla": SLAConfig,
     "topic": TopicConfig,
 }
@@ -253,6 +260,12 @@ def _classify_single_key_dict(data: dict) -> tuple[str, list[str]]:
     key = next(iter(data))
     val = data[key]
 
+    # `flink:` is used both for a runtime target and for model job settings.
+    if key == "flink" and isinstance(val, dict):
+        if set(val) & {"default", "clusters"}:
+            return _validate_model("runtime.flink", FlinkConfig, val)
+        return _validate_model("model.flink", FlinkJobConfig, val)
+
     # Runtime field wrappers: {"kafka": {...}} → KafkaConfig
     if key in RUNTIME_FIELD_MODELS and isinstance(val, dict):
         return _validate_model(f"runtime.{key}", RUNTIME_FIELD_MODELS[key], val)
@@ -264,6 +277,19 @@ def _classify_single_key_dict(data: dict) -> tuple[str, list[str]]:
     # Direct wrappers: {"event_time": {...}} → EventTimeConfig
     if key in DIRECT_WRAPPER_MODELS and isinstance(val, dict):
         return _validate_model(key, DIRECT_WRAPPER_MODELS[key], val)
+
+    if key == "project" and isinstance(val, dict):
+        return _validate_model("project_info", ProjectInfo, val)
+    if key == "clusters" and isinstance(val, dict):
+        return _validate_model("runtime.flink", FlinkConfig, {"clusters": val})
+    if key == "connections" and isinstance(val, dict):
+        errors: list[str] = []
+        for name, connection in val.items():
+            _, connection_errors = _validate_model(
+                f"connection.{name}", ConnectionConfig, connection
+            )
+            errors.extend(connection_errors)
+        return "connections", errors
 
     # Access config
     if key == "access" and isinstance(val, dict):
@@ -309,6 +335,8 @@ def _classify_dict(data: dict) -> tuple[str, list[str]]:
     keys = set(data.keys())
 
     # --- Top-level structures ---
+    if keys == {"apiVersion", "project"}:
+        return _validate_model("project_info", ProjectInfo, data["project"])
     if "project" in keys and keys & {"runtime", "sources", "models"}:
         return _validate_model("project", StreamtProject, data)
     if "environment" in keys:

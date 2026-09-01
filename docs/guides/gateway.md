@@ -47,7 +47,9 @@ models:
       WHERE region = 'EU'
 
     # Explicit configuration for virtual topics via Gateway
-    virtual_topic: true
+    gateway:
+      virtual_topic:
+        name: orders_europe
 ```
 
 What happens:
@@ -91,7 +93,10 @@ models:
     from:
       - source: customers_raw
 
-    virtual_topic: true
+    materialized: virtual_topic
+    gateway:
+      virtual_topic:
+        name: customers_view
     security:
       policies:
         # Hash email for analytics team
@@ -132,7 +137,10 @@ models:
     from:
       - source: orders_v2
 
-    virtual_topic: true
+    materialized: virtual_topic
+    gateway:
+      virtual_topic:
+        name: orders_v1
 ```
 
 Consumers using `orders_v1` through Gateway will read from `orders_v2`.
@@ -148,7 +156,9 @@ models:
       SELECT * FROM {{ source("orders") }}
       WHERE amount > 10000 AND status = 'completed'
 
-    virtual_topic: true
+    gateway:
+      virtual_topic:
+        name: high_value_orders
 ```
 
 The WHERE clause becomes a Gateway filter interceptor.
@@ -181,14 +191,18 @@ models:
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_a'
 
-    virtual_topic: true
+    gateway:
+      virtual_topic:
+        name: orders_tenant_a
 
   - name: orders_tenant_b
     sql: |
       SELECT * FROM {{ source("orders") }}
       WHERE tenant_id = 'tenant_b'
 
-    virtual_topic: true
+    gateway:
+      virtual_topic:
+        name: orders_tenant_b
 ```
 
 ## Configuration Reference

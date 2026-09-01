@@ -230,6 +230,7 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
     created_files: list[str] = []
 
     config = {
+        "apiVersion": "streamt.dev/v1alpha1",
         "project": {"name": name, "version": "1.0.0"},
         "runtime": {
             "kafka": {"bootstrap_servers": "${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}"},
@@ -438,6 +439,7 @@ def _init_discover(
 
         # Write stream_project.yml
         config: dict[str, object] = {
+            "apiVersion": "streamt.dev/v1alpha1",
             "project": {"name": name, "version": "1.0.0"},
             "runtime": {"kafka": {"bootstrap_servers": kafka}},
         }

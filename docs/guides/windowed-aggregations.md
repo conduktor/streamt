@@ -244,7 +244,6 @@ Ensure your aggregations produce valid results. Create `tests/stats_tests.yml`:
 ```yaml
 tests:
   - name: hourly_stats_quality
-    description: Validate hourly stats output
     model: hourly_order_stats
     type: sample
     sample_size: 100
@@ -252,10 +251,12 @@ tests:
     assertions:
       - not_null:
           columns: [region, window_start, order_count]
-      - positive:
+      - range:
           column: order_count
-      - positive:
+          min: 0
+      - range:
           column: total_revenue
+          min: 0
       - range:
           column: avg_order_value
           min: 0

@@ -433,7 +433,10 @@ class TestSchemaRegistryWithGovernance:
                             {"name": "amount", "classification": "confidential"},
                             {"name": "ssn", "classification": "highly_sensitive"},
                         ],
-                        "freshness": {"warn_after": "5m", "error_after": "15m"},
+                        "freshness": {
+                            "warn_after_seconds": 300,
+                            "max_lag_seconds": 900,
+                        },
                     }
                 ],
                 "models": [

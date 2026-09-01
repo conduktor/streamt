@@ -31,6 +31,116 @@ class TestProjectParser:
 
             assert project.project.name == "minimal-project"
             assert project.runtime.kafka.bootstrap_servers == "localhost:9092"
+            assert project.api_version == "streamt.dev/v1alpha1"
+
+    def test_explicit_api_version_valid(self, tmp_path: Path):
+        """The current DSL version is accepted and retained on the parsed project."""
+        config = {
+            "apiVersion": "streamt.dev/v1alpha1",
+            "project": {"name": "versioned-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        project = ProjectParser(tmp_path).parse()
+
+        assert project.api_version == "streamt.dev/v1alpha1"
+
+    def test_unsupported_api_version_fails(self, tmp_path: Path):
+        """A declared DSL version must be one streamt understands."""
+        config = {
+            "apiVersion": "streamt/v2",
+            "project": {"name": "future-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(ParseError, match=r"apiVersion.*streamt/v2.*streamt.dev/v1alpha1"):
+            ProjectParser(tmp_path).parse()
+
+    def test_missing_api_version_warns_during_alpha_migration(self, tmp_path: Path):
+        """Legacy alpha projects remain readable but receive an actionable warning."""
+        config = {
+            "project": {"name": "legacy-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+        warnings: list[str] = []
+
+        project = ProjectParser(tmp_path, warn_callback=warnings.append).parse()
+
+        assert project.api_version == "streamt.dev/v1alpha1"
+        assert any("no 'apiVersion'" in warning for warning in warnings)
+
+    def test_unknown_top_level_field_fails(self, tmp_path: Path):
+        """A root typo must not silently remove a complete declaration section."""
+        config = {
+            "project": {"name": "typo-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            "modles": [],
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(ParseError, match=r"field 'modles'.*Extra inputs"):
+            ProjectParser(tmp_path).parse()
+
+    def test_unknown_nested_field_reports_full_path(self, tmp_path: Path):
+        """Nested runtime typos report their location instead of disappearing."""
+        config = {
+            "project": {"name": "typo-project"},
+            "runtime": {
+                "kafka": {"bootstrap_servers": "localhost:9092"},
+                "schema_registry": {
+                    "url": "http://localhost:8081",
+                    "usernme": "misspelled",
+                },
+            },
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=r"schema_registry → usernme.*Extra inputs are not permitted",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    def test_unknown_model_field_reports_model_and_path(self, tmp_path: Path):
+        """Unsupported model policy fields fail with model and nested field context."""
+        config = {
+            "project": {"name": "typo-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            "models": [
+                {
+                    "name": "payments_clean",
+                    "sql": "SELECT 1",
+                    "security": {"classifiction": {"customer_id": "confidential"}},
+                }
+            ],
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+
+        with pytest.raises(
+            ParseError,
+            match=r"Invalid model 'payments_clean'.*security → classifiction.*Extra inputs",
+        ):
+            ProjectParser(tmp_path).parse()
+
+    def test_unknown_declaration_file_key_fails(self, tmp_path: Path):
+        """A misspelled collection key in a split file must not be ignored."""
+        config = {
+            "project": {"name": "split-project"},
+            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        }
+        (tmp_path / "stream_project.yml").write_text(yaml.dump(config))
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "payments.yml").write_text("modles: []\n")
+
+        with pytest.raises(
+            ParseError,
+            match=r"Invalid models file 'payments.yml'.*field 'modles'.*Extra inputs",
+        ):
+            ProjectParser(tmp_path).parse()
 
     def test_project_with_source_valid(self):
         """TC-VAL-002: Project with source should be valid."""

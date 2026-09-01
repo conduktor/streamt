@@ -606,13 +606,6 @@ models:
     # Connect cluster (for sink materialization)
     connect_cluster: production
 
-    # Event time configuration
-    event_time:
-      watermark:
-        strategy: bounded_out_of_orderness
-        max_out_of_orderness_ms: 5000
-      allowed_lateness_ms: 60000
-
     # Column metadata (stays at top level)
     columns:
       - name: customer_id
@@ -632,10 +625,6 @@ models:
             method: hash
             for_roles: [analyst]
 
-    deprecation:                        # Optional: Version deprecation
-      v1:
-        sunset_date: "2025-06-01"
-        message: "Use v2 instead"
 ```
 
 ### Model Fields (Top Level)
@@ -910,9 +899,6 @@ tests:
     on_failure:                         # Optional
       severity: error                   # error, warning
       actions:
-        - alert:
-            type: slack
-            channel: "#data-alerts"
         - dlq:
             topic: test_failures
 ```
@@ -950,7 +936,7 @@ tests:
 | `throughput` | Messages per second bounds | `min_per_second`, `max_per_second` |
 | `distribution` | Value distribution buckets | `column`, `buckets` |
 | `foreign_key` | Referential integrity | `column`, `ref_model`, `ref_key` |
-| `custom_sql` | Custom SQL assertion | `sql`, `expect` |
+| `custom_sql` | Custom SQL predicate | `name`, `where`, `detail_column` |
 
 ---
 

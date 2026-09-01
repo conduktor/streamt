@@ -30,16 +30,20 @@ sources:
 models:
   - name: payments_clean
     owner: team-payments
-    classification: confidential
     sql: |
       SELECT payment_id, customer_id, amount
       FROM {{ source("payments_raw") }}
       WHERE amount > 0 AND status IS NOT NULL
-    masking:
-      - column: customer_id
-        method: hash
-    governance:
-      max_retention_ms: 2592000000  # 30 days
+    security:
+      classification:
+        customer_id: confidential
+      policies:
+        - mask:
+            column: customer_id
+            method: hash
+    topic:
+      config:
+        retention.ms: 2592000000  # 30 days
 ```
 
 `streamt apply` doesn't just create a Kafka topic and a Flink job — it enforces the policy, validates the schema, and records the lineage. `streamt plan` shows the diff before anything touches production.
@@ -100,7 +104,7 @@ Most models only need `name` and `sql`. Infrastructure fields like `topic:` and 
 
   flink:
     parallelism: 4
-    checkpoint_interval: 60000
+    checkpoint_interval_ms: 60000
   topic:
     partitions: 12
 ```
@@ -136,6 +140,8 @@ streamt init --discover \
 
 ```yaml
 # stream_project.yml
+apiVersion: streamt.dev/v1alpha1
+
 project:
   name: my-pipeline
   version: "1.0.0"

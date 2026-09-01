@@ -56,10 +56,9 @@ class TestTopicNamingGovernance:
                         },
                     },
                 },
-                "governance": {
-                    "topic_rules": {
+                "rules": {
+                    "topics": {
                         "naming_pattern": "^[a-z]+\\.[a-z_]+\\.[a-z]+\\.v\\d+$",
-                        "naming_description": "{domain}.{entity}.{event_type}.v{version}",
                     },
                 },
                 "sources": [
@@ -101,17 +100,12 @@ class TestTopicNamingGovernance:
             result = validator.validate()
             assert result.is_valid
 
-    def test_environment_based_naming(self):
+    def test_strict_topic_naming_rule(self):
         """
-        SCENARIO: Different naming patterns per environment
+        SCENARIO: Enforce a strict topic naming rule
 
-        Story: Dev/staging use relaxed naming, production requires
-        strict naming conventions.
-
-        This test validates that environment-specific governance configurations
-        are correctly parsed and accessible. The validator ensures the configuration
-        structure is valid. Runtime enforcement (applying rules at deploy time)
-        would use these parsed configs.
+        Story: A production project requires a domain/entity/event/version
+        convention and a minimum partition count.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -128,28 +122,11 @@ class TestTopicNamingGovernance:
                         },
                     },
                 },
-                "governance": {
-                    "environments": {
-                        "dev": {
-                            "topic_rules": {
-                                "naming_pattern": "^dev\\..*",  # Relaxed
-                                "min_partitions": 1,
-                            },
-                        },
-                        "staging": {
-                            "topic_rules": {
-                                "naming_pattern": "^staging\\.[a-z]+\\.[a-z_]+\\.v\\d+$",
-                                "min_partitions": 3,
-                            },
-                        },
-                        "prod": {
-                            "topic_rules": {
-                                "naming_pattern": "^[a-z]+\\.[a-z_]+\\.[a-z]+\\.v\\d+$",
-                                "min_partitions": 6,
-                                "min_replication_factor": 3,
-                            },
-                        },
-                    },
+                "rules": {
+                    "topics": {
+                        "naming_pattern": "^[a-z]+\\.[a-z_]+\\.[a-z]+\\.v\\d+$",
+                        "min_partitions": 6,
+                    }
                 },
                 "sources": [
                     {"name": "user_events", "topic": "users.events.raw.v1"},
@@ -200,14 +177,16 @@ class TestOwnershipAndAccessControl:
                         },
                     },
                 },
-                "governance": {
-                    "require_owners": True,
-                    "valid_owners": [
-                        "platform-team",
-                        "customer-team",
-                        "analytics-team",
-                        "data-engineering",
-                    ],
+                "rules": {
+                    "models": {
+                        "require_owner": True,
+                        "valid_owners": [
+                            "platform-team",
+                            "customer-team",
+                            "analytics-team",
+                            "data-engineering",
+                        ],
+                    }
                 },
                 "sources": [
                     {
@@ -280,19 +259,7 @@ class TestOwnershipAndAccessControl:
                         },
                     },
                 },
-                "governance": {
-                    "require_owners": True,
-                    "data_classification": {
-                        "pii": {
-                            "allowed_consumers": ["gdpr-compliance", "customer-support"],
-                            "retention_max_days": 90,
-                            "requires_masking": True,
-                        },
-                        "public": {
-                            "allowed_consumers": ["*"],
-                        },
-                    },
-                },
+                "rules": {"models": {"require_owner": True}},
                 "sources": [
                     {
                         "name": "user_events",
@@ -344,7 +311,6 @@ class TestOwnershipAndAccessControl:
                         "role": "consumer",
                         "description": "Customer support needs PII access",
                         "consumes": [{"ref": "user_profiles_pii"}],
-                        "access_justification": "Required for customer identity verification",
                     },
                     {
                         "name": "analytics_dashboard",
@@ -376,17 +342,13 @@ class TestCrossTeamDependencies:
             yaml.dump(config, f)
         return project_path
 
-    def test_cross_team_data_contracts(self):
+    def test_cross_team_dependencies(self):
         """
-        SCENARIO: Define data contracts between teams
+        SCENARIO: Define dependencies between teams
 
         Story: Team A produces data that Team B depends on.
-        A data contract defines the schema, SLAs, and responsibilities.
-
-        This test validates that data contract configurations (schema references,
-        SLAs, ownership, freshness) are correctly parsed and the DAG correctly
-        captures cross-team dependencies. Contract metadata is available for
-        documentation and runtime enforcement tools.
+        Source ownership and freshness are recorded, and the DAG captures the
+        dependency without claiming unsupported source-contract fields.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -408,15 +370,6 @@ class TestCrossTeamDependencies:
                         "topic": "orders.events.v2",
                         "owner": "order-team",
                         "freshness": {"max_lag_seconds": 60, "warn_after_seconds": 30},
-                        "contract": {
-                            "version": "2.0.0",
-                            "schema_registry_subject": "orders.events.v2-value",
-                            "sla": {
-                                "availability": "99.9%",
-                                "max_latency_p99_ms": 1000,
-                            },
-                            "contact": "order-team@company.com",
-                        },
                     },
                     # Another external source
                     {
@@ -424,10 +377,6 @@ class TestCrossTeamDependencies:
                         "description": "Product catalog from Catalog Team",
                         "topic": "products.catalog.v1",
                         "owner": "catalog-team",
-                        "contract": {
-                            "version": "1.0.0",
-                            "sla": {"availability": "99.5%"},
-                        },
                     },
                 ],
                 "models": [
@@ -580,11 +529,11 @@ class TestDataQualityEnforcement:
                         },
                     },
                 },
-                "governance": {
-                    "model_rules": {
-                        "require_tests": ["critical_model", "payment_events"],
-                        "require_descriptions": True,
-                    },
+                "rules": {
+                    "models": {
+                        "require_tests": True,
+                        "require_description": True,
+                    }
                 },
                 "sources": [
                     {"name": "raw_events", "topic": "events.raw.v1"},
@@ -635,9 +584,10 @@ class TestDataQualityEnforcement:
                         "assertions": [
                             {"not_null": {"columns": ["payment_id", "amount"]}},
                             {
-                                "expression": {
-                                    "sql": "amount > 0",
-                                    "description": "Amount must be positive",
+                                "custom_sql": {
+                                    "name": "non_positive_amount",
+                                    "where": "amount <= 0",
+                                    "detail_column": "payment_id",
                                 }
                             },
                         ],
@@ -708,7 +658,7 @@ class TestDataQualityEnforcement:
                         "type": "schema",
                         "assertions": [
                             {"not_null": {"columns": ["txn_id", "amount", "currency", "status"]}},
-                            {"unique": {"columns": ["txn_id"]}},
+                            {"unique_key": {"key": "txn_id"}},
                             {
                                 "accepted_values": {
                                     "column": "status",
@@ -740,15 +690,17 @@ class TestDataQualityEnforcement:
                         "type": "schema",
                         "assertions": [
                             {
-                                "expression": {
-                                    "sql": "amount > 0",
-                                    "description": "Amount must be positive",
+                                "custom_sql": {
+                                    "name": "non_positive_amount",
+                                    "where": "amount <= 0",
+                                    "detail_column": "txn_id",
                                 }
                             },
                             {
-                                "expression": {
-                                    "sql": "amount < 1000000",
-                                    "description": "Amount must be under $1M",
+                                "custom_sql": {
+                                    "name": "amount_over_limit",
+                                    "where": "amount >= 1000000",
+                                    "detail_column": "txn_id",
                                 }
                             },
                         ],
@@ -759,7 +711,14 @@ class TestDataQualityEnforcement:
                         "model": "transaction_summary",
                         "type": "continuous",
                         "assertions": [
-                            {"distribution": {"column": "amount", "max_stddev": 1000}},
+                            {
+                                "distribution": {
+                                    "column": "amount",
+                                    "buckets": [
+                                        {"min": 0, "max": 1000, "max_ratio": 1.0}
+                                    ],
+                                }
+                            },
                         ],
                     },
                 ],
@@ -893,17 +852,13 @@ class TestComplianceAndAudit:
             assert "transaction_cleaned" in full_upstream
             assert "customer_transactions" in full_upstream
 
-    def test_retention_policy_enforcement(self):
+    def test_retention_topic_configuration(self):
         """
-        SCENARIO: Enforce data retention policies
+        SCENARIO: Compile explicit topic retention configurations
 
-        Story: Different data types have different retention requirements.
-        PII must be deleted after 90 days, financial data kept for 7 years.
-
-        This test validates that retention policies are correctly configured
-        in governance settings and that topic configurations include appropriate
-        retention.ms values. The compiler generates Kafka topic configs with
-        retention settings that can be validated against governance policies.
+        Story: Different data types need different Kafka retention settings.
+        This verifies that the explicitly declared values reach the compiled
+        topic artifacts; policy-based retention enforcement is not implied.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -915,13 +870,6 @@ class TestComplianceAndAudit:
                         "clusters": {
                             "local": {"type": "rest", "rest_url": "http://localhost:8082"}
                         },
-                    },
-                },
-                "governance": {
-                    "retention_policies": {
-                        "pii": {"max_days": 90},
-                        "financial": {"min_days": 2555},  # 7 years
-                        "default": {"max_days": 365},
                     },
                 },
                 "sources": [

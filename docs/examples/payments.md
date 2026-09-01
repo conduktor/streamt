@@ -297,11 +297,13 @@ models:
       FROM {{ ref("payments_enriched") }}
 
     security:
-      masking:
-        - column: ip_address
-          policy: hash
-        - column: card_last_four
-          policy: redact
+      policies:
+        - mask:
+            column: ip_address
+            method: hash
+        - mask:
+            column: card_last_four
+            method: redact
 
     # Override defaults only when needed
     flink:
@@ -367,8 +369,8 @@ models:
 
     connector:
       type: snowflake-sink
-      tasks_max: 4
       config:
+        tasks.max: 4
         snowflake.url.name: ${SNOWFLAKE_URL}
         snowflake.user.name: ${SNOWFLAKE_USER}
         snowflake.private.key: ${SNOWFLAKE_KEY}
@@ -434,16 +436,10 @@ tests:
     type: continuous
     assertions:
       - max_lag:
-          seconds: 60
+          column: processed_at
+          max_seconds: 60
       - throughput:
-          min_per_minute: 100
-    on_failure:
-      severity: error
-      actions:
-        - alert:
-            channel: pagerduty
-            routing_key: pd-payments-key
-            severity: critical
+          min_per_second: 1.67
 ```
 
 ## Exposures

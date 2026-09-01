@@ -192,7 +192,7 @@ models:
     flink:
       parallelism: 16
       checkpoint_interval_ms: 30000
-      cluster: edge
+    flink_cluster: edge
     topic:
       name: iot.sensor-status.v1
       partitions: 24
@@ -254,7 +254,7 @@ models:
     flink:
       parallelism: 16
       checkpoint_interval_ms: 10000
-      cluster: edge
+    flink_cluster: edge
     topic:
       name: iot.anomalies.v1
       partitions: 12
@@ -293,7 +293,7 @@ models:
     flink:
       parallelism: 4
       checkpoint_interval_ms: 60000
-      cluster: cloud
+    flink_cluster: cloud
     topic:
       name: iot.facility-metrics.v1
       partitions: 6
@@ -313,8 +313,8 @@ models:
 
     connector:
       type: s3-sink
-      tasks_max: 8
       config:
+        tasks.max: 8
         s3.bucket.name: ${S3_BUCKET}
         s3.region: ${AWS_REGION}
         aws.access.key.id: ${AWS_ACCESS_KEY}
@@ -362,17 +362,10 @@ tests:
     type: continuous
     assertions:
       - max_lag:
-          seconds: 10  # Very low latency requirement
+          column: timestamp
+          max_seconds: 10  # Very low latency requirement
       - throughput:
-          min_per_minute: 6000000  # 100K/second
-    on_failure:
-      severity: error
-      actions:
-        - alert:
-            channel: pagerduty
-            routing_key: pd-iot-routing-key
-            severity: critical
-            message: "IoT pipeline degradation - potential sensor data loss"
+          min_per_second: 100000
 
   - name: anomaly_alerting
     model: anomaly_detection
@@ -380,13 +373,6 @@ tests:
     assertions:
       - throughput:
           max_per_second: 167  # ~10K/minute
-    on_failure:
-      severity: warning
-      actions:
-        - alert:
-            channel: slack
-            webhook: https://hooks.slack.com/services/IOT-ALERTS
-            message: "High anomaly rate detected - check equipment"
 ```
 
 ## Exposures

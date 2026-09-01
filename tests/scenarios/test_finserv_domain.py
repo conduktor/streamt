@@ -49,13 +49,11 @@ class TestTradingPipeline:
                         "clusters": {"prod": {"type": "rest", "rest_url": "http://localhost:8082"}},
                     },
                 },
-                "governance": {
-                    "require_descriptions": True,
-                    "require_owners": True,
-                    "topic_rules": {
-                        "naming_pattern": "^trading\\..*\\.v\\d+$",
-                        "min_partitions": 6,
-                    },
+                "rules": {
+                    "models": {
+                        "require_description": True,
+                        "require_owner": True,
+                    }
                 },
                 "sources": [
                     {
@@ -219,9 +217,10 @@ class TestTradingPipeline:
                         "assertions": [
                             {"not_null": {"columns": ["symbol", "best_bid", "best_ask"]}},
                             {
-                                "expression": {
-                                    "sql": "best_bid <= best_ask",
-                                    "description": "Bid must not exceed ask",
+                                "custom_sql": {
+                                    "name": "crossed_market",
+                                    "where": "best_bid > best_ask",
+                                    "detail_column": "symbol",
                                 }
                             },
                         ],
@@ -526,12 +525,7 @@ class TestFraudDetection:
                         "clusters": {"prod": {"type": "rest", "rest_url": "http://localhost:8082"}},
                     },
                 },
-                "governance": {
-                    "require_descriptions": True,
-                    "model_rules": {
-                        "require_tests": ["fraud_score", "blocked_transactions"],
-                    },
-                },
+                "rules": {"models": {"require_description": True}},
                 "sources": [
                     {
                         "name": "transactions",
@@ -710,7 +704,7 @@ class TestFraudDetection:
                         "type": "schema",
                         "assertions": [
                             {"not_null": {"columns": ["transaction_id", "fraud_score"]}},
-                            {"accepted_values": {"column": "fraud_score", "values": "0-200"}},
+                            {"range": {"column": "fraud_score", "min": 0, "max": 200}},
                         ],
                     },
                     {
@@ -801,9 +795,11 @@ class TestRegulatoryCompliance:
                         "clusters": {"prod": {"type": "rest", "rest_url": "http://localhost:8082"}},
                     },
                 },
-                "governance": {
-                    "require_descriptions": True,
-                    "require_owners": True,
+                "rules": {
+                    "models": {
+                        "require_description": True,
+                        "require_owner": True,
+                    }
                 },
                 "sources": [
                     {

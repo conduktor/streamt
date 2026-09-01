@@ -51,15 +51,11 @@ sources:
     schema:
       registry: confluent
       subject: orders-raw-value
-      version: latest     # or specific version number
 
     # Column definitions
     columns:
       - name: order_id
         description: Unique order identifier (UUID)
-        tests:
-          - not_null
-          - unique
 
       - name: customer_id
         description: Customer who placed the order
@@ -75,9 +71,6 @@ sources:
 
       - name: status
         description: Order status
-        tests:
-          - accepted_values:
-              values: [pending, confirmed, shipped, delivered, cancelled]
 ```
 
 ## Properties Reference
@@ -145,7 +138,6 @@ Reference an existing schema in Schema Registry:
 schema:
   registry: confluent           # Schema Registry type
   subject: orders-raw-value     # Subject name
-  version: latest               # or specific version (1, 2, etc.)
 ```
 
 ### Auto-Generated Schema
@@ -217,10 +209,6 @@ columns:
 
   - name: amount
     description: Transaction amount
-    tests:                      # Column-level tests
-      - not_null
-      - range:
-          min: 0
 ```
 
 ### Data Classification Levels
@@ -296,6 +284,7 @@ sources/
 ```yaml
 # Good
 - name: orders_raw
+  topic: orders.raw.v1
   description: Raw order events from checkout, including failed attempts
 
 # Bad
@@ -349,7 +338,6 @@ rules:
   sources:
     require_schema: true       # Must have schema reference
     require_freshness: true    # Must have freshness SLA
-    require_columns: true      # Must document columns
 ```
 
 ## Example: E-commerce Sources

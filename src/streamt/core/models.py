@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
+
+from streamt.core.base import StreamtBaseModel as BaseModel
 
 # ============================================================================
 # Enums
@@ -197,6 +199,10 @@ class Defaults(BaseModel):
 # ============================================================================
 
 
+CURRENT_API_VERSION = "streamt.dev/v1alpha1"
+ApiVersion = Literal["streamt.dev/v1alpha1"]
+
+
 class ProjectInfo(BaseModel):
     """Project metadata."""
 
@@ -208,6 +214,9 @@ class ProjectInfo(BaseModel):
 class Project(BaseModel):
     """Project configuration (stream_project.yml)."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_version: ApiVersion = Field(default=CURRENT_API_VERSION, alias="apiVersion")
     project: ProjectInfo
     runtime: RuntimeConfig
     defaults: Optional[Defaults] = None
@@ -411,6 +420,13 @@ class SinkConfig(BaseModel):
     config: dict[str, object] = Field(default_factory=dict)
 
 
+class LegacyConnectorConfig(BaseModel):
+    """Legacy connector spelling retained during the alpha migration window."""
+
+    type: str
+    config: dict[str, object] = Field(default_factory=dict)
+
+
 class MaskPolicy(BaseModel):
     """Masking policy."""
 
@@ -437,6 +453,26 @@ class SecurityPolicies(BaseModel):
 
     classification: dict[str, Classification] = Field(default_factory=dict)
     policies: list[dict[str, object]] = Field(default_factory=list)
+
+    @field_validator("policies", mode="before")
+    @classmethod
+    def validate_policy_shapes(cls, value: object) -> object:
+        """Validate each tagged policy while preserving the compiler's dict API."""
+        if not isinstance(value, list):
+            return value
+        policy_models = {"mask": MaskPolicy, "allow": AllowPolicy, "deny": DenyPolicy}
+        for index, policy in enumerate(value):
+            if not isinstance(policy, dict) or len(policy) != 1:
+                raise ValueError(f"policy at index {index} must contain exactly one policy type")
+            policy_type, config = next(iter(policy.items()))
+            policy_model = policy_models.get(policy_type)
+            if policy_model is None:
+                raise ValueError(
+                    f"policy at index {index} has unknown type '{policy_type}'; "
+                    f"expected one of {sorted(policy_models)}"
+                )
+            policy_model.model_validate(config)
+        return value
 
 
 class FromRef(BaseModel):
@@ -498,7 +534,7 @@ class Model(BaseModel):
     security: Optional[SecurityPolicies] = None
 
     # Optional: connector config (for sinks)
-    connector: Optional[dict[str, object]] = None
+    connector: Optional[LegacyConnectorConfig] = None
     sink: Optional[SinkConfig] = None
 
     # Optional: Gateway config (for virtual topics)
@@ -560,17 +596,13 @@ class Model(BaseModel):
     @model_validator(mode="after")
     def convert_connector_to_sink(self) -> Model:
         """Convert connector dict to sink config if needed."""
-        # If connector is a dict with 'type' and 'config', convert to SinkConfig
-        if self.connector and isinstance(self.connector, dict):
-            if "type" in self.connector:
-                connector_type = str(self.connector["type"])
-                raw_config = self.connector.get("config", {})
-                connector_config: dict[str, object] = (
-                    dict(raw_config) if isinstance(raw_config, dict) else {}
-                )
-                self.sink = SinkConfig(connector=connector_type, config=connector_config)
-                # Clear connector dict after conversion
-                self.connector = None
+        if self.connector:
+            self.sink = SinkConfig(
+                connector=self.connector.type,
+                config=dict(self.connector.config),
+            )
+            # Clear the legacy spelling after conversion.
+            self.connector = None
         return self
 
     def get_materialized(self) -> MaterializedType:
@@ -799,8 +831,9 @@ class ForeignKeyAssertion(BaseModel):
 class CustomSqlAssertion(BaseModel):
     """Custom SQL assertion."""
 
-    sql: str
-    expect: object
+    name: str = "custom"
+    where: str
+    detail_column: Optional[str] = None
 
 
 class AlertAction(BaseModel):
@@ -815,7 +848,7 @@ class AlertAction(BaseModel):
 class DlqAction(BaseModel):
     """DLQ action."""
 
-    model: str
+    model: Optional[str] = None
     topic: Optional[str] = None
 
 
@@ -824,6 +857,28 @@ class OnFailure(BaseModel):
 
     severity: Severity = Severity.ERROR
     actions: list[dict[str, object]] = Field(default_factory=list)
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def validate_action_shapes(cls, value: object) -> object:
+        """Reject unknown actions and fields instead of silently retaining them."""
+        if not isinstance(value, list):
+            return value
+        action_models = {"dlq": DlqAction}
+        for index, action in enumerate(value):
+            if not isinstance(action, dict) or len(action) != 1:
+                raise ValueError(f"action at index {index} must contain exactly one action type")
+            action_type, config = next(iter(action.items()))
+            action_model = action_models.get(action_type)
+            if action_model is None:
+                raise ValueError(
+                    f"action at index {index} has unknown type '{action_type}'; "
+                    f"expected one of {sorted(action_models)}"
+                )
+            if action_type == "dlq" and config is True:
+                continue
+            action_model.model_validate(config)
+        return value
 
 
 class DataTest(BaseModel):
@@ -836,6 +891,39 @@ class DataTest(BaseModel):
     sample_size: Optional[int] = None
     flink_cluster: Optional[str] = None
     on_failure: Optional[OnFailure] = None
+
+    @field_validator("assertions", mode="before")
+    @classmethod
+    def validate_assertion_shapes(cls, value: object) -> object:
+        """Validate tagged assertion configs while preserving their dict API."""
+        if not isinstance(value, list):
+            return value
+        assertion_models = {
+            "not_null": NotNullAssertion,
+            "unique_key": UniqueKeyAssertion,
+            "accepted_values": AcceptedValuesAssertion,
+            "accepted_types": AcceptedTypesAssertion,
+            "range": RangeAssertion,
+            "max_lag": MaxLagAssertion,
+            "throughput": ThroughputAssertion,
+            "distribution": DistributionAssertion,
+            "foreign_key": ForeignKeyAssertion,
+            "custom_sql": CustomSqlAssertion,
+        }
+        for index, assertion in enumerate(value):
+            if not isinstance(assertion, dict) or len(assertion) != 1:
+                raise ValueError(
+                    f"assertion at index {index} must contain exactly one assertion type"
+                )
+            assertion_type, config = next(iter(assertion.items()))
+            assertion_model = assertion_models.get(assertion_type)
+            if assertion_model is None:
+                raise ValueError(
+                    f"assertion at index {index} has unknown type '{assertion_type}'; "
+                    f"expected one of {sorted(assertion_models)}"
+                )
+            assertion_model.model_validate(config)
+        return value
 
 
 # ============================================================================
@@ -946,6 +1034,9 @@ class UDFDeclaration(BaseModel):
 class StreamtProject(BaseModel):
     """Complete streamt project with all declarations."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
+    api_version: ApiVersion = Field(default=CURRENT_API_VERSION, alias="apiVersion")
     project: ProjectInfo
     runtime: RuntimeConfig
     defaults: Optional[Defaults] = None

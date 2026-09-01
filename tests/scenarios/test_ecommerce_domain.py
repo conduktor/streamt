@@ -334,7 +334,6 @@ class TestEcommerceOrderPipeline:
                             "severity": "error",
                             "actions": [
                                 {"dlq": {"model": "orders_dlq"}},
-                                {"alert": {"type": "slack", "channel": "#data-alerts"}},
                             ],
                         },
                     },

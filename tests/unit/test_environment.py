@@ -1625,8 +1625,8 @@ class TestRealisticConfigurations:
             # We're mainly testing that complex configs don't crash
             assert result.exit_code == 0 or "confluent" in result.output.lower()
 
-    def test_multi_cluster_flink_config(self):
-        """Multi-cluster Flink configuration (local + cloud) should validate."""
+    def test_unsupported_confluent_flink_secret_is_rejected(self):
+        """Confluent fields are rejected until that backend is implemented."""
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1679,7 +1679,8 @@ class TestRealisticConfigurations:
                 },
             )
 
-            # Both environments should validate
+            # The supported REST cluster validates. The Confluent credential
+            # shape must fail rather than silently discard api_secret.
             result_dev = runner.invoke(
                 main, ["validate", "-p", str(tmpdir), "--env", "dev"]
             )
@@ -1688,18 +1689,12 @@ class TestRealisticConfigurations:
             )
 
             assert result_dev.exit_code == 0, f"Dev failed: {result_dev.output}"
-            assert result_prod.exit_code == 0, f"Prod failed: {result_prod.output}"
+            assert result_prod.exit_code != 0
+            assert "api_secret" in result_prod.output
+            assert "Extra inputs are not permitted" in result_prod.output
 
-    def test_schema_registry_compatibility_per_environment(self):
-        """Schema Registry compatibility mode should differ per environment.
-
-        Real-world pattern:
-        - Dev uses BACKWARD (relaxed for fast iteration)
-        - Prod uses FULL or FULL_TRANSITIVE (strict for production safety)
-
-        This test verifies each environment can have its own compatibility setting
-        and that they don't leak across environments.
-        """
+    def test_unsupported_schema_registry_compatibility_is_rejected(self):
+        """Runtime compatibility is rejected until it is implemented."""
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1736,31 +1731,14 @@ class TestRealisticConfigurations:
                 "PROD_SR_URL": "https://prod-sr.example.com",
             })
 
-            # Both should validate
+            # Compatibility is not part of the current runtime contract. It
+            # must not appear to work while being silently ignored.
             result_dev = runner.invoke(main, ["validate", "-p", str(tmpdir), "--env", "dev"])
             result_prod = runner.invoke(main, ["validate", "-p", str(tmpdir), "--env", "prod"])
 
-            assert result_dev.exit_code == 0, f"Dev failed: {result_dev.output}"
-            assert result_prod.exit_code == 0, f"Prod failed: {result_prod.output}"
-
-            # Verify configs are isolated via envs show
-            show_dev = runner.invoke(main, ["envs", "show", "dev", "-p", str(tmpdir)])
-            show_prod = runner.invoke(main, ["envs", "show", "prod", "-p", str(tmpdir)])
-
-            if show_dev.exit_code == 0:
-                # Dev should show BACKWARD, NOT FULL_TRANSITIVE
-                assert "BACKWARD" in show_dev.output, (
-                    f"Dev must use BACKWARD compatibility. Got: {show_dev.output}"
-                )
-                assert "FULL_TRANSITIVE" not in show_dev.output, (
-                    f"Dev must NOT show prod's FULL_TRANSITIVE. Got: {show_dev.output}"
-                )
-
-            if show_prod.exit_code == 0:
-                # Prod should show FULL_TRANSITIVE, NOT BACKWARD
-                assert "FULL_TRANSITIVE" in show_prod.output, (
-                    f"Prod must use FULL_TRANSITIVE compatibility. Got: {show_prod.output}"
-                )
-                assert "BACKWARD" not in show_prod.output, (
-                    f"Prod must NOT show dev's BACKWARD. Got: {show_prod.output}"
-                )
+            assert result_dev.exit_code != 0
+            assert result_prod.exit_code != 0
+            assert "compatibility" in result_dev.output
+            assert "compatibility" in result_prod.output
+            assert "Extra inputs are not permitted" in result_dev.output
+            assert "Extra inputs are not permitted" in result_prod.output

@@ -286,15 +286,10 @@ tests:
     type: continuous
     assertions:
       - max_lag:
-          seconds: 30
+          column: timestamp
+          max_seconds: 30
       - throughput:
-          min_per_minute: 1000
-    on_failure:
-      severity: error
-      actions:
-        - alert:
-            channel: slack
-            webhook: https://hooks.slack.com/services/EXAMPLE
+          min_per_second: 16.67
 ```
 
 ## Exposures

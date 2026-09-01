@@ -16,6 +16,7 @@ from streamt.core.environment import (
     EnvironmentManager,
 )
 from streamt.core.models import (
+    CURRENT_API_VERSION,
     ConnectionConfig,
     DataTest,
     Defaults,
@@ -26,6 +27,7 @@ from streamt.core.models import (
     RuntimeConfig,
     Source,
     StreamtProject,
+    UDFDeclaration,
 )
 
 
@@ -110,6 +112,8 @@ class ProjectParser:
             raise ParseError(f"No stream_project.yml found in {self.project_path}")
 
         project_data = self._load_yaml(project_file)
+        self._validate_top_level_keys(project_data)
+        api_version = self._parse_api_version(project_data)
 
         # Check for runtime: in project file when in multi-env mode
         runtime_warning = self.env_manager.check_project_runtime_warning(project_data)
@@ -135,10 +139,12 @@ class ProjectParser:
         models = self._parse_models(project_data)
         tests = self._parse_tests(project_data)
         exposures = self._parse_exposures(project_data)
+        udfs = self._parse_udfs(project_data)
 
         connections = self._parse_connections(project_data)
 
         return StreamtProject(
+            apiVersion=api_version,
             project=project_info,
             runtime=runtime,
             defaults=defaults,
@@ -148,8 +154,51 @@ class ProjectParser:
             models=models,
             tests=tests,
             exposures=exposures,
+            udfs=udfs,
             project_path=self.project_path,
         )
+
+    def _validate_top_level_keys(self, data: dict[str, object]) -> None:
+        """Reject unknown root keys before parsing the project section-by-section."""
+        allowed = {
+            field.alias or name
+            for name, field in StreamtProject.model_fields.items()
+            if name != "project_path"
+        }
+        # Kept temporarily for the existing migration warning below.
+        allowed.add("environments")
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            details = "; ".join(
+                f"field '{key}': Extra inputs are not permitted" for key in unknown
+            )
+            raise ParseError(f"Invalid stream_project.yml: {details}")
+
+    def _parse_api_version(self, data: dict[str, object]) -> str:
+        """Validate the DSL version while allowing legacy unversioned projects."""
+        if "apiVersion" not in data:
+            self.warn_callback(
+                "[yellow]WARNING[/yellow]: stream_project.yml has no 'apiVersion'. "
+                f"Interpreting it as legacy alpha '{CURRENT_API_VERSION}'. Add "
+                f"'apiVersion: {CURRENT_API_VERSION}' to make the configuration contract explicit."
+            )
+        value = data.get("apiVersion", CURRENT_API_VERSION)
+        if value != CURRENT_API_VERSION:
+            raise ParseError(
+                f"Invalid apiVersion '{value}'. Supported version: '{CURRENT_API_VERSION}'"
+            )
+        return CURRENT_API_VERSION
+
+    def _validate_declaration_file(
+        self, data: dict[str, object], path: Path, section: str
+    ) -> None:
+        """Reject misspelled or misplaced keys in declaration-directory files."""
+        unknown = sorted(set(data) - {section})
+        if unknown:
+            details = "; ".join(
+                f"field '{key}': Extra inputs are not permitted" for key in unknown
+            )
+            raise ParseError(f"Invalid {section} file '{path.name}': {details}")
 
     def _find_project_file(self) -> Path | None:
         """Find the stream_project.yml file."""
@@ -220,7 +269,10 @@ class ProjectParser:
         """Parse project info section."""
         if "project" not in data:
             raise ParseError("Missing 'project' section in stream_project.yml")
-        return ProjectInfo(**data["project"])
+        try:
+            return ProjectInfo(**data["project"])
+        except ValidationError as e:
+            raise ParseError(f"Invalid project metadata: {_format_pydantic_error(e)}") from e
 
     def _parse_runtime(self, data: dict[str, object]) -> RuntimeConfig:
         """Parse runtime configuration.
@@ -242,7 +294,10 @@ class ProjectParser:
 
             # Resolve env vars
             resolved = self._resolve_env_vars(runtime_data)
-            return RuntimeConfig(**resolved)
+            try:
+                return RuntimeConfig(**resolved)
+            except ValidationError as e:
+                raise ParseError(f"Invalid runtime: {_format_pydantic_error(e)}") from e
 
         # Single-env mode: require runtime in project file
         if "runtime" not in data:
@@ -260,25 +315,42 @@ class ProjectParser:
 
         # Resolve env vars
         resolved = self._resolve_env_vars(runtime_data)
-        return RuntimeConfig(**resolved)
+        try:
+            return RuntimeConfig(**resolved)
+        except ValidationError as e:
+            raise ParseError(f"Invalid runtime: {_format_pydantic_error(e)}") from e
 
     def _parse_defaults(self, data: dict[str, object]) -> Defaults | None:
         """Parse defaults section."""
         if "defaults" not in data:
             return None
-        return Defaults(**data["defaults"])
+        try:
+            return Defaults(**data["defaults"])
+        except ValidationError as e:
+            raise ParseError(f"Invalid defaults: {_format_pydantic_error(e)}") from e
 
     def _parse_rules(self, data: dict[str, object]) -> Rules | None:
         """Parse rules section."""
         if "rules" not in data:
             return None
-        return Rules(**data["rules"])
+        try:
+            return Rules(**data["rules"])
+        except ValidationError as e:
+            raise ParseError(f"Invalid rules: {_format_pydantic_error(e)}") from e
 
     def _parse_connections(self, data: dict[str, object]) -> dict[str, ConnectionConfig]:
         """Parse global connections section."""
         if "connections" not in data:
             return {}
-        return {k: ConnectionConfig(**v) for k, v in data["connections"].items()}
+        connections = {}
+        for name, connection_data in data["connections"].items():
+            try:
+                connections[name] = ConnectionConfig(**connection_data)
+            except ValidationError as e:
+                raise ParseError(
+                    f"Invalid connection '{name}': {_format_pydantic_error(e)}"
+                ) from e
+        return connections
 
     def _parse_sources(self, data: dict[str, object]) -> list[Source]:
         """Parse sources from project file and sources/ directory."""
@@ -298,6 +370,7 @@ class ProjectParser:
         if sources_dir.exists():
             for yml_file in sources_dir.glob("*.yml"):
                 file_data = self._load_yaml(yml_file)
+                self._validate_declaration_file(file_data, yml_file, "sources")
                 if "sources" in file_data:
                     for source_data in file_data["sources"]:
                         try:
@@ -311,6 +384,7 @@ class ProjectParser:
 
             for yaml_file in sources_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
+                self._validate_declaration_file(file_data, yaml_file, "sources")
                 if "sources" in file_data:
                     for source_data in file_data["sources"]:
                         try:
@@ -353,6 +427,7 @@ class ProjectParser:
 
             for yml_file in models_dir.glob("*.yml"):
                 file_data = self._load_yaml(yml_file)
+                self._validate_declaration_file(file_data, yml_file, "models")
                 if "models" in file_data:
                     for model_data in file_data["models"]:
                         try:
@@ -366,6 +441,7 @@ class ProjectParser:
 
             for yaml_file in models_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
+                self._validate_declaration_file(file_data, yaml_file, "models")
                 if "models" in file_data:
                     for model_data in file_data["models"]:
                         try:
@@ -397,6 +473,7 @@ class ProjectParser:
         if tests_dir.exists():
             for yml_file in tests_dir.glob("*.yml"):
                 file_data = self._load_yaml(yml_file)
+                self._validate_declaration_file(file_data, yml_file, "tests")
                 if "tests" in file_data:
                     for test_data in file_data["tests"]:
                         try:
@@ -410,6 +487,7 @@ class ProjectParser:
 
             for yaml_file in tests_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
+                self._validate_declaration_file(file_data, yaml_file, "tests")
                 if "tests" in file_data:
                     for test_data in file_data["tests"]:
                         try:
@@ -443,6 +521,7 @@ class ProjectParser:
         if exposures_dir.exists():
             for yml_file in exposures_dir.glob("*.yml"):
                 file_data = self._load_yaml(yml_file)
+                self._validate_declaration_file(file_data, yml_file, "exposures")
                 if "exposures" in file_data:
                     for exposure_data in file_data["exposures"]:
                         try:
@@ -456,6 +535,7 @@ class ProjectParser:
 
             for yaml_file in exposures_dir.glob("*.yaml"):
                 file_data = self._load_yaml(yaml_file)
+                self._validate_declaration_file(file_data, yaml_file, "exposures")
                 if "exposures" in file_data:
                     for exposure_data in file_data["exposures"]:
                         try:
@@ -468,6 +548,17 @@ class ProjectParser:
                             ) from e
 
         return exposures
+
+    def _parse_udfs(self, data: dict[str, object]) -> list[UDFDeclaration]:
+        """Parse UDF type declarations from the project file."""
+        udfs = []
+        for udf_data in data.get("udfs", []):
+            try:
+                udfs.append(UDFDeclaration(**udf_data))
+            except ValidationError as e:
+                name = udf_data.get("name", "<unknown>")
+                raise ParseError(f"Invalid UDF '{name}': {_format_pydantic_error(e)}") from e
+        return udfs
 
     def validate_jinja_sql(self, sql: str) -> tuple[bool, str | None]:
         """Validate Jinja syntax in SQL."""

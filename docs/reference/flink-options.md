@@ -327,8 +327,8 @@ flink:
 flink:
   restart_strategy:
     type: exponential-delay
-    initial_delay_ms: 1000
-    max_delay_ms: 60000
+    initial_backoff_ms: 1000
+    max_backoff_ms: 60000
     backoff_multiplier: 2.0
 ```
 

@@ -101,9 +101,6 @@ sources:
     columns:
       - name: order_id
         description: Unique order identifier (UUID)
-        tests:
-          - not_null
-          - unique
 
       - name: customer_id
         description: Customer who placed the order
@@ -236,7 +233,6 @@ tests:
   - name: orders_clean_schema
     model: orders_clean
     type: schema
-    description: Validate orders_clean schema constraints
 
     assertions:
       - not_null:
@@ -259,7 +255,6 @@ tests:
     model: orders_clean
     type: sample
     sample_size: 1000
-    description: Validate data quality on a sample of orders
 
     assertions:
       - range:
@@ -279,21 +274,14 @@ tests:
   - name: orders_freshness_monitor
     model: orders_clean
     type: continuous
-    description: Continuously monitor order freshness
 
     assertions:
       - max_lag:
-          seconds: 300  # Alert if lag > 5 minutes
+          column: created_at
+          max_seconds: 300
 
       - throughput:
-          min_per_minute: 10  # At least 10 orders/minute
-
-    on_failure:
-      severity: error
-      actions:
-        - alert:
-            channel: slack
-            webhook: https://hooks.slack.com/services/EXAMPLE
+          min_per_second: 0.17
 ```
 
 ## Step 5: Document Exposures

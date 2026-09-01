@@ -505,26 +505,23 @@ Create `tests/cdc_tests.yml`:
 ```yaml
 tests:
   - name: cdc_freshness
-    description: Ensure CDC data is flowing
     model: orders_enriched
-    type: sample
-    sample_size: 10
+    type: continuous
     assertions:
-      - freshness:
+      - max_lag:
           column: order_timestamp
-          max_age_minutes: 5  # Data should be < 5 minutes old
+          max_seconds: 300
 
   - name: customer_360_quality
-    description: Validate customer 360 view
     model: customer_360
     type: sample
     sample_size: 100
     assertions:
       - not_null:
           columns: [customer_id, name, email]
-      - positive:
+      - range:
           column: total_orders
-          allow_zero: true
+          min: 0
       - range:
           column: lifetime_value
           min: 0

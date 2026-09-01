@@ -35,7 +35,6 @@ class TestResourceLimits:
                         "clusters": {
                             "local": {"type": "rest", "rest_url": "http://localhost:8082"}
                         },
-                        "default_parallelism": 4,
                     },
                 },
                 "sources": [

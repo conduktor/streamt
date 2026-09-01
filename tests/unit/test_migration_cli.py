@@ -179,7 +179,7 @@ class TestShowContractInfo:
                             "name": "clean",
                             "sql": 'SELECT id, amount FROM {{ source("raw") }}',
                             "contract": {
-                                "enforce": True,
+                                "enforced": True,
                                 "columns": [
                                     {"name": "id", "type": "STRING"},
                                     {"name": "amount", "type": "DECIMAL(18,4)"},
@@ -481,7 +481,7 @@ class TestTestCoverage:
                             "name": "t1",
                             "model": "a",
                             "type": "schema",
-                            "assertions": [{"row_count": {"min": 1}}],
+                            "assertions": [{"not_null": {"columns": ["id"]}}],
                         }
                     ],
                 },
@@ -511,7 +511,7 @@ class TestTestCoverage:
                             "name": "t1",
                             "model": "a",
                             "type": "schema",
-                            "assertions": [{"row_count": {"min": 1}}],
+                            "assertions": [{"not_null": {"columns": ["id"]}}],
                         }
                     ],
                 },

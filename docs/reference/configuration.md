@@ -134,74 +134,30 @@ runtime:
         type: rest
         rest_url: http://flink-jobmanager:8081
         sql_gateway_url: http://flink-sql-gateway:8083
-
-      local:
-        type: docker
-        version: "1.18"
-
-      kubernetes:
-        type: kubernetes
-        namespace: flink-jobs
-        service_account: flink-sa
 ```
 
-**Cluster Types:**
+Only REST/SQL Gateway targets are currently supported. Docker, Kubernetes
+Operator, and Confluent Cloud backends are planned but are not accepted as
+working deployment targets yet.
 
-=== "REST"
+**REST cluster:**
 
-    ```yaml
-    clusters:
-      my-cluster:
-        type: rest
-        rest_url: http://flink-jobmanager:8081
-        sql_gateway_url: http://flink-sql-gateway:8083
-        # Auth (optional)
-        username: ${FLINK_USER}
-        password: ${FLINK_PASSWORD}
-        # Or Bearer token
-        api_key: ${FLINK_API_KEY}
-        # SSL/mTLS (optional)
-        ssl_ca_location: /path/to/ca.pem
-        ssl_certificate_location: /path/to/client-cert.pem
-        ssl_key_location: /path/to/client-key.pem
-    ```
-
-=== "Docker"
-
-    ```yaml
-    clusters:
-      local:
-        type: docker
-        version: "1.18"
-        network: my-network
-    ```
-
-=== "Kubernetes"
-
-    ```yaml
-    clusters:
-      k8s:
-        type: kubernetes
-        namespace: flink-jobs
-        service_account: flink-sa
-        image: flink:1.18
-    ```
-
-=== "Confluent Cloud"
-
-    ```yaml
-    clusters:
-      confluent:
-        type: confluent
-        environment_id: env-abc123
-        compute_pool_id: lfcp-xyz789
-        region: us-west-2
-        api_key: ${CONFLUENT_FLINK_API_KEY}
-        api_secret: ${CONFLUENT_FLINK_API_SECRET}
-    ```
-
-!!! note "ML Functions"
-    `ML_PREDICT` and `ML_EVALUATE` functions are only available on Confluent Cloud Flink clusters. Ensure your cluster is marked as `type: confluent` to enable ML inference validation.
+```yaml
+clusters:
+  my-cluster:
+    type: rest
+    rest_url: http://flink-jobmanager:8081
+    sql_gateway_url: http://flink-sql-gateway:8083
+    # Auth (optional)
+    username: ${FLINK_USER}
+    password: ${FLINK_PASSWORD}
+    # Or Bearer token
+    api_key: ${FLINK_API_KEY}
+    # SSL/mTLS (optional)
+    ssl_ca_location: /path/to/ca.pem
+    ssl_certificate_location: /path/to/client-cert.pem
+    ssl_key_location: /path/to/client-key.pem
+```
 
 ### Connect
 
@@ -273,17 +229,13 @@ defaults:
 
   models:
     cluster: production
-    flink_cluster: production
     # Model-specific topic defaults (overrides project-wide)
     topic:
       partitions: 6
       replication_factor: 3
-      config:
-        retention.ms: 604800000
 
   tests:
     flink_cluster: production
-    sample_size: 1000
 ```
 
 !!! tip "Local Development vs Production"
@@ -331,12 +283,7 @@ rules:
     require_description: true
     require_owner: true
     require_tests: true
-    min_tests: 1
     max_dependencies: 10
-    allowed_materializations:
-      - topic
-      - flink
-      - sink
 ```
 
 | Rule | Type | Description |
@@ -344,7 +291,6 @@ rules:
 | `require_description` | bool | Models must have description |
 | `require_owner` | bool | Models must have owner |
 | `require_tests` | bool | Models must have tests |
-| `min_tests` | int | Minimum test count |
 | `max_dependencies` | int | Maximum upstream dependencies |
 
 ### Source Rules
@@ -354,8 +300,6 @@ rules:
   sources:
     require_schema: true
     require_freshness: true
-    require_columns: true
-    require_owner: true
 ```
 
 ### Security Rules
@@ -365,11 +309,6 @@ rules:
   security:
     require_classification: true
     sensitive_columns_require_masking: true
-    allowed_classifications:
-      - public
-      - internal
-      - confidential
-      - sensitive
 ```
 
 ## Environment Variables

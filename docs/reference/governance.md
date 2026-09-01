@@ -107,31 +107,12 @@ rules:
     # Documentation requirements
     require_description: true
     require_owner: true
-    min_description_length: 20
 
     # Testing requirements
     require_tests: true
-    min_tests: 1
 
     # Complexity limits
     max_dependencies: 10
-    max_sql_length: 5000
-
-    # Allowed materializations
-    allowed_materializations:
-      - topic
-      - flink
-      - sink
-
-    # Tags
-    required_tags:
-      - tier
-    allowed_tags:
-      - tier-1
-      - tier-2
-      - tier-3
-      - critical
-      - experimental
 ```
 
 ### Rule Reference
@@ -140,14 +121,8 @@ rules:
 |------|------|-------------|
 | `require_description` | bool | Models must have description |
 | `require_owner` | bool | Models must have owner |
-| `min_description_length` | int | Minimum description chars |
 | `require_tests` | bool | Models must have tests |
-| `min_tests` | int | Minimum test count |
 | `max_dependencies` | int | Max upstream dependencies |
-| `max_sql_length` | int | Max SQL character count |
-| `allowed_materializations` | list | Allowed materialization types |
-| `required_tags` | list | Tags that must be present |
-| `allowed_tags` | list | Only these tags allowed |
 
 ---
 
@@ -158,31 +133,19 @@ Ensure sources are well-documented:
 ```yaml
 rules:
   sources:
-    # Documentation
-    require_description: true
-    require_owner: true
-
     # Schema requirements
     require_schema: true
-    require_columns: true
 
     # Freshness monitoring
     require_freshness: true
-    max_freshness_warn: 10m
-    max_freshness_error: 30m
 ```
 
 ### Rule Reference
 
 | Rule | Type | Description |
 |------|------|-------------|
-| `require_description` | bool | Sources must have description |
-| `require_owner` | bool | Sources must have owner |
 | `require_schema` | bool | Must reference Schema Registry |
-| `require_columns` | bool | Must document columns |
 | `require_freshness` | bool | Must have freshness SLA |
-| `max_freshness_warn` | duration | Max warn_after value |
-| `max_freshness_error` | duration | Max error_after value |
 
 ---
 
@@ -195,27 +158,9 @@ rules:
   security:
     # Classification requirements
     require_classification: true
-    allowed_classifications:
-      - public
-      - internal
-      - confidential
-      - sensitive
-      - highly_sensitive
 
     # Masking requirements
     sensitive_columns_require_masking: true
-    highly_sensitive_columns_require_encryption: true
-
-    # PII detection
-    pii_column_patterns:
-      - email
-      - phone
-      - ssn
-      - credit_card
-      - ip_address
-
-    # Access control
-    require_access_level: true
 ```
 
 ### Rule Reference
@@ -223,10 +168,7 @@ rules:
 | Rule | Type | Description |
 |------|------|-------------|
 | `require_classification` | bool | Columns must have classification |
-| `allowed_classifications` | list | Valid classification values |
 | `sensitive_columns_require_masking` | bool | Sensitive data must be masked |
-| `pii_column_patterns` | list | Column names that require PII treatment |
-| `require_access_level` | bool | Models must specify access level |
 
 ### Classification Levels
 
@@ -294,42 +236,6 @@ models:
 The validator checks:
 - **Duplicate versions** — error if same model name has duplicate version numbers
 - **Version gaps** — warning if version N exists without version N-1
-
----
-
-## Exposure Rules
-
-Ensure downstream consumers are documented:
-
-```yaml
-rules:
-  exposures:
-    require_description: true
-    require_owner: true
-    require_sla: true
-    require_contacts: true
-
-    # SLA bounds
-    max_latency_p99_ms: 10000
-    min_availability: 99.0
-```
-
----
-
-## Test Rules
-
-Ensure adequate test coverage:
-
-```yaml
-rules:
-  tests:
-    # Coverage requirements
-    require_schema_tests: true
-    min_assertions_per_test: 2
-
-    # Continuous monitoring
-    require_continuous_for_critical: true
-```
 
 ---
 

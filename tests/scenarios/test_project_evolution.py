@@ -561,12 +561,13 @@ class TestSchemaEvolution:
             yaml.dump(config, f)
         return project_path
 
-    def test_backward_compatible_change(self):
+    def test_additive_optional_field_change(self):
         """
-        SCENARIO: Add optional field - backward compatible
+        SCENARIO: Add optional fields to a model
 
         Story: Add a new optional field to a model. Existing consumers
-        continue to work, new consumers can use the new field.
+        continue to work, new consumers can use the new field. Schema Registry
+        compatibility enforcement is covered by the future live resolver.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -588,9 +589,6 @@ class TestSchemaEvolution:
                         "name": "user_profiles",
                         "description": "Current user profile state",
 
-                        "schema": {
-                            "compatibility": "BACKWARD",
-                        },
                         "sql": """
                             SELECT
                                 user_id,

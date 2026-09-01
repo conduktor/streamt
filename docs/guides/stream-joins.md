@@ -311,24 +311,14 @@ Create `tests/join_tests.yml`:
 ```yaml
 tests:
   - name: enriched_orders_quality
-    description: Ensure customer enrichment is working
     model: orders_enriched
     type: sample
     sample_size: 100
     assertions:
       - not_null:
           columns: [order_id, customer_id, order_timestamp]
-      # Customer name should be present for most orders
-      # NULL is acceptable for new customers not yet in CDC
-      - custom_sql:
-          sql: |
-            SELECT COUNT(*) as failures
-            FROM {{ model }}
-            WHERE customer_name IS NULL
-          max_failures: 10  # Allow up to 10% missing
 
   - name: payment_matching_latency
-    description: Monitor payment matching timing
     model: order_payment_matched
     type: sample
     sample_size: 100
