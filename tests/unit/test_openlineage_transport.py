@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
+import requests
+from requests.adapters import HTTPAdapter
 
+from streamt.core.errors import ErrorCode
 from streamt.integrations.openlineage import (
+    DatasetIdentity,
     FileTransportConfig,
     HttpTransportConfig,
+    OpenLineageDeliveryError,
     OpenLineageTransportConfigurationError,
+    OpenLineageValidationError,
+    build_dataset_event,
+    create_openlineage_transport,
     load_openlineage_transport_config,
     parse_openlineage_transport_config,
 )
+from streamt.integrations.openlineage import transport as transport_module
 
 
 def _http_transport(**updates: object) -> dict[str, object]:
@@ -475,3 +487,524 @@ def test_loader_rejects_malformed_explicit_config_paths_without_echo(path: str) 
     assert captured.value.location == "openlineage.config"
     if path:
         assert path not in str(captured.value)
+
+
+def _event(name: str = "orders", description: str | None = None) -> dict[str, object]:
+    facets = None
+    if description is not None:
+        facets = {
+            "documentation": {
+                "_producer": "https://github.com/conduktor/streamt",
+                "_schemaURL": (
+                    "https://openlineage.io/spec/facets/1-1-0/"
+                    "DocumentationDatasetFacet.json#/$defs/DocumentationDatasetFacet"
+                ),
+                "description": description,
+            }
+        }
+    return build_dataset_event(
+        event_time="2026-09-01T12:34:56Z",
+        dataset=DatasetIdentity("kafka://broker.example:9092", name),
+        facets=facets,
+    )
+
+
+def _canonical_line(event: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            event,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+
+
+def test_file_transport_appends_ordered_canonical_durable_lines_and_preserves_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "events.jsonl"
+    target.write_bytes(b"existing\n")
+    target.chmod(0o640)
+    sync_calls: list[int] = []
+    sync_name = "fdatasync" if hasattr(os, "fdatasync") else "fsync"
+    real_sync = getattr(os, sync_name)
+
+    def record_sync(descriptor: int) -> None:
+        sync_calls.append(descriptor)
+        real_sync(descriptor)
+
+    monkeypatch.setattr(transport_module.os, sync_name, record_sync)
+    first = _event("café")
+    second = _event("payments")
+    transport = create_openlineage_transport(FileTransportConfig(target))
+
+    transport.emit(first)
+    transport.emit(second)
+    transport.close()
+    transport.close()
+
+    assert target.read_bytes() == b"existing\n" + _canonical_line(first) + _canonical_line(second)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert len(sync_calls) == 2
+
+
+def test_file_transport_creates_private_append_only_file(tmp_path: Path) -> None:
+    target = tmp_path / "new-events.jsonl"
+    event = _event()
+    transport = create_openlineage_transport(FileTransportConfig(target))
+
+    transport.emit(event)
+    transport.close()
+
+    assert target.read_bytes() == _canonical_line(event)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_file_transport_retries_partial_os_writes_until_one_line_is_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "partial.jsonl"
+    event = _event()
+    real_write = os.write
+    writes: list[int] = []
+
+    def partial_write(descriptor: int, payload: bytes) -> int:
+        chunk = payload[:7]
+        writes.append(len(chunk))
+        return real_write(descriptor, chunk)
+
+    transport = create_openlineage_transport(FileTransportConfig(target))
+    monkeypatch.setattr(transport_module.os, "write", partial_write)
+
+    transport.emit(event)
+    transport.close()
+
+    assert target.read_bytes() == _canonical_line(event)
+    assert len(writes) > 1
+
+
+def test_file_transport_validates_before_event_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "invalid.jsonl"
+    transport = create_openlineage_transport(FileTransportConfig(target))
+    write_called = False
+
+    def unexpected_write(_descriptor: int, _payload: bytes) -> int:
+        nonlocal write_called
+        write_called = True
+        return 0
+
+    monkeypatch.setattr(transport_module.os, "write", unexpected_write)
+
+    with pytest.raises(OpenLineageValidationError):
+        transport.emit({"secret": "event-secret"})
+    transport.close()
+
+    assert write_called is False
+    assert not target.exists()
+
+
+def test_file_transport_failures_are_fixed_safe_and_close_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "file-event-secret"
+    target = tmp_path / "secret-path-token.jsonl"
+    transport = create_openlineage_transport(FileTransportConfig(target))
+
+    def failed_write(_descriptor: int, _payload: bytes) -> int:
+        raise OSError(f"failed at {target} with {secret}")
+
+    monkeypatch.setattr(transport_module.os, "write", failed_write)
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.emit(_event(description=secret))
+
+    rendered = repr(captured.value)
+    assert str(target) not in rendered
+    assert secret not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    transport.close()
+    transport.close()
+
+
+def test_file_transport_sync_failure_and_emit_after_close_are_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "sync-secret.jsonl"
+    transport = create_openlineage_transport(FileTransportConfig(target))
+
+    def failed_sync(_descriptor: int) -> None:
+        raise OSError(f"sync failed for {target}")
+
+    monkeypatch.setattr(transport_module, "_sync_descriptor", failed_sync)
+    with pytest.raises(OpenLineageDeliveryError) as sync_error:
+        transport.emit(_event())
+    assert str(target) not in repr(sync_error.value)
+    assert sync_error.value.__context__ is None
+
+    transport.close()
+    with pytest.raises(OpenLineageDeliveryError) as closed_error:
+        transport.emit(_event())
+    assert str(target) not in repr(closed_error.value)
+
+
+def test_file_transport_rejects_nonregular_and_symlink_targets_safely(
+    tmp_path: Path,
+) -> None:
+    targets = [tmp_path]
+    if hasattr(os, "O_NOFOLLOW"):
+        actual = tmp_path / "actual.jsonl"
+        actual.touch()
+        link = tmp_path / "link.jsonl"
+        link.symlink_to(actual)
+        targets.append(link)
+
+    for target in targets:
+        transport = create_openlineage_transport(FileTransportConfig(target))
+        with pytest.raises(OpenLineageDeliveryError) as captured:
+            transport.emit(_event())
+        transport.close()
+        assert str(target) not in str(captured.value)
+        assert captured.value.__context__ is None
+
+
+def test_file_transport_close_failure_is_safe_and_not_retried(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "close-secret.jsonl"
+    transport = create_openlineage_transport(FileTransportConfig(target))
+    transport.emit(_event())
+    real_close = os.close
+    calls = 0
+
+    def failed_after_close(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        real_close(descriptor)
+        raise OSError(f"close failed for {target}")
+
+    monkeypatch.setattr(transport_module.os, "close", failed_after_close)
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.close()
+    transport.close()
+
+    assert calls == 1
+    assert str(target) not in str(captured.value)
+    assert captured.value.__context__ is None
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, *, close_error: str | None = None) -> None:
+        self.status_code = status_code
+        self.close_error = close_error
+        self.close_calls = 0
+
+    @property
+    def text(self) -> str:
+        raise AssertionError("response bodies must not be read")
+
+    @property
+    def content(self) -> bytes:
+        raise AssertionError("response bodies must not be read")
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise RuntimeError(self.close_error)
+
+
+class _FakeSession:
+    def __init__(self, effects: list[object] | None = None) -> None:
+        self.effects = list(effects or [_FakeResponse(200)])
+        self.trust_env = True
+        self.verify = False
+        self.mounts: list[tuple[str, object]] = []
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.close_calls = 0
+        self.close_error: str | None = None
+
+    def mount(self, prefix: str, adapter: object) -> None:
+        self.mounts.append((prefix, adapter))
+
+    def post(self, url: str, **kwargs: object) -> _FakeResponse:
+        self.calls.append((url, kwargs))
+        effect = self.effects.pop(0)
+        if isinstance(effect, BaseException):
+            raise effect
+        assert isinstance(effect, _FakeResponse)
+        return effect
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise RuntimeError(self.close_error)
+
+
+def _http_delivery_config(
+    *,
+    retry_total: int = 0,
+    api_key: str | None = None,
+) -> HttpTransportConfig:
+    document = _http_transport(retry={"total": retry_total})
+    if api_key is not None:
+        transport = document["transport"]
+        assert isinstance(transport, dict)
+        transport["auth"] = {"type": "api_key", "apiKey": api_key}
+    config = _parse(document)
+    assert isinstance(config, HttpTransportConfig)
+    return config
+
+
+def _create_fake_http_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    session: _FakeSession,
+    *,
+    retry_total: int = 0,
+    api_key: str | None = None,
+):
+    monkeypatch.setattr(transport_module.requests, "Session", lambda: session)
+    return create_openlineage_transport(
+        _http_delivery_config(retry_total=retry_total, api_key=api_key)
+    )
+
+
+def test_factory_revalidates_public_config_records_before_creating_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_created = False
+
+    def unexpected_session() -> _FakeSession:
+        nonlocal session_created
+        session_created = True
+        return _FakeSession()
+
+    monkeypatch.setattr(transport_module.requests, "Session", unexpected_session)
+    config = HttpTransportConfig(
+        url="https://user:factory-secret@lineage.example",
+        endpoint="api/v1/lineage",
+    )
+
+    with pytest.raises(OpenLineageTransportConfigurationError) as captured:
+        create_openlineage_transport(config)
+
+    assert session_created is False
+    assert "factory-secret" not in str(captured.value)
+
+
+def test_http_transport_posts_one_canonical_line_with_explicit_safe_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(204)
+    session = _FakeSession([response])
+    api_key = "http-api-key-secret"
+    transport = _create_fake_http_transport(monkeypatch, session, api_key=api_key)
+    event = _event("café")
+
+    transport.emit(event)
+    transport.close()
+    transport.close()
+
+    assert session.trust_env is False
+    assert session.verify is True
+    assert [prefix for prefix, _adapter in session.mounts] == ["http://", "https://"]
+    for _prefix, adapter in session.mounts:
+        assert isinstance(adapter, HTTPAdapter)
+        assert adapter.max_retries.total == 0
+    assert session.calls == [
+        (
+            "https://lineage.example/base/api/v1/lineage",
+            {
+                "data": _canonical_line(event),
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                "timeout": 5.0,
+                "verify": True,
+                "allow_redirects": False,
+                "stream": True,
+            },
+        )
+    ]
+    assert response.close_calls == 1
+    assert session.close_calls == 1
+
+
+def test_http_transport_validates_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    transport = _create_fake_http_transport(monkeypatch, session)
+
+    with pytest.raises(OpenLineageValidationError):
+        transport.emit({"secret": "event-secret"})
+    transport.close()
+
+    assert session.calls == []
+
+
+def test_http_transport_emit_after_close_is_safe_and_does_not_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    transport = _create_fake_http_transport(monkeypatch, session)
+    transport.close()
+
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.emit(_event())
+
+    assert session.calls == []
+    assert "lineage.example" not in repr(captured.value)
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_http_transport_retries_each_supported_transient_status_once(
+    status: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeResponse(status)
+    second = _FakeResponse(200)
+    session = _FakeSession([first, second])
+    transport = _create_fake_http_transport(monkeypatch, session, retry_total=1)
+
+    transport.emit(_event())
+    transport.close()
+
+    assert len(session.calls) == 2
+    assert first.close_calls == 1
+    assert second.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [requests.Timeout("timeout-secret"), requests.ConnectionError("connection-secret")],
+)
+def test_http_transport_retries_only_timeout_and_connection_failures(
+    failure: requests.RequestException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(200)
+    session = _FakeSession([failure, response])
+    transport = _create_fake_http_transport(monkeypatch, session, retry_total=1)
+
+    transport.emit(_event())
+    transport.close()
+
+    assert len(session.calls) == 2
+    assert response.close_calls == 1
+
+
+@pytest.mark.parametrize("status", [300, 301, 400, 401, 404, 409])
+def test_http_transport_never_retries_redirects_or_nontransient_statuses(
+    status: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(status)
+    session = _FakeSession([response, _FakeResponse(200)])
+    transport = _create_fake_http_transport(monkeypatch, session, retry_total=1)
+
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.emit(_event())
+    transport.close()
+
+    assert len(session.calls) == 1
+    assert response.close_calls == 1
+    assert str(status) in str(captured.value)
+
+
+def test_http_retry_bound_is_zero_when_not_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(503)
+    session = _FakeSession([response, _FakeResponse(200)])
+    transport = _create_fake_http_transport(monkeypatch, session)
+
+    with pytest.raises(OpenLineageDeliveryError):
+        transport.emit(_event())
+    transport.close()
+
+    assert len(session.calls) == 1
+    assert response.close_calls == 1
+
+
+def test_http_generic_request_failure_is_not_retried_and_never_leaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "request-exception-secret"
+    session = _FakeSession([requests.RequestException(secret), _FakeResponse(200)])
+    transport = _create_fake_http_transport(
+        monkeypatch,
+        session,
+        retry_total=1,
+        api_key="api-key-secret",
+    )
+
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.emit(_event(description="event-description-secret"))
+    transport.close()
+
+    rendered = repr(captured.value)
+    assert len(session.calls) == 1
+    assert secret not in rendered
+    assert "api-key-secret" not in rendered
+    assert "event-description-secret" not in rendered
+    assert "lineage.example" not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_http_response_close_failure_is_safe_and_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(503, close_error="response-close-secret")
+    session = _FakeSession([response, _FakeResponse(200)])
+    transport = _create_fake_http_transport(monkeypatch, session, retry_total=1)
+
+    with pytest.raises(OpenLineageDeliveryError) as captured:
+        transport.emit(_event())
+    transport.close()
+
+    assert len(session.calls) == 1
+    assert response.close_calls == 1
+    assert "response-close-secret" not in repr(captured.value)
+    assert captured.value.__context__ is None
+
+
+def test_http_transport_setup_and_close_failures_are_safe_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup_secret = "session-setup-secret"
+
+    def fail_setup() -> _FakeSession:
+        raise RuntimeError(setup_secret)
+
+    monkeypatch.setattr(transport_module.requests, "Session", fail_setup)
+    with pytest.raises(OpenLineageDeliveryError) as setup_error:
+        create_openlineage_transport(_http_delivery_config())
+    assert setup_secret not in repr(setup_error.value)
+    assert setup_error.value.__context__ is None
+
+    session = _FakeSession()
+    session.close_error = "session-close-secret"
+    transport = _create_fake_http_transport(monkeypatch, session)
+    with pytest.raises(OpenLineageDeliveryError) as close_error:
+        transport.close()
+    transport.close()
+
+    assert session.close_calls == 1
+    assert "session-close-secret" not in repr(close_error.value)
+    assert close_error.value.__context__ is None
+
+
+def test_w112_identifier_is_stable_but_not_yet_emitted_by_a_command() -> None:
+    assert ErrorCode.OPENLINEAGE_EMIT_FAILED == "W112_OPENLINEAGE_EMIT_FAILED"

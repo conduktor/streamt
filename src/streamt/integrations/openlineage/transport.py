@@ -1,8 +1,10 @@
-"""Strict, side-effect-free configuration for future OpenLineage transports."""
+"""Strict configuration and bounded synchronous OpenLineage transports."""
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
 import stat
 import unicodedata
@@ -10,11 +12,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
+import requests
 import yaml
 from pydantic import SecretStr
+from requests.adapters import HTTPAdapter
 from yaml.nodes import MappingNode, Node
 from yaml.tokens import (
     AliasToken,
@@ -34,6 +38,7 @@ _MAX_YAML_NESTING = 32
 _URI_PREFIX = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _INTEGER = re.compile(r"-?[0-9]+")
 _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+_RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 _CONFIG_ENV = "OPENLINEAGE_CONFIG"
 _DISABLED_ENV = "OPENLINEAGE_DISABLED"
@@ -60,6 +65,10 @@ class OpenLineageTransportConfigurationError(ValueError):
         self.location = location
 
 
+class OpenLineageDeliveryError(RuntimeError):
+    """A fixed secret-neutral File or HTTP delivery failure."""
+
+
 @dataclass(frozen=True)
 class FileTransportConfig:
     """Validated local append-only File transport configuration."""
@@ -80,6 +89,16 @@ class HttpTransportConfig:
 
 
 OpenLineageTransportConfig = FileTransportConfig | HttpTransportConfig
+
+
+class OpenLineageTransport(Protocol):
+    """Small synchronous delivery interface for later opt-in command hooks."""
+
+    def emit(self, event: Mapping[str, object]) -> None:
+        """Validate and synchronously deliver exactly one event."""
+
+    def close(self) -> None:
+        """Release local resources without draining background work."""
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -585,3 +604,292 @@ def _configuration_error(
     location: str,
 ) -> OpenLineageTransportConfigurationError:
     return OpenLineageTransportConfigurationError(message, location=location)
+
+
+def create_openlineage_transport(
+    config: OpenLineageTransportConfig,
+) -> OpenLineageTransport:
+    """Create one explicit synchronous transport without an implicit fallback."""
+    if isinstance(config, FileTransportConfig):
+        if not isinstance(config.log_file_path, Path):
+            raise _configuration_error(
+                "OpenLineage File transport requires one explicit local path",
+                "openlineage.transport.log_file_path",
+            )
+        validated_file = _parse_file_config({
+            "type": "file",
+            "log_file_path": str(config.log_file_path),
+        })
+        return _FileOpenLineageTransport(validated_file)
+    if isinstance(config, HttpTransportConfig):
+        auth: dict[str, object] | None = None
+        if config.api_key is not None:
+            if not isinstance(config.api_key, SecretStr):
+                raise _configuration_error(
+                    "OpenLineage HTTP apiKey must use the validated secret type",
+                    "openlineage.transport.auth.apiKey",
+                )
+            auth = {
+                "type": "api_key",
+                "apiKey": config.api_key.get_secret_value(),
+            }
+        validated_http = _parse_http_config({
+            "type": "http",
+            "url": config.url,
+            "endpoint": config.endpoint,
+            "timeout": config.timeout_seconds,
+            "verify": config.verify,
+            "retry": {"total": config.retry_total},
+            "auth": auth,
+        })
+        return _HttpOpenLineageTransport(validated_http)
+    raise _configuration_error(
+        "OpenLineage transport configuration type is not supported",
+        "openlineage.transport.type",
+    )
+
+
+def _serialize_event_line(event: Mapping[str, object]) -> bytes:
+    """Validate before I/O and return one canonical UTF-8 JSON line."""
+    from streamt.integrations.openlineage.validation import (
+        OpenLineageValidationError,
+        validate_event,
+    )
+
+    validate_event(event)
+    try:
+        rendered = json.dumps(
+            event,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        raise OpenLineageValidationError(
+            "Validated OpenLineage event could not be serialized canonically"
+        ) from None
+    return (rendered + "\n").encode("utf-8")
+
+
+class _FileOpenLineageTransport:
+    """Unbuffered append-only local File transport with per-event durability."""
+
+    def __init__(self, config: FileTransportConfig) -> None:
+        self._path = config.log_file_path
+        self._descriptor: int | None = None
+        self._closed = False
+
+    def emit(self, event: Mapping[str, object]) -> None:
+        payload = _serialize_event_line(event)
+        if self._closed:
+            raise OpenLineageDeliveryError("OpenLineage File transport is closed")
+        descriptor = self._descriptor
+        if descriptor is None:
+            descriptor = _open_file_descriptor(self._path)
+            self._descriptor = descriptor
+
+        position = 0
+        failed = False
+        try:
+            while position < len(payload):
+                written = os.write(descriptor, payload[position:])
+                if written <= 0:
+                    failed = True
+                    break
+                position += written
+            if not failed:
+                _sync_descriptor(descriptor)
+        except OSError:
+            failed = True
+        if failed:
+            raise OpenLineageDeliveryError("OpenLineage File event delivery failed")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        descriptor = self._descriptor
+        self._descriptor = None
+        if descriptor is None:
+            return
+        failed = False
+        try:
+            os.close(descriptor)
+        except OSError:
+            failed = True
+        if failed:
+            raise OpenLineageDeliveryError("OpenLineage File transport close failed")
+
+
+def _open_file_descriptor(path: Path) -> int:
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    failed = False
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            failed = True
+    except OSError:
+        failed = True
+    if failed:
+        if descriptor is not None:
+            _close_descriptor_quietly(descriptor)
+        raise OpenLineageDeliveryError(
+            "OpenLineage File transport could not be initialized"
+        )
+    if descriptor is None:  # Defensive narrowing for alternate os implementations.
+        raise OpenLineageDeliveryError(
+            "OpenLineage File transport could not be initialized"
+        )
+    return descriptor
+
+
+def _sync_descriptor(descriptor: int) -> None:
+    sync = getattr(os, "fdatasync", os.fsync)
+    sync(descriptor)
+
+
+def _close_descriptor_quietly(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        return
+
+
+class _HttpOpenLineageTransport:
+    """Dedicated synchronous HTTP transport with explicit retry behavior."""
+
+    def __init__(self, config: HttpTransportConfig) -> None:
+        session: requests.Session | None = None
+        failed = False
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            session.verify = True
+            session.mount("http://", HTTPAdapter(max_retries=0))
+            session.mount("https://", HTTPAdapter(max_retries=0))
+        except Exception:
+            failed = True
+        if failed:
+            if session is not None:
+                _close_session_quietly(session)
+            raise OpenLineageDeliveryError(
+                "OpenLineage HTTP transport could not be initialized"
+            )
+        if session is None:  # Defensive narrowing for alternate Session factories.
+            raise OpenLineageDeliveryError(
+                "OpenLineage HTTP transport could not be initialized"
+            )
+        self._session: requests.Session | None = session
+        self._url = f"{config.url.rstrip('/')}/{config.endpoint}"
+        self._timeout = config.timeout_seconds
+        self._retry_total = config.retry_total
+        self._api_key = config.api_key
+
+    def emit(self, event: Mapping[str, object]) -> None:
+        payload = _serialize_event_line(event)
+        session = self._session
+        if session is None:
+            raise OpenLineageDeliveryError("OpenLineage HTTP transport is closed")
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key is not None:
+            headers["Authorization"] = f"Bearer {self._api_key.get_secret_value()}"
+
+        for attempt in range(self._retry_total + 1):
+            response: requests.Response | None = None
+            failure: Literal["timeout", "connection", "request"] | None = None
+            status_code: int | None = None
+            try:
+                response = session.post(
+                    self._url,
+                    data=payload,
+                    headers=headers,
+                    timeout=self._timeout,
+                    verify=True,
+                    allow_redirects=False,
+                    stream=True,
+                )
+                candidate_status = response.status_code
+                if (
+                    isinstance(candidate_status, int)
+                    and not isinstance(candidate_status, bool)
+                    and 100 <= candidate_status <= 599
+                ):
+                    status_code = candidate_status
+                else:
+                    failure = "request"
+            except requests.Timeout:
+                failure = "timeout"
+            except requests.ConnectionError:
+                failure = "connection"
+            except requests.RequestException:
+                failure = "request"
+            except Exception:
+                failure = "request"
+
+            close_failed = _close_response(response)
+            if close_failed:
+                raise OpenLineageDeliveryError(
+                    "OpenLineage HTTP response close failed"
+                )
+
+            retry_available = attempt < self._retry_total
+            if failure is not None:
+                if retry_available and failure in {"timeout", "connection"}:
+                    continue
+                raise OpenLineageDeliveryError(_http_failure_message(failure))
+            if status_code is None:
+                raise OpenLineageDeliveryError("OpenLineage HTTP delivery failed")
+            if 200 <= status_code < 300:
+                return
+            if retry_available and status_code in _RETRYABLE_HTTP_STATUS:
+                continue
+            raise OpenLineageDeliveryError(
+                f"OpenLineage HTTP delivery returned status {status_code}"
+            )
+
+        raise OpenLineageDeliveryError("OpenLineage HTTP delivery failed")
+
+    def close(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        self._session = None
+        failed = False
+        try:
+            session.close()
+        except Exception:
+            failed = True
+        if failed:
+            raise OpenLineageDeliveryError("OpenLineage HTTP transport close failed")
+
+
+def _close_response(response: requests.Response | None) -> bool:
+    if response is None:
+        return False
+    try:
+        response.close()
+    except Exception:
+        return True
+    return False
+
+
+def _close_session_quietly(session: requests.Session) -> None:
+    try:
+        session.close()
+    except Exception:
+        return
+
+
+def _http_failure_message(
+    failure: Literal["timeout", "connection", "request"],
+) -> str:
+    if failure == "timeout":
+        return "OpenLineage HTTP delivery timed out"
+    if failure == "connection":
+        return "OpenLineage HTTP delivery could not connect"
+    return "OpenLineage HTTP request failed"

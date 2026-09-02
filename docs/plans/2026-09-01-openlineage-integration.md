@@ -158,6 +158,15 @@ modern environment overlay, rejects implicit and legacy configuration, and
 returns frozen secret-safe File or HTTP settings. It performs no file append,
 HTTP request, event emission, or command hook.
 
+Slice 3B, the internal delivery boundary, is complete. Every event is validated
+offline and serialized as one canonical JSON line before I/O. The local File
+adapter opens an explicit regular target append-only and durably syncs every
+event. The dedicated synchronous HTTP adapter disables environment inheritance,
+redirects, and adapter retries; enforces TLS and timeout bounds; closes every
+response; and performs at most the one explicitly configured retry. Delivery
+and close failures expose fixed secret-neutral errors. No command calls either
+adapter yet, so runtime emission remains unsupported.
+
 The File/HTTP boundary does not use `openlineage-python`. streamt already owns
 the validated event dictionaries and has `requests` as a core dependency. A
 direct synchronous adapter can enforce the narrower timeout, retry, TLS,
@@ -176,8 +185,8 @@ factory defaults. No dependency or lockfile change belongs to this slice.
 - Parse only the transport boundary. Reject facet, tag, filter, normalization,
   legacy alias, arbitrary nested environment, and custom transport
   configuration.
-- In the next Slice 3B commit, add a local append-only File adapter and a
-  synchronous direct HTTP adapter without changing a CLI command.
+- Add a local append-only File adapter and a synchronous direct HTTP adapter
+  without changing a CLI command.
 - Enforce URL credential rejection, TLS verification, timeout and retry bounds,
   per-event validation before delivery, explicit close behavior, and redacted
   diagnostics.
