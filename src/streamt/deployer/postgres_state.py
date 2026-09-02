@@ -30,6 +30,10 @@ from streamt.core.deployment_state import (
     DeploymentStateConfig,
     PostgresDeploymentStateConfig,
 )
+from streamt.deployer.recovery import (
+    RecoveryResolutionRecord,
+    RecoverySnapshotEvidence,
+)
 from streamt.deployer.state import LocalState, StateError, StateFormatError
 from streamt.deployer.state_backend import (
     OperationControlState,
@@ -775,13 +779,31 @@ _EXPECTED_MIGRATION = (
     POSTGRES_SCHEMA_V1_CHECKSUM,
 )
 _EXPECTED_MIGRATIONS_V2 = (_EXPECTED_MIGRATION, _EXPECTED_MIGRATION_V2)
-_V2_OPERATION_EVENT_KINDS = {
+_V1_OPERATION_EVENT_KINDS = {
     "intent",
     "progress_started",
     "progress_completed",
     "recovery_required",
     "cleared_before_mutation",
     "succeeded",
+}
+_V2_OPERATION_EVENT_KINDS = {
+    *_V1_OPERATION_EVENT_KINDS,
+    "recovery_intent",
+    "recovered_observed",
+    "recovered_rolled_back",
+    "recovered_abandoned_before_mutation",
+}
+_V2_RECOVERY_EVENT_KINDS = {
+    "recovery_intent",
+    "recovered_observed",
+    "recovered_rolled_back",
+    "recovered_abandoned_before_mutation",
+}
+_V2_RECOVERY_RESOLUTION_EVENTS = {
+    "observed": "recovered_observed",
+    "rolled_back": "recovered_rolled_back",
+    "abandoned_before_mutation": "recovered_abandoned_before_mutation",
 }
 
 # Each template's first placeholder is the table being created.  Templates
@@ -3149,8 +3171,17 @@ class PrivatePostgresStateV2Migrator:
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state migration source changed"
             )
+        if initial.schema_version is None:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration source is invalid"
+            )
         self._validate_all_controls_clear(cursor, sql_module, acquired_address_locks)
-        self._validate_all_durable_rows(cursor, sql_module)
+        self._validate_all_durable_rows(
+            cursor,
+            sql_module,
+            expected_store_id=initial.store_id,
+            source_schema_version=initial.schema_version,
+        )
 
         if initial.schema_version == POSTGRES_SCHEMA_V2_VERSION:
             if self._stored_writer_name(cursor, sql_module) != self._writer_role:
@@ -3401,6 +3432,9 @@ class PrivatePostgresStateV2Migrator:
         self,
         cursor: _Cursor,
         sql_module: _SqlModule,
+        *,
+        expected_store_id: str,
+        source_schema_version: int,
     ) -> None:
         current_rows = _rows(
             cursor,
@@ -3544,6 +3578,16 @@ class PrivatePostgresStateV2Migrator:
             tuple[StateAddress, str],
             list[tuple[int, str, OperationControlState]],
         ] = {}
+        recovery_operations: dict[
+            tuple[StateAddress, str],
+            list[
+                tuple[
+                    int,
+                    str,
+                    RecoverySnapshotEvidence | RecoveryResolutionRecord,
+                ]
+            ],
+        ] = {}
         for row in operation_rows:
             if len(row) != 8:
                 raise StateBackendInvalidStateError(
@@ -3551,14 +3595,34 @@ class PrivatePostgresStateV2Migrator:
                 )
             namespace, project, environment, op_id, index, kind, raw, size = row
             address = self._validated_row_address(namespace, project, environment)
+            allowed_event_kinds = (
+                _V2_OPERATION_EVENT_KINDS
+                if source_schema_version == POSTGRES_SCHEMA_V2_VERSION
+                else _V1_OPERATION_EVENT_KINDS
+            )
+            if kind not in allowed_event_kinds:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                )
             try:
                 operation_id = str(uuid.UUID(cast(str, op_id)))
                 if operation_id != op_id:
                     raise ValueError
-                control = OperationControlState.from_dict(
-                    _strict_json(raw, label="operation history"),
-                    expected_address=address,
-                )
+                parsed = _strict_json(raw, label="operation history")
+                if kind == "recovery_intent":
+                    recovery_event: RecoverySnapshotEvidence | RecoveryResolutionRecord = (
+                        RecoverySnapshotEvidence.from_dict(parsed)
+                    )
+                    canonical_event = recovery_event.to_dict()
+                elif kind in _V2_RECOVERY_EVENT_KINDS:
+                    recovery_event = RecoveryResolutionRecord.from_dict(parsed)
+                    canonical_event = recovery_event.to_dict()
+                else:
+                    control = OperationControlState.from_dict(
+                        parsed,
+                        expected_address=address,
+                    )
+                    canonical_event = control.to_dict()
             except (StateError, ValueError, TypeError, AttributeError):
                 raise StateBackendInvalidStateError(
                     "PostgreSQL deployment operation history is invalid"
@@ -3566,22 +3630,30 @@ class PrivatePostgresStateV2Migrator:
             if (
                 type(index) is not int
                 or index < 0
-                or kind not in _V2_OPERATION_EVENT_KINDS
                 or type(size) is not int
                 or size < 0
                 or size > POSTGRES_STATE_MAX_BYTES
                 or not isinstance(raw, str)
                 or len(raw.encode("utf-8")) != size
-                or raw != _canonical_json(control.to_dict())
+                or raw != _canonical_json(canonical_event)
             ):
                 raise StateBackendInvalidStateError(
                     "PostgreSQL deployment operation history is invalid"
                 )
-            operations.setdefault((address, operation_id), []).append(
-                (index, cast(str, kind), control)
-            )
+            if kind in _V2_RECOVERY_EVENT_KINDS:
+                recovery_operations.setdefault((address, operation_id), []).append(
+                    (index, cast(str, kind), recovery_event)
+                )
+            else:
+                operations.setdefault((address, operation_id), []).append(
+                    (index, cast(str, kind), control)
+                )
 
         successful_operations: dict[tuple[StateAddress, str], OperationIntent] = {}
+        unfinished_operations: dict[
+            tuple[StateAddress, str],
+            tuple[OperationIntent, OperationControlState],
+        ] = {}
         for (operation_address, operation_id), events in operations.items():
             if [event[0] for event in events] != list(range(len(events))):
                 raise StateBackendInvalidStateError(
@@ -3637,8 +3709,9 @@ class PrivatePostgresStateV2Migrator:
                 if kind in {"progress_started", "progress_completed"}:
                     prior_progress = control.progress
             if events[-1][1] not in {"succeeded", "cleared_before_mutation"}:
-                raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment operation history is incomplete"
+                unfinished_operations[(operation_address, operation_id)] = (
+                    base_intent,
+                    events[-1][2],
                 )
             if events[-1][1] == "succeeded":
                 expected_progress: list[tuple[int, str, bool | None]] = [
@@ -3655,7 +3728,84 @@ class PrivatePostgresStateV2Migrator:
                         "PostgreSQL deployment operation history is incomplete"
                     )
                 successful_operations[(operation_address, operation_id)] = base_intent
-        if not history_operation_ids <= set(successful_operations):
+
+        recovered_operations: set[tuple[StateAddress, str]] = set()
+        changing_recoveries: dict[
+            tuple[StateAddress, str],
+            tuple[RecoverySnapshotEvidence, RecoveryResolutionRecord],
+        ] = {}
+        for (
+            operation_address,
+            operation_id,
+        ), recovery_events in recovery_operations.items():
+            if [event[0] for event in recovery_events] != [0, 1]:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment recovery history is invalid"
+                )
+            first_index, first_kind, first_payload = recovery_events[0]
+            final_index, final_kind, final_payload = recovery_events[1]
+            if (
+                first_index != 0
+                or first_kind != "recovery_intent"
+                or not isinstance(first_payload, RecoverySnapshotEvidence)
+                or final_index != 1
+                or not isinstance(final_payload, RecoveryResolutionRecord)
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment recovery history is invalid"
+                )
+            evidence = first_payload
+            resolution = final_payload
+            blocked_key = (operation_address, resolution.blocked_operation_id)
+            blocked = unfinished_operations.get(blocked_key)
+            prior_entries = state_history.get(operation_address, [])
+            prior_state_is_known = (
+                not evidence.state.resources
+                if evidence.state.serial == 0
+                else (
+                    evidence.state.serial <= len(prior_entries)
+                    and prior_entries[evidence.state.serial - 1][1] == evidence.state
+                )
+            )
+            if (
+                operation_id != resolution.recovery_operation_id
+                or evidence.address != operation_address
+                or resolution.address != operation_address
+                or evidence.store.backend != "postgres"
+                or evidence.store.store_id != expected_store_id
+                or evidence.blocked_operation_id != resolution.blocked_operation_id
+                or final_kind != _V2_RECOVERY_RESOLUTION_EVENTS.get(resolution.resolution)
+                or blocked is None
+                or blocked[1] != evidence.control
+                or blocked[0].prior_state_serial != evidence.state.serial
+                or blocked[0].prior_state_checksum != evidence.state_checksum
+                or resolution.prior_state_serial != evidence.state.serial
+                or resolution.prior_state_checksum != evidence.state_checksum
+                or not prior_state_is_known
+                or (
+                    resolution.resolution == "abandoned_before_mutation"
+                    and bool(evidence.control.progress)
+                )
+                or blocked_key in recovered_operations
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment recovery history is invalid"
+                )
+            recovered_operations.add(blocked_key)
+            if resolution.state_changed:
+                changing_recoveries[(operation_address, operation_id)] = (
+                    evidence,
+                    resolution,
+                )
+        if set(unfinished_operations) != recovered_operations:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment operation history is incomplete"
+            )
+        state_history_owners = set(successful_operations) | set(changing_recoveries)
+        if (
+            not history_operation_ids <= state_history_owners
+            or not set(changing_recoveries) <= history_operation_ids
+        ):
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state history operation is invalid"
             )
@@ -3666,12 +3816,26 @@ class PrivatePostgresStateV2Migrator:
             )
             for _revision, state, _checksum, _raw, history_id in entries:
                 if history_id is not None:
-                    intent = successful_operations[(address, history_id)]
-                    if (
-                        intent.prior_state_serial != previous_state.serial
-                        or intent.prior_state_checksum != state_checksum(previous_state)
-                        or state.serial != intent.prior_state_serial + 1
-                    ):
+                    history_key = (address, history_id)
+                    intent = successful_operations.get(history_key)
+                    recovery = changing_recoveries.get(history_key)
+                    valid_owner = False
+                    if intent is not None:
+                        valid_owner = (
+                            intent.prior_state_serial == previous_state.serial
+                            and intent.prior_state_checksum == state_checksum(previous_state)
+                            and state.serial == intent.prior_state_serial + 1
+                        )
+                    elif recovery is not None:
+                        evidence, resolution = recovery
+                        valid_owner = (
+                            evidence.state == previous_state
+                            and resolution.prior_state_serial == previous_state.serial
+                            and resolution.prior_state_checksum == state_checksum(previous_state)
+                            and resolution.result_state_serial == state.serial
+                            and resolution.result_state_checksum == state_checksum(state)
+                        )
+                    if not valid_owner:
                         raise StateBackendInvalidStateError(
                             "PostgreSQL deployment state history operation is invalid"
                         )

@@ -38,6 +38,10 @@ from streamt.deployer.postgres_state import (
     _SqlModule,
     _strict_json,
 )
+from streamt.deployer.recovery import (
+    RecoveryResolutionRecord,
+    RecoverySnapshotEvidence,
+)
 from streamt.deployer.state import LocalState, StateError, StateIdentityError
 from streamt.deployer.state_backend import (
     ControlObservation,
@@ -58,6 +62,8 @@ from streamt.deployer.state_backend import (
     StateObservation,
     StateRevision,
     StateStoreIdentity,
+    _same_recovery_resolution_identity,
+    _validate_recovery_transition_inputs,
     state_checksum,
 )
 
@@ -81,6 +87,16 @@ _OPERATION_EVENTS = {
     "recovery_required",
     "cleared_before_mutation",
     "succeeded",
+    "recovery_intent",
+    "recovered_observed",
+    "recovered_rolled_back",
+    "recovered_abandoned_before_mutation",
+}
+
+_RECOVERY_EVENT_KINDS = {
+    "observed": "recovered_observed",
+    "rolled_back": "recovered_rolled_back",
+    "abandoned_before_mutation": "recovered_abandoned_before_mutation",
 }
 
 
@@ -723,6 +739,89 @@ class _PostgresStateReadOperation:
             ),
         )
 
+    @staticmethod
+    def _recovery_history_rows(
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+    ) -> list[tuple[object, ...]]:
+        evidence_payload = _canonical_json(
+            evidence.to_dict(),
+            label="recovery operation history",
+        )
+        resolution_payload = _canonical_json(
+            resolution.to_dict(),
+            label="recovery operation history",
+        )
+        return [
+            (
+                0,
+                "recovery_intent",
+                evidence_payload,
+                len(evidence_payload.encode("utf-8")),
+            ),
+            (
+                1,
+                _RECOVERY_EVENT_KINDS[resolution.resolution],
+                resolution_payload,
+                len(resolution_payload.encode("utf-8")),
+            ),
+        ]
+
+    def _recovery_history_matches(
+        self,
+        rows: list[tuple[object, ...]],
+        *,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+        allow_resolution_timestamp_change: bool,
+    ) -> bool:
+        expected = self._recovery_history_rows(evidence, resolution)
+        if not allow_resolution_timestamp_change:
+            return rows == expected
+        if len(rows) != 2 or rows[0] != expected[0]:
+            return False
+        index, kind, raw, byte_length = rows[1]
+        if (
+            index != 1
+            or kind != _RECOVERY_EVENT_KINDS[resolution.resolution]
+            or not isinstance(raw, str)
+            or type(byte_length) is not int
+            or byte_length != len(raw.encode("utf-8"))
+            or byte_length > POSTGRES_STATE_MAX_BYTES
+        ):
+            return False
+        try:
+            persisted = RecoveryResolutionRecord.from_dict(
+                _strict_json(raw, label="recovery operation history")
+            )
+        except StateError:
+            return False
+        return raw == _canonical_json(
+            persisted.to_dict(),
+            label="recovery operation history",
+        ) and _same_recovery_resolution_identity(persisted, resolution)
+
+    def _require_completed_recovery_history_match(
+        self,
+        rows: list[tuple[object, ...]],
+        *,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+    ) -> None:
+        if not rows:
+            raise StateBackendConflictError(
+                "PostgreSQL deployment recovery retry has no matching completed recovery"
+            )
+        if not self._recovery_history_matches(
+            rows,
+            evidence=evidence,
+            resolution=resolution,
+            allow_resolution_timestamp_change=True,
+        ):
+            raise StateBackendConflictError(
+                "PostgreSQL deployment recovery retry conflicts with completed recovery"
+            )
+
     def ensure_ready(self, observation: OperationSnapshot) -> None:
         """Prove that the supplied state/control pair is still clear."""
         current = self.observe()
@@ -743,7 +842,13 @@ class _PostgresStateReadOperation:
         event_kind: str,
         replacement_state: LocalState | None,
         mutate_state: bool,
+        recovery_evidence: RecoverySnapshotEvidence | None = None,
+        recovery_resolution: RecoveryResolutionRecord | None = None,
     ) -> tuple[OperationSnapshot, int, int | None, bool]:
+        if (recovery_evidence is None) != (recovery_resolution is None):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment recovery transition is invalid"
+            )
         expected_control_json = _canonical_json(
             expected.control.control.to_dict(),
             label="operation control",
@@ -781,14 +886,23 @@ class _PostgresStateReadOperation:
             _begin_mutation(self._cursor, self._lock_timeout_seconds)
             transaction_started = True
             self.check_lock()
-            _prove_mutation_authority(
-                self._cursor,
-                self._bundle,
-                dsn=self._dsn,
-                schema=self._schema,
-                lock_timeout_seconds=self._lock_timeout_seconds,
-                address=self._address,
-            )
+            if recovery_resolution is not None:
+                _prove_private_postgres_v2_writer(
+                    self._cursor,
+                    self._bundle.sql,
+                    schema=self._schema,
+                    address=self._address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
+            else:
+                _prove_mutation_authority(
+                    self._cursor,
+                    self._bundle,
+                    dsn=self._dsn,
+                    schema=self._schema,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                    address=self._address,
+                )
             current = _read_snapshot_transaction(
                 cursor=self._cursor,
                 bundle=self._bundle,
@@ -799,15 +913,28 @@ class _PostgresStateReadOperation:
                 for_update=True,
             )
             self._validate_expected_snapshot(expected, current)
+            history_operation_id = (
+                recovery_resolution.blocked_operation_id
+                if recovery_resolution is not None
+                else operation_id
+            )
             existing_history = self._read_operation_history(
                 self._cursor,
                 self._bundle.sql,
-                operation_id,
+                history_operation_id,
             )
             expected_existing_history = self._expected_history_rows(expected.control.control)
             if existing_history != expected_existing_history:
                 raise StateBackendConflictError(
                     "PostgreSQL deployment operation history changed after observation"
+                )
+            if recovery_resolution is not None and self._read_operation_history(
+                self._cursor,
+                self._bundle.sql,
+                operation_id,
+            ):
+                raise StateBackendConflictError(
+                    "PostgreSQL deployment recovery operation already exists"
                 )
 
             new_state_revision: int | None = expected_state_revision
@@ -967,33 +1094,42 @@ class _PostgresStateReadOperation:
                     "PostgreSQL deployment operation control revision is invalid"
                 )
 
-            operation_history_rows = _rows(
-                self._cursor,
-                _query(
-                    self._bundle.sql,
-                    (
-                        "INSERT INTO {} (namespace, project, environment, operation_id, "
-                        "event_index, event_kind, control_json, recorded_at) VALUES "
-                        "(%s, %s, %s, %s, %s, %s, %s, "
-                        "pg_catalog.clock_timestamp()) ON CONFLICT "
-                        "(namespace, project, environment, operation_id, event_index) "
-                        "DO NOTHING RETURNING event_index"
-                    ),
-                    self._schema,
-                    "operation_history",
-                ),
-                (
-                    *params,
-                    operation_id,
-                    event_index,
-                    event_kind,
-                    replacement_control_json,
-                ),
-            )
-            if operation_history_rows != [(event_index,)]:
-                raise StateBackendConflictError(
-                    "PostgreSQL deployment operation history changed during transition"
+            events: list[tuple[object, ...]] = [
+                (event_index, event_kind, replacement_control_json, 0)
+            ]
+            if recovery_evidence is not None and recovery_resolution is not None:
+                events = self._recovery_history_rows(
+                    recovery_evidence,
+                    recovery_resolution,
                 )
+            for history_index, history_kind, history_payload, _size in events:
+                operation_history_rows = _rows(
+                    self._cursor,
+                    _query(
+                        self._bundle.sql,
+                        (
+                            "INSERT INTO {} (namespace, project, environment, operation_id, "
+                            "event_index, event_kind, control_json, recorded_at) VALUES "
+                            "(%s, %s, %s, %s, %s, %s, %s, "
+                            "pg_catalog.clock_timestamp()) ON CONFLICT "
+                            "(namespace, project, environment, operation_id, event_index) "
+                            "DO NOTHING RETURNING event_index"
+                        ),
+                        self._schema,
+                        "operation_history",
+                    ),
+                    (
+                        *params,
+                        operation_id,
+                        history_index,
+                        history_kind,
+                        history_payload,
+                    ),
+                )
+                if operation_history_rows != [(history_index,)]:
+                    raise StateBackendConflictError(
+                        "PostgreSQL deployment operation history changed during transition"
+                    )
             expected_after = OperationSnapshot(
                 state=StateObservation(
                     store=expected.state.store,
@@ -1036,6 +1172,8 @@ class _PostgresStateReadOperation:
                         event_index=event_index,
                         event_kind=event_kind,
                         state_changed=mutate_state,
+                        recovery_evidence=recovery_evidence,
+                        recovery_resolution=recovery_resolution,
                     )
                 except StateBackendUnknownCommitError as postimage_error:
                     # A preimage is not definitive while the original server
@@ -1054,6 +1192,7 @@ class _PostgresStateReadOperation:
                         self._verify_exact_preimage(
                             expected=expected,
                             operation_id=operation_id,
+                            recovery_resolution=recovery_resolution,
                         )
                     except StateBackendUnknownCommitError:
                         raise postimage_error from None
@@ -1062,7 +1201,7 @@ class _PostgresStateReadOperation:
                         "PostgreSQL deployment state operation lock was lost",
                         operation_id=operation_id,
                     ) from None
-                if event_kind != "succeeded":
+                if event_kind != "succeeded" and recovery_resolution is None:
                     commit_attempted = False
                     raise StateBackendLockLostError(
                         "PostgreSQL deployment state operation lock was lost",
@@ -1132,6 +1271,9 @@ class _PostgresStateReadOperation:
         event_index: int,
         event_kind: str,
         state_changed: bool,
+        recovery_evidence: RecoverySnapshotEvidence | None = None,
+        recovery_resolution: RecoveryResolutionRecord | None = None,
+        allow_resolution_timestamp_change: bool = False,
     ) -> OperationSnapshot:
         """Verify a postimage on a new connection without replaying writes."""
         bundle: _PsycopgBundle | None = None
@@ -1160,136 +1302,129 @@ class _PostgresStateReadOperation:
                 address=self._address,
             )
             self._validate_expected_snapshot(expected, current)
-            history_rows = self._read_operation_history(
-                cursor,
-                bundle.sql,
-                operation_id,
-            )
-            terminal_payload = _canonical_json(
-                expected.control.control.to_dict(),
-                label="operation history",
-            )
-            expected_history_rows = [
-                *self._expected_history_rows(expected_before.control.control),
-                (
-                    event_index,
-                    event_kind,
-                    terminal_payload,
-                    len(terminal_payload.encode("utf-8")),
-                ),
-            ]
-            if history_rows != expected_history_rows:
+            if (recovery_evidence is None) != (recovery_resolution is None):
                 raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment operation history is invalid"
+                    "PostgreSQL deployment recovery verification is invalid"
                 )
-            terminal_control: OperationControlState | None = None
-            prior_control: OperationControlState | None = None
-            for index, row in enumerate(history_rows):
+            if recovery_evidence is not None and recovery_resolution is not None:
+                blocked_history = self._read_operation_history(
+                    cursor,
+                    bundle.sql,
+                    recovery_resolution.blocked_operation_id,
+                )
+                if blocked_history != self._expected_history_rows(expected_before.control.control):
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment blocked operation history is invalid"
+                    )
+                recovery_history = self._read_operation_history(
+                    cursor,
+                    bundle.sql,
+                    operation_id,
+                )
+                if not self._recovery_history_matches(
+                    recovery_history,
+                    evidence=recovery_evidence,
+                    resolution=recovery_resolution,
+                    allow_resolution_timestamp_change=(allow_resolution_timestamp_change),
+                ):
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment recovery history is invalid"
+                    )
+            else:
+                history_rows = self._read_operation_history(
+                    cursor,
+                    bundle.sql,
+                    operation_id,
+                )
+                terminal_payload = _canonical_json(
+                    expected.control.control.to_dict(),
+                    label="operation history",
+                )
+                expected_history_rows = [
+                    *self._expected_history_rows(expected_before.control.control),
+                    (
+                        event_index,
+                        event_kind,
+                        terminal_payload,
+                        len(terminal_payload.encode("utf-8")),
+                    ),
+                ]
+                if history_rows != expected_history_rows:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment operation history is invalid"
+                    )
+                terminal_control: OperationControlState | None = None
+                prior_control: OperationControlState | None = None
+                for index, row in enumerate(history_rows):
+                    if (
+                        len(row) != 4
+                        or row[0] != index
+                        or not isinstance(row[1], str)
+                        or row[1] not in _OPERATION_EVENTS
+                        or not isinstance(row[2], str)
+                        or type(row[3]) is not int
+                        or row[3] != len(row[2].encode("utf-8"))
+                        or row[3] > POSTGRES_STATE_MAX_BYTES
+                    ):
+                        raise StateBackendInvalidStateError(
+                            "PostgreSQL deployment operation history is invalid"
+                        )
+                    raw_control = _strict_json(row[2], label="operation history")
+                    terminal_control = OperationControlState.from_dict(
+                        raw_control,
+                        expected_address=self._address,
+                    )
+                    kind = row[1]
+                    if index == 0:
+                        if (
+                            kind != "intent"
+                            or terminal_control.status != "in_progress"
+                            or terminal_control.intent is None
+                            or terminal_control.intent.operation_id != operation_id
+                            or terminal_control.progress
+                        ):
+                            raise StateBackendInvalidStateError(
+                                "PostgreSQL deployment operation history is invalid"
+                            )
+                    elif kind.startswith("progress_"):
+                        expected_progress_kind = (
+                            f"progress_{terminal_control.progress[-1].status}"
+                            if terminal_control.progress
+                            else ""
+                        )
+                        if (
+                            terminal_control.status != "in_progress"
+                            or terminal_control.intent is None
+                            or terminal_control.intent.operation_id != operation_id
+                            or len(terminal_control.progress) != index
+                            or kind != expected_progress_kind
+                            or prior_control is None
+                            or terminal_control.intent != prior_control.intent
+                            or terminal_control.progress[:-1] != prior_control.progress
+                        ):
+                            raise StateBackendInvalidStateError(
+                                "PostgreSQL deployment operation history is invalid"
+                            )
+                    elif index != event_index:
+                        raise StateBackendInvalidStateError(
+                            "PostgreSQL deployment operation history is invalid"
+                        )
+                    prior_control = terminal_control
                 if (
-                    len(row) != 4
-                    or row[0] != index
-                    or not isinstance(row[1], str)
-                    or row[1] not in _OPERATION_EVENTS
-                    or not isinstance(row[2], str)
-                    or type(row[3]) is not int
-                    or row[3] != len(row[2].encode("utf-8"))
-                    or row[3] > POSTGRES_STATE_MAX_BYTES
+                    history_rows[-1][1] != event_kind
+                    or terminal_control != expected.control.control
                 ):
                     raise StateBackendInvalidStateError(
                         "PostgreSQL deployment operation history is invalid"
                     )
-                raw_control = _strict_json(row[2], label="operation history")
-                terminal_control = OperationControlState.from_dict(
-                    raw_control,
-                    expected_address=self._address,
-                )
-                kind = row[1]
-                if index == 0:
-                    if (
-                        kind != "intent"
-                        or terminal_control.status != "in_progress"
-                        or terminal_control.intent is None
-                        or terminal_control.intent.operation_id != operation_id
-                        or terminal_control.progress
-                    ):
-                        raise StateBackendInvalidStateError(
-                            "PostgreSQL deployment operation history is invalid"
-                        )
-                elif kind.startswith("progress_"):
-                    expected_progress_kind = (
-                        f"progress_{terminal_control.progress[-1].status}"
-                        if terminal_control.progress
-                        else ""
-                    )
-                    if (
-                        terminal_control.status != "in_progress"
-                        or terminal_control.intent is None
-                        or terminal_control.intent.operation_id != operation_id
-                        or len(terminal_control.progress) != index
-                        or kind != expected_progress_kind
-                        or prior_control is None
-                        or terminal_control.intent != prior_control.intent
-                        or terminal_control.progress[:-1] != prior_control.progress
-                    ):
-                        raise StateBackendInvalidStateError(
-                            "PostgreSQL deployment operation history is invalid"
-                        )
-                elif index != event_index:
-                    raise StateBackendInvalidStateError(
-                        "PostgreSQL deployment operation history is invalid"
-                    )
-                prior_control = terminal_control
-            if history_rows[-1][1] != event_kind or terminal_control != expected.control.control:
-                raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment operation history is invalid"
-                )
 
-            state_history_rows = _rows(
-                cursor,
-                _query(
-                    bundle.sql,
-                    (
-                        "SELECT revision, state_serial, state_checksum, state_json, "
-                        "octet_length(state_json) FROM {} WHERE namespace = %s AND "
-                        "project = %s AND environment = %s AND operation_id = %s "
-                        "ORDER BY revision"
-                    ),
-                    self._schema,
-                    "state_history",
-                ),
-                (
-                    self._address.namespace,
-                    self._address.project,
-                    self._address.environment,
-                    operation_id,
-                ),
+            self._validate_state_history(
+                cursor=cursor,
+                sql=bundle.sql,
+                expected=expected,
+                operation_id=operation_id,
+                state_changed=state_changed,
             )
-            if state_changed:
-                state_revision = _revision_number(
-                    expected.state.revision,
-                    allow_absent=False,
-                )
-                expected_state_json = _canonical_json(
-                    expected.state.state.to_dict(),
-                    label="ownership state",
-                )
-                expected_history = [
-                    (
-                        state_revision,
-                        expected.state.state_serial,
-                        state_checksum(expected.state.state),
-                        expected_state_json,
-                        len(expected_state_json.encode("utf-8")),
-                    )
-                ]
-                if state_history_rows != expected_history:
-                    raise StateBackendInvalidStateError(
-                        "PostgreSQL deployment ownership history is invalid"
-                    )
-            elif state_history_rows:
-                raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment ownership history is invalid"
-                )
 
             connection.rollback()
             transaction_started = False
@@ -1319,11 +1454,68 @@ class _PostgresStateReadOperation:
                 operation_id=operation_id,
             ) from None
 
+    def _validate_state_history(
+        self,
+        *,
+        cursor: _Cursor,
+        sql: _SqlModule,
+        expected: OperationSnapshot,
+        operation_id: str,
+        state_changed: bool,
+    ) -> None:
+        state_history_rows = _rows(
+            cursor,
+            _query(
+                sql,
+                (
+                    "SELECT revision, state_serial, state_checksum, state_json, "
+                    "octet_length(state_json) FROM {} WHERE namespace = %s AND "
+                    "project = %s AND environment = %s AND operation_id = %s "
+                    "ORDER BY revision"
+                ),
+                self._schema,
+                "state_history",
+            ),
+            (
+                self._address.namespace,
+                self._address.project,
+                self._address.environment,
+                operation_id,
+            ),
+        )
+        if state_changed:
+            state_revision = _revision_number(
+                expected.state.revision,
+                allow_absent=False,
+            )
+            expected_state_json = _canonical_json(
+                expected.state.state.to_dict(),
+                label="ownership state",
+            )
+            expected_history = [
+                (
+                    state_revision,
+                    expected.state.state_serial,
+                    state_checksum(expected.state.state),
+                    expected_state_json,
+                    len(expected_state_json.encode("utf-8")),
+                )
+            ]
+            if state_history_rows != expected_history:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment ownership history is invalid"
+                )
+        elif state_history_rows:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment ownership history is invalid"
+            )
+
     def _verify_exact_preimage(
         self,
         *,
         expected: OperationSnapshot,
         operation_id: str,
+        recovery_resolution: RecoveryResolutionRecord | None = None,
     ) -> None:
         """Prove an acknowledged-loss write definitely did not commit."""
         connection: _Connection | None = None
@@ -1382,11 +1574,26 @@ class _PostgresStateReadOperation:
                 address=self._address,
             )
             self._validate_expected_snapshot(expected, current)
-            if self._read_operation_history(cursor, bundle.sql, operation_id) != (
-                self._expected_history_rows(expected.control.control)
-            ):
+            history_operation_id = (
+                recovery_resolution.blocked_operation_id
+                if recovery_resolution is not None
+                else operation_id
+            )
+            if self._read_operation_history(
+                cursor,
+                bundle.sql,
+                history_operation_id,
+            ) != self._expected_history_rows(expected.control.control):
                 raise StateBackendInvalidStateError(
                     "PostgreSQL deployment operation history is invalid"
+                )
+            if recovery_resolution is not None and self._read_operation_history(
+                cursor,
+                bundle.sql,
+                operation_id,
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment recovery history is invalid"
                 )
             state_history_rows = _rows(
                 cursor,
@@ -1570,6 +1777,201 @@ class _PostgresStateReadOperation:
         )
         self._active_operation_id = None
         return cleared
+
+    def finalize_recovery(
+        self,
+        observation: OperationSnapshot,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot:
+        """Atomically reconcile one exact unfinished operation and clear it."""
+        self._last_attempted_operation_id = resolution.recovery_operation_id
+        if observation.control.control.status == "clear":
+            return self._verify_completed_recovery_retry(
+                observation,
+                evidence,
+                resolution,
+                replacement,
+            )
+        if evidence.store.backend != "postgres":
+            raise StateIdentityError(
+                "PostgreSQL deployment recovery evidence belongs to another provider"
+            )
+        prior_matches = _validate_recovery_transition_inputs(
+            observation,
+            evidence,
+            resolution,
+            replacement,
+        )
+        if not prior_matches:
+            raise StateBackendConflictError(
+                "active PostgreSQL recovery no longer matches its prior state"
+            )
+        state_changed = resolution.state_changed
+        recovered, _control_revision, _state_revision, already_verified = self._update_control(
+            expected=observation,
+            replacement=OperationControlState.clear(self._address),
+            operation_id=resolution.recovery_operation_id,
+            event_index=1,
+            event_kind=_RECOVERY_EVENT_KINDS[resolution.resolution],
+            replacement_state=replacement,
+            mutate_state=state_changed,
+            recovery_evidence=evidence,
+            recovery_resolution=resolution,
+        )
+        if not already_verified:
+            try:
+                recovered = self._verify_transition(
+                    expected=recovered,
+                    expected_before=observation,
+                    operation_id=resolution.recovery_operation_id,
+                    event_index=1,
+                    event_kind=_RECOVERY_EVENT_KINDS[resolution.resolution],
+                    state_changed=state_changed,
+                    recovery_evidence=evidence,
+                    recovery_resolution=resolution,
+                )
+            except StateBackendUnknownCommitError:
+                self._lost = True
+                raise
+        self._finalized = True
+        self._finalized_operation_id = resolution.recovery_operation_id
+        self._active_operation_id = None
+        return recovered
+
+    def _verify_completed_recovery_retry(
+        self,
+        observation: OperationSnapshot,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot:
+        """Accept only an exact, already-committed retry without issuing DML."""
+        if observation.address != self._address:
+            raise StateIdentityError("PostgreSQL deployment recovery belongs to another address")
+        if evidence.store.backend != "postgres":
+            raise StateIdentityError(
+                "PostgreSQL deployment recovery evidence belongs to another provider"
+            )
+        retry_snapshot = OperationSnapshot(
+            state=observation.state,
+            control=ControlObservation(
+                control=evidence.control,
+                revision=observation.control.revision,
+            ),
+        )
+        prior_matches = _validate_recovery_transition_inputs(
+            retry_snapshot,
+            evidence,
+            resolution,
+            replacement,
+        )
+        if resolution.state_changed == prior_matches:
+            raise StateBackendConflictError(
+                "PostgreSQL deployment recovery retry result does not match"
+            )
+        verified = self._verify_completed_recovery_postimage(
+            expected=observation,
+            evidence=evidence,
+            resolution=resolution,
+        )
+        self._finalized = True
+        self._finalized_operation_id = resolution.recovery_operation_id
+        self._active_operation_id = None
+        return verified
+
+    def _verify_completed_recovery_postimage(
+        self,
+        *,
+        expected: OperationSnapshot,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+    ) -> OperationSnapshot:
+        """Verify a completed retry under this session's lock without writes."""
+        transaction_started = False
+        current: OperationSnapshot | None = None
+        try:
+            self.check_lock()
+            _begin_snapshot(self._cursor, self._lock_timeout_seconds)
+            transaction_started = True
+            _prove_private_postgres_v2_writer(
+                self._cursor,
+                self._bundle.sql,
+                schema=self._schema,
+                address=self._address,
+                lock_timeout_seconds=self._lock_timeout_seconds,
+            )
+            current = _read_snapshot_transaction(
+                cursor=self._cursor,
+                bundle=self._bundle,
+                dsn=self._dsn,
+                schema=self._schema,
+                lock_timeout_seconds=self._lock_timeout_seconds,
+                address=self._address,
+            )
+            self._validate_expected_snapshot(expected, current)
+            blocked_history = self._read_operation_history(
+                self._cursor,
+                self._bundle.sql,
+                resolution.blocked_operation_id,
+            )
+            if blocked_history != self._expected_history_rows(evidence.control):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment blocked operation history is invalid"
+                )
+            recovery_history = self._read_operation_history(
+                self._cursor,
+                self._bundle.sql,
+                resolution.recovery_operation_id,
+            )
+            self._require_completed_recovery_history_match(
+                recovery_history,
+                evidence=evidence,
+                resolution=resolution,
+            )
+            self._validate_state_history(
+                cursor=self._cursor,
+                sql=self._bundle.sql,
+                expected=current,
+                operation_id=resolution.recovery_operation_id,
+                state_changed=resolution.state_changed,
+            )
+            self._connection.rollback()
+            transaction_started = False
+        except (KeyboardInterrupt, SystemExit):
+            if transaction_started:
+                try:
+                    self._connection.rollback()
+                except Exception:
+                    self._lost = True
+            raise
+        except StateError:
+            if transaction_started:
+                try:
+                    self._connection.rollback()
+                except Exception:
+                    self._lost = True
+            raise
+        except Exception:
+            if transaction_started:
+                try:
+                    self._connection.rollback()
+                except Exception:
+                    self._lost = True
+            try:
+                self.check_lock()
+            except StateBackendLockLostError:
+                raise
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment recovery retry verification is unavailable"
+            ) from None
+        self.check_lock()
+        if current is None:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment recovery retry verification is invalid"
+            )
+        return current
 
     def commit_operation(
         self,
