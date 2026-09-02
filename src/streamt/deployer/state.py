@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from streamt.compiler.manifest import ArtifactOwnership
+from streamt.deployer.connect import is_connect_backend_identity
 
 if TYPE_CHECKING:
     from streamt.deployer.planner import DeploymentPlan
@@ -600,13 +601,22 @@ def desired_managed_records(
             blocked_resource_ids=blocked_resource_ids,
         )
     for connector_change in getattr(plan, "connector_changes", []):
+        if connector_change.desired is None:
+            continue
+        backend_identity = getattr(connector_change, "backend_identity", None)
+        if not isinstance(backend_identity, str) or not is_connect_backend_identity(
+            backend_identity
+        ):
+            raise StateFormatError(
+                "desired connector change requires a canonical Connect backend identity"
+            )
         _add_desired_record(
             resources,
             project=project,
             environment=environment,
             kind="connector",
             physical_name=connector_change.connector_name,
-            backend="kafka-connect",
+            backend=backend_identity,
             artifact=connector_change.desired,
             blocked_resource_ids=blocked_resource_ids,
         )

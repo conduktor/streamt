@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from streamt.compiler.manifest import ArtifactOwnership, TopicArtifact
+from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, TopicArtifact
+from streamt.deployer.connect import ConnectClusterBinding, ConnectorChange
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.planner import DeploymentPlan
 from streamt.deployer.state import (
@@ -388,6 +389,85 @@ class TestStateUpdates:
 
         assert desired_managed_records(
             external,
+            project="payments",
+            environment="prod",
+        ) == {}
+
+
+class TestConnectorStateBinding:
+    @staticmethod
+    def _artifact() -> ConnectorArtifact:
+        return ConnectorArtifact(
+            name="payments-sink",
+            connector_class="com.example.PaymentsSink",
+            topics=["payments.events.v1"],
+            cluster="production",
+            ownership=ArtifactOwnership(
+                project="payments",
+                owner_type="model",
+                owner_name="payments",
+                mode="managed",
+            ),
+        )
+
+    def test_desired_record_persists_exact_backend_and_resolved_checksum(self):
+        artifact = self._artifact()
+        binding = ConnectClusterBinding.from_endpoint(
+            "production",
+            "https://connect.example.test/api",
+        )
+        plan = DeploymentPlan(
+            connector_changes=[
+                ConnectorChange(
+                    connector_name=artifact.name,
+                    action="create",
+                    desired=artifact,
+                    backend_identity=binding.backend_identity,
+                )
+            ]
+        )
+
+        records = desired_managed_records(
+            plan,
+            project="payments",
+            environment="prod",
+        )
+
+        record = records[resource_id("payments", "prod", "connector", "payments")]
+        assert record.backend == binding.backend_identity
+        assert record.artifact_checksum == artifact_checksum(artifact.to_dict())
+
+    def test_desired_connector_without_canonical_backend_fails_closed(self):
+        artifact = self._artifact()
+        plan = DeploymentPlan(
+            connector_changes=[
+                ConnectorChange(
+                    connector_name=artifact.name,
+                    action="create",
+                    desired=artifact,
+                )
+            ]
+        )
+
+        with pytest.raises(StateFormatError, match="canonical Connect backend identity"):
+            desired_managed_records(
+                plan,
+                project="payments",
+                environment="prod",
+            )
+
+    def test_delete_without_desired_artifact_needs_no_backend_identity(self):
+        plan = DeploymentPlan(
+            connector_changes=[
+                ConnectorChange(
+                    connector_name="obsolete-sink",
+                    action="delete",
+                )
+            ]
+        )
+
+        assert desired_managed_records(
+            plan,
             project="payments",
             environment="prod",
         ) == {}

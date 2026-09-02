@@ -12,7 +12,12 @@ import json
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from streamt.compiler.manifest import ArtifactOwnership
+from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
+from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifactFormatError
+from streamt.deployer.connect import (
+    ManagedConnectorObservation,
+    is_connect_backend_identity,
+)
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
 from streamt.deployer.recovery import (
     RecoveryResolution,
@@ -41,14 +46,13 @@ _BACKENDS: dict[_Kind, str] = {
     "schema": "schema-registry",
     "topic": "direct-kafka",
     "flink_job": "flink",
-    "connector": "kafka-connect",
     "gateway_rule": "conduktor-gateway",
 }
 _SUPPORTED_ACTIONS: dict[_Kind, frozenset[str]] = {
     "schema": frozenset({"register", "update", "delete", "adopt"}),
     "topic": frozenset({"create", "update", "delete", "adopt"}),
     "flink_job": frozenset({"submit", "update", "cancel"}),
-    "connector": frozenset({"create", "update", "delete"}),
+    "connector": frozenset({"create", "update", "delete", "adopt"}),
     "gateway_rule": frozenset({"create", "update", "delete"}),
 }
 _DELETE_ACTIONS = frozenset({"delete", "cancel"})
@@ -61,14 +65,13 @@ class _MappedChange:
     current: object | None
     desired: object | None
     physical_name: str
+    backend_identity: str | None
 
 
 def _target_error(action: OperationAction, reason: str) -> RecoveryObservationError:
     # OperationAction has already validated the text and RecoveryTargetEvidence later
     # validates its URI.  No provider value or exception text is ever interpolated.
-    return RecoveryObservationError(
-        f"Recovery target {action.resource_id} {reason}"
-    )
+    return RecoveryObservationError(f"Recovery target {action.resource_id} {reason}")
 
 
 def _canonical_fingerprint(value: object) -> str:
@@ -134,6 +137,7 @@ def _identity_for_change(
     kind: _Kind,
     desired: object | None,
     physical_name: str,
+    backend_identity: str | None,
     state: LocalState,
 ) -> str | None:
     ownership = _ownership(desired)
@@ -162,7 +166,11 @@ def _identity_for_change(
             raise RecoveryObservationError(
                 "Recovery state contains an invalid canonical ownership identity"
             ) from error
-        if identity.kind == kind and record.physical_name == physical_name:
+        if (
+            identity.kind == kind
+            and record.physical_name == physical_name
+            and (kind != "connector" or record.backend == backend_identity)
+        ):
             matches.append(prior_id)
     if len(matches) > 1:
         raise RecoveryObservationError(
@@ -181,10 +189,16 @@ def _mapped_changes(
         if physical_name is None:
             continue
         desired = getattr(change, "desired", None)
+        backend_identity = (
+            getattr(change, "backend_identity", None) if kind == "connector" else _BACKENDS[kind]
+        )
+        if kind == "connector" and not is_connect_backend_identity(backend_identity):
+            backend_identity = None
         identity = _identity_for_change(
             kind=kind,
             desired=desired,
             physical_name=physical_name,
+            backend_identity=backend_identity,
             state=state,
         )
         # Unowned, unrelated observations do not correspond to a durable action.
@@ -200,8 +214,20 @@ def _mapped_changes(
             current=_current(kind, change),
             desired=desired,
             physical_name=physical_name,
+            backend_identity=backend_identity,
         )
     return result
+
+
+def _expected_backend(mapped: _MappedChange) -> str:
+    backend = mapped.backend_identity
+    if not isinstance(backend, str) or (
+        mapped.kind == "connector" and not is_connect_backend_identity(backend)
+    ):
+        raise RecoveryObservationError(
+            "Fresh recovery observation has no canonical backend identity"
+        )
+    return backend
 
 
 def _require_bool(value: object) -> bool:
@@ -321,52 +347,36 @@ def _normalize_flink(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
         return "absent", {"kind": "flink_job", "presence": "absent"}
     # FlinkJobState contains only runtime status and an opaque job id.  It cannot
     # prove the SQL or execution settings represented by the ownership checksum.
-    raise RecoveryObservationError(
-        "Fresh Flink observation cannot prove managed artifact content"
-    )
+    raise RecoveryObservationError("Fresh Flink observation cannot prove managed artifact content")
 
 
 def _normalize_connector(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
     current = mapped.current
-    if current is None:
+    if not isinstance(current, ManagedConnectorObservation):
         raise RecoveryObservationError("Fresh recovery observation is partial")
-    exists = _require_bool(getattr(current, "exists", None))
-    name = getattr(current, "name", None)
-    if not isinstance(name, str) or name != mapped.physical_name:
+    backend_identity = _expected_backend(mapped)
+    if current.binding.backend_identity != backend_identity:
+        raise RecoveryObservationError("Fresh recovery observation has mismatched backend identity")
+    if current.name != mapped.physical_name:
         raise RecoveryObservationError("Fresh recovery observation has mismatched identity")
-    if not exists:
-        return "absent", {"kind": "connector", "presence": "absent"}
-    config = getattr(current, "config", None)
-    status = getattr(current, "status", None)
-    tasks = getattr(current, "tasks", None)
-    if (
-        not isinstance(config, dict)
-        or any(not isinstance(key, str) for key in config)
-        or not isinstance(status, str)
-        or not isinstance(tasks, list)
+    desired_cluster = getattr(mapped.desired, "cluster", None)
+    if mapped.desired is not None and (
+        not isinstance(desired_cluster, str)
+        or not desired_cluster
+        or desired_cluster != current.binding.cluster_alias
     ):
-        raise RecoveryObservationError("Fresh recovery observation is partial")
-    try:
-        normalized_tasks = sorted(
-            tasks,
-            key=lambda item: json.dumps(
-                item,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-        )
-    except (TypeError, ValueError) as error:
-        raise RecoveryObservationError("Fresh recovery observation is partial") from error
-    return "present", {
+        raise RecoveryObservationError("Fresh recovery observation has mismatched backend identity")
+    normalized: dict[str, object] = {
         "kind": "connector",
-        "presence": "present",
-        "name": name,
-        "config": config,
-        "status": status,
-        "tasks": normalized_tasks,
+        "backend_identity": backend_identity,
+        "cluster": current.binding.cluster_alias,
+        "name": current.name,
+        "presence": "present" if current.exists else "absent",
     }
+    if not current.exists:
+        return "absent", normalized
+    normalized["config"] = current.config_dict()
+    return "present", normalized
 
 
 def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
@@ -483,7 +493,7 @@ def _direct_desired_record(
             physical_name=mapped.physical_name,
             ownership=ownership.mode,  # type: ignore[arg-type]
             artifact_checksum=artifact_checksum(raw),
-            backend=_BACKENDS[mapped.kind],
+            backend=_expected_backend(mapped),
         )
     except (StateError, TypeError, ValueError):
         raise _target_error(action, "has malformed desired ownership evidence") from None
@@ -499,7 +509,11 @@ def _desired_record(
     if action.action in _DELETE_ACTIONS:
         return None
     record = records.get(action.resource_id)
-    return record or _direct_desired_record(
+    if record is not None:
+        if record.backend != _expected_backend(mapped):
+            raise _target_error(action, "has mismatched desired backend evidence")
+        return record
+    return _direct_desired_record(
         action=action,
         mapped=mapped,
         state=state,
@@ -533,9 +547,9 @@ def _prior_artifact_checksum(
             "ownership": ownership_dict,
         }
     elif mapped.kind == "connector":
-        desired_cluster = getattr(mapped.desired, "cluster", None)
+        cluster = normalized.get("cluster")
         config = normalized["config"]
-        if desired_cluster is not None or not isinstance(config, dict):
+        if not isinstance(cluster, str) or not cluster or not isinstance(config, dict):
             return None
         connector_class = config.get("connector.class")
         topics = config.get("topics")
@@ -545,7 +559,7 @@ def _prior_artifact_checksum(
             "name": normalized["name"],
             "connector_class": connector_class,
             "topics": topics.split(","),
-            "cluster": None,
+            "cluster": cluster,
             "config": config,
             "ownership": ownership_dict,
         }
@@ -554,8 +568,10 @@ def _prior_artifact_checksum(
         # declarations into provider-specific configs that cannot be inverted safely.
         return None
     try:
+        if mapped.kind == "connector":
+            raw = parse_compiled_connector_artifact(raw).to_dict()
         return artifact_checksum(raw)
-    except StateError:
+    except (ConnectorArtifactFormatError, StateError):
         return None
 
 
@@ -572,8 +588,7 @@ def _live_matches_desired(
             and normalized.get("schema") == getattr(mapped.desired, "schema", None)
             and str(normalized.get("schema_type", "")).upper()
             == str(getattr(mapped.desired, "schema_type", "")).upper()
-            and normalized.get("compatibility")
-            == getattr(mapped.desired, "compatibility", None)
+            and normalized.get("compatibility") == getattr(mapped.desired, "compatibility", None)
         )
     if mapped.kind == "topic":
         return (
@@ -589,14 +604,14 @@ def _live_matches_desired(
         raw = mapped.desired.to_dict() if hasattr(mapped.desired, "to_dict") else None
         return (
             getattr(mapped.desired, "name", None) == mapped.physical_name
+            and normalized.get("cluster") == getattr(mapped.desired, "cluster", None)
             and isinstance(raw, dict)
             and normalized.get("config") == raw.get("config")
         )
     desired_interceptors = getattr(mapped.desired, "interceptors", None)
     return (
         getattr(mapped.desired, "virtual_topic", None) == mapped.physical_name
-        and normalized.get("physical_topic")
-        == getattr(mapped.desired, "physical_topic", None)
+        and normalized.get("physical_topic") == getattr(mapped.desired, "physical_topic", None)
         # Current gateway planning discards transformed interceptor content.  An
         # empty set is the only complete representation we can prove exactly.
         and desired_interceptors == []
@@ -675,7 +690,7 @@ class DeploymentPlanRecoveryObserver:
             if action.action not in _SUPPORTED_ACTIONS[kind]:
                 raise _target_error(action, "has an action incompatible with its resource kind")
             if intent.kind == "adopt" and (
-                action.action != "adopt" or kind not in ("schema", "topic")
+                action.action != "adopt" or kind not in ("schema", "topic", "connector")
             ):
                 raise _target_error(action, "is not a representable adoption target")
 
@@ -697,13 +712,23 @@ class DeploymentPlanRecoveryObserver:
                 records=managed_records,
             )
             prior_record = prior_state.resources.get(action.resource_id)
+            expected_backend = _expected_backend(mapped)
+            if (
+                kind == "connector"
+                and prior_record is not None
+                and prior_record.backend != expected_backend
+            ):
+                raise _target_error(
+                    action,
+                    "has legacy or mismatched prior backend evidence",
+                )
             prior_matches = (
                 presence == "absent"
                 if prior_record is None
                 else (
                     presence == "present"
                     and prior_record.physical_name == mapped.physical_name
-                    and prior_record.backend == _BACKENDS[kind]
+                    and prior_record.backend == expected_backend
                     and _prior_artifact_checksum(
                         mapped=mapped,
                         normalized=normalized,
@@ -721,8 +746,7 @@ class DeploymentPlanRecoveryObserver:
                 presence == "absent"
                 if desired_record is None
                 else (
-                    fresh_action == "none"
-                    and _live_matches_desired(mapped, presence, normalized)
+                    fresh_action == "none" and _live_matches_desired(mapped, presence, normalized)
                 )
             )
 

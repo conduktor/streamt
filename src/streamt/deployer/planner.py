@@ -9,10 +9,14 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
-from streamt.compiler.manifest import ArtifactOwnership, Manifest
+from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, Manifest
+from streamt.core.models import StreamtProject
 from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectClusterBindingError,
     ConnectDeployer,
     ConnectorChange,
+    bind_connector_artifact,
     secret_neutral_connector_changes,
 )
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
@@ -1046,6 +1050,7 @@ class DeploymentPlanner:
         change: _PlannedChange,
         current: object = None,
         create_actions: frozenset[str],
+        expected_backend: str | None = None,
     ) -> None:
         """Neutralize changes that lack explicit authority over a live resource."""
         observed_action = str(change.action)
@@ -1079,7 +1084,16 @@ class DeploymentPlanner:
                 self.prior_state.resources.get(resource_uri) if self.prior_state else None
             )
             exists = self._resource_exists(current, observed_action, create_actions)
-            if ownership_mode == "adopted" and prior_record is None:
+            if prior_record is not None and expected_backend is not None and (
+                prior_record.backend != expected_backend
+                or prior_record.physical_name != physical_name
+            ):
+                reason = "state_mismatch"
+                message = (
+                    "Prior ownership belongs to a different provider identity; "
+                    "explicit ownership reconciliation is required."
+                )
+            elif ownership_mode == "adopted" and prior_record is None:
                 reason = "requires_adoption"
                 message = (
                     "Declaring ownership.mode 'adopted' does not grant authority; "
@@ -1115,6 +1129,57 @@ class DeploymentPlanner:
                 message=message,
             )
         )
+
+    def _connect_binding_from_project(self) -> ConnectClusterBinding:
+        """Resolve the exact default Connect binding without constructing a deployer."""
+        if not isinstance(self.project, StreamtProject):
+            raise ConnectClusterBindingError(
+                "Connector planning requires parsed project runtime configuration"
+            )
+        connect = self.project.runtime.connect
+        if connect is None or connect.default is None:
+            raise ConnectClusterBindingError(
+                "Connector planning requires an effective default Connect cluster"
+            )
+        cluster = connect.clusters.get(connect.default)
+        if cluster is None:
+            raise ConnectClusterBindingError(
+                "Connector planning requires an effective default Connect cluster"
+            )
+        return ConnectClusterBinding.from_endpoint(connect.default, cluster.rest_url)
+
+    def _resolved_connector_artifacts(
+        self,
+        binding: ConnectClusterBinding,
+        *,
+        resolver: Callable[[ConnectorArtifact], ConnectorArtifact] | None = None,
+    ) -> list[ConnectorArtifact]:
+        """Parse, bind, and reject Connector identity collisions before observation."""
+        artifacts = []
+        provider_locators: set[tuple[str, str]] = set()
+        logical_owners: set[str] = set()
+        for connector_data in self.manifest.artifacts.get("connectors", []):
+            parsed = parse_compiled_connector_artifact(connector_data)
+            artifact = (
+                resolver(parsed)
+                if resolver is not None
+                else bind_connector_artifact(parsed, binding)
+            )
+            provider_locator = (binding.backend_identity, artifact.name)
+            if provider_locator in provider_locators:
+                raise StateIdentityError(
+                    "deployment manifest contains a duplicate Connector provider locator"
+                )
+            provider_locators.add(provider_locator)
+            ownership = ArtifactOwnership.from_dict(artifact.ownership)
+            logical_owner = ownership.owner_name if ownership is not None else artifact.name
+            if logical_owner in logical_owners:
+                raise StateIdentityError(
+                    "deployment manifest maps one logical owner to multiple Connector artifacts"
+                )
+            logical_owners.add(logical_owner)
+            artifacts.append(artifact)
+        return artifacts
 
     def offline_plan(self) -> DeploymentPlan:
         """Create a plan assuming no current state (all creates).
@@ -1196,12 +1261,19 @@ class DeploymentPlanner:
             except (KeyError, TypeError):
                 pass
 
-        for conn_data in self.manifest.artifacts.get("connectors", []):
-            artifact = parse_compiled_connector_artifact(conn_data)
+        connector_data = self.manifest.artifacts.get("connectors", [])
+        connector_binding = self._connect_binding_from_project() if connector_data else None
+        connector_artifacts = (
+            self._resolved_connector_artifacts(connector_binding)
+            if connector_binding is not None
+            else []
+        )
+        for artifact in connector_artifacts:
             change = ConnectorChange(
                 connector_name=artifact.name,
                 action="create",
                 desired=artifact,
+                backend_identity=connector_binding.backend_identity,
             )
             self._apply_ownership_policy(
                 plan,
@@ -1211,6 +1283,7 @@ class DeploymentPlanner:
                 ownership=artifact.ownership,
                 change=change,
                 create_actions=frozenset({"create"}),
+                expected_backend=connector_binding.backend_identity,
             )
             plan.connector_changes.append(change)
 
@@ -1321,11 +1394,33 @@ class DeploymentPlanner:
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed flink_job artifact: %s in %s", e, job_data)
 
-        # Plan connectors
-        if self.connect_deployer:
-            for conn_data in self.manifest.artifacts.get("connectors", []):
-                artifact = parse_compiled_connector_artifact(conn_data)
+        # Plan connectors only through one exact bound cluster.
+        connector_data = self.manifest.artifacts.get("connectors", [])
+        if connector_data:
+            if self.connect_deployer is None:
+                raise ConnectClusterBindingError(
+                    "Live Connector planning requires a bound Connect deployer"
+                )
+            connector_binding = self.connect_deployer.require_cluster_binding()
+            if isinstance(self.project, StreamtProject):
+                configured_binding = self._connect_binding_from_project()
+                if connector_binding != configured_binding:
+                    raise ConnectClusterBindingError(
+                        "Connect deployer binding does not match project runtime configuration"
+                    )
+            connector_artifacts = self._resolved_connector_artifacts(
+                connector_binding,
+                resolver=self.connect_deployer.resolve_connector_artifact,
+            )
+            for artifact in connector_artifacts:
                 change = self.connect_deployer.plan_connector(artifact)
+                if (
+                    change.backend_identity != connector_binding.backend_identity
+                    or change.desired != artifact
+                ):
+                    raise ConnectClusterBindingError(
+                        "Connect deployer returned a change for a different provider identity"
+                    )
                 self._apply_ownership_policy(
                     plan,
                     kind="connector",
@@ -1335,6 +1430,7 @@ class DeploymentPlanner:
                     change=change,
                     current=change.current,
                     create_actions=frozenset({"create"}),
+                    expected_backend=connector_binding.backend_identity,
                 )
                 plan.connector_changes.append(change)
 

@@ -17,7 +17,12 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
-from streamt.deployer.connect import ConnectorChange, ConnectorState
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectorChange,
+    ConnectorState,
+    ManagedConnectorObservation,
+)
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
 from streamt.deployer.gateway import (
     AliasTopicState,
@@ -62,6 +67,11 @@ PROJECT = "payments"
 ENVIRONMENT = "prod"
 OPERATION_ID = "00000000-0000-4000-8000-000000000201"
 STORE_ID = "00000000-0000-4000-8000-000000000202"
+CONNECT_BINDING = ConnectClusterBinding.from_endpoint(
+    "production",
+    "https://connect.example.test/api",
+)
+CONNECT_BACKEND = CONNECT_BINDING.backend_identity
 
 
 class _Artifact(Protocol):
@@ -95,6 +105,23 @@ def _record(
         ownership=ownership,
         artifact_checksum=artifact_checksum(raw),
         backend=backend,
+    )
+
+
+def _connector_observation(
+    artifact: ConnectorArtifact,
+    *,
+    binding: ConnectClusterBinding = CONNECT_BINDING,
+    exists: bool = True,
+    config: dict[str, object] | None = None,
+) -> ManagedConnectorObservation:
+    raw_config = artifact.to_dict()["config"] if config is None else config
+    assert isinstance(raw_config, dict)
+    return ManagedConnectorObservation(
+        binding=binding,
+        name=artifact.name,
+        exists=exists,
+        config=tuple(sorted(raw_config.items())) if exists else (),  # type: ignore[arg-type]
     )
 
 
@@ -246,6 +273,7 @@ def _candidate_cases() -> Iterator[tuple[OperationAction, DeploymentPlan, str]]:
         connector_class="example.Sink",
         topics=["orders.v1"],
         config={"batch.size": "100"},
+        cluster=CONNECT_BINDING.cluster_alias,
         ownership=_ownership("orders_sink"),
     )
     yield (
@@ -255,18 +283,13 @@ def _candidate_cases() -> Iterator[tuple[OperationAction, DeploymentPlan, str]]:
                 ConnectorChange(
                     connector_name=connector.name,
                     action="none",
-                    current=ConnectorState(
-                        name=connector.name,
-                        exists=True,
-                        config=connector.to_dict()["config"],  # type: ignore[arg-type]
-                        status="RUNNING",
-                        tasks=[{"id": 0, "state": "RUNNING"}],
-                    ),
+                    current=_connector_observation(connector),
                     desired=connector,
+                    backend_identity=CONNECT_BACKEND,
                 )
             ]
         ),
-        "kafka-connect",
+        CONNECT_BACKEND,
     )
 
     gateway = GatewayRuleArtifact(
@@ -315,54 +338,257 @@ def test_observed_candidate_supported_kinds(
     assert result.candidate_state.resources[action.resource_id].backend == backend
 
 
-@pytest.mark.parametrize(("kind", "change", "verb"), [
-    (
-        "schema",
-        SchemaChange(
-            subject="gone-value",
-            action="delete",
-            current=SchemaState(subject="gone-value", exists=False),
+def test_connector_observation_can_prove_exact_prior_artifact() -> None:
+    prior = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        config={"batch.size": "100"},
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    desired = replace(prior, config={"batch.size": "200"})
+    target = _action("connector", "orders", "update")
+    state = _state(
+        {
+            target.resource_id: _record(
+                prior,
+                physical_name=prior.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=prior.name,
+                action="update",
+                current=_connector_observation(prior),
+                desired=desired,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ]
+    )
+
+    result = _observe(state, plan, (target,))
+
+    assert result.targets[0].accepted_as == "prior"
+    assert result.candidate_state == state
+
+
+def test_connector_exact_absence_proves_rolled_back_create() -> None:
+    desired = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    target = _action("connector", "orders", "create")
+    state = _state()
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=desired.name,
+                action="create",
+                current=_connector_observation(desired, exists=False),
+                desired=desired,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ]
+    )
+
+    result = _observe(state, plan, (target,), resolution="rolled_back")
+
+    assert result.targets[0].presence == "absent"
+    assert result.targets[0].accepted_as == "prior"
+    assert result.candidate_state is None
+
+
+@pytest.mark.parametrize(
+    "drifted_binding",
+    [
+        ConnectClusterBinding.from_endpoint(
+            "production",
+            "https://other-connect.example.test/api",
         ),
-        "delete",
-    ),
-    (
-        "topic",
-        TopicChange(
-            topic="gone.v1",
-            action="delete",
-            current=TopicState(name="gone.v1", exists=False),
+        ConnectClusterBinding.from_endpoint(
+            "disaster-recovery",
+            "https://connect.example.test/api",
         ),
-        "delete",
-    ),
-    (
-        "flink_job",
-        FlinkJobChange(
-            job_name="gone_job",
-            action="cancel",
-            current=FlinkJobState(name="gone_job", exists=False),
+    ],
+    ids=["endpoint", "alias"],
+)
+def test_connector_backend_binding_drift_fails_closed(
+    drifted_binding: ConnectClusterBinding,
+) -> None:
+    artifact = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=artifact.name,
+                action="none",
+                current=_connector_observation(artifact, binding=drifted_binding),
+                desired=artifact,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ]
+    )
+
+    with pytest.raises(RecoveryObservationError, match="mismatched backend identity"):
+        _observe(_state(), plan, (_action("connector", "orders", "create"),))
+
+
+def test_legacy_generic_connector_backend_never_upgrades_ownership_implicitly() -> None:
+    artifact = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    target = _action("connector", "orders", "update")
+    state = _state(
+        {
+            target.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend="kafka-connect",
+            )
+        }
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=artifact.name,
+                action="none",
+                current=_connector_observation(artifact),
+                desired=artifact,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ]
+    )
+
+    with pytest.raises(RecoveryObservationError, match="legacy or mismatched"):
+        _observe(state, plan, (target,))
+
+
+def test_legacy_connector_state_is_partial_even_with_bound_change() -> None:
+    artifact = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=artifact.name,
+                action="none",
+                current=ConnectorState(
+                    name=artifact.name,
+                    exists=True,
+                    config=artifact.to_dict()["config"],  # type: ignore[arg-type]
+                    status="RUNNING",
+                    tasks=[],
+                ),
+                desired=artifact,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ]
+    )
+
+    with pytest.raises(RecoveryObservationError, match="partial"):
+        _observe(_state(), plan, (_action("connector", "orders", "create"),))
+
+
+def test_unbound_connector_change_fails_closed() -> None:
+    artifact = ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("orders"),
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=artifact.name,
+                action="none",
+                current=_connector_observation(artifact),
+                desired=artifact,
+                backend_identity=None,
+            )
+        ]
+    )
+
+    with pytest.raises(RecoveryObservationError):
+        _observe(_state(), plan, (_action("connector", "orders", "create"),))
+
+
+@pytest.mark.parametrize(
+    ("kind", "change", "verb"),
+    [
+        (
+            "schema",
+            SchemaChange(
+                subject="gone-value",
+                action="delete",
+                current=SchemaState(subject="gone-value", exists=False),
+            ),
+            "delete",
         ),
-        "cancel",
-    ),
-    (
-        "connector",
-        ConnectorChange(
-            connector_name="gone_sink",
-            action="delete",
-            current=ConnectorState(name="gone_sink", exists=False),
+        (
+            "topic",
+            TopicChange(
+                topic="gone.v1",
+                action="delete",
+                current=TopicState(name="gone.v1", exists=False),
+            ),
+            "delete",
         ),
-        "delete",
-    ),
-    (
-        "gateway_rule",
-        GatewayRuleChange(
-            name="gone_alias",
-            action="delete",
-            current_alias=AliasTopicState(name="gone_alias", exists=False),
-            current_interceptors=[],
+        (
+            "flink_job",
+            FlinkJobChange(
+                job_name="gone_job",
+                action="cancel",
+                current=FlinkJobState(name="gone_job", exists=False),
+            ),
+            "cancel",
         ),
-        "delete",
-    ),
-])
+        (
+            "connector",
+            ConnectorChange(
+                connector_name="gone_sink",
+                action="delete",
+                current=ManagedConnectorObservation(
+                    binding=CONNECT_BINDING,
+                    name="gone_sink",
+                    exists=False,
+                ),
+                backend_identity=CONNECT_BACKEND,
+            ),
+            "delete",
+        ),
+        (
+            "gateway_rule",
+            GatewayRuleChange(
+                name="gone_alias",
+                action="delete",
+                current_alias=AliasTopicState(name="gone_alias", exists=False),
+                current_interceptors=[],
+            ),
+            "delete",
+        ),
+    ],
+)
 def test_observed_absence_removes_deleted_ownership(
     kind: str,
     change: object,
@@ -380,7 +606,7 @@ def test_observed_absence_removes_deleted_ownership(
         "schema": "schema-registry",
         "topic": "direct-kafka",
         "flink_job": "flink",
-        "connector": "kafka-connect",
+        "connector": CONNECT_BACKEND,
         "gateway_rule": "conduktor-gateway",
     }[kind]
     physical = {
@@ -593,9 +819,10 @@ def test_observed_mixes_prior_and_candidate_in_intent_order_and_preserves_unrela
     assert [target.action for target in result.targets] == [topic_action, schema_action]
     assert [target.accepted_as for target in result.targets] == ["prior", "candidate"]
     assert result.candidate_state is not None
-    assert result.candidate_state.resources[topic_action.resource_id] == state.resources[
-        topic_action.resource_id
-    ]
+    assert (
+        result.candidate_state.resources[topic_action.resource_id]
+        == state.resources[topic_action.resource_id]
+    )
     assert result.candidate_state.resources[unrelated_id] == unrelated
     assert result.candidate_state.serial == state.serial + 1
 
@@ -704,6 +931,50 @@ def test_observed_supports_exact_adoption_candidate(kind: str) -> None:
     assert result.candidate_state.resources[target.resource_id].ownership == "adopted"
 
 
+def test_observed_supports_exact_connector_adoption_candidate() -> None:
+    artifact = ConnectorArtifact(
+        name="legacy-sink",
+        connector_class="example.Sink",
+        topics=["legacy.v1"],
+        config={"password": "candidate-secret"},
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("legacy", mode="adopted"),
+    )
+    target = _action("connector", "legacy", "adopt")
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name=artifact.name,
+                action="none",
+                current=_connector_observation(artifact),
+                desired=artifact,
+                backend_identity=CONNECT_BACKEND,
+            )
+        ],
+        ownership_requirements=[
+            OwnershipRequirement(
+                resource_id=target.resource_id,
+                kind="connector",
+                logical_name="legacy",
+                physical_name=artifact.name,
+                reason="requires_adoption",
+                observed_action="none",
+                ownership_mode="adopted",
+                message="review required",
+            )
+        ],
+    )
+
+    result = _observe(_state(), plan, (target,), intent_kind="adopt")
+
+    assert result.targets[0].accepted_as == "candidate"
+    assert "candidate-secret" not in str(result.targets[0].to_dict())
+    assert result.candidate_state is not None
+    record = result.candidate_state.resources[target.resource_id]
+    assert record.ownership == "adopted"
+    assert record.backend == CONNECT_BACKEND
+
+
 def test_observer_performs_no_deployer_calls() -> None:
     class ExplodingDeployer:
         def __getattribute__(self, name: str) -> object:
@@ -806,8 +1077,10 @@ def test_observer_performs_no_deployer_calls() -> None:
                             name="orders-sink",
                             connector_class="example.Sink",
                             topics=["orders.v1"],
+                            cluster=CONNECT_BINDING.cluster_alias,
                             ownership=_ownership("orders"),
                         ),
+                        backend_identity=CONNECT_BACKEND,
                     )
                 ]
             ),
@@ -1010,30 +1283,34 @@ def test_errors_and_evidence_do_not_expose_live_secrets_or_physical_names() -> N
     assert target.resource_id in rendered
 
 
-def test_fingerprints_are_deterministic_for_mapping_and_collection_order() -> None:
+def test_connector_fingerprint_is_deterministic_secret_neutral_and_ignores_volatility() -> None:
     artifact = ConnectorArtifact(
         name="orders-sink",
         connector_class="example.Sink",
         topics=["orders.v1"],
-        config={"a": "1", "b": "2"},
+        config={"a": "1", "b": "2", "password": "fingerprint-secret"},
+        cluster=CONNECT_BINDING.cluster_alias,
         ownership=_ownership("orders"),
     )
     target = _action("connector", "orders", "create")
 
-    def plan(config: dict[str, str], tasks: list[dict[str, object]]) -> DeploymentPlan:
+    def plan(
+        config: dict[str, str],
+        *,
+        status: str,
+        tasks: list[dict[str, object]],
+    ) -> DeploymentPlan:
+        observation = _connector_observation(artifact, config=config)
+        object.__setattr__(observation, "status", status)
+        object.__setattr__(observation, "tasks", tasks)
         return DeploymentPlan(
             connector_changes=[
                 ConnectorChange(
                     connector_name=artifact.name,
                     action="none",
-                    current=ConnectorState(
-                        name=artifact.name,
-                        exists=True,
-                        config=config,
-                        status="RUNNING",
-                        tasks=tasks,
-                    ),
+                    current=observation,
                     desired=artifact,
+                    backend_identity=CONNECT_BACKEND,
                 )
             ]
         )
@@ -1045,8 +1322,10 @@ def test_fingerprints_are_deterministic_for_mapping_and_collection_order() -> No
             "topics": "orders.v1",
             "a": "1",
             "b": "2",
+            "password": "fingerprint-secret",
         },
-        [{"id": 1}, {"id": 0}],
+        status="RUNNING",
+        tasks=[{"id": 1}, {"id": 0}],
     )
     second = plan(
         {
@@ -1055,14 +1334,19 @@ def test_fingerprints_are_deterministic_for_mapping_and_collection_order() -> No
             "topics": "orders.v1",
             "connector.class": artifact.connector_class,
             "name": artifact.name,
+            "password": "fingerprint-secret",
         },
-        [{"id": 0}, {"id": 1}],
+        status="FAILED",
+        tasks=[{"id": 0, "trace": "task-secret"}, {"id": 1}],
     )
 
     first_result = _observe(_state(), first, (target,))
     second_result = _observe(_state(), second, (target,))
 
     assert first_result.targets[0].fingerprint == second_result.targets[0].fingerprint
+    rendered = str(first_result.targets[0].to_dict()) + str(second_result.targets[0].to_dict())
+    assert "fingerprint-secret" not in rendered
+    assert "task-secret" not in rendered
 
 
 def test_abandoned_resolution_rejects_observer_invocation() -> None:

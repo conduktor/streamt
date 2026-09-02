@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from unittest.mock import MagicMock, call, patch
 
@@ -16,7 +17,12 @@ from streamt.deployer.connect import (
     ConnectClusterBindingError,
     ConnectDeployer,
     ConnectManagedObservationError,
+    ConnectorChange,
+    ConnectorState,
     ManagedConnectorObservation,
+    bind_connector_artifact,
+    is_connect_backend_identity,
+    resolve_connector_artifact,
 )
 
 
@@ -41,6 +47,7 @@ def _exact_payload(name: str) -> dict[str, object]:
         "config": {
             "name": name,
             "connector.class": "example.SinkConnector",
+            "topics": "orders",
             "enabled": True,
             "tasks.max": 3,
             "ratio": 0.5,
@@ -48,6 +55,25 @@ def _exact_payload(name: str) -> dict[str, object]:
         "tasks": [{"connector": name, "task": 0}],
         "type": "sink",
     }
+
+
+def _artifact(
+    *,
+    cluster: str | None = None,
+    config: dict[str, object] | None = None,
+) -> ConnectorArtifact:
+    return ConnectorArtifact(
+        name="orders-sink",
+        connector_class="example.SinkConnector",
+        topics=["orders"],
+        cluster=cluster,
+        config=config
+        or {
+            "enabled": True,
+            "tasks.max": 3,
+            "ratio": 0.5,
+        },
+    )
 
 
 def test_cluster_binding_is_stable_normalized_and_endpoint_free() -> None:
@@ -93,6 +119,83 @@ def test_bound_deployer_exposes_only_canonical_backend_identity() -> None:
     assert identity.startswith("kafka-connect:v1:production:sha256:")
     assert "connect.example.test" not in identity
     assert "/api" not in identity
+    assert is_connect_backend_identity(identity)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "kafka-connect:v2:production:sha256:" + "a" * 64,
+        "kafka-connect:v1:bad/alias:sha256:" + "a" * 64,
+        "kafka-connect:v1:production:sha256:secret",
+    ],
+)
+def test_backend_identity_validator_is_exact(value: object) -> None:
+    assert not is_connect_backend_identity(value)
+
+
+def test_connector_change_rejects_noncanonical_backend_identity_without_echo() -> None:
+    invalid = "https://alice:identity-secret@connect.example.test"
+
+    with pytest.raises(ConnectClusterBindingError) as caught:
+        ConnectorChange(
+            connector_name="orders-sink",
+            action="none",
+            backend_identity=invalid,
+        )
+
+    assert invalid not in str(caught.value)
+    assert "identity-secret" not in str(caught.value)
+
+
+def test_pure_and_bound_artifact_resolvers_fill_or_preserve_exact_alias() -> None:
+    binding = ConnectClusterBinding.from_endpoint(
+        "production",
+        "https://connect.example.test",
+    )
+    unresolved = _artifact()
+    explicit = _artifact(cluster="production")
+    deployer = _bound_deployer()
+
+    try:
+        resolved_default = bind_connector_artifact(unresolved, binding)
+        resolved_alias = resolve_connector_artifact(explicit, binding)
+        resolved_by_deployer = deployer.resolve_connector_artifact(unresolved)
+    finally:
+        deployer.close()
+
+    for resolved in (resolved_default, resolved_alias, resolved_by_deployer):
+        assert resolved.cluster == "production"
+        assert resolved is not unresolved
+    assert unresolved.cluster is None
+    assert resolved_default.topics is not unresolved.topics
+    assert resolved_default.config is not unresolved.config
+
+
+def test_artifact_resolver_rejects_unbound_or_nonmatching_alias_without_secrets() -> None:
+    explicit_cluster = "https://alice:cluster-secret@connect.example.test"
+    artifact = _artifact(
+        cluster=explicit_cluster,
+        config={"password": "config-secret"},
+    )
+    bound = _bound_deployer()
+    unbound = ConnectDeployer("https://connect.example.test")
+
+    try:
+        with pytest.raises(ConnectClusterBindingError) as mismatch:
+            bound.resolve_connector_artifact(artifact)
+        with pytest.raises(ConnectClusterBindingError) as missing:
+            unbound.resolve_connector_artifact(artifact)
+    finally:
+        bound.close()
+        unbound.close()
+
+    for rendered in (str(mismatch.value), str(missing.value)):
+        assert explicit_cluster not in rendered
+        assert "cluster-secret" not in rendered
+        assert "config-secret" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -180,6 +283,135 @@ def test_strict_observation_uses_one_encoded_get_and_exact_config() -> None:
     assert observation.binding.cluster_alias == "production"
     assert observation.config_dict() == _exact_payload(connector_name)["config"]
     assert observation.fingerprint.startswith("sha256:")
+
+
+def test_bound_plan_uses_one_strict_get_and_returns_exact_noop_evidence() -> None:
+    artifact = _artifact()
+    deployer = _bound_deployer()
+    request = MagicMock(return_value=_response(200, _exact_payload(artifact.name)))
+    deployer._http_session.request = request  # type: ignore[method-assign]
+
+    try:
+        change = deployer.plan_connector(artifact)
+    finally:
+        deployer.close()
+
+    assert change.action == "none"
+    assert isinstance(change.current, ManagedConnectorObservation)
+    assert change.current.config_dict() == artifact.to_dict()["config"]
+    assert change.desired is not None
+    assert change.desired.cluster == "production"
+    assert change.backend_identity == change.current.binding.backend_identity
+    assert is_connect_backend_identity(change.backend_identity)
+    request.assert_called_once()
+
+
+def test_bound_plan_absence_returns_create_with_resolved_authority() -> None:
+    artifact = _artifact()
+    deployer = _bound_deployer()
+    response = _response(404, {"password": "absence-response-secret"})
+    request = MagicMock(return_value=response)
+    deployer._http_session.request = request  # type: ignore[method-assign]
+
+    try:
+        change = deployer.plan_connector(artifact)
+    finally:
+        deployer.close()
+
+    assert change.action == "create"
+    assert isinstance(change.current, ManagedConnectorObservation)
+    assert change.current.exists is False
+    assert change.desired is not None
+    assert change.desired.cluster == "production"
+    assert change.backend_identity == change.current.binding.backend_identity
+    request.assert_called_once()
+    response.json.assert_not_called()
+
+
+def test_bound_plan_exactly_detects_type_and_case_changes_without_raw_values() -> None:
+    artifact = _artifact(config={"mode": "copy", "tasks.max": True})
+    desired_config = artifact.to_dict()["config"]
+    assert isinstance(desired_config, dict)
+    current_config = dict(desired_config)
+    current_config["mode"] = "COPY"
+    current_config["tasks.max"] = 1
+    deployer = _bound_deployer()
+    request = MagicMock(
+        return_value=_response(
+            200,
+            {
+                "name": artifact.name,
+                "config": current_config,
+                "status": {"state": "RUNNING"},
+            },
+        )
+    )
+    deployer._http_session.request = request  # type: ignore[method-assign]
+
+    try:
+        change = deployer.plan_connector(artifact)
+    finally:
+        deployer.close()
+
+    assert change.action == "update"
+    assert isinstance(change.current, ManagedConnectorObservation)
+    assert change.desired is not None
+    assert change.desired.cluster == "production"
+    assert change.backend_identity == change.current.binding.backend_identity
+    assert set(change.changes) == {"mode", "tasks.max"}
+    assert change.changes["mode"]["change"] == "changed"
+    assert change.changes["tasks.max"]["change"] == "changed"
+    rendered = json.dumps(change.changes, sort_keys=True)
+    assert "COPY" not in rendered
+    assert "copy" not in rendered
+    request.assert_called_once()
+
+
+def test_bound_plan_malformed_config_error_contains_no_raw_config() -> None:
+    artifact = _artifact(config={"password": "desired-secret"})
+    deployer = _bound_deployer()
+    request = MagicMock(
+        return_value=_response(
+            200,
+            {
+                "name": artifact.name,
+                "config": {
+                    "name": artifact.name,
+                    "password": {"nested": "current-secret"},
+                },
+            },
+        )
+    )
+    deployer._http_session.request = request  # type: ignore[method-assign]
+
+    try:
+        with pytest.raises(ConnectManagedObservationError) as caught:
+            deployer.plan_connector(artifact)
+    finally:
+        deployer.close()
+
+    rendered = str(caught.value)
+    assert "desired-secret" not in rendered
+    assert "current-secret" not in rendered
+    request.assert_called_once()
+
+
+def test_unbound_plan_retains_legacy_state_and_no_backend_identity() -> None:
+    artifact = _artifact()
+    deployer = ConnectDeployer("https://connect.example.test")
+    deployer.get_connector_state = MagicMock(  # type: ignore[method-assign]
+        return_value=ConnectorState(name=artifact.name, exists=False)
+    )
+
+    try:
+        change = deployer.plan_connector(artifact)
+    finally:
+        deployer.close()
+
+    assert change.action == "create"
+    assert isinstance(change.current, ConnectorState)
+    assert change.desired is artifact
+    assert change.backend_identity is None
 
 
 def test_strict_observation_excludes_volatile_fields_from_equality_and_fingerprint() -> None:

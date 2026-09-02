@@ -6,8 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from streamt.compiler.manifest import ArtifactOwnership, Manifest
-from streamt.deployer.connect import ConnectorChange, ConnectorState
+from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, Manifest
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectDeployer,
+    ConnectorChange,
+    ConnectorState,
+)
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
 from streamt.deployer.gateway import AliasTopicState, GatewayRuleChange
 from streamt.deployer.kafka import TopicChange, TopicState
@@ -19,6 +24,11 @@ from streamt.deployer.state import (
     StateIdentityError,
     artifact_checksum,
     resource_id,
+)
+
+_CONNECT_BINDING = ConnectClusterBinding.from_endpoint(
+    "production",
+    "https://connect.example.test",
 )
 
 
@@ -110,11 +120,22 @@ def _deployers(*, exists: bool, no_op_topic: bool = False) -> dict[str, MagicMoc
     )
 
     connect = MagicMock()
-    connect.plan_connector.return_value = ConnectorChange(
-        connector_name="sink",
-        action="update" if exists else "create",
-        current=ConnectorState(name="sink", exists=exists),
+    connect.cluster_binding = _CONNECT_BINDING
+    connect.require_cluster_binding.return_value = _CONNECT_BINDING
+    connect.resolve_connector_artifact.side_effect = (
+        lambda artifact: ConnectDeployer.resolve_connector_artifact(connect, artifact)
     )
+
+    def plan_connector(artifact: ConnectorArtifact) -> ConnectorChange:
+        return ConnectorChange(
+            connector_name="sink",
+            action="update" if exists else "create",
+            current=ConnectorState(name="sink", exists=exists),
+            desired=artifact,
+            backend_identity=_CONNECT_BINDING.backend_identity,
+        )
+
+    connect.plan_connector.side_effect = plan_connector
 
     gateway = MagicMock()
     gateway.plan.return_value = GatewayRuleChange(
@@ -139,12 +160,17 @@ def _deployers(*, exists: bool, no_op_topic: bool = False) -> dict[str, MagicMoc
     }
 
 
-def _record(physical_name: str, ownership: str = "managed") -> ManagedResourceRecord:
+def _record(
+    physical_name: str,
+    ownership: str = "managed",
+    *,
+    backend: str = "test",
+) -> ManagedResourceRecord:
     return ManagedResourceRecord(
         physical_name=physical_name,
         ownership=ownership,  # type: ignore[arg-type]
         artifact_checksum=artifact_checksum({"physical_name": physical_name}),
-        backend="test",
+        backend=backend,
     )
 
 
@@ -163,7 +189,10 @@ def _prior_state() -> LocalState:
             resource_id("payments", "prod", "flink_job", "transform"): _record(
                 "transform"
             ),
-            resource_id("payments", "prod", "connector", "sink"): _record("sink"),
+            resource_id("payments", "prod", "connector", "sink"): _record(
+                "sink",
+                backend=_CONNECT_BINDING.backend_identity,
+            ),
             resource_id("payments", "prod", "gateway_rule", "alias_rule"): _record(
                 "virtual-events"
             ),
@@ -241,6 +270,7 @@ class TestOwnershipPlanning:
     def test_legacy_artifact_is_safe_for_create_but_requires_adoption_when_live(self):
         manifest = _manifest()
         manifest.artifacts["topics"][0].pop("ownership")
+        manifest.artifacts["connectors"] = []
         deployers = _deployers(exists=True)
         plan = DeploymentPlanner(
             manifest,
@@ -261,8 +291,10 @@ class TestOwnershipPlanning:
         state.resources[topic_id] = _record("some-other-topic")
         deployers = _deployers(exists=True)
 
+        manifest = _manifest()
+        manifest.artifacts["connectors"] = []
         plan = DeploymentPlanner(
-            _manifest(),
+            manifest,
             prior_state=state,
             kafka_deployer=deployers["kafka_deployer"],
         ).plan()
@@ -295,8 +327,10 @@ class TestOwnershipPlanning:
 class TestOwnershipRequirementOutput:
     def test_details_and_machine_record_explain_required_adoption(self):
         deployers = _deployers(exists=True)
+        manifest = _manifest()
+        manifest.artifacts["connectors"] = []
         plan = DeploymentPlanner(
-            _manifest(),
+            manifest,
             environment="prod",
             kafka_deployer=deployers["kafka_deployer"],
         ).plan()

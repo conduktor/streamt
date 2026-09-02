@@ -9,7 +9,7 @@ import math
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 from urllib.parse import quote, urlsplit
 
@@ -25,6 +25,9 @@ HEALTH_CHECK_TIMEOUT = 10
 _FINGERPRINT_PREFIX = "sha256:"
 _CONNECT_BINDING_VERSION = 1
 _CLUSTER_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_CONNECT_BACKEND_IDENTITY = re.compile(
+    r"^kafka-connect:v1:[A-Za-z0-9][A-Za-z0-9._-]{0,127}:sha256:[0-9a-f]{64}$"
+)
 
 
 class ConnectClusterBindingError(ValueError):
@@ -88,7 +91,7 @@ class ConnectClusterBinding:
     version: int = _CONNECT_BINDING_VERSION
 
     def __post_init__(self) -> None:
-        if self.version != _CONNECT_BINDING_VERSION:
+        if type(self.version) is not int or self.version != _CONNECT_BINDING_VERSION:
             raise ConnectClusterBindingError("Unsupported Connect cluster binding version")
         if not isinstance(self.cluster_alias, str) or not _CLUSTER_ALIAS.fullmatch(
             self.cluster_alias
@@ -113,6 +116,43 @@ class ConnectClusterBinding:
             f"kafka-connect:v{self.version}:{self.cluster_alias}:"
             f"{self.endpoint_fingerprint}"
         )
+
+
+def is_connect_backend_identity(value: object) -> bool:
+    """Whether a value is one exact canonical Kafka Connect backend identity."""
+    return isinstance(value, str) and _CONNECT_BACKEND_IDENTITY.fullmatch(value) is not None
+
+
+def bind_connector_artifact(
+    artifact: ConnectorArtifact,
+    binding: ConnectClusterBinding,
+) -> ConnectorArtifact:
+    """Purely resolve one artifact to an exact Kafka Connect cluster binding."""
+    if not isinstance(binding, ConnectClusterBinding):
+        raise ConnectClusterBindingError("Connector artifact resolution requires a valid binding")
+    if artifact.cluster is not None and artifact.cluster != binding.cluster_alias:
+        raise ConnectClusterBindingError(
+            "Connector artifact cluster does not match the effective Connect cluster "
+            "(bound Kafka Connect cluster)"
+        )
+    ownership = (
+        dict(artifact.ownership) if isinstance(artifact.ownership, dict) else artifact.ownership
+    )
+    return replace(
+        artifact,
+        topics=list(artifact.topics),
+        config=dict(artifact.config),
+        cluster=binding.cluster_alias,
+        ownership=ownership,
+    )
+
+
+def resolve_connector_artifact(
+    artifact: ConnectorArtifact,
+    binding: ConnectClusterBinding,
+) -> ConnectorArtifact:
+    """Compatibility name for pure offline and bound artifact resolution."""
+    return bind_connector_artifact(artifact, binding)
 
 
 ConnectorConfigScalar = str | bool | int | float
@@ -333,6 +373,33 @@ def secret_neutral_connector_changes(changes: object) -> dict[str, dict[str, obj
     return neutral
 
 
+def secret_neutral_connector_config_diff(
+    current_config: Mapping[str, object],
+    desired_config: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    """Return an exact typed config diff containing no raw values."""
+    changes: dict[str, dict[str, object]] = {}
+    for key in sorted(set(current_config) | set(desired_config)):
+        current_present = key in current_config
+        desired_present = key in desired_config
+        current_value = current_config.get(key)
+        desired_value = desired_config.get(key)
+        if (
+            current_present
+            and desired_present
+            and type(current_value) is type(desired_value)
+            and current_value == desired_value
+        ):
+            continue
+        changes[key] = _config_change_evidence(
+            from_present=current_present,
+            from_value=current_value,
+            to_present=desired_present,
+            to_value=desired_value,
+        )
+    return changes
+
+
 @dataclass
 class ConnectorState:
     """Current state of a connector."""
@@ -354,12 +421,20 @@ class ConnectorChange:
 
     connector_name: str
     action: str  # create, update, delete, none
-    current: Optional[ConnectorState] = field(default=None, repr=False)
+    current: ConnectorState | ManagedConnectorObservation | None = field(
+        default=None,
+        repr=False,
+    )
     desired: Optional[ConnectorArtifact] = field(default=None, repr=False)
     changes: dict = None
+    backend_identity: str | None = None
 
     def __post_init__(self) -> None:
         self.changes = secret_neutral_connector_changes(self.changes or {})
+        if self.backend_identity is not None and not is_connect_backend_identity(
+            self.backend_identity
+        ):
+            raise ConnectClusterBindingError("Connector change has an invalid backend identity")
 
 
 class ConnectDeployer:
@@ -406,11 +481,19 @@ class ConnectDeployer:
     @property
     def backend_identity(self) -> str:
         """Return the canonical identity of the configured bound cluster."""
+        return self.require_cluster_binding().backend_identity
+
+    def require_cluster_binding(self) -> ConnectClusterBinding:
+        """Return the exact binding or fail without exposing runtime configuration."""
         if self.cluster_binding is None:
             raise ConnectClusterBindingError(
                 "Kafka Connect backend identity requires an effective cluster binding"
             )
-        return self.cluster_binding.backend_identity
+        return self.cluster_binding
+
+    def resolve_connector_artifact(self, artifact: ConnectorArtifact) -> ConnectorArtifact:
+        """Purely resolve one artifact to this deployer's exact cluster binding."""
+        return resolve_connector_artifact(artifact, self.require_cluster_binding())
 
     def __enter__(self) -> ConnectDeployer:
         """Enter context manager."""
@@ -627,6 +710,9 @@ class ConnectDeployer:
 
     def plan_connector(self, artifact: ConnectorArtifact) -> ConnectorChange:
         """Plan changes for a connector."""
+        if self.cluster_binding is not None:
+            return self._plan_bound_connector(artifact)
+
         current = self.get_connector_state(artifact.name)
 
         if not current.exists:
@@ -639,42 +725,24 @@ class ConnectDeployer:
 
         # Check for config changes
         desired_config = artifact.to_dict()["config"]
-        changes: dict[str, dict[str, object]] = {}
-
         # Remove name from comparison
         current_config = dict(current.config or {})
         current_config.pop("name", None)
         desired_config_cmp = dict(desired_config)
         desired_config_cmp.pop("name", None)
-
-        for key, value in desired_config_cmp.items():
-            current_present = key in current_config
-            current_value = current_config.get(key)
-            if (
-                not current_present
-                or type(current_value) is not type(value)
-                or current_value != value
-            ):
-                changes[key] = _config_change_evidence(
-                    from_present=current_present,
-                    from_value=current_value,
-                    to_present=True,
-                    to_value=value,
-                )
+        changes = secret_neutral_connector_config_diff(
+            current_config,
+            desired_config_cmp,
+        )
 
         # Check for removed keys and warn
-        removed_keys = set(current_config.keys()) - set(desired_config_cmp.keys())
+        removed_keys = [
+            key for key, evidence in changes.items() if evidence["change"] == "removed"
+        ]
         if removed_keys:
             logger.warning(
-                f"Connector '{artifact.name}' will have config keys removed: {sorted(removed_keys)}"
+                f"Connector '{artifact.name}' will have config keys removed: {removed_keys}"
             )
-            for key in sorted(removed_keys):
-                changes[key] = _config_change_evidence(
-                    from_present=True,
-                    from_value=current_config[key],
-                    to_present=False,
-                    to_value=None,
-                )
 
         if changes:
             return ConnectorChange(
@@ -692,15 +760,54 @@ class ConnectDeployer:
             desired=artifact,
         )
 
+    def _plan_bound_connector(self, artifact: ConnectorArtifact) -> ConnectorChange:
+        """Plan from one strict observation against one resolved bound artifact."""
+        binding = self.require_cluster_binding()
+        desired = resolve_connector_artifact(artifact, binding)
+        current = self.observe_managed_connector(desired.name)
+        if current.binding != binding:
+            raise ConnectClusterBindingError(
+                "Kafka Connect cluster binding changed during managed planning"
+            )
+        backend_identity = binding.backend_identity
+        if not current.exists:
+            return ConnectorChange(
+                connector_name=desired.name,
+                action="create",
+                current=current,
+                desired=desired,
+                backend_identity=backend_identity,
+            )
+
+        desired_config = desired.to_dict().get("config")
+        if not isinstance(desired_config, dict):
+            raise ConnectManagedObservationError(
+                "Resolved connector artifact has an invalid config object"
+            )
+        changes = secret_neutral_connector_config_diff(
+            current.config_dict(),
+            desired_config,
+        )
+        action = "update" if changes else "none"
+        return ConnectorChange(
+            connector_name=desired.name,
+            action=action,
+            current=current,
+            desired=desired,
+            changes=changes,
+            backend_identity=backend_identity,
+        )
+
     def apply_connector(self, artifact: ConnectorArtifact) -> str:
         """Apply a connector artifact. Returns action taken."""
         change = self.plan_connector(artifact)
+        desired = change.desired or artifact
 
         if change.action == "create":
-            self.create_connector(artifact)
+            self.create_connector(desired)
             return "created"
         elif change.action == "update":
-            self.update_connector(artifact)
+            self.update_connector(desired)
             return "updated"
         else:
             return "unchanged"
