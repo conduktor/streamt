@@ -22,7 +22,7 @@ def _enrich_schema_from_scope(
 ) -> dict[str, str]:
     """Enrich schema with columns from CTEs and FROM-clause subqueries."""
     # Process CTEs (WITH ... AS (...))
-    root = select
+    root: exp.Expression = select
     while root.parent:
         root = root.parent
     for cte in root.find_all(exp.CTE):
@@ -112,8 +112,8 @@ def _infer_subquery_columns(
                 if "." not in col_name:
                     columns.append((col_name, col_type))
             continue
-        col_name = mixin._get_expression_alias(expr)
+        alias = mixin._get_expression_alias(expr)
         col_type = mixin._infer_expression_type(expr, inner_schema)
-        if col_name:
-            columns.append((col_name, col_type))
+        if alias:
+            columns.append((alias, col_type))
     return columns

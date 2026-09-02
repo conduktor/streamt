@@ -217,10 +217,16 @@ class Manifest:
 
         result = dict(self.artifacts)
         if "flink_jobs" in result:
-            result["flink_jobs"] = [
-                {**job, "sql": redact_ddl_credentials(job["sql"])} if "sql" in job else dict(job)
-                for job in result["flink_jobs"]
-            ]
+            safe_jobs: list[dict[str, object]] = []
+            for job in result["flink_jobs"]:
+                safe_job = dict(job)
+                if "sql" in job:
+                    sql = job["sql"]
+                    if not isinstance(sql, str):
+                        raise TypeError("Flink job SQL must be a string")
+                    safe_job["sql"] = redact_ddl_credentials(sql)
+                safe_jobs.append(safe_job)
+            result["flink_jobs"] = safe_jobs
         return result
 
     def save(self, path: Path) -> None:

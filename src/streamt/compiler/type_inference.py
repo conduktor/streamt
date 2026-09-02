@@ -38,6 +38,10 @@ class TypeInferenceMixin:
     # Top-level column extraction (sqlglot + regex fallback)
     # ------------------------------------------------------------------
 
+    def _build_source_schema(self, model: Model) -> dict[str, str]:
+        """Build source schema context; implemented by the compiler host mixin."""
+        raise NotImplementedError
+
     def _extract_select_columns_with_types(
         self, sql: str, schema_context: Optional[dict[str, str]] = None, model: Optional[Model] = None
     ) -> list[tuple[str, str]]:
@@ -91,10 +95,10 @@ class TypeInferenceMixin:
                         if "." not in col_name:
                             columns.append((col_name, col_type))
                     continue
-                col_name = self._get_expression_alias(expr)
+                alias = self._get_expression_alias(expr)
                 col_type = self._infer_expression_type(expr, schema_context)
-                if col_name:
-                    columns.append((col_name, col_type))
+                if alias:
+                    columns.append((alias, col_type))
 
             self._current_model = None
             return columns
@@ -211,13 +215,15 @@ class TypeInferenceMixin:
 
         # IF function - infer type from THEN branch
         if isinstance(expr, exp.If):
+            true_expr = expr.args.get("true")
+            false_expr = expr.args.get("false")
             return self._merge_types(
                 [
-                    self._infer_expression_type(expr.args.get("true"), schema)
-                    if expr.args.get("true") is not None
+                    self._infer_expression_type(true_expr, schema)
+                    if isinstance(true_expr, exp.Expression)
                     else "",
-                    self._infer_expression_type(expr.args.get("false"), schema)
-                    if expr.args.get("false") is not None
+                    self._infer_expression_type(false_expr, schema)
+                    if isinstance(false_expr, exp.Expression)
                     else "",
                 ]
             )
