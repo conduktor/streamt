@@ -14,7 +14,12 @@ from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
-from streamt.deployer.state import LocalState, StateIdentityError, resource_id
+from streamt.deployer.state import (
+    LocalState,
+    ResourceIdentity,
+    StateIdentityError,
+    resource_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +28,23 @@ class _PlannedChange(Protocol):
     """Common mutable action carried by backend-specific change records."""
 
     action: str
+
+
+@dataclass(frozen=True)
+class PlannedAction:
+    """One ordered runtime action bound to its canonical logical resource."""
+
+    resource_id: str
+    runtime_label: str
+    action: str
+
+    def __post_init__(self) -> None:
+        ResourceIdentity.parse(self.resource_id)
+        if not isinstance(self.runtime_label, str) or not self.runtime_label:
+            raise StateIdentityError("planned action runtime label must be non-empty")
+        if not isinstance(self.action, str) or not self.action:
+            raise StateIdentityError("planned action action must be non-empty")
+
 
 _SENSITIVE_KV = re.compile(
     r"(password|passwd|secret|token|api_key|apikey)\s*[=:]\s*\S+",
@@ -1816,6 +1838,127 @@ class DeploymentPlanner:
             self.gateway_deployer,
             list(getattr(plan, "gateway_changes", [])),
             label_fn=lambda change: f"gateway_rule:{change.name}",
+            upsert_actions=("create", "update"),
+        )
+        return actions
+
+    def _planned_resource_id(
+        self,
+        *,
+        kind: str,
+        change: object,
+        physical_name: str,
+    ) -> str:
+        """Resolve an action to ownership identity, never to its runtime label."""
+        desired = getattr(change, "desired", None)
+        ownership = ArtifactOwnership.from_dict(getattr(desired, "ownership", None))
+        if ownership is not None:
+            if ownership.project != self.project_name:
+                raise StateIdentityError("planned action ownership belongs to another project")
+            logical_name = ownership.owner_name
+        else:
+            logical_names: set[str] = set()
+            if self.prior_state is not None:
+                for prior_resource_id, record in self.prior_state.resources.items():
+                    identity = ResourceIdentity.parse(prior_resource_id)
+                    if identity.kind == kind and record.physical_name == physical_name:
+                        logical_names.add(identity.logical_name)
+            if len(logical_names) > 1:
+                raise StateIdentityError(
+                    "planned action physical resource has ambiguous ownership identity"
+                )
+            if not logical_names:
+                raise StateIdentityError("planned action has no canonical ownership identity")
+            logical_name = next(iter(logical_names))
+        return resource_id(
+            self.project_name,
+            self.environment,
+            kind,
+            logical_name,
+        )
+
+    def planned_actions(self, plan: DeploymentPlan) -> list[PlannedAction]:
+        """Return ordered runtime actions with canonical ownership identities."""
+        actions: list[PlannedAction] = []
+
+        def add_changes(
+            deployer: object | None,
+            changes: list[object],
+            *,
+            kind: str,
+            label_fn: Callable[[object], str],
+            physical_name_fn: Callable[[object], str],
+            upsert_actions: tuple[str, ...],
+            delete_action: str = "delete",
+            delete_ready: Callable[[object], bool] | None = None,
+        ) -> None:
+            if deployer is None:
+                return
+            for change in changes:
+                action = str(change.action)
+                if not (
+                    (action in upsert_actions and getattr(change, "desired", None))
+                    or (action == delete_action and (delete_ready is None or delete_ready(change)))
+                ):
+                    continue
+                actions.append(
+                    PlannedAction(
+                        resource_id=self._planned_resource_id(
+                            kind=kind,
+                            change=change,
+                            physical_name=physical_name_fn(change),
+                        ),
+                        runtime_label=label_fn(change),
+                        action=action,
+                    )
+                )
+
+        add_changes(
+            self.schema_registry_deployer,
+            list(getattr(plan, "schema_changes", [])),
+            kind="schema",
+            label_fn=lambda change: f"schema:{change.subject}",
+            physical_name_fn=lambda change: str(change.subject),
+            upsert_actions=("register", "update"),
+        )
+        add_changes(
+            self.kafka_deployer,
+            list(getattr(plan, "topic_changes", [])),
+            kind="topic",
+            label_fn=lambda change: f"topic:{change.topic}",
+            physical_name_fn=lambda change: str(change.topic),
+            upsert_actions=("create", "update"),
+        )
+        add_changes(
+            self.flink_deployer,
+            list(getattr(plan, "flink_changes", [])),
+            kind="flink_job",
+            label_fn=lambda change: f"flink_job:{change.job_name}",
+            physical_name_fn=lambda change: str(change.job_name),
+            upsert_actions=("submit", "update"),
+            delete_action="cancel",
+            delete_ready=lambda change: bool(change.current and change.current.job_id),
+        )
+        add_changes(
+            self.connect_deployer,
+            list(getattr(plan, "connector_changes", [])),
+            kind="connector",
+            label_fn=lambda change: f"connector:{change.connector_name}",
+            physical_name_fn=lambda change: str(change.connector_name),
+            upsert_actions=("create", "update"),
+        )
+        add_changes(
+            self.gateway_deployer,
+            list(getattr(plan, "gateway_changes", [])),
+            kind="gateway_rule",
+            label_fn=lambda change: f"gateway_rule:{change.name}",
+            physical_name_fn=lambda change: str(
+                change.desired.virtual_topic
+                if change.desired is not None
+                else (
+                    change.current_alias.name if change.current_alias is not None else change.name
+                )
+            ),
             upsert_actions=("create", "update"),
         )
         return actions
