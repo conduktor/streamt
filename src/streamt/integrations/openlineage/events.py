@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from ipaddress import IPv4Address, IPv6Address
 from types import MappingProxyType
 from typing import Literal
 from urllib.parse import quote, urlsplit
@@ -65,6 +67,7 @@ FACET_SCHEMA_URLS: Mapping[FacetScope, Mapping[str, str]] = MappingProxyType({
 })
 
 _EVENT_TYPES = frozenset({"START", "RUNNING", "COMPLETE", "ABORT", "FAIL", "OTHER"})
+_DNS_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
 
 
 class OpenLineageConstructionError(ValueError):
@@ -138,6 +141,7 @@ def validate_kafka_namespace(value: str) -> str:
     _require_nonblank(value, "dataset namespace")
     if (
         value != value.strip()
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
         or not value.startswith("kafka://")
         or "?" in value
         or "#" in value
@@ -152,6 +156,7 @@ def validate_kafka_namespace(value: str) -> str:
         raise OpenLineageConstructionError(
             "dataset namespace must contain one valid host and explicit port"
         ) from exc
+    authority = parsed.netloc
     if (
         parsed.scheme != "kafka"
         or not parsed.hostname
@@ -167,7 +172,66 @@ def validate_kafka_namespace(value: str) -> str:
         raise OpenLineageConstructionError(
             "dataset namespace must contain one host and explicit port only"
         )
+    _validate_kafka_authority(authority)
     return value
+
+
+def _validate_kafka_authority(authority: str) -> None:
+    """Require an ASCII DNS name, IPv4 address, or bracketed IPv6 address."""
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        if closing_bracket < 0:
+            raise OpenLineageConstructionError(
+                "dataset namespace must contain a valid bracketed IPv6 host"
+            )
+        host = authority[1:closing_bracket]
+        port_text = authority[closing_bracket + 1 :]
+        if not port_text.startswith(":") or not port_text[1:].isdigit() or "%" in host:
+            raise OpenLineageConstructionError(
+                "dataset namespace must contain a valid bracketed IPv6 host"
+            )
+        try:
+            IPv6Address(host)
+        except ValueError as exc:
+            raise OpenLineageConstructionError(
+                "dataset namespace must contain a valid bracketed IPv6 host"
+            ) from exc
+        return
+
+    if authority.count(":") != 1:
+        raise OpenLineageConstructionError(
+            "dataset namespace IPv6 hosts must use bracketed URI syntax"
+        )
+    host, port_text = authority.rsplit(":", 1)
+    if not port_text.isdigit():
+        raise OpenLineageConstructionError(
+            "dataset namespace port must contain ASCII digits only"
+        )
+
+    if host.count(".") == 3 and all(part.isdigit() for part in host.split(".")):
+        try:
+            IPv4Address(host)
+        except ValueError as exc:
+            raise OpenLineageConstructionError(
+                "dataset namespace must contain a valid IPv4 host"
+            ) from exc
+        return
+
+    dns_name = host[:-1] if host.endswith(".") else host
+    labels = dns_name.split(".")
+    if (
+        not dns_name
+        or len(dns_name) > 253
+        or any(
+            not label
+            or len(label) > 63
+            or _DNS_LABEL_RE.fullmatch(label) is None
+            for label in labels
+        )
+    ):
+        raise OpenLineageConstructionError(
+            "dataset namespace must contain a valid ASCII DNS host"
+        )
 
 
 def kafka_namespace_from_bootstrap(bootstrap_servers: str) -> str:

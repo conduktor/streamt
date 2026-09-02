@@ -24,6 +24,7 @@ from streamt.integrations.openlineage import (
     EVENT_SCHEMA_URLS,
     DatasetIdentity,
     JobIdentity,
+    OpenLineageConstructionError,
     OpenLineageResourceError,
     OpenLineageValidationError,
     RunIdentity,
@@ -35,6 +36,7 @@ from streamt.integrations.openlineage import (
     standard_facet,
     validate_event,
     validate_event_sequence,
+    validate_kafka_namespace,
     validate_standard_facet,
 )
 from streamt.integrations.openlineage import validation as ol_validation
@@ -175,6 +177,41 @@ def _representative_events() -> tuple[dict[str, object], ...]:
             outputs=[output_dataset],
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        "kafka://Broker-01.Example.COM:09092",
+        "kafka://127.0.0.1:9092",
+        "kafka://[2001:DB8::1]:9092",
+    ],
+)
+def test_kafka_namespace_accepts_and_preserves_strict_ascii_authorities(
+    namespace: str,
+) -> None:
+    assert validate_kafka_namespace(namespace) == namespace
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        "kafka://ho st:9092",
+        "kafka://ho\tst:9092",
+        "kafka://ho\nst:9092",
+        "kafka://bröker:9092",
+        "kafka://-broker.example:9092",
+        "kafka://broker_.example:9092",
+        "kafka://broker..example:9092",
+        "kafka://999.1.1.1:9092",
+        "kafka://2001:db8::1:9092",
+    ],
+)
+def test_kafka_namespace_rejects_non_uri_or_invalid_host_authorities(
+    namespace: str,
+) -> None:
+    with pytest.raises(OpenLineageConstructionError):
+        validate_kafka_namespace(namespace)
 
 
 def test_all_pinned_resources_have_exact_bytes_digests_and_valid_schemas() -> None:
