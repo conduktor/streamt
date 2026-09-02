@@ -13,12 +13,20 @@ import requests
 from confluent_kafka.admin import AdminClient, NewTopic
 from requests.auth import HTTPBasicAuth
 
-from streamt.compiler.manifest import GatewayRuleArtifact
+from streamt.compiler.manifest import ArtifactOwnership, GatewayRuleArtifact
 from streamt.deployer.gateway import (
     GatewayDeployer,
     ManagedGatewayRuleObservation,
     build_desired_gateway_rule,
 )
+from streamt.deployer.gateway_adoption import (
+    GatewayAdoptionTarget,
+    build_gateway_adoption_action_evidence,
+    build_gateway_adoption_review,
+    gateway_alias_mapping_checksum,
+    require_unchanged_gateway_adoption_observation,
+)
+from streamt.deployer.state import artifact_checksum, resource_id
 
 _ENABLE_ENV = "STREAMT_TEST_GATEWAY_STRICT_OBSERVER"
 _ADMIN_URL_ENV = "STREAMT_TEST_GATEWAY_ADMIN_URL"
@@ -195,6 +203,256 @@ def test_gateway_315_strict_snapshot_observes_default_scope_exactly_once() -> No
         if topic_created:
             kafka.delete_topics([physical_name])[physical_name].result(timeout=15)
         setup.close()
+
+
+@pytest.mark.integration
+@pytest.mark.gateway
+def test_gateway_315_alias_only_adoption_uses_two_read_only_snapshots() -> None:
+    """Validate alias-only adoption evidence against real Gateway observations."""
+    if os.environ.get(_ENABLE_ENV) != "1":
+        pytest.skip(f"set {_ENABLE_ENV}=1 to run the real Gateway adoption gate")
+
+    admin_url = os.environ.get(_ADMIN_URL_ENV, "http://127.0.0.1:8888").rstrip("/")
+    username = os.environ.get(_ADMIN_USER_ENV, "admin")
+    password = os.environ.get(_ADMIN_PASSWORD_ENV, "conduktor")
+    kafka_bootstrap = os.environ.get(_KAFKA_BOOTSTRAP_ENV, "127.0.0.1:9092")
+    suffix = uuid.uuid4().hex[:12]
+    project_name = "gateway-real-gate"
+    environment = "integration"
+    owner_name = f"test-adopt-owner-{suffix}"
+    rule_name = f"test-adopt-rule-{suffix}"
+    alias_name = f"test-adopt-alias-{suffix}"
+    observed_physical_name = f"test-adopt-observed-{suffix}"
+    desired_physical_name = f"test-adopt-desired-{suffix}"
+    unrelated_rule_name = f"test-adopt-other-rule-{suffix}"
+    unrelated_alias_name = f"test-adopt-other-alias-{suffix}"
+    unrelated_physical_name = f"test-adopt-other-physical-{suffix}"
+    alias_endpoint = f"{admin_url}/gateway/v2/alias-topic"
+    interceptor_endpoint = f"{admin_url}/gateway/v2/interceptor"
+    topic_names = (
+        observed_physical_name,
+        desired_physical_name,
+        unrelated_physical_name,
+    )
+
+    setup_target_artifact = GatewayRuleArtifact(
+        name=rule_name,
+        virtual_topic=alias_name,
+        physical_topic=observed_physical_name,
+    )
+    adoption_artifact = GatewayRuleArtifact(
+        name=rule_name,
+        virtual_topic=alias_name,
+        physical_topic=desired_physical_name,
+        ownership=ArtifactOwnership(
+            project=project_name,
+            owner_type="model",
+            owner_name=owner_name,
+            mode="adopted",
+        ),
+    )
+    unrelated_artifact = GatewayRuleArtifact(
+        name=unrelated_rule_name,
+        virtual_topic=unrelated_alias_name,
+        physical_topic=unrelated_physical_name,
+        interceptors=[
+            {"type": "filter", "config": {"where": "amount >= 0"}},
+        ],
+    )
+
+    kafka = AdminClient({"bootstrap.servers": kafka_bootstrap})
+    cleanup = requests.Session()
+    cleanup.auth = HTTPBasicAuth(username, password)
+    created_topics: list[str] = []
+    cleanup_interceptors: list[tuple[str, dict[str, object]]] = []
+    try:
+        futures = kafka.create_topics(
+            [NewTopic(name, num_partitions=1, replication_factor=1) for name in topic_names]
+        )
+        for name in topic_names:
+            futures[name].result(timeout=15)
+            created_topics.append(name)
+
+        with GatewayDeployer(
+            admin_url=admin_url,
+            username=username,
+            password=password,
+        ) as deployer:
+            setup_target = build_desired_gateway_rule(
+                setup_target_artifact,
+                deployer.cluster_binding,
+            )
+            unrelated_desired = build_desired_gateway_rule(
+                unrelated_artifact,
+                deployer.cluster_binding,
+            )
+            cleanup_interceptors = [
+                (interceptor.name, dict(interceptor.scope))
+                for interceptor in unrelated_desired.interceptors
+            ]
+
+            initial = deployer.observe_managed_gateway_snapshot()
+            assert (
+                deployer.apply_managed_gateway_rule(
+                    initial.rule(rule_name, alias_name),
+                    setup_target,
+                )
+                == "created"
+            )
+            assert (
+                deployer.apply_managed_gateway_rule(
+                    initial.rule(unrelated_rule_name, unrelated_alias_name),
+                    unrelated_desired,
+                )
+                == "created"
+            )
+
+            adoption_desired = build_desired_gateway_rule(
+                adoption_artifact,
+                deployer.cluster_binding,
+            )
+            target = GatewayAdoptionTarget(
+                resource_id=resource_id(
+                    project_name,
+                    environment,
+                    "gateway_rule",
+                    owner_name,
+                ),
+                logical_owner=owner_name,
+                binding=deployer.cluster_binding,
+                artifact=adoption_artifact,
+                desired=adoption_desired,
+                desired_artifact_checksum=artifact_checksum(adoption_artifact.to_dict()),
+                existing_record=None,
+            )
+
+            requests_seen: list[tuple[str, str, dict[str, object]]] = []
+            request = deployer._session.request
+
+            def record_request(
+                method: str,
+                url: str,
+                **kwargs: object,
+            ) -> requests.Response:
+                requests_seen.append((method, url, kwargs))
+                return request(method, url, **kwargs)
+
+            deployer._session.request = record_request  # type: ignore[method-assign]
+            first_snapshot = deployer.observe_managed_gateway_snapshot()
+            second_snapshot = deployer.observe_managed_gateway_snapshot()
+
+            first = first_snapshot.rule(rule_name, alias_name)
+            second = second_snapshot.rule(rule_name, alias_name)
+            first_unrelated = first_snapshot.rule(
+                unrelated_rule_name,
+                unrelated_alias_name,
+            )
+            second_unrelated = second_snapshot.rule(
+                unrelated_rule_name,
+                unrelated_alias_name,
+            )
+            review = build_gateway_adoption_review(target, first)
+            confirmed = require_unchanged_gateway_adoption_observation(
+                target,
+                first,
+                second,
+            )
+            action_evidence = build_gateway_adoption_action_evidence(
+                target,
+                confirmed,
+            )
+
+        expected_requests = [
+            ("GET", alias_endpoint),
+            ("GET", interceptor_endpoint),
+        ] * 2
+        assert [(method, url) for method, url, _kwargs in requests_seen] == expected_requests
+        assert all(
+            kwargs
+            == {
+                "timeout": 10,
+                "allow_redirects": False,
+                "stream": True,
+            }
+            for _method, _url, kwargs in requests_seen
+        )
+        assert all(method == "GET" for method, _url, _kwargs in requests_seen)
+
+        assert first == setup_target
+        assert second == setup_target
+        assert first.exists is True
+        assert first.physical_name == observed_physical_name
+        assert first.physical_cluster == "main"
+        assert first.interceptors == ()
+        assert confirmed == second
+        assert len(first_unrelated.interceptors) == 1
+        assert first_unrelated == unrelated_desired
+        assert second_unrelated == unrelated_desired
+
+        assert review.resource_id == target.resource_id
+        assert review.effective_vcluster == "passthrough"
+        assert review.alias_name == alias_name
+        assert review.physical_cluster == "main"
+        assert review.observed_mapping_checksum == gateway_alias_mapping_checksum(
+            observed_physical_name,
+            "main",
+        )
+        assert review.desired_mapping_checksum == gateway_alias_mapping_checksum(
+            desired_physical_name,
+            "main",
+        )
+        assert review.pending_change_categories == ("alias_mapping",)
+        assert review.observed_aggregate_fingerprint == first.fingerprint
+        assert review.desired_aggregate_fingerprint == adoption_desired.fingerprint
+
+        assert action_evidence.version == 1
+        assert action_evidence.backend_identity == target.binding.backend_identity
+        assert action_evidence.rule_name == rule_name
+        assert action_evidence.alias_name == alias_name
+        assert action_evidence.current.exists is True
+        assert action_evidence.current.fingerprint == confirmed.fingerprint
+        assert action_evidence.current.managed_interceptor_count == 0
+        assert action_evidence.desired.exists is True
+        assert action_evidence.desired.fingerprint == adoption_desired.fingerprint
+        assert action_evidence.desired.managed_interceptor_count == 0
+        assert action_evidence.current.fingerprint != action_evidence.desired.fingerprint
+    finally:
+        active_failure = sys.exc_info()[0] is not None
+        cleanup_failures: list[str] = []
+        for interceptor_name, scope in reversed(cleanup_interceptors):
+            failure = _delete_for_cleanup(
+                cleanup,
+                f"{interceptor_endpoint}/{interceptor_name}",
+                scope,
+            )
+            if failure is not None:
+                cleanup_failures.append(f"interceptor {interceptor_name}: {failure}")
+        for cleanup_alias in (alias_name, unrelated_alias_name):
+            failure = _delete_for_cleanup(
+                cleanup,
+                alias_endpoint,
+                {"name": cleanup_alias, "vCluster": "passthrough"},
+            )
+            if failure is not None:
+                cleanup_failures.append(f"alias {cleanup_alias}: {failure}")
+        if created_topics:
+            try:
+                deleted_topics = kafka.delete_topics(created_topics)
+            except Exception as error:
+                cleanup_failures.append(
+                    f"topic cleanup failed with {type(error).__name__}"
+                )
+            else:
+                for topic_name in created_topics:
+                    try:
+                        deleted_topics[topic_name].result(timeout=15)
+                    except Exception as error:
+                        cleanup_failures.append(
+                            f"topic {topic_name}: cleanup failed with {type(error).__name__}"
+                        )
+        cleanup.close()
+        if cleanup_failures and not active_failure:
+            pytest.fail("; ".join(cleanup_failures))
 
 
 @pytest.mark.integration
@@ -412,9 +670,7 @@ def test_gateway_315_exact_managed_delete_removes_only_target_aggregate(
             try:
                 deleted_topics = kafka.delete_topics(created_topics)
             except Exception as error:
-                cleanup_failures.append(
-                    f"topic cleanup failed with {type(error).__name__}"
-                )
+                cleanup_failures.append(f"topic cleanup failed with {type(error).__name__}")
             else:
                 for topic_name in created_topics:
                     try:

@@ -80,7 +80,7 @@ jobs:
         run: python scripts/check_mypy_baseline.py
 
   gateway-strict-observer:
-    name: Conduktor Gateway 3.15 strict observe/delete
+    name: Conduktor Gateway 3.15 strict observe/delete/adopt
     runs-on: ubuntu-latest
     timeout-minutes: 12
 
@@ -118,7 +118,7 @@ jobs:
             sleep 2
           done
 
-      - name: Run strict managed observe/delete gate
+      - name: Run strict managed observe/delete/adopt gate
         env:
           STREAMT_TEST_GATEWAY_STRICT_OBSERVER: '1'
           STREAMT_TEST_GATEWAY_ADMIN_URL: http://127.0.0.1:8888
@@ -134,18 +134,18 @@ jobs:
         if: always()
         shell: bash
         run: |
-          mkdir -p gateway-strict-observe-delete-artifacts
+          mkdir -p gateway-strict-observe-delete-adopt-artifacts
           docker compose ps \
-            > gateway-strict-observe-delete-artifacts/compose-status.txt 2>&1 || true
+            > gateway-strict-observe-delete-adopt-artifacts/compose-status.txt 2>&1 || true
           docker compose logs --no-color kafka conduktor-gateway \
-            > gateway-strict-observe-delete-artifacts/compose.log 2>&1 || true
+            > gateway-strict-observe-delete-adopt-artifacts/compose.log 2>&1 || true
 
       - name: Upload Gateway service logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: gateway-strict-observe-delete-logs
-          path: gateway-strict-observe-delete-artifacts/
+          name: gateway-strict-observe-delete-adopt-logs
+          path: gateway-strict-observe-delete-adopt-artifacts/
           if-no-files-found: warn
 
       - name: Stop Gateway services
