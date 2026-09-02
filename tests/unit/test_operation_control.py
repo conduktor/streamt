@@ -235,12 +235,18 @@ def test_commit_clear_failure_preserves_written_state_and_active_marker(
         backend = service.backend
         original_write = backend._write_control  # type: ignore[attr-defined]
 
-        def fail_clear(path: Path, control: OperationControlState) -> None:
+        def fail_clear(
+            path: Path,
+            control: OperationControlState,
+            *,
+            operation_id: str | None,
+        ) -> None:
             if control.status == "clear":
                 raise StateBackendUnknownCommitError(
-                    "local operation control state commit could not be confirmed"
+                    "local operation control state commit could not be confirmed",
+                    operation_id=operation_id,
                 )
-            original_write(path, control)
+            original_write(path, control, operation_id=operation_id)
 
         monkeypatch.setattr(backend, "_write_control", fail_clear)
         replacement = LocalState(
@@ -248,9 +254,10 @@ def test_commit_clear_failure_preserves_written_state_and_active_marker(
             environment="dev",
             serial=1,
         )
-        with pytest.raises(StateBackendUnknownCommitError):
+        with pytest.raises(StateBackendUnknownCommitError) as captured:
             operation.commit_operation(active, replacement)
 
+        assert captured.value.operation_id == intent.operation_id
         assert operation.read().state == replacement
         assert operation.read_control().control.status == "in_progress"
 

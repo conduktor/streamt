@@ -27,6 +27,7 @@ class StructuredError:
     location: Optional[str] = None
     suggestion: Optional[str] = None
     docs_url: Optional[str] = None
+    operation_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {"code": self.code, "message": self.message}
@@ -36,6 +37,8 @@ class StructuredError:
             d["suggestion"] = self.suggestion
         if self.docs_url:
             d["docs_url"] = self.docs_url
+        if self.operation_id:
+            d["operation_id"] = self.operation_id
         return d
 
 

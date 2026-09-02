@@ -743,6 +743,11 @@ unknown outcome direct the operator to status/recovery; state conflict requires
 fresh planning/evidence; and release failure after verified commit explicitly
 forbids replaying the mutation.
 
+When a durable intent exists, lock-lost, unknown-outcome, and
+release-after-commit errors carry its canonical operation UUID as a distinct
+structured `operation_id` and repeat it in sanitized text output. A malformed
+provider value is never promoted into that structured recovery field.
+
 ## Observability
 
 Structured command output includes the safe state reference, operation ID,

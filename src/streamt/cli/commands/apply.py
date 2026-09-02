@@ -23,6 +23,7 @@ from streamt.cli.helpers import (
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
+    state_operation_error_details,
 )
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.core.deployment_state import (
@@ -757,7 +758,8 @@ def apply(
                 except OSError as error:
                     raise StateBackendUnknownCommitError(
                         "deployment succeeded but ownership state commit "
-                        "could not be confirmed"
+                        "could not be confirmed",
+                        operation_id=operation_id,
                     ) from error
                 operation_finalized = True
                 if next_state is not None:
@@ -833,7 +835,7 @@ def apply(
         fmt.flush()
         sys.exit(1)
     except StateBackendReleaseAfterCommitError as e:
-        safe_message = redact_sensitive_text(e)
+        safe_message, error_operation_id = state_operation_error_details(e)
         release_data = dict(verified_commit_data or {})
         release_data["committed"] = e.committed
         fmt.set_data(release_data)
@@ -841,6 +843,7 @@ def apply(
             StructuredError(
                 code=ErrorCode.STATE_RELEASE_FAILED_AFTER_COMMIT,
                 message=safe_message,
+                operation_id=error_operation_id,
             )
         )
         fmt.print_error(safe_message)
@@ -855,9 +858,13 @@ def apply(
         fmt.flush()
         sys.exit(1)
     except StateBackendLockLostError as e:
-        safe_message = redact_sensitive_text(e)
+        safe_message, error_operation_id = state_operation_error_details(e)
         fmt.add_error(
-            StructuredError(code=ErrorCode.STATE_LOCK_LOST, message=safe_message)
+            StructuredError(
+                code=ErrorCode.STATE_LOCK_LOST,
+                message=safe_message,
+                operation_id=error_operation_id,
+            )
         )
         fmt.print_error(safe_message)
         fmt.flush()
@@ -871,11 +878,12 @@ def apply(
         fmt.flush()
         sys.exit(1)
     except StateBackendUnknownCommitError as e:
-        safe_message = redact_sensitive_text(e)
+        safe_message, error_operation_id = state_operation_error_details(e)
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.STATE_UNKNOWN_OUTCOME,
                 message=safe_message,
+                operation_id=error_operation_id,
             )
         )
         fmt.print_error(safe_message)

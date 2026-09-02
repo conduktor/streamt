@@ -67,6 +67,10 @@ class StateBackendLockTimeoutError(StateBackendError):
 class StateBackendLockLostError(StateBackendError):
     """The caller no longer owns the state operation lock."""
 
+    def __init__(self, message: str, *, operation_id: str | None = None) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
+
 
 class StateBackendRecoveryRequiredError(StateBackendError):
     """An unfinished operation must be reconciled before mutation."""
@@ -74,6 +78,10 @@ class StateBackendRecoveryRequiredError(StateBackendError):
 
 class StateBackendUnknownCommitError(StateBackendError):
     """The backend cannot prove whether a state transition committed."""
+
+    def __init__(self, message: str, *, operation_id: str | None = None) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
 
 
 class StateBackendReleaseAfterCommitError(StateBackendError):
@@ -85,6 +93,10 @@ class StateBackendReleaseAfterCommitError(StateBackendError):
     """
 
     committed: Literal[True] = True
+
+    def __init__(self, message: str, *, operation_id: str | None = None) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
 
 
 def _require_address_segment(value: object, label: str) -> str:
@@ -877,6 +889,7 @@ class _LocalDeploymentStateOperation:
         self._backend = backend
         self._address = address
         self._lock = lock
+        self._active_operation_id: str | None = None
 
     def read(self) -> StateObservation:
         return self._backend._read(self._address)
@@ -895,7 +908,8 @@ class _LocalDeploymentStateOperation:
     def check_lock(self) -> None:
         if not self._lock.is_held:
             raise StateBackendLockLostError(
-                "deployment state operation lock was lost"
+                "deployment state operation lock was lost",
+                operation_id=self._active_operation_id,
             )
 
     def _validate_snapshot(self, snapshot: OperationSnapshot) -> None:
@@ -992,6 +1006,7 @@ class _LocalDeploymentStateOperation:
             replacement,
             self._lock,
         )
+        self._active_operation_id = intent.operation_id
         if return_snapshot:
             return OperationSnapshot(state=snapshot.state, control=active)
         # Compatibility delegate for the current CLI. New workflows retain
@@ -1079,6 +1094,7 @@ class _LocalDeploymentStateOperation:
             replacement,
             self._lock,
         )
+        self._active_operation_id = None
         if return_snapshot:
             return OperationSnapshot(
                 state=snapshot.state,
@@ -1110,6 +1126,7 @@ class _LocalDeploymentStateOperation:
             OperationControlState.clear(self._address),
             self._lock,
         )
+        self._active_operation_id = None
         if return_snapshot:
             return OperationSnapshot(state=snapshot.state, control=cleared)
         # Compatibility delegate. It intentionally retains the existing broad
@@ -1162,6 +1179,7 @@ class _LocalDeploymentStateOperation:
             OperationControlState.clear(self._address),
             self._lock,
         )
+        self._active_operation_id = None
         return OperationSnapshot(state=committed_state, control=cleared)
 
     def clear_before_mutation(
@@ -1292,7 +1310,12 @@ class LocalDeploymentStateBackend:
         return self._read_control(address)
 
     @staticmethod
-    def _write_control(path: Path, control: OperationControlState) -> None:
+    def _write_control(
+        path: Path,
+        control: OperationControlState,
+        *,
+        operation_id: str | None,
+    ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(control.to_dict(), indent=2, sort_keys=True)
         temp_name: str | None = None
@@ -1329,7 +1352,8 @@ class LocalDeploymentStateBackend:
                 except OSError:
                     pass
             raise StateBackendUnknownCommitError(
-                "local operation control state commit could not be confirmed"
+                "local operation control state commit could not be confirmed",
+                operation_id=operation_id,
             ) from error
 
     def _validate_control_observation(
@@ -1365,16 +1389,23 @@ class LocalDeploymentStateBackend:
             raise StateIdentityError(
                 "replacement control state belongs to another address"
             )
+        intent = observation.control.intent or replacement.intent
+        operation_id = intent.operation_id if intent is not None else None
         if not lock.is_held:
             raise StateBackendLockLostError(
-                "deployment state operation lock was lost"
+                "deployment state operation lock was lost",
+                operation_id=operation_id,
             )
         current = self._read_control(address)
         if current.revision != observation.revision:
             raise StateBackendConflictError(
                 "operation control state changed after it was observed"
             )
-        self._write_control(self._control_path(address), replacement)
+        self._write_control(
+            self._control_path(address),
+            replacement,
+            operation_id=operation_id,
+        )
         return self._read_control(address)
 
     def _read(self, address: StateAddress) -> StateObservation:

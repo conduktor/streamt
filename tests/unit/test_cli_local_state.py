@@ -300,23 +300,33 @@ def test_first_apply_persists_state_and_repeat_plan_has_update_authority(
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_code"),
+    ("error", "expected_code", "expected_operation_id"),
     [
         (
             StateBackendLockTimeoutError("lock timeout password=lock-secret"),
             "E422_STATE_LOCK_TIMEOUT",
+            None,
         ),
         (
-            StateBackendLockLostError("lock lost token=lock-secret"),
+            StateBackendLockLostError(
+                "lock lost token=lock-secret",
+                operation_id="00000000-0000-4000-8000-000000000099",
+            ),
             "E423_STATE_LOCK_LOST",
+            "00000000-0000-4000-8000-000000000099",
         ),
         (
             StateBackendConflictError("state conflict password=state-secret"),
             "E424_STATE_CONFLICT",
+            None,
         ),
         (
-            StateBackendUnknownCommitError("unknown token=commit-secret"),
+            StateBackendUnknownCommitError(
+                "unknown token=commit-secret",
+                operation_id="00000000-0000-4000-8000-000000000099",
+            ),
             "E425_STATE_UNKNOWN_OUTCOME",
+            "00000000-0000-4000-8000-000000000099",
         ),
     ],
 )
@@ -324,6 +334,7 @@ def test_apply_reports_distinct_redacted_state_backend_failures(
     tmp_path: Path,
     error: Exception,
     expected_code: str,
+    expected_operation_id: str | None,
 ) -> None:
     _write_project(tmp_path)
 
@@ -349,6 +360,7 @@ def test_apply_reports_distinct_redacted_state_backend_failures(
     assert result.exit_code == 1
     payload = _json(result)
     assert payload["errors"][0]["code"] == expected_code
+    assert payload["errors"][0].get("operation_id") == expected_operation_id
     assert "secret" not in json.dumps(payload)
 
 
@@ -370,7 +382,8 @@ def test_apply_release_failure_after_commit_reports_committed_without_success(
         with delegate_service.operation() as delegate:
             yield delegate
         raise StateBackendReleaseAfterCommitError(
-            "operation release failed password=release-secret"
+            "operation release failed password=release-secret",
+            operation_id="00000000-0000-4000-8000-000000000099",
         )
 
     state_service = MagicMock()
@@ -391,6 +404,9 @@ def test_apply_release_failure_after_commit_reports_committed_without_success(
     assert result.exit_code == 1
     payload = _json(result)
     assert payload["errors"][0]["code"] == "E426_STATE_RELEASE_FAILED_AFTER_COMMIT"
+    assert payload["errors"][0]["operation_id"] == (
+        "00000000-0000-4000-8000-000000000099"
+    )
     assert payload["data"]["committed"] is True
     assert payload["data"]["state_serial"] == 1
     assert payload["data"]["created"] == ["topic:payments.clean.v1"]

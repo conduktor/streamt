@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, TypeVar
+from uuid import UUID
 
 import click
 from pydantic import SecretStr
@@ -26,6 +27,21 @@ _DeployerT = TypeVar("_DeployerT")
 # Preserve the existing helper import surface while keeping the implementation
 # in a lower-level module that deployers and observers can use safely.
 redact_sensitive_text = _redact_sensitive_text
+
+
+def state_operation_error_details(error: object) -> tuple[str, str | None]:
+    """Return a redacted message plus durable operation recovery evidence."""
+    message = redact_sensitive_text(error)
+    raw_operation_id = getattr(error, "operation_id", None)
+    if not isinstance(raw_operation_id, str) or not raw_operation_id:
+        return message, None
+    try:
+        if str(UUID(raw_operation_id)) != raw_operation_id:
+            return message, None
+    except ValueError:
+        return message, None
+    operation_id = redact_sensitive_text(raw_operation_id)
+    return f"{message} Operation ID: {operation_id}.", operation_id
 
 
 def get_project_path(project_dir: Optional[str]) -> Path:

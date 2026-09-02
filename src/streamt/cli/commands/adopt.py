@@ -21,6 +21,7 @@ from streamt.cli.helpers import (
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
+    state_operation_error_details,
 )
 from streamt.compiler.manifest import (
     ArtifactOwnership,
@@ -1056,6 +1057,7 @@ def adopt(
         except OSError as exc:
             raise StateBackendUnknownCommitError(
                 "Could not confirm the atomic adoption state commit",
+                operation_id=operation_id,
             ) from exc
         finally:
             if active_snapshot is not None and not operation_finalized:
@@ -1140,13 +1142,14 @@ def adopt(
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except StateBackendReleaseAfterCommitError as exc:
-        safe_message = redact_sensitive_text(exc)
+        safe_message, error_operation_id = state_operation_error_details(exc)
         data["committed"] = exc.committed
         fmt.set_data(data)
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.STATE_RELEASE_FAILED_AFTER_COMMIT,
                 message=safe_message,
+                operation_id=error_operation_id,
             )
         )
         fmt.print_error(safe_message)
@@ -1161,9 +1164,13 @@ def adopt(
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except StateBackendLockLostError as exc:
-        safe_message = redact_sensitive_text(exc)
+        safe_message, error_operation_id = state_operation_error_details(exc)
         fmt.add_error(
-            StructuredError(code=ErrorCode.STATE_LOCK_LOST, message=safe_message)
+            StructuredError(
+                code=ErrorCode.STATE_LOCK_LOST,
+                message=safe_message,
+                operation_id=error_operation_id,
+            )
         )
         fmt.print_error(safe_message)
         fmt.flush()
@@ -1177,11 +1184,12 @@ def adopt(
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except StateBackendUnknownCommitError as exc:
-        safe_message = redact_sensitive_text(exc)
+        safe_message, error_operation_id = state_operation_error_details(exc)
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.STATE_UNKNOWN_OUTCOME,
                 message=safe_message,
+                operation_id=error_operation_id,
             )
         )
         fmt.print_error(safe_message)

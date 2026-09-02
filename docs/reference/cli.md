@@ -73,6 +73,12 @@ On error, `status` is `"error"` and `errors` contains structured entries with ma
 }
 ```
 
+State-operation failures that occur after a durable intent exists also include
+the canonical `operation_id`. The same identifier appears in text output so an
+operator can inspect status or run recovery without guessing which attempt the
+error describes. Provider credentials, endpoints, lock handles, and revision
+tokens are never included.
+
 This makes streamt suitable for LLM agents, CI/CD pipelines, and programmatic integrations.
 
 ## Commands
@@ -1600,6 +1606,11 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E419_STATE_RECOVERY_REQUIRED` | An unfinished local operation marker blocks apply/adopt pending explicit recovery |
 | `E420_STATE_BACKEND_UNAVAILABLE` | The configured deployment-state provider cannot be used; no fallback occurs |
 | `E421_REMOTE_STATE_REQUIRED` | Environment policy rejects apply/adopt while local deployment state is selected |
+| `E422_STATE_LOCK_TIMEOUT` | The bounded wait for deployment-state operation authority expired |
+| `E423_STATE_LOCK_LOST` | The operation no longer owns its deployment-state lock; inspect the reported operation ID before continuing |
+| `E424_STATE_CONFLICT` | The observed deployment state or operation control changed; re-observe or re-plan |
+| `E425_STATE_UNKNOWN_OUTCOME` | A state transition may have committed; do not retry it and resolve the reported operation ID |
+| `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` | The commit is verified but authority release is not; `data.committed` is `true` and the commit must not be replayed |
 
 **Parse Errors (E5xx):**
 

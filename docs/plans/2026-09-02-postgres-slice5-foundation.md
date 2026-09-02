@@ -330,7 +330,9 @@ but it must preserve these distinct machine-readable kinds and retry advice:
 
 All messages and structured details pass central redaction and exclude the DSN,
 host, database/schema/user names, SQL, advisory key, lock token, and raw provider
-exception.
+exception. Once intent is durable, lock-lost, unknown-outcome, and
+release-after-commit errors preserve its validated operation UUID in both the
+structured `operation_id` field and sanitized human output.
 
 ## Work packages and commit order
 
