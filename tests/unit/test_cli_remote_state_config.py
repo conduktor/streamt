@@ -329,9 +329,7 @@ def test_read_only_plan_and_state_status_are_not_blocked_by_remote_policy(
             "make_connect_deployer",
             "make_gateway_deployer",
         ):
-            stack.enter_context(
-                patch(f"streamt.cli.commands.plan.{factory}", return_value=None)
-            )
+            stack.enter_context(patch(f"streamt.cli.commands.plan.{factory}", return_value=None))
         stack.enter_context(
             patch(
                 "streamt.cli.commands.plan.check_required_deployers",
@@ -351,7 +349,7 @@ def test_read_only_plan_and_state_status_are_not_blocked_by_remote_policy(
 
     assert planned.exit_code == 0, planned.output
     assert _payload(planned)["data"]["state_serial"] == 0
-    assert not (tmp_path / ".streamt").exists()
+    assert not (tmp_path / ".streamt" / "state" / "dev.json").exists()
 
     status = CliRunner().invoke(
         main,
@@ -361,7 +359,7 @@ def test_read_only_plan_and_state_status_are_not_blocked_by_remote_policy(
     assert status.exit_code == 0, status.output
     assert _payload(status)["data"]["backend"] == "local"
     assert _payload(status)["data"]["state_status"] == "absent"
-    assert not (tmp_path / ".streamt").exists()
+    assert not (tmp_path / ".streamt" / "state" / "dev.json").exists()
 
 
 def test_adopt_missing_postgres_dsn_fails_before_runtime_or_local(

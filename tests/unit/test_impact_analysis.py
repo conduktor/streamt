@@ -77,9 +77,7 @@ def _manifest(*, physical_name: str = PHYSICAL_CLEAN) -> Manifest:
 
 
 def _changed_plan(*, physical_name: str = PHYSICAL_CLEAN) -> DeploymentPlan:
-    return DeploymentPlan(
-        topic_changes=[TopicChange(topic=physical_name, action="update")]
-    )
+    return DeploymentPlan(topic_changes=[TopicChange(topic=physical_name, action="update")])
 
 
 def _impact(
@@ -173,9 +171,7 @@ def test_no_kafka_access_is_explicitly_unavailable_not_clean() -> None:
         "reason": "kafka_not_configured",
         "failures": [],
     }
-    assert "consumer evidence: unavailable (kafka_not_configured)" in plan.details(
-        color=False
-    )
+    assert "consumer evidence: unavailable (kafka_not_configured)" in plan.details(color=False)
 
 
 def test_partial_consumer_query_failure_is_preserved_and_redacted() -> None:
@@ -184,9 +180,7 @@ def test_partial_consumer_query_failure_is_preserved_and_redacted() -> None:
 
     def lag(group: str, topic: str) -> ConsumerGroupLag:
         if group == "z-broken":
-            raise RuntimeError(
-                "https://admin:super-secret@broker.test password=hunter2 token=abc"
-            )
+            raise RuntimeError("https://admin:super-secret@broker.test password=hunter2 token=abc")
         return ConsumerGroupLag(group_id=group, topic=topic, total_lag=4)
 
     kafka.get_consumer_group_lag.side_effect = lag
@@ -362,6 +356,7 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
         environment="prod",
         runtime=_project().runtime,
         state=None,
+        actions=(),
         offline=True,
     )
 
@@ -370,7 +365,7 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
     )
     lag_changed = _changed_plan()
     planner._compute_impact_radius(lag_changed)
-    reviewed.verify_current_plan(lag_changed, state_observation=None)
+    reviewed.verify_current_plan(lag_changed, actions=(), state_observation=None)
 
     evidence_changed = _changed_plan()
     evidence_changed.impact_radius = [
@@ -383,7 +378,11 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
         )
     ]
     with pytest.raises(StalePlanError, match="impact evidence"):
-        reviewed.verify_current_plan(evidence_changed, state_observation=None)
+        reviewed.verify_current_plan(
+            evidence_changed,
+            actions=(),
+            state_observation=None,
+        )
 
 
 def test_offline_plan_includes_graph_impact_with_unavailable_live_evidence() -> None:

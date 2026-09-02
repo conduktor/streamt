@@ -103,6 +103,7 @@ def test_connector_plan_text_and_json_resanitize_legacy_raw_diffs(tmp_path: Path
         environment="test",
         runtime={},
         state=None,
+        actions=(),
         offline=True,
     )
     reviewed_plan_path = tmp_path / "reviewed-plan.json"

@@ -56,9 +56,7 @@ def test_change_risks_cover_every_primary_class_with_fail_closed_evidence() -> N
             FlinkJobChange(
                 job_name="score-payments",
                 action="update",
-                current=FlinkJobState(
-                    name="score-payments", exists=True, status="RUNNING"
-                ),
+                current=FlinkJobState(name="score-payments", exists=True, status="RUNNING"),
             )
         ],
         connector_changes=[ConnectorChange(connector_name="legacy", action="delete")],
@@ -202,9 +200,7 @@ def test_existing_flink_resubmit_requires_state_evidence_and_blocks_apply() -> N
             FlinkJobChange(
                 job_name="score-payments",
                 action="submit",
-                current=FlinkJobState(
-                    name="score-payments", exists=True, status="FAILED"
-                ),
+                current=FlinkJobState(name="score-payments", exists=True, status="FAILED"),
             )
         ]
     )
@@ -233,6 +229,7 @@ def test_reviewed_plan_checks_risk_classification_drift() -> None:
         environment="prod",
         runtime={},
         state=None,
+        actions=(),
         offline=True,
     )
     payload = deployment_plan_payload(original)
@@ -246,6 +243,7 @@ def test_reviewed_plan_checks_risk_classification_drift() -> None:
     with pytest.raises(StalePlanError, match="risk classification"):
         reviewed.verify_current_plan(
             unverified_absence,
+            actions=(),
             state_observation=None,
         )
 
@@ -267,6 +265,7 @@ def test_github_summary_renders_checksum_verified_risk(tmp_path: Path) -> None:
         environment="prod",
         runtime={},
         state=None,
+        actions=(),
         offline=True,
     )
     reviewed.save(plan_path)

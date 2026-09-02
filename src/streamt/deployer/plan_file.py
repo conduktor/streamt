@@ -20,15 +20,17 @@ from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import secret_neutral_connector_changes
 from streamt.deployer.gateway import secret_neutral_gateway_changes
 from streamt.deployer.planner import DeploymentPlan
-from streamt.deployer.state import StateError
+from streamt.deployer.state import ResourceIdentity, StateError
 from streamt.deployer.state_backend import (
+    CURRENT_CONTROL_VERSION,
+    OperationAction,
     StateAddress,
     StateObservation,
     state_checksum,
 )
 
 PLAN_FILE_KIND = "streamt.reviewed-plan"
-PLAN_FILE_VERSION = 3
+PLAN_FILE_VERSION = 4
 _MAX_PLAN_FILE_BYTES = 10 * 1024 * 1024
 _SENSITIVE_KEY = re.compile(
     r"(^|[._-])(?:password|passwd|secret|token|api[_-]?key|authorization|credentials?"
@@ -129,9 +131,7 @@ def manifest_checksum(manifest: Manifest) -> str:
 
 def environment_fingerprint(runtime: object, environment: str) -> str:
     """Hash the non-secret runtime identity for environment freshness checks."""
-    runtime_data = (
-        runtime.model_dump(mode="json") if hasattr(runtime, "model_dump") else runtime
-    )
+    runtime_data = runtime.model_dump(mode="json") if hasattr(runtime, "model_dump") else runtime
     return _checksum(
         {
             "environment": environment,
@@ -239,6 +239,13 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             raise PlanFileError("Safety blocker payload must be an object")
         safety_blockers.append(normalized)
 
+    gateway_removal_assessments: list[dict[str, object]] = []
+    for assessment in plan.gateway_removal_assessments:
+        normalized = _redact_inline_credentials(assessment.to_dict())
+        if not isinstance(normalized, dict):  # pragma: no cover - to_dict is fixed
+            raise PlanFileError("Gateway removal assessment payload must be an object")
+        gateway_removal_assessments.append(normalized)
+
     change_risks: list[dict[str, object]] = []
     for risk in plan.ordered_change_risks:
         normalized = _redact_inline_credentials(risk.to_dict())
@@ -257,6 +264,7 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             "has_changes": plan.has_changes,
             "ownership_requirements": len(ownership_requirements),
             "safety_blockers": len(safety_blockers),
+            "gateway_removal_assessments": len(gateway_removal_assessments),
             "is_apply_blocked": plan.is_apply_blocked,
             "risk": risk_summary,
         },
@@ -266,6 +274,7 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
         "risk_summary": risk_summary,
         "ownership_requirements": ownership_requirements,
         "safety_blockers": safety_blockers,
+        "gateway_removal_assessments": gateway_removal_assessments,
     }
 
 
@@ -306,12 +315,8 @@ class StateReference:
     checksum: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.backend, str) or not _BACKEND_KIND.fullmatch(
-            self.backend
-        ):
-            raise PlanFileError(
-                "Plan state backend must be a lowercase backend identifier"
-            )
+        if not isinstance(self.backend, str) or not _BACKEND_KIND.fullmatch(self.backend):
+            raise PlanFileError("Plan state backend must be a lowercase backend identifier")
         if not isinstance(self.store_id, str):
             raise PlanFileError("Plan state store_id must be a canonical UUID")
         try:
@@ -326,12 +331,8 @@ class StateReference:
             raise PlanFileError(f"Plan state address is invalid: {error}") from error
         if type(self.serial) is not int or self.serial < 0:
             raise PlanFileError("Plan state serial must be a non-negative integer")
-        if not isinstance(self.checksum, str) or not _STATE_CHECKSUM.fullmatch(
-            self.checksum
-        ):
-            raise PlanFileError(
-                "Plan state checksum must be a sha256:<64 lowercase hex> value"
-            )
+        if not isinstance(self.checksum, str) or not _STATE_CHECKSUM.fullmatch(self.checksum):
+            raise PlanFileError("Plan state checksum must be a sha256:<64 lowercase hex> value")
 
     @property
     def parsed_address(self) -> StateAddress:
@@ -355,13 +356,9 @@ class StateReference:
         unknown = set(value) - expected
         missing = expected - set(value)
         if unknown:
-            raise PlanFileError(
-                f"Plan state has unknown field(s): {', '.join(sorted(unknown))}"
-            )
+            raise PlanFileError(f"Plan state has unknown field(s): {', '.join(sorted(unknown))}")
         if missing:
-            raise PlanFileError(
-                f"Plan state is missing field(s): {', '.join(sorted(missing))}"
-            )
+            raise PlanFileError(f"Plan state is missing field(s): {', '.join(sorted(missing))}")
         return cls(
             backend=value["backend"],
             store_id=value["store_id"],
@@ -392,18 +389,48 @@ class ReviewedPlanFile:
     manifest_checksum: str
     plan: dict[str, object]
     state: Optional[StateReference]
+    actions: tuple[OperationAction, ...]
     offline: bool = False
     selection: Optional[dict[str, str]] = None
     streamt_version: str = __version__
     checksum: str = ""
 
     def __post_init__(self) -> None:
+        if type(self.actions) is not tuple or any(
+            type(action) is not OperationAction for action in self.actions
+        ):
+            raise PlanFileError("Reviewed plan actions must be an exact immutable action tuple")
+        if [action.index for action in self.actions] != list(range(len(self.actions))):
+            raise PlanFileError("Reviewed plan action indexes must be contiguous from zero")
+        resource_ids = [action.resource_id for action in self.actions]
+        if len(set(resource_ids)) != len(resource_ids):
+            raise PlanFileError("Reviewed plan actions contain a duplicate resource identity")
+        try:
+            action_identities = tuple(
+                ResourceIdentity.parse(resource_id) for resource_id in resource_ids
+            )
+        except StateError:
+            raise PlanFileError(
+                "Reviewed plan action has an invalid canonical resource identity"
+            ) from None
+        if any(
+            identity.project != self.project or identity.environment != self.environment
+            for identity in action_identities
+        ):
+            raise PlanFileError("Reviewed plan action belongs to another project environment")
+        if any(
+            identity.kind == "gateway_rule"
+            and action.action in ("create", "update", "delete")
+            and action.gateway_evidence is None
+            for identity, action in zip(action_identities, self.actions, strict=True)
+        ):
+            raise PlanFileError("Reviewed plan Gateway mutations require exact action evidence")
+        if self.offline and self.actions:
+            raise PlanFileError("Offline reviewed plans must not contain actions")
         if self.offline and self.state is not None:
             raise PlanFileError("Offline reviewed plans must encode state as null")
         if not self.offline and self.state is None:
-            raise PlanFileError(
-                "Online reviewed plans require an exact ownership-state reference"
-            )
+            raise PlanFileError("Online reviewed plans require an exact ownership-state reference")
         if self.state is not None:
             address = self.state.parsed_address
             if address.project != self.project or address.environment != self.environment:
@@ -426,6 +453,7 @@ class ReviewedPlanFile:
         environment: str,
         runtime: object,
         state: Optional[StateReference],
+        actions: tuple[OperationAction, ...],
         offline: bool = False,
         selection: Optional[dict[str, str]] = None,
     ) -> ReviewedPlanFile:
@@ -437,6 +465,7 @@ class ReviewedPlanFile:
             manifest_checksum=manifest_checksum(manifest),
             plan=deployment_plan_payload(deployment_plan),
             state=state,
+            actions=actions,
             offline=offline,
             selection=selection,
         )
@@ -455,6 +484,9 @@ class ReviewedPlanFile:
             "selection": self.selection,
             "offline": self.offline,
             "plan": self.plan,
+            "actions": [
+                action.to_dict(control_version=CURRENT_CONTROL_VERSION) for action in self.actions
+            ],
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -465,9 +497,12 @@ class ReviewedPlanFile:
         """Atomically write a deterministic plan file."""
         path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = json.dumps(
-            self.to_dict(), ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True
-        ) + "\n"
+        content = (
+            json.dumps(
+                self.to_dict(), ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True
+            )
+            + "\n"
+        )
         temp_path: Optional[Path] = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -517,16 +552,15 @@ class ReviewedPlanFile:
         if data.get("kind") != PLAN_FILE_KIND:
             raise PlanFileError(f"Unsupported plan file kind: {data.get('kind')!r}")
         format_version = data.get("format_version")
-        if type(format_version) is int and format_version in (1, 2):
+        if type(format_version) is int and format_version in (1, 2, 3):
             raise PlanFileError(
-                f"Reviewed plan format version {format_version} predates exact ownership-state "
-                "binding and cannot authorize apply; regenerate it with the current "
+                f"Reviewed plan format version {format_version} predates exact reviewed "
+                "action binding and cannot authorize apply; regenerate it with the current "
                 "'streamt plan --out <path>' command"
             )
         if format_version != PLAN_FILE_VERSION:
             raise PlanFileError(
-                f"Unsupported plan format version {format_version!r}; "
-                f"expected {PLAN_FILE_VERSION}"
+                f"Unsupported plan format version {format_version!r}; expected {PLAN_FILE_VERSION}"
             )
 
         expected_fields = {
@@ -541,6 +575,7 @@ class ReviewedPlanFile:
             "selection",
             "offline",
             "plan",
+            "actions",
             "checksum",
         }
         unknown = set(data) - expected_fields
@@ -551,6 +586,8 @@ class ReviewedPlanFile:
             raise PlanFileError(f"Plan file is missing field(s): {', '.join(sorted(missing))}")
         if not isinstance(data["plan"], dict):
             raise PlanFileError("Plan file 'plan' field must be an object")
+        if not isinstance(data["actions"], list):
+            raise PlanFileError("Plan file 'actions' field must be an array")
         if not isinstance(data["checksum"], str):
             raise PlanFileError("Plan file checksum must be a string")
 
@@ -574,11 +611,17 @@ class ReviewedPlanFile:
             raise PlanFileError("Plan file 'offline' field must be boolean")
         if data["selection"] is not None and not isinstance(data["selection"], dict):
             raise PlanFileError("Plan file 'selection' field must be an object or null")
-        state = (
-            None
-            if data["state"] is None
-            else StateReference.from_dict(data["state"])
-        )
+        state = None if data["state"] is None else StateReference.from_dict(data["state"])
+        try:
+            actions = tuple(
+                OperationAction.from_dict(
+                    action,
+                    control_version=CURRENT_CONTROL_VERSION,
+                )
+                for action in data["actions"]
+            )
+        except StateError as error:
+            raise PlanFileError(f"Plan file action is invalid: {error}") from error
 
         return cls(
             project=data["project"],
@@ -587,6 +630,7 @@ class ReviewedPlanFile:
             manifest_checksum=data["manifest_checksum"],
             plan=data["plan"],
             state=state,
+            actions=actions,
             offline=data["offline"],
             selection=data["selection"],
             streamt_version=data["streamt_version"],
@@ -649,9 +693,7 @@ class ReviewedPlanFile:
                 f"{current.backend!r}"
             )
         if self.state.store_id != current.store_id:
-            raise StalePlanError(
-                "Plan state store does not match the current backend instance"
-            )
+            raise StalePlanError("Plan state store does not match the current backend instance")
         if self.state.address != current.address:
             raise StalePlanError(
                 f"Plan state address {self.state.address!r} does not match current address "
@@ -671,10 +713,19 @@ class ReviewedPlanFile:
         self,
         current_plan: DeploymentPlan,
         *,
+        actions: tuple[OperationAction, ...],
         state_observation: Optional[StateObservation],
     ) -> None:
         """Reject live-state drift that changes reviewed resource actions or diffs."""
         self.verify_state(state_observation)
+        if type(actions) is not tuple or any(
+            type(action) is not OperationAction for action in actions
+        ):
+            raise StalePlanError("Current planned actions are not an exact immutable action tuple")
+        if self.actions != actions:
+            raise StalePlanError(
+                "Reviewed plan is stale; ordered action identity or evidence changed after planning"
+            )
         current_payload = deployment_plan_payload(current_plan)
         reviewed_live_state = {
             "resources": self.plan.get("resources"),
@@ -683,6 +734,7 @@ class ReviewedPlanFile:
             "risk_summary": self.plan.get("risk_summary"),
             "ownership_requirements": self.plan.get("ownership_requirements"),
             "safety_blockers": self.plan.get("safety_blockers"),
+            "gateway_removal_assessments": self.plan.get("gateway_removal_assessments"),
         }
         current_live_state = {
             "resources": current_payload["resources"],
@@ -691,10 +743,11 @@ class ReviewedPlanFile:
             "risk_summary": current_payload["risk_summary"],
             "ownership_requirements": current_payload["ownership_requirements"],
             "safety_blockers": current_payload["safety_blockers"],
+            "gateway_removal_assessments": current_payload["gateway_removal_assessments"],
         }
         if canonical_json(reviewed_live_state) != canonical_json(current_live_state):
             raise StalePlanError(
                 "Reviewed plan is stale; live resource actions, diffs, impact evidence, "
-                "risk classification, ownership requirements, or safety blockers changed "
-                "after planning"
+                "risk classification, ownership requirements, safety blockers, or "
+                "Gateway removal assessments changed after planning"
             )

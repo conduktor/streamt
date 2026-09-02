@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Optional, Protocol
+from typing import Literal, Optional, Protocol
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
 from streamt.compiler.gateway_artifact import (
@@ -141,14 +141,10 @@ class ResolvedGatewayRuleRemoval:
         alias_name: str,
     ) -> None:
         if type(prior_artifact) is not GatewayRuleArtifact:
-            raise StateIdentityError(
-                "Resolved Gateway removal contains invalid compiled identity"
-            )
+            raise StateIdentityError("Resolved Gateway removal contains invalid compiled identity")
         try:
             identity = ResourceIdentity.parse(resource_id)
-            prior_artifact = parse_compiled_gateway_rule_artifact(
-                prior_artifact.to_dict()
-            )
+            prior_artifact = parse_compiled_gateway_rule_artifact(prior_artifact.to_dict())
             expected_checksum = artifact_checksum(prior_artifact.to_dict())
         except (AttributeError, GatewayArtifactFormatError, StateError, TypeError):
             raise StateIdentityError(
@@ -192,9 +188,7 @@ class ResolvedGatewayRuleRemoval:
     @property
     def prior_artifact(self) -> GatewayRuleArtifact:
         """Return an independent strict copy of the checksum-bound prior artifact."""
-        return parse_compiled_gateway_rule_artifact(
-            json.loads(self._prior_artifact_json)
-        )
+        return parse_compiled_gateway_rule_artifact(json.loads(self._prior_artifact_json))
 
 
 @dataclass(frozen=True)
@@ -211,22 +205,90 @@ class GatewayPlanningTargets:
         if not isinstance(self.desired_rules, tuple) or any(
             type(rule) is not ResolvedManagedGatewayRule for rule in self.desired_rules
         ):
-            raise StateIdentityError(
-                "Gateway planning targets require immutable desired rules"
-            )
+            raise StateIdentityError("Gateway planning targets require immutable desired rules")
         if not isinstance(self.removals, tuple) or any(
-            type(removal) is not ResolvedGatewayRuleRemoval
-            for removal in self.removals
+            type(removal) is not ResolvedGatewayRuleRemoval for removal in self.removals
         ):
-            raise StateIdentityError(
-                "Gateway planning targets require immutable removal targets"
-            )
-        if any(
-            rule.desired.binding != self.binding for rule in self.desired_rules
-        ) or any(removal.binding != self.binding for removal in self.removals):
+            raise StateIdentityError("Gateway planning targets require immutable removal targets")
+        if any(rule.desired.binding != self.binding for rule in self.desired_rules) or any(
+            removal.binding != self.binding for removal in self.removals
+        ):
             raise StateIdentityError(
                 "Gateway planning targets contain a mismatched provider binding"
             )
+
+
+GatewayRemovalAssessmentStatus = Literal[
+    "already_absent",
+    "state_provider_drift",
+    "offline_unverified",
+    "ownership_required",
+]
+_GATEWAY_REMOVAL_ASSESSMENT_STATUSES = frozenset(
+    {
+        "already_absent",
+        "state_provider_drift",
+        "offline_unverified",
+        "ownership_required",
+    }
+)
+
+
+@dataclass(frozen=True)
+class GatewayRemovalAssessment:
+    """One immutable secret-neutral outcome for a non-actionable removal."""
+
+    resource_id: str
+    logical_owner: str
+    rule_name: str
+    alias_name: str
+    backend_identity: str
+    status: GatewayRemovalAssessmentStatus
+
+    def __post_init__(self) -> None:
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+        except StateError:
+            raise StateIdentityError(
+                "Gateway removal assessment has an invalid canonical identity"
+            ) from None
+        if (
+            identity.kind != "gateway_rule"
+            or identity.logical_name != self.logical_owner
+            or not is_gateway_resource_name(self.rule_name)
+            or not is_gateway_resource_name(self.alias_name)
+            or not is_gateway_backend_identity(self.backend_identity)
+            or type(self.status) is not str
+            or self.status not in _GATEWAY_REMOVAL_ASSESSMENT_STATUSES
+        ):
+            raise StateIdentityError(
+                "Gateway removal assessment contains mismatched identity evidence"
+            )
+
+    def to_dict(self) -> dict[str, str]:
+        """Return the stable secret-neutral reviewed representation."""
+        return {
+            "resource_id": self.resource_id,
+            "logical_owner": self.logical_owner,
+            "rule_name": self.rule_name,
+            "alias_name": self.alias_name,
+            "backend_identity": self.backend_identity,
+            "status": self.status,
+        }
+
+
+def _gateway_removal_assessment(
+    removal: ResolvedGatewayRuleRemoval,
+    status: GatewayRemovalAssessmentStatus,
+) -> GatewayRemovalAssessment:
+    return GatewayRemovalAssessment(
+        resource_id=removal.resource_id,
+        logical_owner=removal.logical_owner,
+        rule_name=removal.rule_name,
+        alias_name=removal.alias_name,
+        backend_identity=removal.binding.backend_identity,
+        status=status,
+    )
 
 
 @dataclass(frozen=True)
@@ -242,9 +304,7 @@ def _gateway_binding_from_parsed_project(
     conduktor = project.runtime.conduktor
     gateway = conduktor.gateway if conduktor is not None else None
     if gateway is None or gateway.admin_url is None:
-        raise GatewayBindingError(
-            "Gateway planning requires a configured project runtime"
-        )
+        raise GatewayBindingError("Gateway planning requires a configured project runtime")
     return GatewayBackendBinding.from_endpoint(
         gateway.admin_url,
         virtual_cluster=gateway.virtual_cluster,
@@ -257,9 +317,7 @@ def _parse_gateway_rule_removals(
     project_name: str,
 ) -> tuple[_ParsedGatewayRuleRemoval, ...]:
     if type(raw_removals) is not list:
-        raise StateIdentityError(
-            "Gateway removal manifest collection must be an exact list"
-        )
+        raise StateIdentityError("Gateway removal manifest collection must be an exact list")
     parsed: list[_ParsedGatewayRuleRemoval] = []
     for raw_removal in raw_removals:
         if not isinstance(raw_removal, dict) or set(raw_removal) != {
@@ -270,18 +328,10 @@ def _parse_gateway_rule_removals(
                 "Gateway removal manifest entry must have exact compiled fields"
             )
         logical_owner = raw_removal["logicalOwner"]
-        if (
-            not isinstance(logical_owner, str)
-            or not logical_owner.strip()
-            or "/" in logical_owner
-        ):
-            raise StateIdentityError(
-                "Gateway removal manifest has an invalid logical owner"
-            )
+        if not isinstance(logical_owner, str) or not logical_owner.strip() or "/" in logical_owner:
+            raise StateIdentityError("Gateway removal manifest has an invalid logical owner")
         try:
-            prior_artifact = parse_compiled_gateway_rule_artifact(
-                raw_removal["priorArtifact"]
-            )
+            prior_artifact = parse_compiled_gateway_rule_artifact(raw_removal["priorArtifact"])
         except GatewayArtifactFormatError:
             raise StateIdentityError(
                 "Gateway removal manifest has an invalid prior artifact"
@@ -293,9 +343,7 @@ def _parse_gateway_rule_removals(
             owner_name=logical_owner,
             mode="managed",
         ):
-            raise StateIdentityError(
-                "Gateway removal manifest has mismatched managed ownership"
-            )
+            raise StateIdentityError("Gateway removal manifest has mismatched managed ownership")
         if not all(
             is_gateway_resource_name(name)
             for name in (
@@ -304,16 +352,12 @@ def _parse_gateway_rule_removals(
                 prior_artifact.physical_topic,
             )
         ):
-            raise StateIdentityError(
-                "Gateway removal manifest has an invalid provider identity"
-            )
+            raise StateIdentityError("Gateway removal manifest has an invalid provider identity")
         parsed.append(
             _ParsedGatewayRuleRemoval(
                 logical_owner=logical_owner,
                 prior_artifact=prior_artifact,
-                prior_artifact_checksum=artifact_checksum(
-                    prior_artifact.to_dict()
-                ),
+                prior_artifact_checksum=artifact_checksum(prior_artifact.to_dict()),
             )
         )
     return tuple(parsed)
@@ -350,9 +394,7 @@ def _generated_removal_interceptor_names(
     for ordinal, declaration in enumerate(removal.prior_artifact.interceptors):
         declaration_type = declaration.get("type")
         if not isinstance(declaration_type, str):  # pragma: no cover - strict parser
-            raise StateIdentityError(
-                "Gateway removal manifest has an invalid interceptor identity"
-            )
+            raise StateIdentityError("Gateway removal manifest has an invalid interceptor identity")
         try:
             names.append(
                 generate_gateway_interceptor_name(
@@ -420,9 +462,7 @@ def _validate_gateway_planning_target_collisions(
         for registry, identity, identity_label in claims:
             previous = registry.get(identity)
             if previous is not None:
-                raise StateIdentityError(
-                    f"Gateway planning targets collide on {identity_label}"
-                )
+                raise StateIdentityError(f"Gateway planning targets collide on {identity_label}")
             registry[identity] = label
         for interceptor_name in interceptor_names:
             locator = (binding.backend_identity, interceptor_name)
@@ -440,9 +480,7 @@ def _validate_gateway_planning_target_collisions(
             logical_owner=rule.logical_owner,
             rule_name=rule.artifact.name,
             alias_name=rule.artifact.virtual_topic,
-            interceptor_names=tuple(
-                interceptor.name for interceptor in rule.desired.interceptors
-            ),
+            interceptor_names=tuple(interceptor.name for interceptor in rule.desired.interceptors),
         )
     for index, removal in enumerate(removals):
         claim(
@@ -492,9 +530,7 @@ def resolve_gateway_planning_targets(
         )
     project_name = manifest.project_name
     if project.project.name != project_name:
-        raise StateIdentityError(
-            "Gateway project runtime does not match deployment manifest"
-        )
+        raise StateIdentityError("Gateway project runtime does not match deployment manifest")
     try:
         ResourceIdentity(project_name, environment, "gateway_rule", "validation")
     except StateError:
@@ -513,13 +549,8 @@ def resolve_gateway_planning_targets(
         )
     if prior_state is not None:
         if not isinstance(prior_state, LocalState):
-            raise StateIdentityError(
-                "Gateway removal planning received invalid ownership state"
-            )
-        if (
-            prior_state.project != project_name
-            or prior_state.environment != environment
-        ):
+            raise StateIdentityError("Gateway removal planning received invalid ownership state")
+        if prior_state.project != project_name or prior_state.environment != environment:
             raise StateIdentityError(
                 "Gateway removal planning state belongs to another project environment"
             )
@@ -546,10 +577,9 @@ def resolve_gateway_planning_targets(
         for identity, record in prior_records:
             if identity.logical_name == rule.logical_owner:
                 continue
-            if (
-                record.physical_name == rule.desired.alias_name
-                and record.backend
-                in (binding.backend_identity, "conduktor-gateway")
+            if record.physical_name == rule.desired.alias_name and record.backend in (
+                binding.backend_identity,
+                "conduktor-gateway",
             ):
                 raise StateIdentityError(
                     "Gateway desired alias is claimed by another logical record"
@@ -563,16 +593,10 @@ def resolve_gateway_planning_targets(
             "gateway_rule",
             removal.logical_owner,
         )
-        prior_record = (
-            prior_state.resources.get(resource_uri)
-            if prior_state is not None
-            else None
-        )
+        prior_record = prior_state.resources.get(resource_uri) if prior_state is not None else None
         if prior_record is not None:
             if prior_record.ownership != "managed":
-                raise StateIdentityError(
-                    "Gateway removal requires managed prior ownership"
-                )
+                raise StateIdentityError("Gateway removal requires managed prior ownership")
             if prior_record.backend == "conduktor-gateway":
                 raise StateIdentityError(
                     "Gateway removal cannot use legacy unbound ownership state"
@@ -582,9 +606,7 @@ def resolve_gateway_planning_targets(
                     "Gateway removal prior ownership has a different provider binding"
                 )
             if prior_record.physical_name != removal.prior_artifact.virtual_topic:
-                raise StateIdentityError(
-                    "Gateway removal prior ownership has a different alias"
-                )
+                raise StateIdentityError("Gateway removal prior ownership has a different alias")
             if prior_record.artifact_checksum != removal.prior_artifact_checksum:
                 raise StateIdentityError(
                     "Gateway removal prior ownership has a different artifact checksum"
@@ -592,13 +614,10 @@ def resolve_gateway_planning_targets(
         if any(
             identity.uri != resource_uri
             and record.physical_name == removal.prior_artifact.virtual_topic
-            and record.backend
-            in (binding.backend_identity, "conduktor-gateway")
+            and record.backend in (binding.backend_identity, "conduktor-gateway")
             for identity, record in prior_records
         ):
-            raise StateIdentityError(
-                "Gateway removal alias is claimed by another logical record"
-            )
+            raise StateIdentityError("Gateway removal alias is claimed by another logical record")
         resolved_removals.append(
             ResolvedGatewayRuleRemoval(
                 resource_id=resource_uri,
@@ -746,7 +765,13 @@ class SafetyBlocker:
         }
 
 
-_SAFETY_KIND_ORDER = {"schema": 0, "topic": 1, "flink_job": 2}
+_SAFETY_KIND_ORDER = {
+    "schema": 0,
+    "topic": 1,
+    "flink_job": 2,
+    "connector": 3,
+    "gateway_rule": 4,
+}
 _CHANGE_KIND_ORDER = {
     "schema": 0,
     "topic": 1,
@@ -793,6 +818,10 @@ class DeploymentPlan:
     flink_changes: list[FlinkJobChange] = field(default_factory=list)
     connector_changes: list[ConnectorChange] = field(default_factory=list)
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
+    gateway_removal_assessments: tuple[GatewayRemovalAssessment, ...] = field(
+        default_factory=tuple,
+        kw_only=True,
+    )
     gateway_recovery_observations: tuple[GatewayRecoveryObservation, ...] = field(
         default_factory=tuple,
         repr=False,
@@ -805,14 +834,17 @@ class DeploymentPlan:
 
     def __post_init__(self) -> None:
         """Derive blockers for plans constructed with their changes up front."""
+        if not isinstance(self.gateway_removal_assessments, tuple) or any(
+            type(assessment) is not GatewayRemovalAssessment
+            for assessment in self.gateway_removal_assessments
+        ):
+            raise StateIdentityError("deployment plan Gateway removal assessments are invalid")
         if not isinstance(self.gateway_recovery_observations, tuple) or any(
             type(observation) is not GatewayRecoveryObservation
             for observation in self.gateway_recovery_observations
         ):
-            raise StateIdentityError(
-                "deployment plan Gateway recovery observations are invalid"
-            )
-        if not self.safety_blockers:
+            raise StateIdentityError("deployment plan Gateway recovery observations are invalid")
+        if self.gateway_removal_assessments or not self.safety_blockers:
             self.refresh_safety_blockers()
 
     def refresh_safety_blockers(self) -> None:
@@ -831,9 +863,8 @@ class DeploymentPlan:
                 current_version = incompatible.get("current_version")
                 if current_version is not None:
                     details["current_version"] = current_version
-            compatibility = (
-                getattr(current, "compatibility", None)
-                or getattr(desired, "compatibility", None)
+            compatibility = getattr(current, "compatibility", None) or getattr(
+                desired, "compatibility", None
             )
             if compatibility is not None:
                 details["compatibility"] = compatibility
@@ -899,6 +930,33 @@ class DeploymentPlan:
                         "explicitly stateless upgrade workflow is implemented."
                     ),
                     details=details,
+                )
+            )
+
+        gateway_removal_blockers = {
+            "state_provider_drift": (
+                "gateway_removal_state_provider_drift",
+                "Provider absence conflicts with exact Gateway ownership state; apply is blocked.",
+            ),
+            "offline_unverified": (
+                "gateway_removal_offline_unverified",
+                "Gateway removal requires a complete live provider observation; "
+                "offline apply is blocked.",
+            ),
+        }
+        for assessment in self.gateway_removal_assessments:
+            blocker = gateway_removal_blockers.get(assessment.status)
+            if blocker is None:
+                continue
+            code, message = blocker
+            blockers.append(
+                SafetyBlocker(
+                    code=code,
+                    kind="gateway_rule",
+                    resource=assessment.resource_id,
+                    action="delete",
+                    message=message,
+                    details={"status": assessment.status},
                 )
             )
 
@@ -1291,12 +1349,9 @@ class DeploymentPlan:
         return {
             "overall": overall,
             "counts": counts,
-            "risk_flags": sorted(
-                {flag for item in changes for flag in item.risk_flags}
-            ),
+            "risk_flags": sorted({flag for item in changes for flag in item.risk_flags}),
             "evidence_complete": not any(
-                item.assessment == "unknown"
-                or item.evidence.get("status") != "verified"
+                item.assessment == "unknown" or item.evidence.get("status") != "verified"
                 for item in changes
             ),
         }
@@ -1372,8 +1427,7 @@ class DeploymentPlan:
     def summary(self) -> str:
         """Get a summary of the plan."""
         summary = (
-            f"Plan: {self.creates} to create, {self.updates} to update, "
-            f"{self.deletes} to delete"
+            f"Plan: {self.creates} to create, {self.updates} to update, {self.deletes} to delete"
         )
         summary += f", risk: {self.risk_summary['overall']}"
         if self.ownership_requirements:
@@ -1451,18 +1505,11 @@ class DeploymentPlan:
                 lines.append(_add(f"+ connector: {change.connector_name}"))
             elif change.action == "update":
                 lines.append(_upd(f"~ connector: {change.connector_name}"))
-                for key, evidence in secret_neutral_connector_changes(
-                    change.changes
-                ).items():
-                    from_evidence = (
-                        "present" if evidence.get("from_present") is True else "absent"
-                    )
-                    to_evidence = (
-                        "present" if evidence.get("to_present") is True else "absent"
-                    )
+                for key, evidence in secret_neutral_connector_changes(change.changes).items():
+                    from_evidence = "present" if evidence.get("from_present") is True else "absent"
+                    to_evidence = "present" if evidence.get("to_present") is True else "absent"
                     lines.append(
-                        f"    {key}: {evidence['change']} "
-                        f"({from_evidence} -> {to_evidence})"
+                        f"    {key}: {evidence['change']} ({from_evidence} -> {to_evidence})"
                     )
             elif change.action == "delete":
                 lines.append(_rm(f"- connector: {change.connector_name}"))
@@ -1474,10 +1521,7 @@ class DeploymentPlan:
                 lines.append(_upd(f"~ gateway_rule: {change.name}"))
                 evidence = secret_neutral_gateway_changes(change.changes)
                 categories = evidence.get("categories", [])
-                lines.append(
-                    "    drift: "
-                    + ", ".join(str(category) for category in categories)
-                )
+                lines.append("    drift: " + ", ".join(str(category) for category in categories))
                 for surface in ("current", "desired"):
                     value = evidence.get(surface)
                     if isinstance(value, dict):
@@ -1496,9 +1540,7 @@ class DeploymentPlan:
             lines.append("Risk Classification:")
             lines.append(f"  overall: {self.risk_summary['overall']}")
             for risk in self.ordered_change_risks:
-                flag_suffix = (
-                    f" flags={','.join(risk.risk_flags)}" if risk.risk_flags else ""
-                )
+                flag_suffix = f" flags={','.join(risk.risk_flags)}" if risk.risk_flags else ""
                 lines.append(
                     f"  {risk.kind}: {risk.resource} ({risk.action}) "
                     f"[{risk.assessment}]{flag_suffix}"
@@ -1510,8 +1552,7 @@ class DeploymentPlan:
                     else ""
                 )
                 lines.append(
-                    "    evidence: "
-                    f"{risk.evidence.get('status', 'unavailable')}{reason_suffix}"
+                    f"    evidence: {risk.evidence.get('status', 'unavailable')}{reason_suffix}"
                 )
 
         if self.ownership_requirements:
@@ -1676,9 +1717,13 @@ class DeploymentPlanner:
                 self.prior_state.resources.get(resource_uri) if self.prior_state else None
             )
             exists = self._resource_exists(current, observed_action, create_actions)
-            if prior_record is not None and expected_backend is not None and (
-                prior_record.backend != expected_backend
-                or prior_record.physical_name != physical_name
+            if (
+                prior_record is not None
+                and expected_backend is not None
+                and (
+                    prior_record.backend != expected_backend
+                    or prior_record.physical_name != physical_name
+                )
             ):
                 reason = "state_mismatch"
                 message = (
@@ -1807,9 +1852,8 @@ class DeploymentPlanner:
                     continue
                 claims_desired_backend = record.backend == binding.backend_identity
                 is_legacy_unbound = record.backend == "conduktor-gateway"
-                if (
-                    record.physical_name == rule.desired.alias_name
-                    and (claims_desired_backend or is_legacy_unbound)
+                if record.physical_name == rule.desired.alias_name and (
+                    claims_desired_backend or is_legacy_unbound
                 ):
                     raise StateIdentityError(
                         "Gateway desired alias is claimed by another logical record"
@@ -1900,14 +1944,10 @@ class DeploymentPlanner:
                 )
             action_resources.add(action.resource_id)
             if action.action not in ("create", "update", "delete"):
-                raise StateIdentityError(
-                    "Gateway recovery action has an unsupported mutation verb"
-                )
+                raise StateIdentityError("Gateway recovery action has an unsupported mutation verb")
             evidence = action.gateway_evidence
             if type(evidence) is not GatewayActionEvidence:
-                raise StateIdentityError(
-                    "Gateway recovery action requires exact durable evidence"
-                )
+                raise StateIdentityError("Gateway recovery action requires exact durable evidence")
             if evidence.backend_identity != binding.backend_identity:
                 raise StateIdentityError(
                     "Gateway recovery action belongs to another provider binding"
@@ -1935,8 +1975,7 @@ class DeploymentPlanner:
             if action.action == "delete" and any(
                 prior_identity.uri != action.resource_id
                 and record.physical_name == evidence.alias_name
-                and record.backend
-                in (binding.backend_identity, "conduktor-gateway")
+                and record.backend in (binding.backend_identity, "conduktor-gateway")
                 for prior_identity, record in prior_gateway_records
             ):
                 raise StateIdentityError(
@@ -2009,6 +2048,67 @@ class DeploymentPlanner:
             expected_backend=rule.desired.binding.backend_identity,
         )
         plan.gateway_changes.append(change)
+
+    def _append_planned_gateway_removal(
+        self,
+        plan: DeploymentPlan,
+        removal: ResolvedGatewayRuleRemoval,
+        current: ManagedGatewayRuleObservation,
+        assessments: list[GatewayRemovalAssessment],
+    ) -> None:
+        """Classify one validated tombstone from an exact shared observation."""
+        if (
+            type(current) is not ManagedGatewayRuleObservation
+            or current.binding != removal.binding
+            or current.logical_name != removal.rule_name
+            or current.alias_name != removal.alias_name
+        ):
+            raise StateIdentityError("Gateway removal observation does not match its exact target")
+        prior_record = (
+            self.prior_state.resources.get(removal.resource_id)
+            if self.prior_state is not None
+            else None
+        )
+        has_prior_ownership = prior_record is not None
+
+        if not current.exists:
+            assessments.append(
+                _gateway_removal_assessment(
+                    removal,
+                    "state_provider_drift" if has_prior_ownership else "already_absent",
+                )
+            )
+            return
+
+        change = plan_managed_gateway_rule_deletion(current)
+        requirement_count = len(plan.ownership_requirements)
+        self._apply_ownership_policy(
+            plan,
+            kind="gateway_rule",
+            logical_name=removal.logical_owner,
+            physical_name=removal.alias_name,
+            ownership=removal.prior_artifact.ownership,
+            change=change,
+            current=current,
+            create_actions=frozenset({"create"}),
+            expected_backend=removal.binding.backend_identity,
+        )
+        if has_prior_ownership:
+            if change.action != "delete" or len(plan.ownership_requirements) != requirement_count:
+                raise StateIdentityError("Gateway removal lost exact ownership eligibility")
+            plan.gateway_changes.append(change)
+            return
+
+        new_requirements = plan.ownership_requirements[requirement_count:]
+        if (
+            change.action != "none"
+            or len(new_requirements) != 1
+            or new_requirements[0].reason != "requires_adoption"
+        ):
+            raise StateIdentityError(
+                "Unowned Gateway removal did not produce an ownership requirement"
+            )
+        assessments.append(_gateway_removal_assessment(removal, "ownership_required"))
 
     def offline_plan(self) -> DeploymentPlan:
         """Create a plan assuming no current state (all creates).
@@ -2144,6 +2244,12 @@ class DeploymentPlanner:
                     self._absent_gateway_rule(rule),
                 )
 
+        if gateway_targets is not None:
+            plan.gateway_removal_assessments = tuple(
+                _gateway_removal_assessment(removal, "offline_unverified")
+                for removal in gateway_targets.removals
+            )
+
         plan.refresh_safety_blockers()
         self._compute_impact_radius(plan)
         return plan
@@ -2179,20 +2285,19 @@ class DeploymentPlanner:
                 "Gateway recovery actions must be an exact immutable action tuple"
             )
         gateway_rules: tuple[ResolvedManagedGatewayRule, ...] = ()
+        gateway_removals: tuple[ResolvedGatewayRuleRemoval, ...] = ()
         validated_gateway_recovery_actions: tuple[OperationAction, ...] = ()
         gateway_deployer = self.gateway_deployer
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
         configured_gateway_binding: GatewayBackendBinding | None = None
-        if gateway_data or gateway_recovery_actions:
+        if gateway_data or gateway_targets is not None or gateway_recovery_actions:
             configured_gateway_binding = (
                 gateway_targets.binding
                 if gateway_targets is not None
                 else self._gateway_binding_from_project()
             )
             if gateway_deployer is None:
-                raise GatewayBindingError(
-                    "Live Gateway planning requires a bound Gateway deployer"
-                )
+                raise GatewayBindingError("Live Gateway planning requires a bound Gateway deployer")
             if gateway_deployer.cluster_binding != configured_gateway_binding:
                 raise GatewayBindingError(
                     "Gateway deployer binding does not match project runtime configuration"
@@ -2200,16 +2305,13 @@ class DeploymentPlanner:
             gateway_rules = (
                 gateway_targets.desired_rules
                 if gateway_targets is not None
-                else self._gateway_rules_with_prior_state_checks(
-                    configured_gateway_binding
-                )
+                else self._gateway_rules_with_prior_state_checks(configured_gateway_binding)
             )
-            validated_gateway_recovery_actions = (
-                self._validated_gateway_recovery_actions(
-                    actions=gateway_recovery_actions,
-                    binding=configured_gateway_binding,
-                    rules=gateway_rules,
-                )
+            gateway_removals = gateway_targets.removals if gateway_targets is not None else ()
+            validated_gateway_recovery_actions = self._validated_gateway_recovery_actions(
+                actions=gateway_recovery_actions,
+                binding=configured_gateway_binding,
+                rules=gateway_rules,
             )
 
         # Plan schemas first (before topics that may depend on them)
@@ -2325,23 +2427,17 @@ class DeploymentPlanner:
                 plan.connector_changes.append(change)
 
         # Plan all Gateway rules from one exact, complete two-list snapshot.
-        if gateway_rules or validated_gateway_recovery_actions:
+        if gateway_rules or gateway_removals or validated_gateway_recovery_actions:
             if gateway_deployer is None:  # pragma: no cover - preflight narrows this
-                raise GatewayBindingError(
-                    "Live Gateway planning requires a bound Gateway deployer"
-                )
+                raise GatewayBindingError("Live Gateway planning requires a bound Gateway deployer")
             snapshot = gateway_deployer.observe_managed_gateway_snapshot()
             if configured_gateway_binding is None:  # pragma: no cover - preflight narrows this
-                raise GatewayBindingError(
-                    "Gateway planning requires a configured project runtime"
-                )
+                raise GatewayBindingError("Gateway planning requires a configured project runtime")
             if snapshot.binding != configured_gateway_binding:
                 raise GatewayBindingError(
                     "Gateway observation does not match project runtime configuration"
                 )
-            observations: dict[
-                tuple[str, str], ManagedGatewayRuleObservation
-            ] = {}
+            observations: dict[tuple[str, str], ManagedGatewayRuleObservation] = {}
 
             def observe(
                 rule_name: str,
@@ -2360,6 +2456,19 @@ class DeploymentPlanner:
                     rule.artifact.virtual_topic,
                 )
                 self._append_planned_gateway_rule(plan, rule, current)
+            removal_assessments: list[GatewayRemovalAssessment] = []
+            for removal in gateway_removals:
+                current = observe(
+                    removal.rule_name,
+                    removal.alias_name,
+                )
+                self._append_planned_gateway_removal(
+                    plan,
+                    removal,
+                    current,
+                    removal_assessments,
+                )
+            plan.gateway_removal_assessments = tuple(removal_assessments)
             recovery_observations: list[GatewayRecoveryObservation] = []
             for action in validated_gateway_recovery_actions:
                 evidence = action.gateway_evidence
@@ -2485,9 +2594,7 @@ class DeploymentPlanner:
                             logical_type=logical_type,
                             logical_name=logical_name,
                             logical_resource=logical_resource,
-                            change_type=(
-                                "topic_create" if action == "create" else "topic_update"
-                            ),
+                            change_type=("topic_create" if action == "create" else "topic_update"),
                             owners=sorted(owners),
                             consumers=consumers,
                             identity_evidence=identity_evidence,
@@ -2499,9 +2606,7 @@ class DeploymentPlanner:
                 try:
                     downstream_nodes = dag.get_downstream(logical_name)
                     downstream_models = sorted(
-                        name
-                        for name in downstream_nodes
-                        if dag.nodes[name].type.value == "model"
+                        name for name in downstream_nodes if dag.nodes[name].type.value == "model"
                     )
                     for model_name in downstream_models:
                         model = self._logical_declaration("model", model_name)
@@ -2832,9 +2937,7 @@ class DeploymentPlanner:
                 exists=False,
             )
         if candidate is None:
-            raise StateIdentityError(
-                "Gateway action evidence requires an exact desired candidate"
-            )
+            raise StateIdentityError("Gateway action evidence requires an exact desired candidate")
         return GatewayActionEvidence(
             version=1,
             backend_identity=current.binding.backend_identity,
@@ -2943,12 +3046,8 @@ class DeploymentPlanner:
                 return
             for change in changes:
                 action = str(change.action)
-                if (
-                    action in upsert_actions
-                    and getattr(change, "desired", None)
-                ) or (
-                    action == delete_action
-                    and (delete_ready is None or delete_ready(change))
+                if (action in upsert_actions and getattr(change, "desired", None)) or (
+                    action == delete_action and (delete_ready is None or delete_ready(change))
                 ):
                     actions.append((label_fn(change), action))
 
@@ -2970,9 +3069,7 @@ class DeploymentPlanner:
             label_fn=lambda change: f"flink_job:{change.job_name}",
             upsert_actions=("submit", "update"),
             delete_action="cancel",
-            delete_ready=lambda change: bool(
-                change.current and change.current.job_id
-            ),
+            delete_ready=lambda change: bool(change.current and change.current.job_id),
         )
         add_changes(
             self.connect_deployer,
@@ -3010,10 +3107,7 @@ class DeploymentPlanner:
                     if (
                         identity.kind == kind
                         and record.physical_name == physical_name
-                        and (
-                            expected_backend is None
-                            or record.backend == expected_backend
-                        )
+                        and (expected_backend is None or record.backend == expected_backend)
                     ):
                         logical_names.add(identity.logical_name)
             if len(logical_names) > 1:
@@ -3113,9 +3207,7 @@ class DeploymentPlanner:
         if self.gateway_deployer is not None:
             for change in actionable_gateway_changes:
                 action = str(change.action)
-                current, desired, alias_name = self._require_managed_gateway_action(
-                    change
-                )
+                current, desired, alias_name = self._require_managed_gateway_action(change)
                 actions.append(
                     PlannedAction(
                         resource_id=self._planned_resource_id(
@@ -3137,13 +3229,8 @@ class DeploymentPlanner:
         seen_resource_ids: set[str] = set()
         for planned_action in actions:
             identity = ResourceIdentity.parse(planned_action.resource_id)
-            if (
-                identity.project != self.project_name
-                or identity.environment != self.environment
-            ):
-                raise StateIdentityError(
-                    "planned action identity belongs to another state address"
-                )
+            if identity.project != self.project_name or identity.environment != self.environment:
+                raise StateIdentityError("planned action identity belongs to another state address")
             if planned_action.resource_id in seen_resource_ids:
                 raise StateIdentityError(
                     "deployment plan contains duplicate canonical action identity"
@@ -3315,16 +3402,12 @@ class DeploymentPlanner:
                                 "Actionable Gateway change requires a desired aggregate"
                             )
                         result = gd.apply_managed_gateway_rule(current, desired)
-                        expected_result = (
-                            "created" if change.action == "create" else "updated"
-                        )
+                        expected_result = "created" if change.action == "create" else "updated"
                         if result != expected_result:
                             raise StateIdentityError(
                                 "Gateway managed apply returned an invalid result"
                             )
-                        results[
-                            "created" if change.action == "create" else "updated"
-                        ].append(label)
+                        results["created" if change.action == "create" else "updated"].append(label)
                 except Exception as e:
                     results["errors"].append(f"{label}: {_sanitize_error(e)}")
                     if after_action is not None:
@@ -3427,9 +3510,7 @@ class DeploymentPlanner:
     ) -> ManagedGatewayRuleObservation:
         """Resolve one Gateway create rollback from the exact reviewed plan."""
         if self.gateway_deployer is None:
-            raise StateIdentityError(
-                "Gateway rollback requires a configured Gateway deployer"
-            )
+            raise StateIdentityError("Gateway rollback requires a configured Gateway deployer")
         if plan is None:
             raise StateIdentityError("Gateway rollback requires the exact reviewed plan")
         matches = [
@@ -3438,9 +3519,7 @@ class DeploymentPlanner:
             if change.action == "create" and f"gateway_rule:{change.name}" == label
         ]
         if len(matches) != 1:
-            raise StateIdentityError(
-                "Gateway rollback requires one exact normalized create change"
-            )
+            raise StateIdentityError("Gateway rollback requires one exact normalized create change")
         _, desired, _ = self._require_managed_gateway_action(matches[0])
         if desired is None:
             raise StateIdentityError("Gateway rollback requires the exact desired aggregate")
@@ -3465,9 +3544,7 @@ class DeploymentPlanner:
                 raise StateIdentityError(
                     "Gateway rollback requires exact normalized mutation evidence"
                 )
-            result = self.gateway_deployer.delete_managed_gateway_rule(
-                gateway_rollback
-            )
+            result = self.gateway_deployer.delete_managed_gateway_rule(gateway_rollback)
             if result != "deleted":
                 raise StateIdentityError(
                     "Gateway managed rollback delete returned an invalid result"

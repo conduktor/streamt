@@ -148,9 +148,7 @@ class TestSafetyBlockerModel:
         reduction = _topic_reduction()
         plan.topic_changes.append(reduction)
         plan.refresh_safety_blockers()
-        assert [blocker.code for blocker in plan.safety_blockers] == [
-            "kafka_partition_reduction"
-        ]
+        assert [blocker.code for blocker in plan.safety_blockers] == ["kafka_partition_reduction"]
 
         reduction.action = "none"
         plan.refresh_safety_blockers()
@@ -244,17 +242,16 @@ class TestReviewedPlanSafetyBlockers:
             environment="prod",
             runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
             state=None,
+            actions=(),
             offline=True,
         )
         path = tmp_path / "blocked.plan.json"
         reviewed.save(path)
         loaded = ReviewedPlanFile.load(path)
 
-        assert PLAN_FILE_VERSION == 3
+        assert PLAN_FILE_VERSION == 4
         assert loaded == reviewed
-        assert [
-            blocker["code"] for blocker in loaded.plan["safety_blockers"]
-        ] == [
+        assert [blocker["code"] for blocker in loaded.plan["safety_blockers"]] == [
             "schema_incompatible",
             "kafka_partition_reduction",
             "flink_update_requires_savepoint",
@@ -269,6 +266,7 @@ class TestReviewedPlanSafetyBlockers:
             environment="prod",
             runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
             state=None,
+            actions=(),
             offline=True,
         )
         assert safe.checksum != reviewed.checksum
@@ -281,6 +279,7 @@ class TestReviewedPlanSafetyBlockers:
             environment="prod",
             runtime={},
             state=None,
+            actions=(),
             offline=True,
         )
         path = tmp_path / "old.plan.json"
@@ -289,7 +288,7 @@ class TestReviewedPlanSafetyBlockers:
         data["format_version"] = 1
         path.write_text(json.dumps(data))
 
-        with pytest.raises(PlanFileError, match="predates exact ownership-state binding"):
+        with pytest.raises(PlanFileError, match="predates exact reviewed action binding"):
             ReviewedPlanFile.load(path)
 
     def test_verify_current_plan_detects_safety_blocker_drift(self) -> None:
@@ -317,12 +316,13 @@ class TestReviewedPlanSafetyBlockers:
             environment="prod",
             runtime={},
             state=None,
+            actions=(),
             offline=True,
         )
         current = DeploymentPlan(topic_changes=[change])
 
-        with pytest.raises(StalePlanError, match="safety blockers changed"):
-            reviewed.verify_current_plan(current, state_observation=None)
+        with pytest.raises(StalePlanError, match="safety blockers"):
+            reviewed.verify_current_plan(current, actions=(), state_observation=None)
 
     def test_machine_payload_contains_no_blockers_for_safe_plan(self) -> None:
         payload = deployment_plan_payload(
@@ -353,6 +353,10 @@ class TestCliSafetyBlockers:
                 "streamt.deployer.planner.DeploymentPlanner.plan",
                 return_value=blocked,
             ),
+            patch(
+                "streamt.deployer.planner.DeploymentPlanner.planned_actions",
+                side_effect=AssertionError("blocked plan derived runtime actions"),
+            ) as planned_actions,
         ):
             result = CliRunner().invoke(
                 main,
@@ -371,14 +375,15 @@ class TestCliSafetyBlockers:
         payload = _json(result)
         assert payload["status"] == "ok"
         assert payload["data"]["is_apply_blocked"] is True
-        assert [
-            blocker["code"] for blocker in payload["data"]["safety_blockers"]
-        ] == [
+        assert [blocker["code"] for blocker in payload["data"]["safety_blockers"]] == [
             "schema_incompatible",
             "kafka_partition_reduction",
             "flink_update_requires_savepoint",
         ]
-        assert ReviewedPlanFile.load(plan_path).plan["summary"]["safety_blockers"] == 3
+        reviewed = ReviewedPlanFile.load(plan_path)
+        assert reviewed.plan["summary"]["safety_blockers"] == 3
+        assert reviewed.actions == ()
+        planned_actions.assert_not_called()
 
     @pytest.mark.parametrize("use_reviewed_plan", [False, True])
     def test_apply_rejects_before_any_mutation(
@@ -421,6 +426,7 @@ class TestCliSafetyBlockers:
                         config=local_deployment_state_config(),
                     ).read()
                 ),
+                actions=(),
             )
             plan_path = tmp_path / "reviewed.plan.json"
             reviewed.save(plan_path)
@@ -436,7 +442,15 @@ class TestCliSafetyBlockers:
                 "streamt.deployer.planner.DeploymentPlanner.plan",
                 return_value=blocked,
             ),
+            patch(
+                "streamt.deployer.planner.DeploymentPlanner.planned_actions",
+                side_effect=AssertionError("blocked plan derived runtime actions"),
+            ) as planned_actions,
             patch("streamt.deployer.planner.DeploymentPlanner.apply") as apply_plan,
+            patch(
+                "streamt.cli.commands.apply.OperationIntent",
+                side_effect=AssertionError("blocked plan created an operation intent"),
+            ) as operation_intent,
         ):
             result = CliRunner().invoke(main, args)
 
@@ -447,6 +461,8 @@ class TestCliSafetyBlockers:
         assert "1 resource(s) with unresolved ownership" in payload["errors"][0]["message"]
         assert len(payload["data"]["safety_blockers"]) == 3
         assert len(payload["data"]["blocking_ownership_requirements"]) == 1
+        planned_actions.assert_not_called()
+        operation_intent.assert_not_called()
         apply_plan.assert_not_called()
         for method in (
             "apply_topic",

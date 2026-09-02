@@ -16,6 +16,7 @@ from streamt.cli import main
 from streamt.compiler.manifest import Manifest, TopicArtifact
 from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.connect import ConnectorChange
+from streamt.deployer.gateway import managed_gateway_absence_fingerprint
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.plan_file import (
     PLAN_FILE_VERSION,
@@ -26,7 +27,11 @@ from streamt.deployer.plan_file import (
     canonical_json,
     deployment_plan_payload,
 )
-from streamt.deployer.planner import DeploymentPlan, OwnershipRequirement
+from streamt.deployer.planner import (
+    DeploymentPlan,
+    GatewayRemovalAssessment,
+    OwnershipRequirement,
+)
 from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
@@ -35,6 +40,10 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    CURRENT_CONTROL_VERSION,
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
+    OperationAction,
     StateAddress,
     StateObservation,
     StateRevision,
@@ -43,6 +52,7 @@ from streamt.deployer.state_backend import (
 )
 
 _TEST_STORE_ID = "00000000-0000-4000-8000-000000000001"
+_GATEWAY_BACKEND = "conduktor-gateway:v1:p:sha256:" + "a" * 64
 
 
 def _manifest(*, compiled_at: str = "2026-01-01T00:00:00Z") -> Manifest:
@@ -67,6 +77,48 @@ def _deployment_plan() -> DeploymentPlan:
             TopicChange(topic=topic.name, action="create", desired=topic),
             TopicChange(topic="unchanged.v1", action="none"),
         ]
+    )
+
+
+def _reviewed_actions() -> tuple[OperationAction, ...]:
+    return (
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/prod/topic/payments_clean",
+            action="create",
+        ),
+    )
+
+
+def _gateway_delete_actions() -> tuple[OperationAction, ...]:
+    rule_name = "orders_rule"
+    alias_name = "orders.public"
+    return (
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/prod/gateway_rule/orders_view",
+            action="delete",
+            gateway_evidence=GatewayActionEvidence(
+                version=1,
+                backend_identity=_GATEWAY_BACKEND,
+                rule_name=rule_name,
+                alias_name=alias_name,
+                current=GatewayActionSurfaceEvidence(
+                    exists=True,
+                    fingerprint="sha256:" + "b" * 64,
+                    managed_interceptor_count=2,
+                ),
+                desired=GatewayActionSurfaceEvidence(
+                    exists=False,
+                    fingerprint=managed_gateway_absence_fingerprint(
+                        _GATEWAY_BACKEND,
+                        rule_name,
+                        alias_name,
+                    ),
+                    managed_interceptor_count=0,
+                ),
+            ),
+        ),
     )
 
 
@@ -131,6 +183,7 @@ def _reviewed_plan() -> ReviewedPlanFile:
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
         state=_state_reference(),
+        actions=_reviewed_actions(),
     )
 
 
@@ -213,6 +266,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
         state=_state_reference(),
+        actions=_reviewed_actions(),
     )
     second = ReviewedPlanFile.create(
         _deployment_plan(),
@@ -221,6 +275,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
         state=_state_reference(),
+        actions=_reviewed_actions(),
     )
     first_path = tmp_path / "first.plan.json"
     second_path = tmp_path / "second.plan.json"
@@ -233,7 +288,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
     assert not list(tmp_path.glob(".*.tmp"))
 
 
-def test_v3_online_state_reference_is_exact_and_excludes_provider_revision() -> None:
+def test_v4_online_state_reference_is_exact_and_excludes_provider_revision() -> None:
     observation = _state_observation(
         serial=7,
         resources=_managed_topic_record(partitions=3),
@@ -246,10 +301,19 @@ def test_v3_online_state_reference_is_exact_and_excludes_provider_revision() -> 
         environment="prod",
         runtime={},
         state=StateReference.from_observation(observation),
+        actions=_reviewed_actions(),
     )
     payload = reviewed.to_dict()
 
-    assert PLAN_FILE_VERSION == 3
+    assert PLAN_FILE_VERSION == 4
+    assert payload["actions"] == [
+        {
+            "index": 0,
+            "resource_id": "streamt://payments/prod/topic/payments_clean",
+            "action": "create",
+            "gateway_evidence": None,
+        }
+    ]
     assert payload["state"] == {
         "backend": "local",
         "store_id": _TEST_STORE_ID,
@@ -263,6 +327,159 @@ def test_v3_online_state_reference_is_exact_and_excludes_provider_revision() -> 
     assert "revision-token" not in serialized
 
 
+def test_v4_actions_round_trip_with_exact_gateway_evidence(tmp_path: Path) -> None:
+    actions = _gateway_delete_actions()
+    reviewed = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=_state_reference(),
+        actions=actions,
+    )
+    path = tmp_path / "gateway-actions.plan.json"
+
+    reviewed.save(path)
+    loaded = ReviewedPlanFile.load(path)
+
+    assert type(loaded.actions) is tuple
+    assert loaded.actions == actions
+    assert loaded.to_dict()["actions"] == [
+        actions[0].to_dict(control_version=CURRENT_CONTROL_VERSION)
+    ]
+
+
+def test_create_requires_explicit_actions_argument() -> None:
+    with pytest.raises(TypeError, match="actions"):
+        ReviewedPlanFile.create(  # type: ignore[call-arg]
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+        )
+
+
+def test_actions_require_contiguous_indexes_and_unique_resource_ids() -> None:
+    with pytest.raises(PlanFileError, match="exact immutable action tuple"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            actions=list(_reviewed_actions()),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(PlanFileError, match="contiguous from zero"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            actions=(
+                OperationAction(
+                    index=1,
+                    resource_id="streamt://payments/prod/topic/payments_clean",
+                    action="create",
+                ),
+            ),
+        )
+
+    with pytest.raises(PlanFileError, match="duplicate resource identity"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            actions=(
+                OperationAction(
+                    index=0,
+                    resource_id="streamt://payments/prod/topic/payments_clean",
+                    action="create",
+                ),
+                OperationAction(
+                    index=1,
+                    resource_id="streamt://payments/prod/topic/payments_clean",
+                    action="update",
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("resource", "message"),
+    [
+        ("topic:payments_clean", "invalid canonical resource identity"),
+        (
+            "streamt://payments/staging/topic/payments_clean",
+            "another project environment",
+        ),
+        (
+            "streamt://other/prod/topic/payments_clean",
+            "another project environment",
+        ),
+    ],
+)
+def test_actions_require_current_canonical_project_environment(
+    resource: str,
+    message: str,
+) -> None:
+    with pytest.raises(PlanFileError, match=message):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            actions=(OperationAction(index=0, resource_id=resource, action="create"),),
+        )
+
+
+def test_gateway_mutation_actions_require_exact_evidence() -> None:
+    with pytest.raises(PlanFileError, match="require exact action evidence"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            actions=(
+                OperationAction(
+                    index=0,
+                    resource_id=("streamt://payments/prod/gateway_rule/orders_view"),
+                    action="delete",
+                ),
+            ),
+        )
+
+
+def test_loaded_gateway_mutation_without_evidence_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "missing-gateway-evidence.plan.json"
+    data = _reviewed_plan().to_dict()
+    actions = data["actions"]
+    assert isinstance(actions, list)
+    action = actions[0]
+    assert isinstance(action, dict)
+    action["resource_id"] = "streamt://payments/prod/gateway_rule/orders_view"
+    action["action"] = "delete"
+    action["gateway_evidence"] = None
+    _resign_plan_data(data)
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(PlanFileError, match="require exact action evidence"):
+        ReviewedPlanFile.load(path)
+
+
 def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -> None:
     offline = ReviewedPlanFile.create(
         _deployment_plan(),
@@ -271,10 +488,23 @@ def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -
         environment="prod",
         runtime={},
         state=None,
+        actions=(),
         offline=True,
     )
 
     assert offline.to_dict()["state"] is None
+    assert offline.to_dict()["actions"] == []
+    with pytest.raises(PlanFileError, match="must not contain actions"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=None,
+            actions=_reviewed_actions(),
+            offline=True,
+        )
     with pytest.raises(PlanFileError, match="Offline reviewed plans must encode state as null"):
         ReviewedPlanFile.create(
             _deployment_plan(),
@@ -283,6 +513,7 @@ def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -
             environment="prod",
             runtime={},
             state=_state_reference(),
+            actions=(),
             offline=True,
         )
     with pytest.raises(PlanFileError, match="require an exact ownership-state reference"):
@@ -293,11 +524,12 @@ def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -
             environment="prod",
             runtime={},
             state=None,
+            actions=(),
         )
 
 
-@pytest.mark.parametrize("version", [1, 2])
-def test_v1_and_v2_plans_require_explicit_regeneration(
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_v1_through_v3_plans_require_explicit_regeneration(
     tmp_path: Path,
     version: int,
 ) -> None:
@@ -313,7 +545,7 @@ def test_v1_and_v2_plans_require_explicit_regeneration(
     with pytest.raises(
         PlanFileError,
         match=(
-            rf"format version {version} predates exact ownership-state binding.*"
+            rf"format version {version} predates exact reviewed action binding.*"
             r"regenerate.*streamt plan --out"
         ),
     ):
@@ -326,16 +558,14 @@ def test_state_reference_strictly_rejects_unknown_and_credential_shaped_fields()
     with pytest.raises(PlanFileError, match=r"unknown field.*revision"):
         StateReference.from_dict({**valid, "revision": "provider-secret"})
     with pytest.raises(PlanFileError, match=r"missing field.*checksum"):
-        StateReference.from_dict(
-            {key: value for key, value in valid.items() if key != "checksum"}
-        )
+        StateReference.from_dict({key: value for key, value in valid.items() if key != "checksum"})
     with pytest.raises(PlanFileError, match="canonical UUID"):
         StateReference.from_dict({**valid, "store_id": "password=provider-secret"})
     with pytest.raises(PlanFileError, match="non-negative integer"):
         StateReference.from_dict({**valid, "serial": True})
 
 
-def test_loaded_v3_plan_strictly_rejects_extra_state_fields(tmp_path: Path) -> None:
+def test_loaded_v4_plan_strictly_rejects_extra_state_fields(tmp_path: Path) -> None:
     path = tmp_path / "extra-state.plan.json"
     data = _reviewed_plan().to_dict()
     state = data["state"]
@@ -356,6 +586,48 @@ def test_plan_file_load_detects_tampering(tmp_path: Path) -> None:
     path.write_text(json.dumps(data))
 
     with pytest.raises(PlanFileError, match="checksum mismatch"):
+        ReviewedPlanFile.load(path)
+
+
+def test_plan_file_checksum_covers_actions(tmp_path: Path) -> None:
+    path = tmp_path / "reviewed.plan.json"
+    _reviewed_plan().save(path)
+    data = json.loads(path.read_text())
+    data["actions"][0]["action"] = "update"
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(PlanFileError, match="checksum mismatch"):
+        ReviewedPlanFile.load(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda actions: actions.pop("actions"), "missing field.*actions"),
+        (lambda actions: actions.__setitem__("actions", {}), "must be an array"),
+        (
+            lambda actions: actions["actions"][0].pop("gateway_evidence"),
+            "missing field.*gateway_evidence",
+        ),
+        (
+            lambda actions: actions["actions"][0].__setitem__("future", True),
+            "unknown field.*future",
+        ),
+    ],
+)
+def test_loaded_v4_plan_strictly_rejects_malformed_actions(
+    tmp_path: Path,
+    mutate: object,
+    message: str,
+) -> None:
+    path = tmp_path / "malformed-actions.plan.json"
+    data = _reviewed_plan().to_dict()
+    assert callable(mutate)
+    mutate(data)
+    _resign_plan_data(data)
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(PlanFileError, match=message):
         ReviewedPlanFile.load(path)
 
 
@@ -423,6 +695,7 @@ def test_context_verification_checks_state_serial() -> None:
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
         state=_state_reference(serial=7),
+        actions=_reviewed_actions(),
     )
     runtime = {"kafka": {"bootstrap_servers": "broker:9092"}}
 
@@ -455,6 +728,7 @@ def test_exact_state_reference_rejects_every_identity_and_content_drift() -> Non
         environment="prod",
         runtime={},
         state=StateReference.from_observation(reviewed_observation),
+        actions=_reviewed_actions(),
     )
 
     reviewed.verify_state(
@@ -510,9 +784,8 @@ def test_current_plan_verification_rechecks_exact_state_reference() -> None:
     with pytest.raises(StalePlanError, match="state checksum"):
         reviewed.verify_current_plan(
             _deployment_plan(),
-            state_observation=_state_observation(
-                resources=_managed_topic_record(partitions=6)
-            ),
+            actions=_reviewed_actions(),
+            state_observation=_state_observation(resources=_managed_topic_record(partitions=6)),
         )
 
 
@@ -522,15 +795,52 @@ def test_live_action_drift_is_rejected_but_impact_metrics_may_change() -> None:
     same_actions.impact_radius = []
     reviewed.verify_current_plan(
         same_actions,
+        actions=_reviewed_actions(),
         state_observation=_state_observation(),
     )
 
-    drifted = DeploymentPlan(
-        topic_changes=[TopicChange(topic="payments.clean.v1", action="none")]
-    )
+    drifted = DeploymentPlan(topic_changes=[TopicChange(topic="payments.clean.v1", action="none")])
     with pytest.raises(StalePlanError, match="live resource actions"):
         reviewed.verify_current_plan(
             drifted,
+            actions=_reviewed_actions(),
+            state_observation=_state_observation(),
+        )
+
+
+def test_current_plan_verification_rejects_ordered_action_and_evidence_drift() -> None:
+    reviewed_actions = _gateway_delete_actions()
+    reviewed = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=_state_reference(),
+        actions=reviewed_actions,
+    )
+    changed_data = reviewed_actions[0].to_dict(control_version=CURRENT_CONTROL_VERSION)
+    evidence = changed_data["gateway_evidence"]
+    assert isinstance(evidence, dict)
+    current = evidence["current"]
+    assert isinstance(current, dict)
+    current["fingerprint"] = "sha256:" + "c" * 64
+    changed_actions = (
+        OperationAction.from_dict(
+            changed_data,
+            control_version=CURRENT_CONTROL_VERSION,
+        ),
+    )
+
+    reviewed.verify_current_plan(
+        _deployment_plan(),
+        actions=reviewed_actions,
+        state_observation=_state_observation(),
+    )
+    with pytest.raises(StalePlanError, match="ordered action identity or evidence"):
+        reviewed.verify_current_plan(
+            _deployment_plan(),
+            actions=changed_actions,
             state_observation=_state_observation(),
         )
 
@@ -591,9 +901,63 @@ def test_plan_payload_includes_sorted_ownership_requirements() -> None:
     payload = deployment_plan_payload(plan)
 
     assert payload["summary"]["ownership_requirements"] == 2
-    assert [
-        requirement["logical_name"] for requirement in payload["ownership_requirements"]
-    ] == ["a", "z"]
+    assert [requirement["logical_name"] for requirement in payload["ownership_requirements"]] == [
+        "a",
+        "z",
+    ]
+
+
+def _removal_assessment(
+    owner: str,
+    *,
+    status: str = "already_absent",
+) -> GatewayRemovalAssessment:
+    return GatewayRemovalAssessment(
+        resource_id=f"streamt://payments/prod/gateway_rule/{owner}",
+        logical_owner=owner,
+        rule_name=f"{owner}_rule",
+        alias_name=f"{owner}.public",
+        backend_identity=_GATEWAY_BACKEND,
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def test_plan_payload_preserves_removal_assessment_order_and_verifies_drift() -> None:
+    assessments = (
+        _removal_assessment("z_owner"),
+        _removal_assessment("a_owner"),
+    )
+    plan = DeploymentPlan(gateway_removal_assessments=assessments)
+    payload = deployment_plan_payload(plan)
+
+    assert payload["summary"]["gateway_removal_assessments"] == 2
+    assert [item["logical_owner"] for item in payload["gateway_removal_assessments"]] == [
+        "z_owner",
+        "a_owner",
+    ]
+
+    reviewed = ReviewedPlanFile.create(
+        plan,
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=_state_reference(),
+        actions=(),
+    )
+    changed = DeploymentPlan(
+        gateway_removal_assessments=(
+            _removal_assessment("z_owner", status="state_provider_drift"),
+            _removal_assessment("a_owner"),
+        )
+    )
+
+    with pytest.raises(StalePlanError, match="Gateway removal assessments"):
+        reviewed.verify_current_plan(
+            changed,
+            actions=(),
+            state_observation=_state_observation(),
+        )
 
 
 def test_cli_saves_offline_plan_but_rejects_it_for_apply(tmp_path: Path) -> None:
@@ -615,9 +979,7 @@ def test_cli_saves_offline_plan_but_rejects_it_for_apply(tmp_path: Path) -> None
 
     with (
         patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka,
-        patch(
-            "streamt.cli.commands.apply.make_deployment_state_service"
-        ) as make_state_service,
+        patch("streamt.cli.commands.apply.make_deployment_state_service") as make_state_service,
     ):
         applied = runner.invoke(
             main, ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)]
@@ -646,12 +1008,8 @@ def test_protected_environment_rejects_every_direct_apply_before_backend_setup(
     project_arg = shlex.quote(str(resolved_project))
     plan_path = resolved_project / ".streamt" / "reviewed-plan.json"
     plan_arg = shlex.quote(str(plan_path))
-    plan_command = (
-        f"streamt plan --project-dir {project_arg} --env prod --out {plan_arg}"
-    )
-    apply_command = (
-        f"streamt apply --project-dir {project_arg} --env prod --plan {plan_arg}"
-    )
+    plan_command = f"streamt plan --project-dir {project_arg} --env prod --out {plan_arg}"
+    apply_command = f"streamt apply --project-dir {project_arg} --env prod --plan {plan_arg}"
 
     with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
         result = CliRunner().invoke(
@@ -816,9 +1174,7 @@ def test_cli_rejects_tampered_and_stale_plan_files(tmp_path: Path) -> None:
     _write_project(tmp_path)
     plan_path = tmp_path / "reviewed.plan.json"
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)]
-    )
+    result = runner.invoke(main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)])
     assert result.exit_code == 0, result.output
 
     original = plan_path.read_text()
@@ -893,9 +1249,7 @@ def test_cli_rejects_live_plan_drift_before_apply(tmp_path: Path) -> None:
     _write_project(tmp_path)
     plan_path = tmp_path / "reviewed.plan.json"
     runner = CliRunner()
-    result = runner.invoke(
-        main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)]
-    )
+    result = runner.invoke(main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)])
     assert result.exit_code == 0, result.output
 
     changed_live_plan = DeploymentPlan(
@@ -1025,9 +1379,7 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
     _write_project(tmp_path)
     project = ProjectParser(tmp_path).parse()
     manifest = Compiler(project).compile(dry_run=True)
-    blocked_plan = DeploymentPlan(
-        ownership_requirements=[_ownership_requirement()]
-    )
+    blocked_plan = DeploymentPlan(ownership_requirements=[_ownership_requirement()])
     reviewed = ReviewedPlanFile.create(
         blocked_plan,
         manifest,
@@ -1042,6 +1394,7 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
                 config=local_deployment_state_config(),
             ).read()
         ),
+        actions=(),
     )
     plan_path = tmp_path / "blocked.plan.json"
     reviewed.save(plan_path)
@@ -1061,9 +1414,7 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
     assert result.exit_code == 1
     payload = _json_output(result)
     assert payload["errors"][0]["code"] == "E410_OWNERSHIP_REQUIRED"
-    assert payload["data"]["blocking_ownership_requirements"][0]["reason"] == (
-        "requires_adoption"
-    )
+    assert payload["data"]["blocking_ownership_requirements"][0]["reason"] == ("requires_adoption")
     apply_plan.assert_not_called()
 
 

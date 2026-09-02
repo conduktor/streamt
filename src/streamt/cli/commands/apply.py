@@ -32,6 +32,7 @@ from streamt.core.deployment_state import (
 )
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
+from streamt.deployer.operation_actions import operation_actions_from_planned
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
@@ -42,7 +43,6 @@ from streamt.deployer.state import (
     updated_local_state,
 )
 from streamt.deployer.state_backend import (
-    OperationAction,
     OperationIntent,
     OperationProgress,
     OperationSnapshot,
@@ -144,7 +144,8 @@ def _enforce_gateway_removal_apply_authorization(
 ) -> None:
     """Require one complete online reviewed workflow for explicit removals."""
     removals = manifest.artifacts.get("gateway_rule_removals", [])
-    if not removals or (reviewed_plan_path is not None and not (target or select)):
+    has_removal_declaration = type(removals) is not list or bool(removals)
+    if not has_removal_declaration or (reviewed_plan_path is not None and not (target or select)):
         return
 
     plan_command, apply_command = _reviewed_plan_commands(environment, project_path)
@@ -155,14 +156,13 @@ def _enforce_gateway_removal_apply_authorization(
         )
     else:
         message = (
-            "Gateway rule removals cannot be applied directly; "
-            "an online reviewed plan is required"
+            "Gateway rule removals cannot be applied directly; an online reviewed plan is required"
         )
     fmt.set_data(
         {
             "environment": environment,
             "policy": "gateway_rule_removal",
-            "gateway_rule_removals": len(removals),
+            "gateway_rule_removals": (len(removals) if isinstance(removals, list) else None),
             "required_workflow": "reviewed_plan",
             "next_steps": [plan_command, apply_command],
         }
@@ -172,8 +172,7 @@ def _enforce_gateway_removal_apply_authorization(
             code=ErrorCode.REVIEWED_PLAN_REQUIRED,
             message=message,
             suggestion=(
-                f"Run '{plan_command}', review the complete saved plan, then run "
-                f"'{apply_command}'."
+                f"Run '{plan_command}', review the complete saved plan, then run '{apply_command}'."
             ),
             docs_url="https://streamt.dev/docs/reference/cli#apply",
         )
@@ -223,7 +222,10 @@ def apply(
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
-    from streamt.deployer.planner import DeploymentPlanner
+    from streamt.deployer.planner import (
+        DeploymentPlanner,
+        resolve_gateway_planning_targets,
+    )
 
     fmt = make_formatter(ctx, "apply")
     project_path = get_project_path(project_dir)
@@ -271,8 +273,7 @@ def apply(
                     code=ErrorCode.REVIEWED_PLAN_REQUIRED,
                     message=message,
                     suggestion=(
-                        f"Run '{plan_command}', review the saved file, then run "
-                        f"'{apply_command}'."
+                        f"Run '{plan_command}', review the saved file, then run '{apply_command}'."
                     ),
                     docs_url="https://streamt.dev/docs/reference/cli#apply",
                 )
@@ -281,9 +282,7 @@ def apply(
             fmt.flush()
             sys.exit(1)
 
-        reviewed_plan = (
-            ReviewedPlanFile.load(reviewed_plan_path) if reviewed_plan_path else None
-        )
+        reviewed_plan = ReviewedPlanFile.load(reviewed_plan_path) if reviewed_plan_path else None
         if reviewed_plan is not None and reviewed_plan.offline:
             raise PlanFileError(
                 "Offline reviewed plans are preview-only and cannot authorize apply; "
@@ -301,9 +300,7 @@ def apply(
             if env_config.environment.protected:
                 fmt.print_warning(f"Deploying to protected environment '{env_name}'")
             else:
-                fmt.print_warning(
-                    f"Environment '{env_name}' requires explicit apply confirmation"
-                )
+                fmt.print_warning(f"Environment '{env_name}' requires explicit apply confirmation")
 
             if confirm_env:
                 if confirm_env != env_name:
@@ -345,8 +342,7 @@ def apply(
                         )
                     )
                     fmt.print_error(
-                        f"'{env_name}' requires confirmation. Use --confirm or "
-                        "--confirm-env in CI."
+                        f"'{env_name}' requires confirmation. Use --confirm or --confirm-env in CI."
                     )
                     fmt.flush()
                     sys.exit(1)
@@ -360,9 +356,7 @@ def apply(
             fmt.flush()
             sys.exit(1)
 
-        parsed_environment = (
-            parser.env_config.environment.name if parser.env_config else None
-        )
+        parsed_environment = parser.env_config.environment.name if parser.env_config else None
         effective_environment = (
             parsed_environment
             if isinstance(parsed_environment, str) and parsed_environment
@@ -389,9 +383,7 @@ def apply(
             environment=effective_environment,
             config=project.deployment_state,
         )
-        state_operation = operation_stack.enter_context(
-            state_service.operation()
-        )
+        state_operation = operation_stack.enter_context(state_service.operation())
         # This is the planning state/control pair.  The operation lock remains
         # held through live re-planning, runtime mutation, and state commit.
         planning_snapshot = state_operation.observe()
@@ -410,6 +402,19 @@ def apply(
                 environment=effective_environment,
                 runtime=project.runtime,
                 state_observation=prior_observation,
+            )
+
+        raw_gateway_removals = manifest.artifacts.get(
+            "gateway_rule_removals",
+            [],
+        )
+        if type(raw_gateway_removals) is not list or raw_gateway_removals:
+            resolve_gateway_planning_targets(
+                manifest,
+                project,
+                environment=effective_environment,
+                prior_state=prior_state,
+                require_authoritative_state=True,
             )
 
         # --target / --select filtering
@@ -517,26 +522,36 @@ def apply(
                 environment=effective_environment,
             )
             deployment_plan = planner.plan()
+            ordered_actions = (
+                [] if deployment_plan.is_apply_blocked else planner.planned_actions(deployment_plan)
+            )
+            operation_actions = (
+                ()
+                if deployment_plan.is_apply_blocked
+                else operation_actions_from_planned(ordered_actions)
+            )
+            gateway_removal_assessments = [
+                assessment.to_dict() for assessment in deployment_plan.gateway_removal_assessments
+            ]
             if reviewed_plan is not None:
                 reviewed_snapshot = state_operation.observe()
                 state_operation.ensure_ready(reviewed_snapshot)
                 reviewed_plan.verify_current_plan(
                     deployment_plan,
+                    actions=operation_actions,
                     state_observation=reviewed_snapshot.state,
                 )
 
             if deployment_plan.is_apply_blocked is True:
                 all_requirements = [
-                    requirement.to_dict()
-                    for requirement in deployment_plan.ownership_requirements
+                    requirement.to_dict() for requirement in deployment_plan.ownership_requirements
                 ]
                 blocking_requirements = [
                     requirement.to_dict()
                     for requirement in deployment_plan.blocking_ownership_requirements
                 ]
                 safety_blockers = [
-                    blocker.to_dict()
-                    for blocker in deployment_plan.ordered_safety_blockers
+                    blocker.to_dict() for blocker in deployment_plan.ordered_safety_blockers
                 ]
                 if safety_blockers:
                     error_code = ErrorCode.SAFETY_BLOCKED
@@ -559,6 +574,7 @@ def apply(
                         "ownership_requirements": all_requirements,
                         "blocking_ownership_requirements": blocking_requirements,
                         "safety_blockers": safety_blockers,
+                        "gateway_removal_assessments": gateway_removal_assessments,
                         "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
@@ -570,9 +586,7 @@ def apply(
 
             # Destructive safety — only block if plan actually has deletes
             if deployment_plan.deletes > 0:
-                env_name = (
-                    parser.env_config.environment.name if parser.env_config else "default"
-                )
+                env_name = parser.env_config.environment.name if parser.env_config else "default"
                 if not destructive_operations_allowed(parser.env_config, force):
                     fmt.add_error(
                         StructuredError(
@@ -603,14 +617,13 @@ def apply(
                         "updates": deployment_plan.updates,
                         "deletes": deployment_plan.deletes,
                         "has_changes": deployment_plan.has_changes,
+                        "gateway_removal_assessments": gateway_removal_assessments,
                         "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
                 fmt.flush()
                 close_deployers(sr, kafka, flink, connect, gateway)
                 return
-
-            ordered_actions = planner.planned_actions(deployment_plan)
 
             # Bind the durable intent to a fresh state/control pair immediately
             # before it is written.  Direct applies get the same final drift
@@ -620,16 +633,15 @@ def apply(
             if reviewed_plan is not None:
                 reviewed_plan.verify_current_plan(
                     deployment_plan,
+                    actions=operation_actions,
                     state_observation=intent_snapshot.state,
                 )
             if (
                 intent_snapshot.state.store != prior_observation.store
                 or intent_snapshot.state.revision != prior_observation.revision
                 or intent_snapshot.state.state != prior_state
-                or intent_snapshot.control.revision
-                != planning_snapshot.control.revision
-                or intent_snapshot.control.control
-                != planning_snapshot.control.control
+                or intent_snapshot.control.revision != planning_snapshot.control.revision
+                or intent_snapshot.control.control != planning_snapshot.control.control
             ):
                 raise StateBackendConflictError(
                     "deployment state or operation control changed during live "
@@ -647,15 +659,7 @@ def apply(
                 reviewed_plan_checksum=(
                     reviewed_plan.checksum if reviewed_plan is not None else None
                 ),
-                actions=tuple(
-                    OperationAction(
-                        index=index,
-                        resource_id=planned_action.resource_id,
-                        action=planned_action.action,
-                        gateway_evidence=planned_action.gateway_evidence,
-                    )
-                    for index, planned_action in enumerate(ordered_actions)
-                ),
+                actions=operation_actions,
             )
             managed_gateway_deletions = tuple(
                 ManagedGatewayResourceDeletion(
@@ -738,8 +742,7 @@ def apply(
                 completed = [
                     progress.action_index
                     for progress in active_snapshot[0].control.control.progress
-                    if progress.status == "completed"
-                    and progress.succeeded is True
+                    if progress.status == "completed" and progress.succeeded is True
                 ]
                 active_snapshot[0] = state_operation.mark_recovery_required(
                     active_snapshot[0],
@@ -747,18 +750,14 @@ def apply(
                         operation_id=operation_id,
                         failure_code=failure_code,
                         failed_at=operation_timestamp(),
-                        last_completed_action_index=(
-                            max(completed) if completed else None
-                        ),
+                        last_completed_action_index=(max(completed) if completed else None),
                     ),
                 )
                 operation_finalized = True
 
             def clear_before_mutation() -> None:
                 nonlocal operation_finalized
-                active_snapshot[0] = state_operation.clear_before_mutation(
-                    active_snapshot[0]
-                )
+                active_snapshot[0] = state_operation.clear_before_mutation(active_snapshot[0])
                 operation_finalized = True
 
             try:
@@ -768,6 +767,7 @@ def apply(
                     after_action=after_action,
                     stop_on_error=True,
                 )
+                results["gateway_removal_assessments"] = gateway_removal_assessments
                 if reviewed_plan and reviewed_plan_path:
                     results["plan_checksum"] = reviewed_plan.checksum
                     results["plan_file"] = str(reviewed_plan_path.resolve())
@@ -786,9 +786,7 @@ def apply(
                     rolled_back, rb_errors = planner.rollback(
                         rollback_candidates,
                         plan=deployment_plan,
-                        before_action=lambda _label, _index: (
-                            state_operation.check_lock()
-                        ),
+                        before_action=lambda _label, _index: (state_operation.check_lock()),
                         after_action=lambda _label, _index, _succeeded: (
                             state_operation.check_lock()
                         ),
@@ -808,9 +806,7 @@ def apply(
                 if errors:
                     if mutation_started:
                         mark_recovery(
-                            "rollback_incomplete"
-                            if rollback_failed
-                            else "runtime_action_failed"
+                            "rollback_incomplete" if rollback_failed else "runtime_action_failed"
                         )
                     else:
                         clear_before_mutation()
@@ -818,9 +814,7 @@ def apply(
                     fmt.set_status("error")
                     fmt.print("\n[red]Errors:[/red]")
                     for item in errors:
-                        fmt.add_error(
-                            StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item)
-                        )
+                        fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
                         fmt.print_error(item)
                     fmt.flush()
                     sys.exit(1)
@@ -836,8 +830,7 @@ def apply(
                     )
                 except OSError as error:
                     raise StateBackendUnknownCommitError(
-                        "deployment succeeded but ownership state commit "
-                        "could not be confirmed",
+                        "deployment succeeded but ownership state commit could not be confirmed",
                         operation_id=operation_id,
                     ) from error
                 operation_finalized = True
@@ -931,9 +924,7 @@ def apply(
         sys.exit(1)
     except StateBackendLockTimeoutError as e:
         safe_message = redact_sensitive_text(e)
-        fmt.add_error(
-            StructuredError(code=ErrorCode.STATE_LOCK_TIMEOUT, message=safe_message)
-        )
+        fmt.add_error(StructuredError(code=ErrorCode.STATE_LOCK_TIMEOUT, message=safe_message))
         fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
@@ -951,9 +942,7 @@ def apply(
         sys.exit(1)
     except StateBackendConflictError as e:
         safe_message = redact_sensitive_text(e)
-        fmt.add_error(
-            StructuredError(code=ErrorCode.STATE_CONFLICT, message=safe_message)
-        )
+        fmt.add_error(StructuredError(code=ErrorCode.STATE_CONFLICT, message=safe_message))
         fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
@@ -993,9 +982,7 @@ def apply(
         sys.exit(1)
     except StateError as e:
         safe_message = redact_sensitive_text(e)
-        fmt.add_error(
-            StructuredError(code=ErrorCode.STATE_INVALID, message=safe_message)
-        )
+        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=safe_message))
         fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)

@@ -16,7 +16,11 @@ from streamt.core.runtime import (
     KafkaConfig,
     RuntimeConfig,
 )
-from streamt.deployer.gateway import GatewayBackendBinding, GatewayDeployer
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayDeployer,
+    ManagedGatewayRuleObservation,
+)
 from streamt.deployer.planner import (
     DeploymentPlanner,
     GatewayPlanningTargets,
@@ -75,9 +79,7 @@ def _rule(
 ) -> dict[str, object]:
     interceptors: list[dict[str, object]] = []
     if where is not None:
-        interceptors.append(
-            {"type": "filter", "config": {"where": where}}
-        )
+        interceptors.append({"type": "filter", "config": {"where": where}})
     return {
         "name": rule,
         "virtualTopic": alias,
@@ -134,9 +136,7 @@ def _state(
         assert isinstance(prior, dict)
         alias = prior["virtualTopic"]
         assert isinstance(alias, str)
-        resources[
-            resource_id("payments", "prod", "gateway_rule", owner)
-        ] = ManagedResourceRecord(
+        resources[resource_id("payments", "prod", "gateway_rule", owner)] = ManagedResourceRecord(
             physical_name=alias,
             ownership="managed",
             artifact_checksum=artifact_checksum(prior),
@@ -161,9 +161,7 @@ def _assert_preflight_fails_without_gateway_read(
     gateway = MagicMock(spec=GatewayDeployer)
     gateway.cluster_binding = _binding()
     schema_registry = MagicMock()
-    manifest.artifacts["schemas"] = [
-        {"subject": "later-value", "schema": '{"type":"string"}'}
-    ]
+    manifest.artifacts["schemas"] = [{"subject": "later-value", "schema": '{"type":"string"}'}]
 
     with pytest.raises(StateIdentityError, match=message):
         DeploymentPlanner(
@@ -209,15 +207,11 @@ def test_resolves_owner_rule_alias_checksum_and_declaration_order() -> None:
     ]
     resolved = targets.removals[0]
     assert isinstance(resolved, ResolvedGatewayRuleRemoval)
-    assert resolved.resource_id == resource_id(
-        "payments", "prod", "gateway_rule", "orders_view"
-    )
+    assert resolved.resource_id == resource_id("payments", "prod", "gateway_rule", "orders_view")
     assert resolved.logical_owner == "orders_view"
     assert resolved.rule_name == "orders_access_rule"
     assert resolved.alias_name == "orders.public"
-    assert resolved.prior_artifact_checksum == artifact_checksum(
-        first["priorArtifact"]
-    )
+    assert resolved.prior_artifact_checksum == artifact_checksum(first["priorArtifact"])
     assert len({resolved.logical_owner, resolved.rule_name, resolved.alias_name}) == 3
     with pytest.raises(FrozenInstanceError):
         resolved.alias_name = "changed"  # type: ignore[misc]
@@ -225,9 +219,7 @@ def test_resolves_owner_rule_alias_checksum_and_declaration_order() -> None:
     detached.name = "changed"
     detached.interceptors[0]["config"] = {"where": "changed = true"}
     assert resolved.prior_artifact.name == "orders_access_rule"
-    assert resolved.prior_artifact.interceptors[0]["config"] == {
-        "where": "region = 'us'"
-    }
+    assert resolved.prior_artifact.interceptors[0]["config"] == {"where": "region = 'us'"}
 
 
 def test_resolved_removal_rejects_ownership_from_another_project() -> None:
@@ -296,7 +288,7 @@ def test_no_prior_record_is_a_valid_preflight_target() -> None:
     assert targets.removals[0].logical_owner == "orders_view"
 
 
-def test_only_removal_live_plan_stays_preflight_only() -> None:
+def test_only_removal_live_plan_uses_one_snapshot_without_mutating() -> None:
     removal = _removal(
         owner="orders_view",
         rule="orders_rule",
@@ -304,6 +296,15 @@ def test_only_removal_live_plan_stays_preflight_only() -> None:
     )
     gateway = MagicMock(spec=GatewayDeployer)
     gateway.cluster_binding = _binding()
+    snapshot = MagicMock()
+    snapshot.binding = _binding()
+    snapshot.rule.return_value = ManagedGatewayRuleObservation(
+        binding=_binding(),
+        logical_name="orders_rule",
+        alias_name="orders.public",
+        exists=False,
+    )
+    gateway.observe_managed_gateway_snapshot.return_value = snapshot
 
     plan = DeploymentPlanner(
         _manifest(removals=[removal]),
@@ -314,7 +315,11 @@ def test_only_removal_live_plan_stays_preflight_only() -> None:
     ).plan()
 
     assert plan.gateway_changes == []
-    gateway.observe_managed_gateway_snapshot.assert_not_called()
+    assert [assessment.status for assessment in plan.gateway_removal_assessments] == [
+        "state_provider_drift"
+    ]
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    gateway.delete_managed_gateway_rule.assert_not_called()
 
 
 def test_offline_removal_preflight_does_not_require_state_or_read_gateway() -> None:
@@ -334,6 +339,12 @@ def test_offline_removal_preflight_does_not_require_state_or_read_gateway() -> N
     ).offline_plan()
 
     assert plan.gateway_changes == []
+    assert [assessment.status for assessment in plan.gateway_removal_assessments] == [
+        "offline_unverified"
+    ]
+    assert [blocker.code for blocker in plan.safety_blockers] == [
+        "gateway_removal_offline_unverified"
+    ]
     gateway.observe_managed_gateway_snapshot.assert_not_called()
 
 
@@ -479,9 +490,7 @@ def test_prior_state_must_match_exact_removal_without_gateway_read(
     )
     prior = removal["priorArtifact"]
     assert isinstance(prior, dict)
-    target = resource_id(
-        "payments", "prod", "gateway_rule", "orders_view"
-    )
+    target = resource_id("payments", "prod", "gateway_rule", "orders_view")
 
     _assert_preflight_fails_without_gateway_read(
         _manifest(removals=[removal]),
@@ -503,9 +512,7 @@ def test_another_prior_alias_claim_is_rejected_without_gateway_read(
         rule="orders_rule",
         alias="orders.public",
     )
-    other = resource_id(
-        "payments", "prod", "gateway_rule", "other_owner"
-    )
+    other = resource_id("payments", "prod", "gateway_rule", "other_owner")
 
     _assert_preflight_fails_without_gateway_read(
         _manifest(removals=[removal]),
@@ -529,9 +536,7 @@ def test_exact_canonical_target_and_legacy_duplicate_alias_claim_are_rejected() 
         rule="orders_rule",
         alias="orders.public",
     )
-    other = resource_id(
-        "payments", "prod", "gateway_rule", "legacy_owner"
-    )
+    other = resource_id("payments", "prod", "gateway_rule", "legacy_owner")
 
     _assert_preflight_fails_without_gateway_read(
         _manifest(removals=[removal]),
@@ -642,9 +647,7 @@ def test_removal_to_removal_collisions_fail_without_gateway_read(
         lambda removal: removal.update({"future": True}),
         lambda removal: removal.pop("logicalOwner"),
         lambda removal: removal["priorArtifact"].pop("ownership"),
-        lambda removal: removal["priorArtifact"].update(
-            {"ownership": _ownership("other_owner")}
-        ),
+        lambda removal: removal["priorArtifact"].update({"ownership": _ownership("other_owner")}),
     ],
     ids=["unknown-field", "missing-field", "missing-ownership", "wrong-owner"],
 )

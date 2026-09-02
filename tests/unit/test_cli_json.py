@@ -38,7 +38,12 @@ class TestJSONOutput:
                 {"name": "enriched", "sql": 'SELECT * FROM {{ ref("clean") }}'},
             ],
             "tests": [
-                {"name": "clean_schema", "model": "clean", "type": "schema", "assertions": [{"not_null": {"columns": ["id"]}}]},
+                {
+                    "name": "clean_schema",
+                    "model": "clean",
+                    "type": "schema",
+                    "assertions": [{"not_null": {"columns": ["id"]}}],
+                },
             ],
         }
 
@@ -148,7 +153,10 @@ class TestJSONOutput:
         """envs list --output json in single-env mode."""
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = {"project": {"name": "test"}, "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}}}
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+            }
             self._create_project(tmpdir, config)
             result = runner.invoke(main, ["-o", "json", "envs", "list", "-p", tmpdir])
 
@@ -198,7 +206,10 @@ class TestListCommand:
                 "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
                 "sources": [{"name": "raw", "topic": "raw.v1"}],
                 "models": [
-                    {"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }} WHERE id IS NOT NULL'},
+                    {
+                        "name": "clean",
+                        "sql": 'SELECT * FROM {{ source("raw") }} WHERE id IS NOT NULL',
+                    },
                 ],
             }
             self._create_project(tmpdir, config)
@@ -222,7 +233,12 @@ class TestListCommand:
                 "sources": [{"name": "raw", "topic": "raw.v1"}],
                 "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
                 "tests": [
-                    {"name": "t1", "model": "clean", "type": "schema", "assertions": [{"not_null": {"columns": ["id"]}}]},
+                    {
+                        "name": "t1",
+                        "model": "clean",
+                        "type": "schema",
+                        "assertions": [{"not_null": {"columns": ["id"]}}],
+                    },
                 ],
             }
             self._create_project(tmpdir, config)
@@ -331,7 +347,9 @@ class TestShowCommand:
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_project(tmpdir, self._full_config())
-            result = runner.invoke(main, ["-o", "json", "show", "model", "nonexistent", "-p", tmpdir])
+            result = runner.invoke(
+                main, ["-o", "json", "show", "model", "nonexistent", "-p", tmpdir]
+            )
 
             assert result.exit_code == 1
             data = parse_json_output(result.output)
@@ -361,11 +379,14 @@ class TestConfirmEnvFlag:
         envs_dir = project_path / "environments"
         envs_dir.mkdir()
         with open(envs_dir / "prod.yml", "w") as f:
-            yaml.dump({
-                "environment": {"name": "prod", "description": "Production", "protected": True},
-                "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
-                "safety": {"confirm_apply": True, "allow_destructive": False},
-            }, f)
+            yaml.dump(
+                {
+                    "environment": {"name": "prod", "description": "Production", "protected": True},
+                    "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
+                    "safety": {"confirm_apply": True, "allow_destructive": False},
+                },
+                f,
+            )
         return project_path
 
     def test_confirm_env_wrong_name(self):
@@ -425,11 +446,18 @@ class TestDestructiveSafety:
         envs_dir = project_path / "environments"
         envs_dir.mkdir()
         with open(envs_dir / "prod.yml", "w") as f:
-            yaml.dump({
-                "environment": {"name": "prod", "description": "Production", "protected": False},
-                "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
-                "safety": {"confirm_apply": True, "allow_destructive": False},
-            }, f)
+            yaml.dump(
+                {
+                    "environment": {
+                        "name": "prod",
+                        "description": "Production",
+                        "protected": False,
+                    },
+                    "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
+                    "safety": {"confirm_apply": True, "allow_destructive": False},
+                },
+                f,
+            )
         return project_path
 
     def test_non_destructive_apply_succeeds_without_force(self):
@@ -438,20 +466,23 @@ class TestDestructiveSafety:
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir)
             result = runner.invoke(
-                main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"]
+                main,
+                ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"],
             )
 
             # Should NOT fail with "Destructive ops blocked" — there are no destructive ops
             data = parse_json_output(result.output)
             if data["status"] == "error":
                 for err in data["errors"]:
-                    assert "destructive" not in err["message"].lower(), \
+                    assert "destructive" not in err["message"].lower(), (
                         f"Non-destructive apply should not be blocked: {err['message']}"
+                    )
 
     def test_destructive_apply_blocked_without_force(self):
         """apply with allow_destructive=false should block when plan has deletes."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
+        from streamt.deployer.kafka import TopicChange
         from streamt.deployer.planner import DeploymentPlan
 
         runner = CliRunner()
@@ -459,13 +490,23 @@ class TestDestructiveSafety:
             self._create_multi_env_project(tmpdir, with_model=True)
 
             # Mock planner to return a plan with deletes
-            mock_plan = MagicMock(spec=DeploymentPlan)
-            mock_plan.deletes = 1
-            mock_plan.has_changes = True
+            mock_plan = DeploymentPlan(
+                topic_changes=[TopicChange(topic="retired.v1", action="delete")]
+            )
 
-            with patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=mock_plan):
+            with (
+                patch(
+                    "streamt.deployer.planner.DeploymentPlanner.plan",
+                    return_value=mock_plan,
+                ),
+                patch(
+                    "streamt.deployer.planner.DeploymentPlanner.planned_actions",
+                    return_value=[],
+                ),
+            ):
                 result = runner.invoke(
-                    main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"]
+                    main,
+                    ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "prod"],
                 )
 
                 assert result.exit_code == 1
@@ -475,25 +516,54 @@ class TestDestructiveSafety:
 
     def test_destructive_apply_proceeds_with_force(self):
         """apply with --force should proceed even when plan has deletes."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
+        from streamt.deployer.kafka import TopicChange
         from streamt.deployer.planner import DeploymentPlan
 
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir, with_model=True)
 
-            mock_plan = MagicMock(spec=DeploymentPlan)
-            mock_plan.deletes = 1
-            mock_plan.has_changes = True
+            mock_plan = DeploymentPlan(
+                topic_changes=[TopicChange(topic="retired.v1", action="delete")]
+            )
 
-            mock_results = {"created": [], "updated": [], "unchanged": ["topic:raw.v1"], "errors": []}
+            mock_results = {
+                "created": [],
+                "updated": [],
+                "unchanged": ["topic:raw.v1"],
+                "errors": [],
+            }
 
-            with patch("streamt.deployer.planner.DeploymentPlanner.plan", return_value=mock_plan), \
-                 patch("streamt.deployer.planner.DeploymentPlanner.apply", return_value=mock_results):
+            with (
+                patch(
+                    "streamt.deployer.planner.DeploymentPlanner.plan",
+                    return_value=mock_plan,
+                ),
+                patch(
+                    "streamt.deployer.planner.DeploymentPlanner.planned_actions",
+                    return_value=[],
+                ),
+                patch(
+                    "streamt.deployer.planner.DeploymentPlanner.apply",
+                    return_value=mock_results,
+                ),
+            ):
                 result = runner.invoke(
-                    main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod",
-                           "--confirm-env", "prod", "--force"]
+                    main,
+                    [
+                        "-o",
+                        "json",
+                        "apply",
+                        "-p",
+                        tmpdir,
+                        "--env",
+                        "prod",
+                        "--confirm-env",
+                        "prod",
+                        "--force",
+                    ],
                 )
 
                 assert result.exit_code == 0
@@ -510,11 +580,14 @@ class TestErrorCodes:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir)
             with open(project_path / "stream_project.yml", "w") as f:
-                yaml.dump({
-                    "project": {"name": "test"},
-                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-                    "models": [{"name": "bad", "sql": 'SELECT * FROM {{ source("nope") }}'}],
-                }, f)
+                yaml.dump(
+                    {
+                        "project": {"name": "test"},
+                        "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                        "models": [{"name": "bad", "sql": 'SELECT * FROM {{ source("nope") }}'}],
+                    },
+                    f,
+                )
 
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
 
@@ -546,10 +619,13 @@ class TestOutputEnvelope:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir)
             with open(project_path / "stream_project.yml", "w") as f:
-                yaml.dump({
-                    "project": {"name": "test"},
-                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-                }, f)
+                yaml.dump(
+                    {
+                        "project": {"name": "test"},
+                        "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    },
+                    f,
+                )
 
             result = runner.invoke(main, ["-o", "json", "validate", "-p", tmpdir])
             data = parse_json_output(result.output)
@@ -568,10 +644,13 @@ class TestOutputEnvelope:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_path = Path(tmpdir)
             with open(project_path / "stream_project.yml", "w") as f:
-                yaml.dump({
-                    "project": {"name": "test"},
-                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-                }, f)
+                yaml.dump(
+                    {
+                        "project": {"name": "test"},
+                        "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    },
+                    f,
+                )
 
             result = runner.invoke(main, ["validate", "-p", tmpdir])
 

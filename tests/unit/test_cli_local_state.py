@@ -145,7 +145,7 @@ class _RecordingStateOperation:
 
 
 class _FakeReadBackend:
-    """Minimal provider fake proving commands depend on the typed boundary."""
+    """Minimal provider fake proving commands use the locked typed boundary."""
 
     def __init__(self, observation: StateObservation) -> None:
         self.observation = observation
@@ -168,7 +168,18 @@ class _FakeReadBackend:
         self,
         address: StateAddress,
     ) -> AbstractContextManager[DeploymentStateOperation]:
-        raise AssertionError(f"read-only plan must not acquire {address.uri}")
+        assert address == self.observation.address
+
+        @contextmanager
+        def locked() -> Iterator[DeploymentStateOperation]:
+            operation = MagicMock(spec=DeploymentStateOperation)
+            operation.observe.return_value = OperationSnapshot(
+                state=self.observation,
+                control=self.read_control(address),
+            )
+            yield operation
+
+        return locked()
 
 
 def _write_project(path: Path) -> None:
@@ -236,11 +247,7 @@ def _write_multi_environment_project(path: Path) -> None:
             yaml.safe_dump(
                 {
                     "environment": {"name": environment},
-                    "runtime": {
-                        "kafka": {
-                            "bootstrap_servers": f"{environment}-broker:9092"
-                        }
-                    },
+                    "runtime": {"kafka": {"bootstrap_servers": f"{environment}-broker:9092"}},
                 }
             )
         )
@@ -456,9 +463,7 @@ def test_apply_release_failure_after_commit_reports_committed_without_success(
     assert result.exit_code == 1
     payload = _json(result)
     assert payload["errors"][0]["code"] == "E426_STATE_RELEASE_FAILED_AFTER_COMMIT"
-    assert payload["errors"][0]["operation_id"] == (
-        "00000000-0000-4000-8000-000000000099"
-    )
+    assert payload["errors"][0]["operation_id"] == ("00000000-0000-4000-8000-000000000099")
     assert payload["data"]["committed"] is True
     assert payload["data"]["state_serial"] == 1
     assert payload["data"]["created"] == ["topic:payments.clean.v1"]
@@ -797,17 +802,21 @@ def test_controlled_apply_stops_after_first_failed_runtime_action(
 
     assert result.exit_code == 1
     assert called == ["orders.v1"]
-    control = make_deployment_state_service(
-        tmp_path,
-        project="plan-test",
-        environment="default",
-        config=local_deployment_state_config(),
-    ).read_control().control
+    control = (
+        make_deployment_state_service(
+            tmp_path,
+            project="plan-test",
+            environment="default",
+            config=local_deployment_state_config(),
+        )
+        .read_control()
+        .control
+    )
     assert control.status == "recovery_required"
-    assert [
-        (item.action_index, item.status, item.succeeded)
-        for item in control.progress
-    ] == [(0, "started", None), (0, "completed", False)]
+    assert [(item.action_index, item.status, item.succeeded) for item in control.progress] == [
+        (0, "started", None),
+        (0, "completed", False),
+    ]
     assert control.recovery is not None
     assert control.recovery.last_completed_action_index is None
 
@@ -872,12 +881,16 @@ def test_uncertain_zero_action_finalizer_is_not_cleared_as_pre_mutation_failure(
         )
 
     assert result.exit_code == 1
-    control = make_deployment_state_service(
-        tmp_path,
-        project="plan-test",
-        environment="default",
-        config=local_deployment_state_config(),
-    ).read_control().control
+    control = (
+        make_deployment_state_service(
+            tmp_path,
+            project="plan-test",
+            environment="default",
+            config=local_deployment_state_config(),
+        )
+        .read_control()
+        .control
+    )
     assert control.status == "recovery_required"
     assert control.intent is not None
     assert control.intent.actions == ()
@@ -985,9 +998,7 @@ def test_external_resources_are_excluded_from_persisted_state(tmp_path: Path) ->
 
     assert result.exit_code == 0, result.output
     state = LocalState.load(local_state_path(tmp_path, environment="default"))
-    assert set(state.resources) == {
-        resource_id("plan-test", "default", "topic", "payments_clean")
-    }
+    assert set(state.resources) == {resource_id("plan-test", "default", "topic", "payments_clean")}
 
 
 @pytest.mark.parametrize(
@@ -1167,9 +1178,7 @@ def test_direct_apply_rejects_clear_control_revision_drift_before_intent(
     def plan_after_control_churn(artifact: TopicArtifact) -> TopicChange:
         change = original_plan_topic(artifact)
         control_path.parent.mkdir(parents=True, exist_ok=True)
-        control_path.write_text(
-            json.dumps(OperationControlState.clear(service.address).to_dict())
-        )
+        control_path.write_text(json.dumps(OperationControlState.clear(service.address).to_dict()))
         return change
 
     kafka.plan_topic.side_effect = plan_after_control_churn
@@ -1274,7 +1283,7 @@ def test_online_plan_reads_injected_backend_without_touching_local_state(
     assert state_path.read_text() == "{malformed-but-not-selected"
 
 
-def test_online_plan_exposes_safe_recovery_status_without_mutating_it(
+def test_online_plan_fails_closed_on_recovery_status_without_mutating_it(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
@@ -1315,21 +1324,16 @@ def test_online_plan_exposes_safe_recovery_status_without_mutating_it(
         patch(
             "streamt.cli.commands.plan.make_kafka_deployer",
             return_value=_kafka(exists=False),
-        ),
+        ) as make_kafka,
     ):
         result = CliRunner().invoke(
             main,
             ["-o", "json", "plan", "-p", str(tmp_path)],
         )
 
-    assert result.exit_code == 0, result.output
-    assert _json(result)["data"]["operation_status"] == {
-        "status": "recovery_required",
-        "operation_id": intent.operation_id,
-        "kind": "apply",
-        "failure_code": "runtime_action_failed",
-        "last_completed_action_index": None,
-    }
+    assert result.exit_code == 1, result.output
+    assert _json(result)["errors"][0]["code"] == "E419_STATE_RECOVERY_REQUIRED"
+    make_kafka.assert_not_called()
     assert control_path.read_bytes() == before
 
 

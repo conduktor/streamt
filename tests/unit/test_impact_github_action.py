@@ -75,6 +75,7 @@ def test_summary_renders_checksum_verified_impact_evidence(tmp_path: Path) -> No
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
         state=None,
+        actions=(),
         offline=True,
     )
     reviewed.save(plan_path)
