@@ -15,19 +15,31 @@ workflow, schema/role contract, and full release gates below pass together.
 
 ## Delivery status (2026-09-02)
 
-Packages 1 through 6 are implemented and pass the current test gates, including
-PostgreSQL 14 and 18 conformance. The delivered foundation includes canonical planned-action
-identity, snapshot-bound local apply/adopt, stable failure taxonomy and
+Packages 1 through 8 are implemented and pass the current test gates, including
+PostgreSQL 14 and 18 conformance. The delivered foundation includes canonical
+planned-action identity, snapshot-bound local apply/adopt, stable failure taxonomy and
 operation-ID recovery evidence, and a direct-construction-only PostgreSQL v1
 owner backend covering consistent reads, session locks, atomic mutation,
 histories, commit ambiguity, and crash recovery evidence. Package 6 adds the
 explicit `state migrate-postgres-v2` administrative path, exact store/role
 confirmation, the portable writer-name metadata/ACL contract, v1/v2
 administrative compatibility, and private least-privilege writer execution.
+Package 7 adds real command-level apply, reviewed apply, adopt, failure,
+contention, and installed-wheel gates against both supported PostgreSQL majors.
 
-Packages 7 through 9 remain prohibited until PostgreSQL apply/adopt command
-failure injection, minimum recovery, topology/HA evidence, and final release
-gates pass. Ordinary PostgreSQL factory selection remains disabled.
+Package 8 adds a distinct writer credential binding, strict reviewed recovery
+evidence, three explicit outcomes, an integrity-checked no-overwrite plan file,
+provider-neutral locked orchestration, crash-safe local audit/finalization,
+atomic PostgreSQL finalization, conservative live-target reconstruction, and a
+recovery-only factory. The two-command `state recovery-plan`/`state recover`
+workflow passes all three local resolution paths, real PostgreSQL finalization
+for all three outcomes, PostgreSQL command E2E, and isolated installed-wheel
+gates on PostgreSQL 14 and 18. Public configuration, CLI, support, migration,
+backup, recovery, and topology documentation now describes this recovery-only
+boundary and its fail-closed target limitations.
+
+Package 9 remains prohibited until the remaining topology/HA evidence and final
+release gates pass. Ordinary PostgreSQL factory selection remains disabled.
 
 ## Dependencies and preserved boundaries
 
@@ -407,15 +419,16 @@ they merge in this order.
    store/role confirmation, exact writer identity/ACL validation, safe status
    reporting, operator documentation, and least-privilege backend conformance
    are implemented. The ordinary factory remains disabled.
-7. **PostgreSQL command E2E and failure gates.** After both the private backend
-   and schema version 2 land, inject the private PostgreSQL adapter into the
-   already provider-neutral apply/adopt command path. Pass real PostgreSQL
-   process concurrency and every command failure boundary on all supported
-   majors and packaging shapes; ordinary factory selection remains disabled.
-8. **Minimum recovery.** Ship `state recover` for `observed`, `rolled-back`, and
-   `abandoned-before-mutation`, with exact confirmation, operation-ID binding,
-   fresh evidence, CAS, and append-only audit. Migration/export may follow, but
-   recovery cannot.
+7. **PostgreSQL command E2E and failure gates — complete.** The private
+   PostgreSQL adapter passes real direct apply, reviewed apply, adopt, failure
+   injection, process contention, and isolated installed-wheel command tests on
+   PostgreSQL 14 and 18. Ordinary factory selection remains disabled.
+8. **Minimum recovery — complete.** `state recovery-plan` and `state recover`
+   ship for `observed`, `rolled_back`, and `abandoned_before_mutation`, with
+   exact confirmation, operation-ID binding, fresh project/target evidence,
+   CAS, append-only audit, local crash safety, and atomic PostgreSQL
+   finalization. Unrepresentable live states remain blocked rather than being
+   guessed. Migration/export may follow independently.
 9. **Final factory enablement.** In the last implementation commit only, allow
    the ordinary factory to select a verified version-2 PostgreSQL store with the
    exact writer role. Update public support/configuration/release documentation
@@ -475,10 +488,10 @@ reviewed operator test record:
       validation pass; no ordinary job uses the owner identity.
 - [ ] Direct/session-affine primary checks pass, and the documented standalone
       versus synchronous-HA durability boundary matches tested deployment.
-- [ ] Slice 6 command E2E and the complete failure-injection matrix pass on the
+- [x] Slice 6 command E2E and the complete failure-injection matrix pass on the
       supported PostgreSQL major versions.
-- [ ] Minimum explicit recovery ships and passes all three resolution paths.
-- [ ] Local-only/base and PostgreSQL-extra unit, scenario, packaging, strict
+- [x] Minimum explicit recovery ships and passes all three resolution paths.
+- [x] Local-only/base and PostgreSQL-extra unit, scenario, packaging, strict
       docs, Ruff, and zero-error mypy gates pass.
 - [ ] Public support, configuration, operations, migration, backup, recovery,
       rollback, monitoring, and release notes describe only the enabled
