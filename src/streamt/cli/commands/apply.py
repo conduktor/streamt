@@ -204,6 +204,15 @@ def apply(
             fmt.flush()
             sys.exit(1)
 
+        reviewed_plan = (
+            ReviewedPlanFile.load(reviewed_plan_path) if reviewed_plan_path else None
+        )
+        if reviewed_plan is not None and reviewed_plan.offline:
+            raise PlanFileError(
+                "Offline reviewed plans are preview-only and cannot authorize apply; "
+                "create a fresh online plan with live infrastructure evidence"
+            )
+
         # Explicit environment confirmation
         if env_config and env_config.requires_apply_confirmation:
             env_name = env_config.environment.name
@@ -292,15 +301,13 @@ def apply(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
         )
-        reviewed_plan = None
-        if reviewed_plan_path:
-            reviewed_plan = ReviewedPlanFile.load(reviewed_plan_path)
+        if reviewed_plan is not None:
             reviewed_plan.verify_context(
                 manifest,
                 project=project.project.name,
                 environment=effective_environment,
                 runtime=project.runtime,
-                state_serial=None if reviewed_plan.offline else prior_state.serial,
+                state_serial=prior_state.serial,
             )
 
         # --target / --select filtering

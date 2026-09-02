@@ -291,7 +291,7 @@ def test_plan_payload_includes_sorted_ownership_requirements() -> None:
     ] == ["a", "z"]
 
 
-def test_cli_saves_and_applies_reviewed_plan(tmp_path: Path) -> None:
+def test_cli_saves_offline_plan_but_rejects_it_for_apply(tmp_path: Path) -> None:
     _write_project(tmp_path)
     plan_path = tmp_path / "reviewed.plan.json"
     runner = CliRunner()
@@ -305,12 +305,16 @@ def test_cli_saves_and_applies_reviewed_plan(tmp_path: Path) -> None:
     assert planned_output["data"]["plan_file"] == str(plan_path)
     assert plan_path.exists()
 
-    applied = runner.invoke(
-        main, ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)]
-    )
-    assert applied.exit_code == 0, applied.output
+    with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
+        applied = runner.invoke(
+            main, ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)]
+        )
+
+    assert applied.exit_code == 1
     applied_output = _json_output(applied)
-    assert applied_output["data"]["plan_checksum"] == ReviewedPlanFile.load(plan_path).checksum
+    assert applied_output["errors"][0]["code"] == "E408_PLAN_FILE_INVALID"
+    assert "preview-only" in applied_output["errors"][0]["message"]
+    make_kafka.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -421,7 +425,6 @@ def test_protected_environment_accepts_integrity_checked_reviewed_plan(
             str(tmp_path),
             "--env",
             "prod",
-            "--offline",
             "--out",
             str(plan_path),
         ],
@@ -500,13 +503,13 @@ def test_cli_rejects_tampered_and_stale_plan_files(tmp_path: Path) -> None:
     plan_path = tmp_path / "reviewed.plan.json"
     runner = CliRunner()
     result = runner.invoke(
-        main, ["plan", "-p", str(tmp_path), "--offline", "--out", str(plan_path)]
+        main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)]
     )
     assert result.exit_code == 0, result.output
 
     original = plan_path.read_text()
     data = json.loads(original)
-    data["offline"] = False
+    data["offline"] = True
     plan_path.write_text(json.dumps(data))
     tampered = runner.invoke(
         main, ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)]
@@ -577,7 +580,7 @@ def test_cli_rejects_live_plan_drift_before_apply(tmp_path: Path) -> None:
     plan_path = tmp_path / "reviewed.plan.json"
     runner = CliRunner()
     result = runner.invoke(
-        main, ["plan", "-p", str(tmp_path), "--offline", "--out", str(plan_path)]
+        main, ["plan", "-p", str(tmp_path), "--out", str(plan_path)]
     )
     assert result.exit_code == 0, result.output
 

@@ -75,6 +75,8 @@ Compatible Schema Registry output proves registry-policy compatibility only;
 schema updates remain `risky` with unverified downstream schema impact. Existing
 Flink updates and resubmissions remain state-migration-requiring and blocked.
 Offline creates are `unknown` because offline planning does not prove live absence.
+An offline plan is preview evidence only and is rejected by `apply` even when
+its resource actions happen to match a later live plan.
 
 ## Impact graph
 

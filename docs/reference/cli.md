@@ -425,7 +425,7 @@ streamt plan --env staging --out staging.plan.json
 ```
 
 !!! tip "Offline Plan"
-    Use `--offline` to preview what a fresh deployment would create, without connecting to Kafka or other infrastructure. Useful for evaluating the tool, CI validation, or reviewing changes before infrastructure is available. The offline plan assumes no existing resources — all artifacts show as "create".
+    Use `--offline` to preview what a fresh deployment would create, without connecting to Kafka or other infrastructure. Useful for evaluating the tool, CI validation, or reviewing changes before infrastructure is available. The offline plan assumes no existing resources — all artifacts show as "create". Offline plan files are preview-only and cannot authorize `apply`; generate a fresh online plan with live evidence before mutation.
 
 Online planning reports ordered `safety_blockers` for Kafka partition
 reductions, incompatible schemas, and Flink job updates. A blocked plan still
