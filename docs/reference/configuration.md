@@ -92,9 +92,9 @@ Local accepts no remote fields and stores ownership at
 `.streamt/state/<environment>.json`. It is intended for a single-user checkout,
 not shared or distributed runners.
 
-The strict PostgreSQL shape lets projects initialize, inspect, diagnose, and
-explicitly migrate a future remote authority through narrow administrative
-commands:
+The strict PostgreSQL shape lets projects initialize, inspect, diagnose,
+explicitly migrate a future remote authority, and recover an unfinished
+operation through a narrow v2 writer path:
 
 ```yaml
 deployment_state:
@@ -105,6 +105,7 @@ deployment_state:
     dsn_env: STREAMT_STATE_POSTGRES_DSN
     schema: streamt
     writer_role_env: STREAMT_STATE_POSTGRES_WRITER_ROLE
+    writer_dsn_env: STREAMT_STATE_POSTGRES_WRITER_DSN
 ```
 
 | Field | Type | Default | Description |
@@ -115,19 +116,20 @@ deployment_state:
 | `postgres.dsn_env` | string | - | Required environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `postgres.schema` | string | `streamt` | Unquoted schema name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `postgres.writer_role_env` | string or null | `null` | Optional environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$`; required by `state migrate-postgres-v2`, ignored by v1 init/status/lock-status |
+| `postgres.writer_dsn_env` | string or null | `null` | Optional environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$`; required by PostgreSQL `state recovery-plan` and `state recover`, and must differ from `postgres.dsn_env` |
 
 Provider blocks reject unknown keys, mixed local/PostgreSQL fields, an omitted
 discriminator, and partial PostgreSQL shapes. The DSN itself must not appear in
 YAML. streamt resolves the named variable only when an online command constructs
 the provider, after `.env`, `.env.<environment>`, and the real environment have
-been applied. `writer_role_env` likewise stores only a variable name. Its role
-value is resolved late only by commands that require it, with the real process
-environment taking precedence over the selected environment dotenv and then
-the base dotenv. Neither value is retained in parsed configuration, generated
-schemas, plans, logs, or command output. Validation, compilation, and offline
-plan read neither variable.
+been applied. `writer_role_env` and `writer_dsn_env` likewise store only
+variable names. Their values are resolved late only by commands that require
+them, with the real process environment taking precedence over the selected
+environment dotenv and then the base dotenv. None of these values is retained
+in parsed configuration, generated schemas, plans, logs, or command output.
+Validation, compilation, and offline plan read none of them.
 
-!!! warning "PostgreSQL is administrative-only"
+!!! warning "PostgreSQL ordinary authority is disabled"
     With the optional `postgres` package extra, `state status` inspects an exact
     version-1 or version-2 store in a bounded, repeatable-read, read-only
     transaction. `state init` creates a version-1 store or registers an empty
@@ -137,12 +139,13 @@ plan read neither variable.
     metadata/ACL contract atomically, and never selects the ordinary backend.
     `state lock-status` reports instantaneous `available`, `busy`, or
     `unregistered` diagnostics; it reserves nothing and cannot authorize
-    mutation. A missing extra or variable, invalid connection policy,
+    mutation. `state recovery-plan` and `state recover` can resolve one exact
+    unfinished operation through the separately configured v2 writer. This is
+    recovery-only authority, not ordinary backend selection. A missing extra
+    or variable, invalid connection policy,
     unavailable database, or incompatible store fails with a secret-neutral
     state error. Online plan, apply, and adopt still fail with
     `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local state.
-    Recovery and ordinary operation locking remain unavailable from normal
-    commands.
 
 !!! note "PostgreSQL roles and catalog security"
     The initializer identity owns the schema and all seven state tables.
@@ -156,6 +159,9 @@ plan read neither variable.
     [PostgreSQL deployment-state migration guide](../guides/postgres-deployment-state.md#exact-writer-acl).
     Missing, extra, grantable, wrong-grantor, default, or `PUBLIC` privileges
     fail closed.
+    Recovery resolves only `writer_dsn_env`, proves that its login is the exact
+    writer stored by the v2 catalog, and never falls back to the owner/admin
+    `dsn_env`. The two DSN environment-variable names must be distinct.
     Status-reader roles remain limited to non-grantable `USAGE` and `SELECT`.
     Every administrative path fixes `search_path` to `pg_catalog` and uses
     validated, schema-qualified identifiers.

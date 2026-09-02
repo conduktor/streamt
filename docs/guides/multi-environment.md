@@ -103,6 +103,7 @@ deployment_state:
   postgres:
     dsn_env: STREAMT_STATE_POSTGRES_DSN
     writer_role_env: STREAMT_STATE_POSTGRES_WRITER_ROLE
+    writer_dsn_env: STREAMT_STATE_POSTGRES_WRITER_DSN
     schema: streamt
 ```
 
@@ -118,18 +119,23 @@ cannot borrow the root namespace or connection block and is rejected. This is
 intentionally different from root `runtime`, which is ignored whenever an
 `environments/` directory exists.
 
-The configuration contains only environment-variable names, not the DSN or
-role value. Online administrative commands resolve the values they need after
-`.env`, `.env.<environment>`, and the real process environment are applied;
-the real environment wins. Offline plan and validation read neither value.
+The configuration contains only environment-variable names, not either DSN or
+the role value. Online administrative and recovery commands resolve only the
+values they need after `.env`, `.env.<environment>`, and the real process
+environment are applied; the real environment wins. Offline plan and
+validation read none of them.
 With the optional `postgres` package extra, `state status` can inspect an exact
 version-1 or version-2 store, confirmation-gated `state init` can create or
 register an empty address, and the separate confirmed
 `state migrate-postgres-v2` command can atomically bind an external writer to
-an exact v1 store. Ordinary PostgreSQL plan/apply/adopt and recovery remain
-unavailable and fail safely without falling back to local state. See the
+an exact v1 store. `state recovery-plan` and `state recover` can then use only
+the separately named writer DSN to resolve an exact blocked operation in a v2
+store. The administrative DSN is never a recovery fallback. Ordinary
+PostgreSQL plan/apply/adopt remains unavailable and fails safely without
+falling back to local state. See the
 [PostgreSQL deployment-state migration guide](postgres-deployment-state.md)
-before running the administrative migration.
+before running the administrative migration and the
+[deployment-state recovery runbook](state-recovery.md) before recovery.
 
 Initialization confirmations bind to the effective environment after the
 whole-block precedence rules above have been applied. For a project named

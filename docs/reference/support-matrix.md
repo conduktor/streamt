@@ -2,8 +2,10 @@
 
 This page distinguishes working integration paths from configuration that is
 only planned. "Direct apply" means streamt currently owns the API calls. Local
-ownership state is persisted for development use, but remote locking and
-production-safe stateful upgrades are not implemented.
+ownership state is persisted for development use. Explicit reviewed recovery
+is available for local state and through a recovery-only PostgreSQL v2 writer,
+but ordinary remote plan/apply/adopt and production-safe stateful upgrades are
+not enabled.
 
 | System | Compile | Observe or discover | Direct plan/apply | Current boundary |
 | --- | --- | --- | --- | --- |
@@ -12,7 +14,8 @@ production-safe stateful upgrades are not implemented.
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates and resubmissions are classified state-migration-requiring and blocked until a savepoint-safe or explicitly stateless workflow exists. |
 | Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Rule state | Virtual-topic interceptor rules | Console catalog publication is a separate planned integration. |
-| PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, and explicit confirmed v1-to-v2 administrative migration | No | Requires the optional `postgres` package extra. `state migrate-postgres-v2` atomically binds an exact pre-created least-privilege writer role while preserving state/history; it does not enable ordinary authority. PostgreSQL 14 and 18 run real-server, ACL, mutation-protocol, and process-concurrency gates. Ordinary plan/apply/adopt selection and recovery remain disabled until the remaining command, HA, and recovery gates pass. |
+| Local deployment state | No | Status and explicit reviewed recovery | Ordinary local plan/apply/adopt | Single-host file locking, durable intent/progress, and crash-safe recovery history are supported. It provides no cross-host exclusion, shared-runner fencing, or HA durability. |
+| PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, explicit confirmed v1-to-v2 migration, and reviewed recovery through the exact v2 writer | Recovery only | Requires the optional `postgres` package extra. `state recovery-plan` and `state recover` expose minimum explicit recovery without enabling ordinary authority. PostgreSQL 14 and 18 run real-server, ACL, mutation-protocol, recovery, and process-concurrency gates. Ordinary plan/apply/adopt selection remains disabled pending the final topology/HA and release gates. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
 | Open Data Contract Standard (ODCS) | ODCS 3.1.0 project-wide schema export | No | No | One parsed project becomes one offline-validated contract containing every declared source and model. Quality, SLA, team, role, server, import, catalog publication, runtime enrichment, and per-model documents are not supported. |
 | OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` `RunEvent` pairs | No | No | Static metadata and command events are validated offline against pinned official schemas plus local invariants. Explicit bounded File/HTTP transports are supported. `apply` and deployed Flink, Gateway, and Connect processes emit no telemetry. |
@@ -29,8 +32,9 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Extend adoption beyond Kafka topics and Schema Registry subjects, followed
-   by remote ownership state and locking for shared deployment workflows.
+1. Complete ordinary PostgreSQL ownership-state enablement for supported
+   topologies, then extend adoption beyond Kafka topics and Schema Registry
+   subjects.
 2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a

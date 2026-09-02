@@ -23,8 +23,14 @@ Complete reference for all streamt CLI commands.
 | Migrate configured PostgreSQL state to schema v2 | `state migrate-postgres-v2` | No |
 | Probe instantaneous PostgreSQL lock availability | `state lock-status` | No |
 | Inspect ownership/recovery metadata | `state status` | No |
+| Create reviewed evidence for one unfinished operation | `state recovery-plan` | Sometimes[^recovery-observation] |
+| Execute one exact reviewed recovery | `state recover` | Sometimes[^recovery-observation] |
 | Claim an existing declared topic or schema subject | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
+
+[^recovery-observation]: `observed` and `rolled_back` recovery contact every
+    runtime provider needed by the blocked action. `abandoned_before_mutation`
+    requires empty durable progress and does not contact runtime targets.
 
 ## Global Options
 
@@ -534,9 +540,10 @@ After a successful non-dry-run apply, streamt atomically records resources it
 manages or has adopted in `.streamt/state/<environment>.json`. External,
 unowned, and ownership-blocked resources are never recorded. Local state is
 appropriate for a single-user development checkout only. Strict PostgreSQL
-configuration is recognized, but the provider is unavailable in this release;
-online commands return `E420_STATE_BACKEND_UNAVAILABLE` without reading local
-state. Shared CI still needs the later remote provider and distributed locking.
+configuration is recognized, but ordinary provider selection remains
+unavailable; online plan/apply/adopt return `E420_STATE_BACKEND_UNAVAILABLE`
+without reading local state. The separate recovery-only PostgreSQL path does
+not change that authority boundary.
 Failed and rolled-back planner results do not advance ownership state before
 final commit.
 
@@ -550,9 +557,10 @@ For local apply/adopt, `.streamt/state/<environment>.control.json` records a
 versioned durable intent before mutation and safe ordered action progress. Both
 `in_progress` and `recovery_required` block later apply/adopt commands
 indefinitely with `E419_STATE_RECOVERY_REQUIRED`; elapsed time is not proof that
-a runtime call failed. There is no recovery command yet. Do not delete or edit
-the sidecar, and do not roll back streamt versions while a marker exists;
-retain the evidence and reconcile live infrastructure with ownership state.
+a runtime call failed. Do not delete or edit the sidecar, and do not roll back
+streamt versions while a marker exists. Use the explicit two-command reviewed
+recovery workflow below for an exactly representable outcome; unsupported or
+ambiguous targets remain blocked.
 This sidecar complements a same-host file lock and does not provide cross-host
 or distributed exclusion.
 
@@ -607,8 +615,9 @@ Summary: 2 created, 1 updated, 0 unchanged
     call fails. It may attempt rollback of earlier created resources while the
     lock remains healthy, but it preserves a recovery marker because the failed
     call's result can be unknown. Do not automatically rerun apply; inspect the
-    online plan's `operation_status` and retain the sidecar evidence until the
-    explicit recovery workflow is available.
+    online plan's `operation_status`, retain the sidecar evidence, and use the
+    explicit reviewed recovery workflow only after establishing the exact live
+    outcome.
 
 !!! warning "Flink Job Lifecycle"
     Existing Flink job updates are currently blocked because the available
@@ -665,9 +674,10 @@ advance its serial.
 
 !!! warning "Local state only"
     Adoption state is stored at `.streamt/state/<environment>.json`. It is safe
-    for a single-user development checkout, not shared CI: remote state and
-    locking are not implemented. Run `streamt plan --out ...` after adoption
-    and review that plan before applying any pending differences.
+    for a single-user development checkout, not shared CI: ordinary remote
+    state selection and distributed operation locking remain disabled. Run
+    `streamt plan --out ...` after adoption and review that plan before applying
+    any pending differences.
 
 ---
 
@@ -1049,13 +1059,157 @@ catalog_ready`; human output separately reports catalog readiness and
 `Ordinary state authority: disabled`. The read-only transaction sets
 `search_path` to `pg_catalog` and uses schema-qualified state objects.
 PostgreSQL remains unavailable to ordinary plan/apply/adopt. The explicit v2
-catalog migration exists, but recovery and ordinary command integration do
-not.
+catalog migration and recovery-only writer path do not enable ordinary command
+integration.
 
 ```bash
 streamt state status -p . -e prod
 streamt -o json state status -p . -e prod
 ```
+
+---
+
+### state recovery-plan
+
+Create integrity-checked evidence for one exact unfinished operation without
+clearing its marker or changing ownership state.
+
+```bash
+streamt state recovery-plan [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--resolution OUTCOME` | Required exact outcome: `observed`, `rolled_back`, or `abandoned_before_mutation` |
+| `--out FILE` | Required new recovery-evidence file; existing paths and symlinks are refused |
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
+
+The command acquires the configured state lock and rereads the complete state,
+control marker, durable progress, and ordered action intent. `observed` and
+`rolled_back` also recompile the current project and freshly observe every
+target. `abandoned_before_mutation` is accepted only when durable progress is
+empty and does not construct runtime deployers. A target that cannot be
+represented exactly fails closed: in particular, present Flink jobs and
+present/nonempty Gateway interceptor state are not recoverable.
+
+The evidence file is created atomically as a regular file with mode `0600` and
+is never overwritten. It binds the configured store/address, blocked and new
+recovery operation IDs, prior state and control preimage, current project
+fingerprints and normalized target evidence when required, selected resolution,
+candidate ownership state when applicable, and an `evidence_checksum`. It
+contains no DSN, provider revision token, or raw provider error. The checksum
+detects modification; it is not an approval signature.
+
+```bash
+streamt state recovery-plan -p . -e prod \
+  --resolution observed \
+  --out /secure/recovery/payments-prod-observed.json
+```
+
+Successful structured result data contains:
+
+```json
+{
+  "plan_file": "/secure/recovery/payments-prod-observed.json",
+  "blocked_operation_id": "00000000-0000-4000-8000-000000000000",
+  "recovery_operation_id": "00000000-0000-4000-8000-000000000001",
+  "resolution": "observed",
+  "evidence_checksum": "sha256:..."
+}
+```
+
+Creating evidence is read-only with respect to deployment state. Review its
+exact operation, actions, live classifications, candidate state, project
+fingerprints, and checksum before execution. Do not edit the file; after any
+drift, generate and review a new file at a new path.
+
+---
+
+### state recover
+
+Execute one exact reviewed recovery after revalidating its state, project, and
+live evidence under the configured lock.
+
+```bash
+streamt state recover [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--plan FILE` | Required reviewed recovery-evidence file |
+| `--confirm-operation-id UUID` | Exact blocked operation UUID from that file |
+| `--confirm-resolution OUTCOME` | Exact `observed`, `rolled_back`, or `abandoned_before_mutation` value from that file |
+| `--confirm-evidence-checksum CHECKSUM` | Exact lowercase `sha256:` checksum from that file |
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
+
+All three confirmations are required. Malformed confirmations fail before the
+plan is read or a provider is constructed. The command then strictly validates
+the plan and checksum, configured store/address, current state/control
+preimage, and, when required, project fingerprints and fresh live evidence.
+Any mismatch stops without partially accepting a plan.
+
+```bash
+streamt state recover -p . -e prod \
+  --plan /secure/recovery/payments-prod-observed.json \
+  --confirm-operation-id 00000000-0000-4000-8000-000000000000 \
+  --confirm-resolution observed \
+  --confirm-evidence-checksum sha256:0000000000000000000000000000000000000000000000000000000000000000
+```
+
+Successful structured result data contains:
+
+```json
+{
+  "store": {
+    "backend": "postgres",
+    "store_id": "8d04f3f7-0000-4000-8000-000000000000"
+  },
+  "address": "streamt-state://platform/payments/prod",
+  "state_serial": 13,
+  "state_checksum": "sha256:...",
+  "control_status": "clear",
+  "state_changed": true,
+  "blocked_operation_id": "00000000-0000-4000-8000-000000000000",
+  "recovery_operation_id": "00000000-0000-4000-8000-000000000001",
+  "resolution": "observed",
+  "evidence_checksum": "sha256:..."
+}
+```
+
+`observed` may preserve an exact reviewed mix of targets at their prior and
+candidate states. `rolled_back` requires every target to match prior state.
+`abandoned_before_mutation` retains prior state and requires no started action.
+Recovery never repeats a runtime mutation, lowers the state serial, edits
+history in place, force-unlocks, or runs automatically.
+
+Local recovery uses the local state authority and a crash-safe history
+sequence. PostgreSQL recovery requires an exact v2 catalog and resolves only
+the separately configured `postgres.writer_dsn_env`; it never falls back to
+the administrative `postgres.dsn_env`. It proves the stored writer identity,
+exact catalog/ACL, and a direct session-affine primary, then commits state,
+history, and control atomically. This recovery-only path does not enable
+ordinary PostgreSQL plan/apply/adopt.
+
+Recovery failures use these stable codes:
+
+| Code | Operator meaning |
+|------|------------------|
+| `E408_PLAN_FILE_INVALID` | The plan or a confirmation is malformed, modified, incomplete, unsupported, unsafe, or mismatched. Do not repair the plan in place. |
+| `E409_PLAN_STALE` | Current project inputs or fresh live observations no longer match the reviewed evidence. Create and review a new plan. |
+| `E411_STATE_INVALID` | State, control, history, catalog, or address is incompatible. Do not hand-edit state metadata. |
+| `E419_STATE_RECOVERY_REQUIRED` | Recovery planning found no active unfinished operation, or the selected abandonment outcome is forbidden after durable progress. Inspect `state status` and preserve the marker. |
+| `E420_STATE_BACKEND_UNAVAILABLE` | A dependency, named credential, endpoint, runtime provider, or exact PostgreSQL writer authority is unavailable; no fallback occurs. |
+| `E422_STATE_LOCK_TIMEOUT` | The bounded lock deadline expired. Resolve legitimate contention and retry; never force-unlock. |
+| `E423_STATE_LOCK_LOST` | State authority was lost. Start no mutation and inspect `state status`. |
+| `E424_STATE_CONFLICT` | State or operation control changed after observation. Create fresh reviewed evidence for the remaining blocker. |
+| `E425_STATE_UNKNOWN_OUTCOME` | Recovery may have committed. Inspect status and use only the identical file and confirmations for idempotent verification. |
+| `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` | The recovery commit was verified but authority release failed. Structured data reports `committed: true`; treat the recovery as committed. |
+
+See the [deployment-state recovery runbook](../guides/state-recovery.md) for
+resolution criteria, independent review, backups, supported target boundaries,
+failure handling, and PostgreSQL topology requirements.
 
 ---
 
@@ -1673,8 +1827,8 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E405_SSL_ERROR` | SSL/TLS connection error |
 | `E406_CONNECTION_REFUSED` | Connection refused by service |
 | `E407_DEPLOY_ERROR` | General deployment error |
-| `E408_PLAN_FILE_INVALID` | Reviewed plan is malformed or its integrity checksum fails |
-| `E409_PLAN_STALE` | Project, environment, ownership state, or live actions drifted after review |
+| `E408_PLAN_FILE_INVALID` | A reviewed deployment/recovery plan or required recovery confirmation is malformed, mismatched, or fails integrity validation |
+| `E409_PLAN_STALE` | Project, environment, ownership state, or live action/evidence drifted after review |
 | `E410_OWNERSHIP_REQUIRED` | A live resource needs an explicit ownership decision or adoption |
 | `E411_STATE_INVALID` | Ownership state is malformed or belongs to another context |
 | `E412_ADOPTION_TARGET_INVALID` | Adoption target is missing, ambiguous, or not explicitly declared adopted |
@@ -1684,13 +1838,13 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E416_ADOPTION_FAILED` | Live observation or atomic adoption-state persistence failed |
 | `E417_SAFETY_BLOCKED` | Apply refused an unsupported partition, schema, or Flink migration before mutation |
 | `E418_REVIEWED_PLAN_REQUIRED` | Direct apply is disabled by protected/shared environment policy; create and apply a reviewed plan file |
-| `E419_STATE_RECOVERY_REQUIRED` | An unfinished local operation marker blocks apply/adopt pending explicit recovery |
+| `E419_STATE_RECOVERY_REQUIRED` | An unfinished operation marker blocks mutation pending explicit recovery |
 | `E420_STATE_BACKEND_UNAVAILABLE` | The configured deployment-state provider cannot be used; no fallback occurs |
 | `E421_REMOTE_STATE_REQUIRED` | Environment policy rejects apply/adopt while local deployment state is selected |
 | `E422_STATE_LOCK_TIMEOUT` | The bounded wait for deployment-state operation authority expired |
 | `E423_STATE_LOCK_LOST` | The operation no longer owns its deployment-state lock; inspect the reported operation ID before continuing |
 | `E424_STATE_CONFLICT` | The observed deployment state or operation control changed; re-observe or re-plan |
-| `E425_STATE_UNKNOWN_OUTCOME` | A state transition may have committed; do not retry it and resolve the reported operation ID |
+| `E425_STATE_UNKNOWN_OUTCOME` | A state transition may have committed; inspect status and never blindly replay it (recovery permits only exact idempotent verification) |
 | `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` | The commit is verified but authority release is not; `data.committed` is `true` and the commit must not be replayed |
 
 **Parse Errors (E5xx):**

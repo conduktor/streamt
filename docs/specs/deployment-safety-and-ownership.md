@@ -85,7 +85,34 @@ mutation and rollback. This closes the prior same-host stale-serial mutation
 race. A strict control sidecar records durable intent before mutation, ordered
 progress, and conservative recovery-required state, so an interrupted mutation
 blocks later local apply/adopt. The file lock is still not distributed, and the
-recovery command is not implemented.
+explicit recovery workflow does not make local state safe for shared runners.
+
+## Explicit recovery
+
+`streamt state recovery-plan` and `streamt state recover` resolve one exact
+unfinished operation through a reviewed, two-command protocol. The planning
+command binds the state/control preimage, ordered intent and progress, selected
+resolution, project fingerprints and exact target evidence when required, and a
+candidate ownership state into a no-overwrite, mode-`0600` evidence file. The
+execution command requires the blocked operation UUID, resolution, and evidence
+checksum again, then revalidates state and, when required, project and live
+evidence under the operation lock before finalization.
+
+The supported outcomes are `observed`, `rolled_back`, and
+`abandoned_before_mutation`. Observed recovery may accept an exact reviewed mix
+of targets at prior and candidate state. Rollback requires every target at its
+exact prior state. Abandonment is legal only when durable progress proves that
+no action started. Recovery never retries runtime mutations, lowers a state
+serial, force-unlocks, expires a marker by age, or runs automatically.
+
+Local finalization uses a crash-safe, checksum-chained recovery history under
+the same-host lock. PostgreSQL finalization is available only through an exact
+schema-v2 writer credential and atomically commits history, optional ownership
+state, and control clearing. This recovery-only PostgreSQL authority does not
+enable ordinary plan/apply/adopt. Present Flink jobs and nonempty or
+unreconstructible Gateway rules fail closed; other partial or ambiguous target
+observations do as well. The complete operator contract is in the
+[deployment-state recovery runbook](../guides/state-recovery.md).
 
 ## Planning algorithm
 

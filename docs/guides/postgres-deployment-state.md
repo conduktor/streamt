@@ -4,8 +4,8 @@ This runbook upgrades an exact streamt PostgreSQL deployment-state store from
 schema version 1 to version 2. Version 2 binds an externally created,
 least-privilege writer role and makes the catalog privately mutation-ready. It
 does **not** enable PostgreSQL for ordinary `plan`, `apply`, or `adopt`; the
-ordinary factory remains disabled until command E2E, topology, and minimum
-recovery gates ship.
+ordinary factory remains disabled pending its final topology/HA and release
+gates. Version 2 does enable the separate, explicit recovery-only writer path.
 
 ## Before you begin
 
@@ -19,12 +19,14 @@ Do not use a transaction- or statement-pooling endpoint. The migration holds
 session advisory locks, and their ownership cannot survive a physical-session
 switch.
 
-Use two separate identities:
+Use separate administrative and runtime identities:
 
 - `postgres.dsn_env` resolves to the existing schema-owner DSN for this
   administrative migration.
 - `postgres.writer_role_env` resolves to the PostgreSQL role name to bind. It
   is a role identifier, not a DSN or password.
+- `postgres.writer_dsn_env`, configured for later recovery, resolves to a DSN
+  whose login is that exact bound role. It is not used by migration.
 
 The writer must already exist. streamt never creates, alters, drops, infers, or
 silently rebinds it. A representative DBA command is:
@@ -71,8 +73,10 @@ streamt state lock-status -p . -e prod
 
 The source must be an exact version-1 store. Every registered address must have
 semantically valid ownership/history and clear operation control. A visible
-`in_progress` or `recovery_required` marker is an incident to resolve later; it
-must not be cleared manually to force this migration. An `available`
+`in_progress` or `recovery_required` marker is an incident that blocks
+migration. PostgreSQL recovery is deliberately v2-only, so preserve a blocked
+v1 store and escalate to the backed-up incident/disaster-recovery procedure;
+never clear metadata manually to force migration. An `available`
 `lock-status` result is only instantaneous and reserves nothing—the migration
 acquires its own locks.
 
@@ -89,6 +93,7 @@ deployment_state:
     dsn_env: STREAMT_STATE_POSTGRES_DSN
     schema: streamt
     writer_role_env: STREAMT_STATE_POSTGRES_WRITER_ROLE
+    writer_dsn_env: STREAMT_STATE_POSTGRES_WRITER_DSN
 ```
 
 Set the named variables in the operator environment:
@@ -96,17 +101,19 @@ Set the named variables in the operator environment:
 ```bash
 export STREAMT_STATE_POSTGRES_DSN='postgresql://schema-owner@primary.example/state'
 export STREAMT_STATE_POSTGRES_WRITER_ROLE='streamt_state_writer'
+export STREAMT_STATE_POSTGRES_WRITER_DSN='postgresql://streamt_state_writer@primary.example/state'
 ```
 
 The real process environment takes precedence over `.env.<environment>`, which
 takes precedence over `.env`. Configuration retains only the variable names.
-The resolved DSN, database login, writer role, schema name, and role OID are not
-written to plans or normal text/JSON output.
+The resolved DSNs, database logins, writer role, schema name, and role OID are
+not written to plans or normal text/JSON output.
 
 Version-1 init and version-1/version-2 status and lock diagnostics do not
 require or resolve `writer_role_env`. On an existing exact v2 store, owner-only
 `state init` may register another empty address. Initializing a new store still
-creates version 1.
+creates version 1. Migration resolves the owner `dsn_env` and
+`writer_role_env`, but does not resolve `writer_dsn_env`.
 
 ## Run the migration
 
@@ -209,6 +216,27 @@ delete the ledger row, hand-edit ACLs, or update the stored writer name. There
 is also no automatic repair or rebind command. Restore the tested pre-migration
 backup into a controlled target if rollback is required, or recreate the exact
 stored role/ACL under a reviewed DBA procedure.
+
+## Use the recovery-only writer
+
+After migration, `state recovery-plan` and `state recover` can resolve one
+exact `in_progress` or `recovery_required` operation. They resolve only the DSN
+named by `postgres.writer_dsn_env`; the owner/admin `postgres.dsn_env` is not
+used and is never a fallback. The two DSN environment-variable names must be
+different, and the writer connection must authenticate as the exact role bound
+by migration.
+
+Recovery revalidates the complete v2 catalog, writer identity and ACL, direct
+primary topology, state/control preimage, and reviewed target evidence under
+one address lock. It atomically appends recovery history, writes the reviewed
+ownership revision when needed, and clears operation control. It never repeats
+runtime mutations or enables ordinary PostgreSQL plan/apply/adopt.
+
+Follow the [deployment-state recovery runbook](state-recovery.md) for the
+two-command workflow, exact confirmations, supported observation boundaries,
+backup requirements, and indeterminate-outcome handling. Present Flink jobs
+and nonempty or present-prior Gateway rules cannot currently be reconstructed
+exactly and fail closed.
 
 ## Topology and HA boundary
 
