@@ -14,10 +14,10 @@ to exact creates from the reviewed plan. Stage 9 recovery proves converged
 creates and updates and an absent rolled-back create, but deliberately fails
 closed for rolled-back updates and normalized deletes that current state cannot
 prove. The audited design for closing those gaps is now frozen: versioned
-current/desired aggregate evidence belongs on the durable pre-mutation
-`OperationAction`, not the ownership record. Its implementation and release
-gates remain pending. Package 6 is therefore not complete, and Gateway adoption
-remains unsupported.
+rule-name plus current/desired aggregate evidence belongs on the durable
+pre-mutation `OperationAction`, not the ownership record. Its implementation
+and release gates remain pending. Package 6 is therefore not complete, and
+Gateway adoption remains unsupported.
 
 This specification freezes the implementation contract for Package 6 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
@@ -74,8 +74,9 @@ list.
     configuration. Redaction remains defense in depth rather than permission to
     carry arbitrary response content into presentation objects.
 11. Transaction recovery evidence is written on the durable pre-mutation action
-    intent. Ownership state does not double as a provider-surface journal, and
-    manifest absence never implies deletion or state removal.
+    intent, including the artifact rule name needed to resolve its generated
+    interceptor namespace. Ownership state does not double as a provider-surface
+    journal, and manifest absence never implies deletion or state removal.
 
 ## Stage 1: strict compiled-artifact parser
 
@@ -478,8 +479,10 @@ below is frozen but not yet implemented.
 
 The recovery preimage belongs to the durable `OperationAction` embedded in the
 operation intent, not to `ManagedResourceRecord`. The action's canonical
-`resource_id` remains the only logical-owner field. It must not be duplicated or
-replaced by the rule name, alias, runtime label, or provider display name.
+`resource_id` remains the only logical-owner field. The evidence separately
+carries the exact artifact `rule_name`; it is an observation locator, not a
+second ownership identity. Neither value may be replaced by the alias, runtime
+label, or provider display name.
 
 New Gateway mutation actions emit this exact additional member before the first
 provider mutation:
@@ -491,6 +494,7 @@ provider mutation:
   "action": "update",
   "gateway_evidence": {
     "version": 1,
+    "rule_name": "orders_rule",
     "backend_identity": "conduktor-gateway:v1:...:sha256:...",
     "alias_name": "orders.public",
     "current": {
@@ -511,19 +515,27 @@ provider mutation:
 always present, including absence: an absent aggregate has `exists: false`, its
 canonical absence fingerprint, and count zero. Fingerprints use the immutable
 aggregate fingerprint contract from Stage 5. Counts are non-negative integers,
-never booleans. Backend identity and alias are exact and case-sensitive. Create
-requires absent-to-present evidence, update requires two distinct present
-fingerprints, and delete requires present-to-absent evidence. The action,
-resource kind, current and desired normalized changes, binding, and alias must
-all agree before the intent write.
+never booleans. Rule name, backend identity, and alias are exact and
+case-sensitive. Create requires absent-to-present evidence, update requires two
+distinct present fingerprints, and delete requires present-to-absent evidence.
+The action, resource kind, rule name, current and desired normalized changes,
+binding, and alias must all agree before the intent write.
+
+The logical owner parsed from `resource_id` may differ from `rule_name` because
+`ownership.owner_name` may differ from the artifact's `name`. The logical owner
+selects durable authority; `rule_name` selects the exact anchored
+generated-interceptor namespace. A removed-manifest delete has no artifact from
+which to recover that namespace, so its durable evidence must retain
+`rule_name`. Recovery never substitutes the owner or alias for it.
 
 The evidence is derived only from the canonical reviewed `GatewayRuleChange`.
 For a normalized delete, intent construction creates the canonical absent
-desired aggregate from the exact current binding, logical identity, and alias;
-it does not rediscover anything. The durable value contains no raw provider
+desired aggregate from the exact current binding, rule name, and alias; it does
+not rediscover anything. The durable value contains no raw provider
 configuration, physical topic, SQL expression, endpoint, response object,
-credential, or per-field diff. The versioned backend identity contains only the
-already approved endpoint fingerprint and effective vCluster encoding.
+credential, or per-field diff. The exact rule name and alias are secret-neutral.
+The versioned backend identity contains only the already approved endpoint
+fingerprint and effective vCluster encoding.
 
 ### Why ownership state is not the evidence store
 
@@ -560,11 +572,13 @@ Existing non-Gateway recovery behavior remains unchanged.
 
 Recovery first resolves the union of manifest-backed desired targets and
 explicitly removed targets present in the durable action list. For every Gateway
-target it validates the logical owner from `resource_id`, exact backend, alias,
-and evidence before provider access. All targets bound to the configured Gateway
-are then derived from one strict two-list snapshot, not one snapshot per action.
-The fresh observed fingerprint, existence, and managed count must match exactly
-one recorded surface appropriate to the requested resolution.
+target it validates the logical owner from `resource_id` and the exact rule
+name, backend, alias, and evidence before provider access. For a removed-manifest
+target, recorded `rule_name` is what allows the observer to classify its exact
+generated interceptors. All targets bound to the configured Gateway are then
+derived from one strict two-list snapshot, not one snapshot per action. The
+fresh observed fingerprint, existence, and managed count must match exactly one
+recorded surface appropriate to the requested resolution.
 
 An observed desired surface advances create or update ownership state. An
 observed desired-absent surface removes ownership state only when the durable
@@ -604,17 +618,19 @@ evidence land:
    evidence value and optional `OperationAction.gateway_evidence`; accept only
    the exact legacy and extended action shapes; preserve byte-stable canonical
    checksums for legacy control and recovery-plan fixtures; reject every unknown
-   field, version, type, boolean count, and malformed checksum.
+   field, version, type, boolean count, malformed rule name, and malformed
+   checksum.
 2. **Pre-mutation emission:** derive evidence from canonical reviewed Gateway
    changes in direct and reviewed apply; prove create/update/delete coherence;
    persist it in local and PostgreSQL v2 intent before `started` progress or any
    Gateway request; reject tampering and assert endpoint, configuration, SQL,
    and credentials never enter control, history, plans, output, or errors.
 3. **One-snapshot target resolution:** combine desired and explicit removed
-   Gateway actions, reject duplicate/colliding owner/backend/alias claims before
-   provider access, and prove exactly two list GETs for any positive number of
-   targets. A target absent from the manifest is eligible only through its
-   explicit durable delete evidence.
+   Gateway actions, preserve logical-owner/rule-name divergence, reject
+   duplicate or colliding owner/rule-name/backend/alias claims before provider
+   access, and prove exactly two list GETs for any positive number of targets. A
+   target absent from the manifest is eligible only through its explicit durable
+   delete evidence and uses recorded `rule_name` for exact observation.
 4. **Recovery decisions and state projection:** cover exact current and desired
    outcomes for create, update, and delete; drift and ambiguous matches;
    rolled-back update; completed and rolled-back delete; explicit-delete-only
@@ -672,7 +688,7 @@ equivalence for every supported plugin.
 | Collision and planning | Duplicate owner, alias, interceptor, and generated namespace rejection before provider access; physical cluster cannot split alias identity; exact create/update/no-op; secret-neutral reviewed plans | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_planner_ownership.py`, `tests/unit/test_deployment_state.py` |
 | Status and bounded mutation | Status and health use one strict snapshot; observed mapping is reported; no-op writes nothing; exact create/update/delete results; canonical present-surface delete; logical name differs from alias; overlapping names cannot cross-delete; scoped delete uses an exact request body; rollback routes only exact reviewed creates | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_managed_mutation.py`, `tests/unit/test_planner_gateway_mutation.py` |
 | Recovery | Converged create/update candidate; absent unapplied or rolled-back create; legacy backend, endpoint/scope drift, malformed/extra evidence, and operation/control conflicts; explicit fail-closed rolled-back update without prior-surface fingerprint and unrepresentable normalized delete | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
-| Durable recovery evidence extension | Exact legacy/new action serialization; legacy checksum stability; strict v1 evidence and action coherence; pre-mutation local/PostgreSQL intent persistence; one snapshot across desired/removed targets; rolled-back update; completed/rolled-back delete; explicit-delete-only state removal; secret scan | `tests/unit/test_operation_control.py`, `tests/unit/test_recovery_models.py`, `tests/unit/test_recovery_plan.py`, `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_postgres_state_mutation.py` |
+| Durable recovery evidence extension | Exact legacy/new action serialization; legacy checksum stability; strict v1 rule-name/backend/alias/surface evidence and action coherence; logical-owner/rule-name divergence; pre-mutation local/PostgreSQL intent persistence; one snapshot across desired/removed targets; rolled-back update; completed/rolled-back delete; explicit-delete-only state removal; secret scan | `tests/unit/test_operation_control.py`, `tests/unit/test_recovery_models.py`, `tests/unit/test_recovery_plan.py`, `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_postgres_state_mutation.py` |
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
 | Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit Gateway readiness | `tests/integration/test_gateway_e2e.py`, `tests/integration/helpers/gateway.py`, `tests/integration/helpers/docker.py` |
 | PostgreSQL v2 | Production factory and writer; finalized `adopt` history; no local state; exact Gateway backend; two observations; exact reviewed recovery | `tests/postgres/test_postgres_ordinary_factory_commands_real.py`, `tests/postgres/test_postgres_recovery_commands_real.py` |
@@ -700,8 +716,9 @@ an integration gate:
 - [ ] Planner and status use complete aggregate evidence.
 - [ ] State projection rejects legacy unbound authority.
 - [ ] Apply, delete, and rollback use exact alias and interceptor identities.
-- [ ] Versioned Gateway action evidence is written before mutation, dual-reads
-      old control/recovery payloads, and remains secret-neutral.
+- [ ] Versioned Gateway rule-name/backend/alias/surface action evidence is
+      written before mutation, dual-reads old control/recovery payloads, and
+      remains secret-neutral.
 - [ ] Recovery observes desired and explicitly removed Gateway targets through
       one shared snapshot and rejects missing or mismatched action evidence.
 - [ ] Only an explicit durable delete action can remove Gateway ownership state;
