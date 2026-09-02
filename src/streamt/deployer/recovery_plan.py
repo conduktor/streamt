@@ -265,7 +265,12 @@ class RecoveryPlanFile:
             prior_record.backend == gateway_evidence.backend_identity
             and prior_record.physical_name == gateway_evidence.alias_name
         )
-        if target.action.action == "create":
+        if target.action.action == "adopt":
+            if prior_record is not None:
+                raise RecoveryPlanError(
+                    "Gateway recovery adoption requires absent prior ownership evidence"
+                )
+        elif target.action.action == "create":
             if prior_record is not None and not exact_prior:
                 raise RecoveryPlanError(
                     "Gateway recovery create has mismatched prior ownership evidence"
@@ -296,6 +301,13 @@ class RecoveryPlanFile:
         ):
             raise RecoveryPlanError(
                 "Gateway recovery candidate requires exact desired ownership evidence"
+            )
+        if (
+            target.action.action == "adopt"
+            and candidate_record.ownership != "adopted"
+        ):
+            raise RecoveryPlanError(
+                "Gateway recovery adoption candidate requires adopted ownership evidence"
             )
 
     def _validate_prior_state(self, serial: int, checksum: str) -> None:

@@ -67,7 +67,7 @@ _SUPPORTED_ACTIONS: dict[_Kind, frozenset[str]] = {
     "topic": frozenset({"create", "update", "delete", "adopt"}),
     "flink_job": frozenset({"submit", "update", "cancel"}),
     "connector": frozenset({"create", "update", "delete", "adopt"}),
-    "gateway_rule": frozenset({"create", "update", "delete"}),
+    "gateway_rule": frozenset({"create", "update", "delete", "adopt"}),
 }
 _DELETE_ACTIONS = frozenset({"delete", "cancel"})
 
@@ -251,12 +251,13 @@ def preflight_recovery_intent(
                 "schema",
                 "topic",
                 "connector",
+                "gateway_rule",
             ):
                 raise _target_error(action, "is not a representable adoption target")
         elif action.action == "adopt":
             raise _target_error(action, "is not part of an adoption intent")
         if kind == "gateway_rule" and action.gateway_evidence is None:
-            raise _target_error(action, "has no version 2 Gateway action evidence")
+            raise _target_error(action, "has no exact Gateway action evidence")
     return intent.actions
 
 
@@ -771,12 +772,18 @@ def _gateway_desired_record(
 ) -> ManagedResourceRecord:
     evidence = action.gateway_evidence
     if evidence is None:  # pragma: no cover - preflight rejects this
-        raise _target_error(action, "has no version 2 Gateway action evidence")
+        raise _target_error(action, "has no exact Gateway action evidence")
     desired = getattr(change, "desired", None)
     ownership = ArtifactOwnership.from_dict(getattr(desired, "ownership", None))
     if not isinstance(desired, GatewayRuleArtifact) or ownership is None:
         raise _target_error(action, "has no exact current Gateway manifest artifact")
     identity = ResourceIdentity.parse(action.resource_id)
+    expected_adopted_ownership = ArtifactOwnership(
+        project=state.project,
+        owner_type="model",
+        owner_name=identity.logical_name,
+        mode="adopted",
+    )
     if (
         ownership.project != state.project
         or ownership.owner_name != identity.logical_name
@@ -788,15 +795,51 @@ def _gateway_desired_record(
         or observation.binding.backend_identity != evidence.backend_identity
     ):
         raise _target_error(action, "has mismatched current Gateway manifest identity")
+    if action.action == "adopt" and (
+        ownership != expected_adopted_ownership or desired.interceptors != []
+    ):
+        raise _target_error(
+            action,
+            "requires exact adopted model ownership and no desired interceptors",
+        )
 
     try:
-        normalized = _normalized_gateway_change(change)
         rebuilt = build_desired_gateway_rule(desired, observation.binding)
-    except (RecoveryObservationError, ValueError):
+    except ValueError:
         raise _target_error(action, "has incoherent current Gateway manifest evidence") from None
-    if normalized is None:
-        raise _target_error(action, "has legacy current Gateway manifest evidence")
-    planned_current, planned_desired, backend_identity = normalized
+    if action.action == "adopt":
+        try:
+            planned_current = getattr(change, "current", None)
+            planned_desired = getattr(change, "desired_managed", None)
+            backend_identity = getattr(change, "backend_identity", None)
+            canonical = plan_managed_gateway_rule(
+                desired,
+                rebuilt,
+                observation,
+            )
+            if (
+                getattr(change, "current_alias", None) is not None
+                or getattr(change, "current_interceptors", None) is not None
+                or getattr(change, "action", None) not in {canonical.action, "none"}
+                or getattr(change, "changes", None) != canonical.changes
+            ):
+                raise RecoveryObservationError
+        except (RecoveryObservationError, ValueError):
+            raise _target_error(
+                action,
+                "has incoherent current Gateway manifest evidence",
+            ) from None
+    else:
+        try:
+            normalized = _normalized_gateway_change(change)
+        except RecoveryObservationError:
+            raise _target_error(
+                action,
+                "has incoherent current Gateway manifest evidence",
+            ) from None
+        if normalized is None:
+            raise _target_error(action, "has legacy current Gateway manifest evidence")
+        planned_current, planned_desired, backend_identity = normalized
     if (
         backend_identity != evidence.backend_identity
         or planned_current != observation
@@ -826,7 +869,7 @@ def _observe_gateway_target(
 ) -> RecoveryTargetEvidence:
     evidence = action.gateway_evidence
     if evidence is None:  # pragma: no cover - preflight rejects this
-        raise _target_error(action, "has no version 2 Gateway action evidence")
+        raise _target_error(action, "has no exact Gateway action evidence")
     if (
         observation.binding.backend_identity != evidence.backend_identity
         or observation.logical_name != evidence.rule_name
@@ -835,8 +878,16 @@ def _observe_gateway_target(
         raise _target_error(action, "has mismatched fresh Gateway observation identity")
 
     current_surface = _gateway_surface(observation)
-    if current_surface == evidence.current:
-        accepted_as: Literal["prior", "candidate"] = "prior"
+    accepted_as: Literal["prior", "candidate"]
+    if action.action == "adopt":
+        if current_surface != evidence.current:
+            raise _target_error(
+                action,
+                "does not exactly match the reviewed Gateway adoption surface",
+            )
+        accepted_as = "prior" if resolution == "rolled_back" else "candidate"
+    elif current_surface == evidence.current:
+        accepted_as = "prior"
     elif current_surface == evidence.desired:
         if resolution == "rolled_back":
             raise _target_error(action, "does not exactly match prior Gateway surface")
@@ -848,6 +899,8 @@ def _observe_gateway_target(
         )
 
     prior_record = prior_state.resources.get(action.resource_id)
+    if action.action == "adopt" and prior_record is not None:
+        raise _target_error(action, "requires absent prior Gateway ownership")
     if action.action in ("update", "delete") and prior_record is None:
         raise _target_error(action, "has no exact prior Gateway ownership record")
     if prior_record is not None and (
@@ -857,8 +910,11 @@ def _observe_gateway_target(
         raise _target_error(action, "has mismatched prior Gateway ownership evidence")
     if any(
         other_resource_id != action.resource_id
-        and record.backend == evidence.backend_identity
         and record.physical_name == evidence.alias_name
+        and (
+            record.backend == evidence.backend_identity
+            or (action.action == "adopt" and record.backend == "conduktor-gateway")
+        )
         for other_resource_id, record in prior_state.resources.items()
     ):
         raise _target_error(action, "has ambiguous prior Gateway alias ownership")

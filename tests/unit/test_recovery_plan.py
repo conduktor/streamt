@@ -174,7 +174,7 @@ def _gateway_snapshot(
         else GatewayActionSurfaceEvidence(
             exists=True,
             fingerprint="sha256:" + "2" * 64,
-            managed_interceptor_count=1,
+            managed_interceptor_count=0 if action_name == "adopt" else 1,
         )
     )
     desired = (
@@ -183,7 +183,7 @@ def _gateway_snapshot(
         else GatewayActionSurfaceEvidence(
             exists=True,
             fingerprint="sha256:" + "3" * 64,
-            managed_interceptor_count=1,
+            managed_interceptor_count=0 if action_name == "adopt" else 1,
         )
     )
     action = OperationAction(
@@ -201,7 +201,7 @@ def _gateway_snapshot(
     )
     intent = OperationIntent(
         operation_id=BLOCKED_OPERATION_ID,
-        kind="apply",
+        kind="adopt" if action_name == "adopt" else "apply",
         started_at="2026-09-02T12:00:00Z",
         actor="operator",
         prior_state_serial=state.serial,
@@ -444,6 +444,46 @@ def test_rolled_back_gateway_recreate_accepts_absent_current_with_prior_ownershi
     assert plan.candidate_state is None
 
 
+def test_rolled_back_gateway_adopt_requires_and_preserves_prior_absence() -> None:
+    snapshot = _gateway_snapshot(action_name="adopt")
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="prior",
+        fingerprint=gateway_evidence.current.fingerprint,
+    )
+
+    plan = RecoveryPlanFile.create(
+        resolution="rolled_back",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(target,),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert action.resource_id not in plan.snapshot.state.resources
+    assert plan.candidate_state is None
+
+    with pytest.raises(RecoveryPlanError, match="absent prior ownership"):
+        RecoveryPlanFile.create(
+            resolution="rolled_back",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_gateway_snapshot(
+                with_prior_ownership=True,
+                action_name="adopt",
+            ),
+            targets=(target,),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
 def test_observed_candidate_is_authoritative_and_preserves_unrelated_state() -> None:
     plan = _observed_plan()
 
@@ -553,6 +593,67 @@ def test_observed_gateway_candidate_requires_exact_desired_ownership() -> None:
             snapshot=snapshot,
             targets=(target,),
             candidate_state=snapshot.state,
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_observed_gateway_adopt_candidate_requires_exact_adopted_ownership() -> None:
+    snapshot = _gateway_snapshot(action_name="adopt")
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="candidate",
+        fingerprint=gateway_evidence.current.fingerprint,
+    )
+    candidate_record = ManagedResourceRecord(
+        physical_name=gateway_evidence.alias_name,
+        ownership="adopted",
+        artifact_checksum=CHECKSUM,
+        backend=gateway_evidence.backend_identity,
+    )
+    candidate = LocalState(
+        project="payments",
+        environment="prod",
+        serial=snapshot.state.serial + 1,
+        resources={action.resource_id: candidate_record},
+    )
+
+    plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(target,),
+        candidate_state=candidate,
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert plan.candidate_state == candidate
+    with pytest.raises(RecoveryPlanError, match="adopted ownership"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=snapshot,
+            targets=(target,),
+            candidate_state=LocalState(
+                project="payments",
+                environment="prod",
+                serial=snapshot.state.serial + 1,
+                resources={
+                    action.resource_id: ManagedResourceRecord(
+                        physical_name=gateway_evidence.alias_name,
+                        ownership="managed",
+                        artifact_checksum=CHECKSUM,
+                        backend=gateway_evidence.backend_identity,
+                    )
+                },
+            ),
             environment_fingerprint=CHECKSUM,
             manifest_checksum=CHECKSUM,
         )

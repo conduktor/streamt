@@ -143,6 +143,9 @@ def _gateway_artifact(
     *,
     physical_topic: str = "orders.v1",
     where: str | None = None,
+    owner_name: str = "orders_owner",
+    ownership_mode: str = "managed",
+    owner_type: str = "model",
 ) -> GatewayRuleArtifact:
     interceptors: list[dict[str, object]] = []
     if where is not None:
@@ -152,7 +155,11 @@ def _gateway_artifact(
         virtual_topic="orders.public",
         physical_topic=physical_topic,
         interceptors=interceptors,
-        ownership=_ownership("orders_owner"),
+        ownership=_ownership(
+            owner_name,
+            mode=ownership_mode,
+            owner_type=owner_type,
+        ),
     )
 
 
@@ -842,6 +849,240 @@ def test_normalized_gateway_delete_current_surface_preserves_prior_record() -> N
     assert observed.candidate_state == state
     assert rolled_back.targets[0].accepted_as == "prior"
     assert rolled_back.candidate_state is None
+
+
+@pytest.mark.parametrize("surface", ["equal", "different"])
+def test_gateway_adopt_observed_records_exact_adopted_model_ownership(
+    surface: str,
+) -> None:
+    artifact = _gateway_artifact(
+        physical_topic="orders.v2",
+        ownership_mode="adopted",
+    )
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    current = (
+        desired
+        if surface == "equal"
+        else ManagedGatewayRuleObservation(
+            binding=GATEWAY_BINDING,
+            logical_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            exists=True,
+            physical_name="orders.v1",
+            physical_cluster="main",
+        )
+    )
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=current,
+        desired=desired,
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=current,
+        changes=[plan_managed_gateway_rule(artifact, desired, current)],
+    )
+    state = _state()
+
+    result = _observe(
+        state,
+        plan,
+        (target,),
+        intent_kind="adopt",
+        planner=_planner(
+            state,
+            gateway_deployer=object(),
+        ),
+    )
+
+    assert result.targets[0].accepted_as == "candidate"
+    assert result.targets[0].presence == "present"
+    assert result.targets[0].fingerprint == current.fingerprint
+    assert result.candidate_state is not None
+    assert result.candidate_state.serial == state.serial + 1
+    assert result.candidate_state.resources[target.resource_id] == ManagedResourceRecord(
+        physical_name=artifact.virtual_topic,
+        ownership="adopted",
+        artifact_checksum=artifact_checksum(artifact.to_dict()),
+        backend=GATEWAY_BINDING.backend_identity,
+    )
+
+
+def test_gateway_adopt_rolled_back_requires_reviewed_live_and_no_prior_record() -> None:
+    artifact = _gateway_artifact(ownership_mode="adopted")
+    current = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=current,
+        desired=current,
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=current,
+        changes=[plan_managed_gateway_rule(artifact, current, current)],
+    )
+
+    result = _observe(
+        _state(),
+        plan,
+        (target,),
+        resolution="rolled_back",
+        intent_kind="adopt",
+    )
+
+    assert result.targets[0].accepted_as == "prior"
+    assert result.targets[0].fingerprint == current.fingerprint
+    assert result.candidate_state is None
+
+
+def test_gateway_adopt_rejects_live_drift_even_when_live_matches_desired() -> None:
+    artifact = _gateway_artifact(
+        physical_topic="orders.v2",
+        ownership_mode="adopted",
+    )
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    reviewed_current = replace(desired, physical_name="orders.v1")
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=reviewed_current,
+        desired=desired,
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=desired,
+        changes=[plan_managed_gateway_rule(artifact, desired, desired)],
+    )
+
+    with pytest.raises(
+        RecoveryObservationError,
+        match="reviewed Gateway adoption surface",
+    ):
+        _observe(
+            _state(),
+            plan,
+            (target,),
+            intent_kind="adopt",
+        )
+
+
+@pytest.mark.parametrize(
+    ("artifact", "message"),
+    [
+        (_gateway_artifact(), "exact adopted model ownership"),
+        (
+            _gateway_artifact(ownership_mode="adopted", owner_type="source"),
+            "exact adopted model ownership",
+        ),
+        (
+            _gateway_artifact(
+                ownership_mode="adopted",
+                where="region = 'US'",
+            ),
+            "no desired interceptors",
+        ),
+        (
+            _gateway_artifact(
+                physical_topic="orders.changed",
+                ownership_mode="adopted",
+            ),
+            "mismatched current Gateway manifest evidence",
+        ),
+    ],
+    ids=["managed", "wrong-owner-type", "interceptor", "desired-drift"],
+)
+def test_gateway_adopt_rejects_changed_manifest_evidence(
+    artifact: GatewayRuleArtifact,
+    message: str,
+) -> None:
+    reviewed_artifact = _gateway_artifact(ownership_mode="adopted")
+    reviewed = build_desired_gateway_rule(reviewed_artifact, GATEWAY_BINDING)
+    fresh_desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=reviewed,
+        desired=reviewed,
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=reviewed,
+        changes=[plan_managed_gateway_rule(artifact, fresh_desired, reviewed)],
+    )
+
+    with pytest.raises(RecoveryObservationError, match=message):
+        _observe(
+            _state(),
+            plan,
+            (target,),
+            intent_kind="adopt",
+        )
+
+
+def test_gateway_adopt_rejects_any_prior_ownership_record() -> None:
+    artifact = _gateway_artifact(ownership_mode="adopted")
+    current = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=current,
+        desired=current,
+    )
+    state = _state(
+        {
+            target.resource_id: _record(
+                artifact,
+                physical_name=artifact.virtual_topic,
+                backend=GATEWAY_BINDING.backend_identity,
+                ownership="adopted",
+            )
+        }
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=current,
+        changes=[plan_managed_gateway_rule(artifact, current, current)],
+    )
+
+    with pytest.raises(RecoveryObservationError, match="absent prior Gateway ownership"):
+        _observe(state, plan, (target,), intent_kind="adopt")
+
+
+def test_gateway_adopt_rejects_legacy_alias_claimed_by_another_owner() -> None:
+    artifact = _gateway_artifact(ownership_mode="adopted")
+    current = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    target = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=current,
+        desired=current,
+    )
+    other_resource_id = resource_id(
+        PROJECT,
+        ENVIRONMENT,
+        "gateway_rule",
+        "legacy_owner",
+    )
+    state = _state(
+        {
+            other_resource_id: ManagedResourceRecord(
+                physical_name=artifact.virtual_topic,
+                ownership="managed",
+                artifact_checksum=artifact_checksum({"legacy": True}),
+                backend="conduktor-gateway",
+            )
+        }
+    )
+    plan = _gateway_plan(
+        target=target,
+        observation=current,
+        changes=[plan_managed_gateway_rule(artifact, current, current)],
+    )
+
+    with pytest.raises(RecoveryObservationError, match="ambiguous prior Gateway alias"):
+        _observe(state, plan, (target,), intent_kind="adopt")
 
 
 def test_normalized_gateway_create_allows_exact_provider_recreation_record() -> None:
@@ -1818,8 +2059,22 @@ def test_preflight_rejects_legacy_gateway_action_before_live_planning() -> None:
         control_version=1,
     )
 
-    with pytest.raises(RecoveryObservationError, match="version 2 Gateway"):
+    with pytest.raises(RecoveryObservationError, match="exact Gateway"):
         preflight_recovery_intent(snapshot)
+
+
+def test_preflight_accepts_gateway_adopt_with_exact_action_evidence() -> None:
+    artifact = _gateway_artifact(ownership_mode="adopted")
+    current = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    action = _gateway_action(
+        "orders_owner",
+        "adopt",
+        current=current,
+        desired=current,
+    )
+    snapshot = _snapshot(_state(), (action,), kind="adopt")
+
+    assert preflight_recovery_intent(snapshot) == (action,)
 
 
 @pytest.mark.parametrize("mismatch", ["serial", "checksum"])

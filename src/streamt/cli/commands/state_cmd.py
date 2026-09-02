@@ -213,7 +213,7 @@ class _RecoveryRuntime:
             action
             for action in recovery_actions
             if ResourceIdentity.parse(action.resource_id).kind == "gateway_rule"
-            and action.action in {"create", "update", "delete"}
+            and action.action in {"create", "update", "delete", "adopt"}
         )
 
         # Deployer construction failures are intentionally accumulated in a private,

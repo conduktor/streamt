@@ -60,12 +60,12 @@ _FILTER_PLUGIN = "io.conduktor.gateway.interceptor.VirtualSqlTopicPlugin"
 _CHECKSUM = re.compile(r"sha256:[0-9a-f]{64}")
 
 
-def _ownership(owner_name: str) -> dict[str, str]:
+def _ownership(owner_name: str, *, mode: str = "managed") -> dict[str, str]:
     return ArtifactOwnership(
         project="payments",
         owner_type="model",
         owner_name=owner_name,
-        mode="managed",
+        mode=mode,
     ).to_dict()
 
 
@@ -76,6 +76,7 @@ def _rule(
     physical: str = "orders.v1",
     owner_name: str = "orders_model",
     where: str | None = None,
+    ownership_mode: str = "managed",
 ) -> dict[str, object]:
     interceptors: list[dict[str, object]] = []
     if where is not None:
@@ -85,7 +86,7 @@ def _rule(
         "virtualTopic": alias,
         "physicalTopic": physical,
         "interceptors": interceptors,
-        "ownership": _ownership(owner_name),
+        "ownership": _ownership(owner_name, mode=ownership_mode),
     }
 
 
@@ -300,6 +301,16 @@ def _recovery_action(
             alias_name=artifact.virtual_topic,
             exists=False,
         )
+    elif action == "adopt":
+        current = ManagedGatewayRuleObservation(
+            binding=selected_binding,
+            logical_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            exists=True,
+            physical_name=f"{artifact.physical_topic}.live",
+            physical_cluster="main",
+        )
+        candidate = desired
     else:
         return OperationAction(
             index=index,
@@ -607,6 +618,93 @@ def test_gateway_recovery_actions_share_one_snapshot_with_manifest_planning() ->
         _assert_exact_two_list_gets(request)
 
 
+def test_gateway_adopt_recovery_uses_shared_snapshot_with_divergent_identities() -> None:
+    adopted = _rule(
+        name="provider_orders_rule",
+        alias="orders.public",
+        physical="orders.v2",
+        owner_name="orders_model_owner",
+        ownership_mode="adopted",
+    )
+    action = _recovery_action(adopted, "adopt")
+    with _mocked_gateway(
+        aliases=[_alias_resource(adopted, physical="orders.v2.live")],
+    ) as (deployer, request):
+        observe_snapshot = MagicMock(wraps=deployer.observe_managed_gateway_snapshot)
+        deployer.observe_managed_gateway_snapshot = observe_snapshot  # type: ignore[method-assign]
+
+        plan = DeploymentPlanner(
+            _manifest(adopted),
+            project=_project(),
+            gateway_deployer=deployer,
+            prior_state=LocalState(project="payments", environment="prod"),
+            environment="prod",
+        ).plan(gateway_recovery_actions=(action,))
+
+        assert observe_snapshot.call_count == 1
+        assert plan.gateway_recovery_observations[0].resource_id == action.resource_id
+        observation = plan.gateway_recovery_observations[0].observation
+        assert ResourceIdentity.parse(action.resource_id).logical_name == "orders_model_owner"
+        assert observation.logical_name == "provider_orders_rule"
+        assert observation.alias_name == "orders.public"
+        assert observation.physical_name == "orders.v2.live"
+        _assert_exact_two_list_gets(request)
+
+
+@pytest.mark.parametrize(
+    ("manifest_rule", "prior_state", "message"),
+    [
+        (
+            _rule(ownership_mode="adopted"),
+            None,
+            "authoritative prior state",
+        ),
+        (
+            _rule(ownership_mode="managed"),
+            LocalState(project="payments", environment="prod"),
+            "exact adopted model ownership",
+        ),
+        (
+            _rule(
+                ownership_mode="adopted",
+                where="region = 'US'",
+            ),
+            LocalState(project="payments", environment="prod"),
+            "no desired interceptors",
+        ),
+        (
+            _rule(ownership_mode="adopted"),
+            _prior_state(_rule(ownership_mode="adopted")),
+            "absent prior ownership",
+        ),
+    ],
+    ids=[
+        "missing-authoritative-state",
+        "managed-ownership",
+        "desired-interceptor",
+        "existing-prior-record",
+    ],
+)
+def test_gateway_adopt_recovery_preflight_fails_before_provider_read(
+    manifest_rule: dict[str, object],
+    prior_state: LocalState | None,
+    message: str,
+) -> None:
+    reviewed = _rule(ownership_mode="adopted")
+    action = _recovery_action(reviewed, "adopt")
+    with _mocked_gateway() as (deployer, request):
+        with pytest.raises(StateIdentityError, match=message):
+            DeploymentPlanner(
+                _manifest(manifest_rule),
+                project=_project(),
+                gateway_deployer=deployer,
+                prior_state=prior_state,
+                environment="prod",
+            ).plan(gateway_recovery_actions=(action,))
+
+        request.assert_not_called()
+
+
 def test_gateway_recovery_create_allows_exact_prior_record_for_provider_recreate() -> None:
     desired = _rule(
         name="provider_recreate_rule",
@@ -660,7 +758,7 @@ def test_gateway_recovery_observations_are_hidden_from_plan_identity_and_payload
         (
             (_recovery_action(_rule(), "replace"),),
             None,
-            "unsupported mutation verb",
+            "unsupported verb",
         ),
         (
             (

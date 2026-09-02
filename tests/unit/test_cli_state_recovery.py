@@ -69,6 +69,7 @@ from streamt.deployer.state_backend import (
     OperationAction,
     OperationControlState,
     OperationIntent,
+    OperationKind,
     OperationProgress,
     OperationSnapshot,
     StateAddress,
@@ -181,6 +182,7 @@ def _gateway_rule(
     physical_name: str = "orders.v1",
     owner_name: str = "orders_owner",
     where: str | None = None,
+    ownership_mode: str = "managed",
 ) -> GatewayRuleArtifact:
     interceptors: list[dict[str, object]] = []
     if where is not None:
@@ -194,7 +196,7 @@ def _gateway_rule(
             project="recovery-test",
             owner_type="model",
             owner_name=owner_name,
-            mode="managed",
+            mode=ownership_mode,
         ),
     )
 
@@ -252,6 +254,7 @@ def _gateway_recovery_snapshot(
     *,
     address: StateAddress | None = None,
     control_version: int = 2,
+    intent_kind: OperationKind = "apply",
 ) -> RecoverySnapshotEvidence:
     effective_address = address or StateAddress(
         namespace="default",
@@ -260,7 +263,7 @@ def _gateway_recovery_snapshot(
     )
     intent = OperationIntent(
         operation_id=BLOCKED_OPERATION_ID,
-        kind="apply",
+        kind=intent_kind,
         started_at="2026-09-02T12:00:00Z",
         actor="prior-runner",
         prior_state_serial=state.serial,
@@ -1185,6 +1188,62 @@ def test_recovery_runtime_uses_one_gateway_snapshot_for_desired_and_removed_rule
     assert observed.candidate_state is not None
     assert set(observed.candidate_state.resources) == {orders_id}
     assert GATEWAY_CONFIG_SECRET not in repr(observed)
+
+
+def test_recovery_runtime_routes_gateway_adopt_through_one_shared_snapshot() -> None:
+    artifact = _gateway_rule(
+        rule_name="provider_orders_rule",
+        alias_name="orders.public",
+        physical_name="orders.v2",
+        owner_name="orders_model_owner",
+        ownership_mode="adopted",
+    )
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    current = ManagedGatewayRuleObservation(
+        binding=GATEWAY_BINDING,
+        logical_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        exists=True,
+        physical_name="orders.v1",
+        physical_cluster="main",
+    )
+    action = _gateway_operation_action(
+        index=0,
+        owner_name="orders_model_owner",
+        action="adopt",
+        current=current,
+        desired=desired,
+    )
+    state = LocalState(project="recovery-test", environment="default")
+
+    observed, gateway, provider_snapshot = _observe_gateway_runtime(
+        manifest=Manifest(
+            version="1",
+            project_name="recovery-test",
+            artifacts={"gateway_rules": [artifact.to_dict()]},
+        ),
+        snapshot=_gateway_recovery_snapshot(
+            state,
+            (action,),
+            intent_kind="adopt",
+        ),
+        observations={(artifact.name, artifact.virtual_topic): current},
+    )
+
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    provider_snapshot.rule.assert_called_once_with(
+        artifact.name,
+        artifact.virtual_topic,
+    )
+    assert observed.targets[0].accepted_as == "candidate"
+    assert observed.targets[0].fingerprint == current.fingerprint
+    assert observed.candidate_state is not None
+    assert observed.candidate_state.resources[action.resource_id] == ManagedResourceRecord(
+        physical_name=artifact.virtual_topic,
+        ownership="adopted",
+        artifact_checksum=artifact_checksum(artifact.to_dict()),
+        backend=GATEWAY_BINDING.backend_identity,
+    )
 
 
 @pytest.mark.parametrize("resolution", ["observed", "rolled_back"])

@@ -1943,8 +1943,8 @@ class DeploymentPlanner:
                     "Gateway recovery actions contain a duplicate canonical resource"
                 )
             action_resources.add(action.resource_id)
-            if action.action not in ("create", "update", "delete"):
-                raise StateIdentityError("Gateway recovery action has an unsupported mutation verb")
+            if action.action not in ("create", "update", "delete", "adopt"):
+                raise StateIdentityError("Gateway recovery action has an unsupported verb")
             evidence = action.gateway_evidence
             if type(evidence) is not GatewayActionEvidence:
                 raise StateIdentityError("Gateway recovery action requires exact durable evidence")
@@ -1962,7 +1962,16 @@ class DeploymentPlanner:
                 prior_record.backend == evidence.backend_identity
                 and prior_record.physical_name == evidence.alias_name
             )
-            if action.action == "create":
+            if action.action == "adopt":
+                if self.prior_state is None:
+                    raise StateIdentityError(
+                        "Gateway recovery adoption requires authoritative prior state"
+                    )
+                if prior_record is not None:
+                    raise StateIdentityError(
+                        "Gateway recovery adoption requires absent prior ownership"
+                    )
+            elif action.action == "create":
                 if prior_record is not None and not exact_prior:
                     raise StateIdentityError(
                         "Gateway recovery create has mismatched prior ownership evidence"
@@ -1983,12 +1992,29 @@ class DeploymentPlanner:
                 )
 
             desired_rule = rules_by_owner.get(identity.logical_name)
-            if action.action in ("create", "update"):
+            if action.action in ("create", "update", "adopt"):
                 if desired_rule is None:
                     raise StateIdentityError(
-                        "Gateway recovery upsert has no exact desired manifest rule"
+                        "Gateway recovery action has no exact desired manifest rule"
                     )
                 desired = desired_rule.desired
+                desired_ownership = ArtifactOwnership.from_dict(
+                    desired_rule.artifact.ownership
+                )
+                if action.action == "adopt" and (
+                    desired_ownership
+                    != ArtifactOwnership(
+                        project=self.project_name,
+                        owner_type="model",
+                        owner_name=identity.logical_name,
+                        mode="adopted",
+                    )
+                    or desired_rule.artifact.interceptors != []
+                ):
+                    raise StateIdentityError(
+                        "Gateway recovery adoption requires exact adopted model ownership "
+                        "and no desired interceptors"
+                    )
                 expected_surface = GatewayActionSurfaceEvidence(
                     exists=True,
                     fingerprint=desired.fingerprint,
@@ -2001,7 +2027,7 @@ class DeploymentPlanner:
                     or evidence.desired != expected_surface
                 ):
                     raise StateIdentityError(
-                        "Gateway recovery upsert differs from its exact desired rule"
+                        "Gateway recovery action differs from its exact desired rule"
                     )
             elif desired_rule is not None:
                 raise StateIdentityError(
