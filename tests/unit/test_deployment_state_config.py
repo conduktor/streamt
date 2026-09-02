@@ -68,7 +68,16 @@ def test_postgres_config_is_strict_and_keeps_only_the_dsn_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("STREAMT_STATE_DSN", raising=False)
-    _write_project(tmp_path, deployment_state=_postgres(), include_state=True)
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "STREAMT_STATE_DSN",
+                "writer_role_env": "STREAMT_STATE_WRITER_ROLE",
+            }
+        ),
+        include_state=True,
+    )
 
     project = ProjectParser(tmp_path).parse()
 
@@ -76,8 +85,23 @@ def test_postgres_config_is_strict_and_keeps_only_the_dsn_name(
     assert project.deployment_state.namespace == "platform team"
     assert project.deployment_state.lock_timeout_seconds == 30
     assert project.deployment_state.postgres.dsn_env == "STREAMT_STATE_DSN"
+    assert (
+        project.deployment_state.postgres.writer_role_env
+        == "STREAMT_STATE_WRITER_ROLE"
+    )
     assert project.deployment_state.postgres.schema_name == "streamt"
     assert "dsn" not in project.deployment_state.model_dump(mode="json")
+
+
+def test_writer_role_environment_name_is_optional_for_v1_administration(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path, deployment_state=_postgres(), include_state=True)
+
+    project = ProjectParser(tmp_path).parse()
+
+    assert isinstance(project.deployment_state, PostgresDeploymentStateConfig)
+    assert project.deployment_state.postgres.writer_role_env is None
 
 
 @pytest.mark.parametrize(
@@ -96,6 +120,14 @@ def test_postgres_config_is_strict_and_keeps_only_the_dsn_name(
         _postgres(postgres={"dsn_env": "${STATE_DSN}"}),
         _postgres(postgres={"dsn_env": "postgresql://db"}),
         _postgres(postgres={"dsn_env": "STATE-DSN"}),
+        _postgres(
+            postgres={"dsn_env": "STATE_DSN", "writer_role_env": "${WRITER_ROLE}"}
+        ),
+        _postgres(
+            postgres={"dsn_env": "STATE_DSN", "writer_role_env": "writer-role"}
+        ),
+        _postgres(postgres={"dsn_env": "STATE_DSN", "writer_role_env": ""}),
+        _postgres(postgres={"dsn_env": "STATE_DSN", "writer_role_env": False}),
         _postgres(postgres={"dsn_env": "STATE_DSN", "schema": "bad-name"}),
         _postgres(postgres={"dsn_env": "STATE_DSN", "unknown": True}),
     ],
@@ -113,7 +145,16 @@ def test_explicit_null_project_config_is_not_treated_as_omitted(tmp_path: Path) 
 
 
 def test_environment_omission_inherits_root_config(tmp_path: Path) -> None:
-    _write_project(tmp_path, deployment_state=_postgres(), include_state=True)
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "STREAMT_STATE_DSN",
+                "writer_role_env": "STREAMT_STATE_WRITER_ROLE",
+            }
+        ),
+        include_state=True,
+    )
     environments = tmp_path / "environments"
     environments.mkdir()
     (environments / "dev.yml").write_text(
@@ -125,6 +166,9 @@ def test_environment_omission_inherits_root_config(tmp_path: Path) -> None:
 
     assert project.deployment_state.backend == "postgres"
     assert project.deployment_state.namespace == "platform team"
+    assert project.deployment_state.postgres.writer_role_env == (
+        "STREAMT_STATE_WRITER_ROLE"
+    )
 
 
 def test_environment_provider_block_replaces_root_whole(tmp_path: Path) -> None:
@@ -145,6 +189,48 @@ def test_environment_provider_block_replaces_root_whole(tmp_path: Path) -> None:
     project = ProjectParser(tmp_path, environment="dev").parse()
 
     assert project.deployment_state.backend == "local"
+
+
+def test_environment_postgres_block_replaces_writer_environment_name(
+    tmp_path: Path,
+) -> None:
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "BASE_STATE_DSN",
+                "writer_role_env": "BASE_STATE_WRITER_ROLE",
+            }
+        ),
+        include_state=True,
+    )
+    environments = tmp_path / "environments"
+    environments.mkdir()
+    (environments / "dev.yml").write_text(
+        yaml.safe_dump(
+            {
+                "environment": {"name": "dev"},
+                "runtime": _runtime(),
+                "deployment_state": _postgres(
+                    namespace="dev",
+                    postgres={
+                        "dsn_env": "DEV_STATE_DSN",
+                        "writer_role_env": "DEV_STATE_WRITER_ROLE",
+                    },
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    project = ProjectParser(tmp_path, environment="dev").parse()
+
+    assert isinstance(project.deployment_state, PostgresDeploymentStateConfig)
+    assert project.deployment_state.namespace == "dev"
+    assert project.deployment_state.postgres.dsn_env == "DEV_STATE_DSN"
+    assert project.deployment_state.postgres.writer_role_env == (
+        "DEV_STATE_WRITER_ROLE"
+    )
 
 
 def test_partial_environment_provider_does_not_deep_merge(tmp_path: Path) -> None:
@@ -243,7 +329,60 @@ def test_generated_project_schema_exposes_strict_tagged_provider_contract() -> N
     assert connection["properties"]["dsn_env"]["pattern"] == (
         "^[A-Za-z_][A-Za-z0-9_]*$"
     )
+    assert connection["properties"]["writer_role_env"] == {
+        "anyOf": [
+            {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string",
+            },
+            {"type": "null"},
+        ],
+        "default": None,
+        "title": "Writer Role Env",
+    }
     assert connection["properties"]["schema"]["default"] == "streamt"
+
+
+def test_writer_role_value_is_not_resolved_or_serialized_during_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREAMT_STATE_WRITER_ROLE", "runtime-secret-role")
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "STREAMT_STATE_DSN",
+                "writer_role_env": "STREAMT_STATE_WRITER_ROLE",
+            }
+        ),
+        include_state=True,
+    )
+    (tmp_path / ".env").write_text(
+        "STREAMT_STATE_WRITER_ROLE=base-secret-role\n",
+        encoding="utf-8",
+    )
+    environments = tmp_path / "environments"
+    environments.mkdir()
+    (environments / "dev.yml").write_text(
+        yaml.safe_dump({"environment": {"name": "dev"}, "runtime": _runtime()}),
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.dev").write_text(
+        "STREAMT_STATE_WRITER_ROLE=environment-secret-role\n",
+        encoding="utf-8",
+    )
+
+    project = ProjectParser(tmp_path, environment="dev").parse()
+    serialized = project.deployment_state.model_dump_json()
+
+    assert isinstance(project.deployment_state, PostgresDeploymentStateConfig)
+    assert project.deployment_state.postgres.writer_role_env == (
+        "STREAMT_STATE_WRITER_ROLE"
+    )
+    assert "runtime-secret-role" not in serialized
+    assert "base-secret-role" not in serialized
+    assert "environment-secret-role" not in serialized
 
 
 def test_dsn_value_uses_dotenv_precedence_only_when_factory_is_constructed(

@@ -20,6 +20,7 @@ Complete reference for all streamt CLI commands.
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
 | Initialize configured PostgreSQL state | `state init` | No |
+| Migrate configured PostgreSQL state to schema v2 | `state migrate-postgres-v2` | No |
 | Probe instantaneous PostgreSQL lock availability | `state lock-status` | No |
 | Inspect ownership/recovery metadata | `state status` | No |
 | Claim an existing declared topic or schema subject | `adopt` | **Yes** |
@@ -805,9 +806,9 @@ orders_raw (source)
 
 ### state init
 
-Explicitly initialize the configured PostgreSQL version-1 store and register
-one empty canonical address. This is an administrative command, not ordinary
-deployment-state authority.
+Explicitly initialize a new PostgreSQL version-1 store or register one empty
+canonical address in an exact compatible version-1 or version-2 store. This is
+an administrative command, not ordinary deployment-state authority.
 
 ```bash
 streamt state init [OPTIONS]
@@ -836,8 +837,9 @@ When the configured schema is absent, init creates the frozen seven-table
 version-1 catalog, one immutable random store ID, the requested address and its
 collision-checked advisory-lock mapping, and a clear operation-control row.
 When the schema already exists but is empty, the initializer identity must own
-it. An exact compatible store can register a previously unregistered empty
-address. Repeating init for the same compatible, empty address is a no-op.
+it. An exact compatible version-1 or version-2 store can register a previously
+unregistered empty address. Repeating init for the same compatible, empty
+address is a no-op. Init never changes an existing store's schema version.
 
 The structured `outcome` is `initialized`, `address_registered`, or
 `already_initialized`. Every successful result reports the safe store ID,
@@ -864,8 +866,83 @@ objects, populated or active target addresses, incompatible versions, and
 advisory-lock-key collisions fail closed without repair.
 
 Incompatible state uses `E411_STATE_INVALID`. Missing dependencies or
-credentials, connection failures, and unknown commit outcomes use the
-secret-neutral `E420_STATE_BACKEND_UNAVAILABLE`; no local fallback occurs.
+credentials and connection failures use the secret-neutral
+`E420_STATE_BACKEND_UNAVAILABLE`; no local fallback occurs.
+
+---
+
+### state migrate-postgres-v2
+
+Explicitly migrate one exact PostgreSQL deployment-state catalog from schema
+version 1 to schema version 2 and bind its separately provisioned,
+least-privilege writer role. This is an owner-only administrative operation; it
+does not enable PostgreSQL for ordinary plan, apply, or adopt.
+
+```bash
+streamt state migrate-postgres-v2 [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
+| `--confirm-store-id UUID` | Exact canonical store UUID reported by `state status` |
+| `--confirm-writer-role ROLE` | Exact role value resolved through `postgres.writer_role_env` |
+
+Both confirmations are required. The store ID must be canonical UUID text. The
+role must be nonempty, NUL-free, UTF-8 encodable, and no longer than PostgreSQL's
+63-byte identifier limit. Missing or malformed confirmations fail before
+project parsing or provider construction. The supplied role must exactly match
+the value obtained from the configured `postgres.writer_role_env`; the source
+store must exactly match the supplied ID. A mismatch fails before mutation, and
+no failure echoes a role, DSN, login, endpoint, or schema name.
+
+The owner connection is resolved through `postgres.dsn_env`; the external role
+name is resolved separately through `postgres.writer_role_env`. Both named
+environment values are required, with no implicit credential or role fallback.
+The command requires a direct, session-affine primary, takes the schema lock and
+all registered-address locks under one bounded deadline, validates the complete
+v1 catalog and histories, migrates metadata and ACLs atomically, and verifies
+the postimage through a fresh connection. It never creates or alters a role.
+
+```bash
+streamt state migrate-postgres-v2 -p . -e prod \
+  --confirm-store-id 8d04f3f7-0000-4000-8000-000000000000 \
+  --confirm-writer-role streamt_state_writer
+```
+
+A successful human result reports the outcome, safe store ID, schema version
+`2`, `Catalog mutation readiness: catalog_ready`, and `Ordinary state
+authority: disabled`. Structured result data contains only:
+
+```json
+{
+  "backend": "postgres",
+  "outcome": "migrated",
+  "store_id": "8d04f3f7-0000-4000-8000-000000000000",
+  "schema_version": 2,
+  "ordinary_state_authority": "disabled",
+  "mutation_status": "catalog_ready"
+}
+```
+
+`outcome` is `migrated` or, for an exact same-store/same-role retry,
+`already_migrated`. The result never authorizes an ordinary state command.
+
+Migration-specific failures are:
+
+| Code | Operator meaning |
+|------|------------------|
+| `E411_STATE_INVALID` | A confirmation, role, source catalog, control/history sequence, or resulting ACL is incompatible. No repair or rebind is attempted. |
+| `E420_STATE_BACKEND_UNAVAILABLE` | Configuration, optional dependency, named environment value, endpoint, credential, or connection is unavailable. |
+| `E422_STATE_LOCK_TIMEOUT` | The bounded lock deadline expired. Resolve contention, recheck clear control, then retry the identical confirmed command. |
+| `E425_STATE_UNKNOWN_OUTCOME` | Commit could not be classified. Do not blindly replay; preserve evidence and inspect `state status` and the durable catalog. |
+| `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` | The v2 postimage was verified but lock release was not. Structured data contains `committed: true`; treat the migration as committed and do not replay it as an uncommitted write. |
+
+There is no in-place downgrade, repair, or writer-rebind command. See the
+[PostgreSQL deployment-state migration guide](../guides/postgres-deployment-state.md)
+for backup and preflight steps, the exact writer ACL, ambiguity handling, and
+the supported topology boundary.
 
 ---
 
@@ -884,10 +961,11 @@ streamt state lock-status [OPTIONS]
 | `--project-dir PATH`, `-p PATH` | Project directory |
 | `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
 
-The command validates the complete version-1 catalog and requires a direct,
-session-affine primary endpoint. It runs in an explicit repeatable-read,
-read-only transaction. For an unregistered address it returns `unregistered`
-without invoking an advisory-lock function. For a registered address it calls
+The command validates the complete version-1 or version-2 catalog and requires
+a direct, session-affine primary endpoint. It runs in an explicit
+repeatable-read, read-only transaction. For an unregistered address it returns
+`unregistered` without invoking an advisory-lock function. For a registered
+address it calls
 `pg_try_advisory_xact_lock(bigint)` once and returns `available` or `busy`.
 `available`, `busy`, and `unregistered` are all successful command outcomes.
 
@@ -915,8 +993,8 @@ Structured output contains only:
 
 PostgreSQL advisory locks are physical-session and reentrant state. Use a direct
 or session-affine primary connection; transaction- and statement-pooling
-endpoints are unsupported. This is also required by the future operation lock,
-which must retain one connection for its complete lifetime. The probe creates no
+endpoints are unsupported. The private operation lock has the same requirement
+and retains one connection for its complete lifetime. The probe creates no
 roles, grants, address rows, or operation markers.
 
 An invalid catalog uses `E411_STATE_INVALID`. A replica, missing dependency or
@@ -957,19 +1035,22 @@ markers still block apply/adopt indefinitely. `state status` cannot clear or
 recover them.
 
 For `backend: postgres`, the optional `postgres` package extra enables a
-separate administrative reader. It verifies the exact version-1 store catalog,
-then reports safe store, address, ownership, and operation-control fields from
+separate administrative reader. It verifies the exact version-1 or version-2
+store catalog, then reports safe store, address, ownership, and
+operation-control fields from
 one bounded, repeatable-read, read-only snapshot. It never returns the DSN,
 endpoint, SQL, raw driver errors, or ownership payload. An absent schema is
 `uninitialized`; an initialized store can report an unregistered, absent, or
 present address. Missing dependencies or credentials, incompatible stores, and
 connection failures use sanitized state errors and never fall back to local.
-Catalog verification also requires common schema/table ownership, no `PUBLIC`
-ACL, and no non-owner access beyond non-grantable schema `USAGE` and table or
-column `SELECT`. The read-only transaction sets `search_path` to `pg_catalog`
-and uses schema-qualified state objects. PostgreSQL remains unavailable to
-ordinary plan/apply/adopt. Recovery, migration, ownership mutation, ordinary
-operation locking, and lock reservation for mutation are not implemented.
+Catalog verification also requires common schema/table ownership and the exact
+version-specific ACL contract. For v2, status reports `mutation_status:
+catalog_ready`; human output separately reports catalog readiness and
+`Ordinary state authority: disabled`. The read-only transaction sets
+`search_path` to `pg_catalog` and uses schema-qualified state objects.
+PostgreSQL remains unavailable to ordinary plan/apply/adopt. The explicit v2
+catalog migration exists, but recovery and ordinary command integration do
+not.
 
 ```bash
 streamt state status -p . -e prod

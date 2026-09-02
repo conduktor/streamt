@@ -130,6 +130,7 @@ nav:
     - Governance Rules: reference/governance.md
   - Guides:
     - Multi-Environment: guides/multi-environment.md
+    - PostgreSQL Deployment State: guides/postgres-deployment-state.md
     - CI/CD Integration: guides/ci-cd.md
     - Conduktor Gateway: guides/gateway.md
     - Windowed Aggregations: guides/windowed-aggregations.md

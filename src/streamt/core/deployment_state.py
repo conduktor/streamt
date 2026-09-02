@@ -22,6 +22,10 @@ class PostgresConnectionConfig(StreamtBaseModel):
     """Non-secret PostgreSQL provider configuration."""
 
     dsn_env: Annotated[StrictStr, Field(pattern=_ENVIRONMENT_VARIABLE_NAME)]
+    writer_role_env: Annotated[
+        StrictStr,
+        Field(pattern=_ENVIRONMENT_VARIABLE_NAME),
+    ] | None = None
     schema_name: Annotated[
         StrictStr,
         Field(alias="schema", pattern=_POSTGRES_SCHEMA_NAME),

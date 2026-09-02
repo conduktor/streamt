@@ -9,22 +9,22 @@ from the same prior snapshot. The normative boundary is
 
 ## Status — 2026-09-02
 
-Slices 1 through 3 and the Slice 4A configuration/policy boundary are
-complete. Slice 4A landed in `2b75090`, building on the read-only local status
-command from `0e04112`. Slice 4B now includes explicit PostgreSQL store/address
-initialization, read-only status, non-reserving lock diagnostics, and PostgreSQL
-14/18 real-server and process-concurrency gates. Slice 4B is complete. Normal
-PostgreSQL state reads and mutations for `plan`, `apply`, and `adopt` remain
-deliberately disabled until the full backend and operation protocol pass later
-acceptance gates.
+Slices 1 through 5 are complete. The delivered PostgreSQL boundary includes
+explicit v1 store/address initialization, strict v1/v2 status, non-reserving
+lock diagnostics, the private atomic mutation backend, and the explicit
+confirmation-gated v1-to-v2 migration with an exact least-privilege writer.
+PostgreSQL 14/18 real-server, ACL, commit-ambiguity, lifecycle, and
+process-concurrency gates pass. Normal PostgreSQL state reads and mutations for
+`plan`, `apply`, and `adopt` remain deliberately disabled until Slices 6 through
+8 pass.
 
 The implementation-ready prerequisite and final enablement checklist for the
 remaining PostgreSQL work is
 `docs/plans/2026-09-02-postgres-slice5-foundation.md`. In particular, ordinary
-factory selection remains disabled through Slice 6 command E2E/failure gates,
-schema-version-2 least-privilege role validation, and the minimum Slice 7
-recovery workflow. Factory enablement is the last implementation commit, not a
-Slice 5 backend milestone.
+factory selection remains disabled through Slice 6 command E2E/failure gates
+and the minimum Slice 7 recovery workflow. Factory enablement is the last
+implementation commit, not a private-backend or administrative-migration
+milestone.
 
 ## Current implementation audit
 
@@ -57,8 +57,9 @@ The remaining gaps are material:
   pending. This preserves authoritative evidence but can intentionally block a
   second same-host mutator until the prompt completes.
 - The file lock and control sidecar coordinate only one host. Local warnings
-  truthfully say shared CI is unsupported; no remote provider or distributed
-  operation lock exists.
+  truthfully say shared CI is unsupported. A session-affine PostgreSQL lock and
+  mutation provider now exist privately, but the ordinary factory remains
+  disabled until Slices 6 through 8 pass.
 
 ## Non-goals for the first implementation
 
@@ -332,10 +333,11 @@ beyond tests that prove PostgreSQL selection remains disabled.
 
 ### Slice 5: PostgreSQL mutation backend
 
-This slice builds a private, conforming mutation backend. It does not enable
-normal provider selection. Focused tests may construct it directly with an
-isolated version-1 schema-owner credential, but that is test scaffolding rather
-than a production role or supported command path. The detailed prerequisite is
+This slice is complete. It builds a private, conforming mutation backend and
+the explicit schema-v2 administrative migration without enabling normal
+provider selection. Version-1 owner mutation remains test scaffolding;
+version-2 conformance runs through the exact writer role. The detailed contract
+and remaining enablement checklist are in
 `docs/plans/2026-09-02-postgres-slice5-foundation.md`.
 
 1. Add a consistent `OperationSnapshot` containing state and control
@@ -392,8 +394,8 @@ Acceptance:
   commit outcome.
 - Canonical logical identities remain stable when runtime/display names differ.
 - Private owner-only conformance tests pass, then the same suite passes through
-  the exact version-2 least-privilege writer role. Missing, extra, grantable,
-  owner, or `PUBLIC` privileges fail closed.
+  the exact version-2 least-privilege writer role. Missing, extra, wrong-level,
+  wrong-grantor, grantable, default, owner, or `PUBLIC` privileges fail closed.
 - Standby, transaction-pooling, statement-pooling, and asynchronously promoted
   endpoints cannot be presented as a supported HA operation path.
 - An incompatible database schema version fails closed.
@@ -450,8 +452,9 @@ Acceptance:
 
 ### Slice 7: migration, recovery, and operations documentation
 
-Minimum explicit recovery is a factory-enablement prerequisite; export and
-migration can follow without delaying that safety gate.
+Minimum explicit recovery is a factory-enablement prerequisite. Export and
+local-to-remote state migration can follow without delaying that safety gate;
+the separate database schema-v2 administrative migration is already delivered.
 
 1. First add `state recover` for `observed`, `rolled-back`, and
    `abandoned-before-mutation`. Require a fresh reviewed observation, exact

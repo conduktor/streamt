@@ -15,17 +15,19 @@ workflow, schema/role contract, and full release gates below pass together.
 
 ## Delivery status (2026-09-02)
 
-Packages 1 through 5 are implemented and green in CI, including PostgreSQL 14
-and 18 conformance. The delivered foundation includes canonical planned-action
+Packages 1 through 6 are implemented and pass the current test gates, including
+PostgreSQL 14 and 18 conformance. The delivered foundation includes canonical planned-action
 identity, snapshot-bound local apply/adopt, stable failure taxonomy and
 operation-ID recovery evidence, and a direct-construction-only PostgreSQL v1
 owner backend covering consistent reads, session locks, atomic mutation,
-histories, commit ambiguity, and crash recovery evidence.
+histories, commit ambiguity, and crash recovery evidence. Package 6 adds the
+explicit `state migrate-postgres-v2` administrative path, exact store/role
+confirmation, the portable writer-name metadata/ACL contract, v1/v2
+administrative compatibility, and private least-privilege writer execution.
 
-Package 6 is in progress. Packages 7 through 9 remain prohibited until schema
-v2, exact writer-role execution, command failure injection, minimum recovery,
-and final release gates pass. Ordinary PostgreSQL factory selection remains
-disabled.
+Packages 7 through 9 remain prohibited until PostgreSQL apply/adopt command
+failure injection, minimum recovery, topology/HA evidence, and final release
+gates pass. Ordinary PostgreSQL factory selection remains disabled.
 
 ## Dependencies and preserved boundaries
 
@@ -69,9 +71,9 @@ disabled.
    after commit, and recovery-required are distinct sanitized error classes and
    structured outcomes.
 9. Private backend tests may use an isolated schema-owner credential against
-   version 1. That exception is test scaffolding only. Production enablement
-   requires an explicit schema-version-2 migration and an exact least-privilege
-   ordinary writer-role contract.
+   version 1. That exception is test scaffolding only. Package 6 has delivered
+   the explicit schema-version-2 migration and exact least-privilege writer
+   contract; production enablement additionally requires Packages 7 through 9.
 10. Ordinary operations use one direct, session-affine primary connection for
     the whole lock lifetime. Transaction- and statement-pooling endpoints are
     unsupported. A failover-capable production claim additionally requires
@@ -401,9 +403,10 @@ they merge in this order.
    commit, clear-before-mutation, recovery marking, internal history, final
    verification, and unknown-outcome classification. The ordinary factory
    still rejects PostgreSQL.
-6. **Schema version 2 administration.** Add explicit migration, exact writer
-   identity/ACL validation, status reporting of mutation readiness, and DBA
-   documentation. Run backend conformance through the least-privilege role.
+6. **Schema version 2 administration — complete.** Explicit migration, exact
+   store/role confirmation, exact writer identity/ACL validation, safe status
+   reporting, operator documentation, and least-privilege backend conformance
+   are implemented. The ordinary factory remains disabled.
 7. **PostgreSQL command E2E and failure gates.** After both the private backend
    and schema version 2 land, inject the private PostgreSQL adapter into the
    already provider-neutral apply/adopt command path. Pass real PostgreSQL
@@ -457,18 +460,18 @@ commit before/during/after acknowledgement, verification read, and release.
 The final factory diff is prohibited until every item is evidenced in CI or a
 reviewed operator test record:
 
-- [ ] `OperationSnapshot` and state/control CAS conformance pass for local,
+- [x] `OperationSnapshot` and state/control CAS conformance pass for local,
       fake, and PostgreSQL providers.
-- [ ] PostgreSQL finalization is atomic across ownership, control, and both
+- [x] PostgreSQL finalization is atomic across ownership, control, and both
       histories, with a fresh verification read.
-- [ ] Durable actions use canonical logical identities end to end.
-- [ ] Direct and reviewed apply use the final post-plan reread.
-- [ ] Adoption uses post-confirmation exact-target re-observation.
-- [ ] Final success is emitted only after lock release; committed release
+- [x] Durable actions use canonical logical identities end to end.
+- [x] Direct and reviewed apply use the final post-plan reread.
+- [x] Adoption uses post-confirmation exact-target re-observation.
+- [x] Final success is emitted only after lock release; committed release
       failure has a distinct non-retry outcome.
-- [ ] Lock timeout, loss, conflict, unknown outcome, release failure, and
+- [x] Lock timeout, loss, conflict, unknown outcome, release failure, and
       recovery-required have distinct sanitized errors.
-- [ ] Schema version 2 migration and exact least-privilege writer-role
+- [x] Schema version 2 migration and exact least-privilege writer-role
       validation pass; no ordinary job uses the owner identity.
 - [ ] Direct/session-affine primary checks pass, and the documented standalone
       versus synchronous-HA durability boundary matches tested deployment.

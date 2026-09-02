@@ -92,9 +92,9 @@ Local accepts no remote fields and stores ownership at
 `.streamt/state/<environment>.json`. It is intended for a single-user checkout,
 not shared or distributed runners.
 
-The strict PostgreSQL shape lets projects explicitly initialize, register, and
-inspect a future remote authority through the narrow `state init`, `state
-status`, and `state lock-status` administrative commands:
+The strict PostgreSQL shape lets projects initialize, inspect, diagnose, and
+explicitly migrate a future remote authority through narrow administrative
+commands:
 
 ```yaml
 deployment_state:
@@ -104,6 +104,7 @@ deployment_state:
   postgres:
     dsn_env: STREAMT_STATE_POSTGRES_DSN
     schema: streamt
+    writer_role_env: STREAMT_STATE_POSTGRES_WRITER_ROLE
 ```
 
 | Field | Type | Default | Description |
@@ -113,46 +114,62 @@ deployment_state:
 | `lock_timeout_seconds` | integer | `30` | PostgreSQL initializer advisory-lock and administrative catalog lock wait, from 1 through 300 seconds |
 | `postgres.dsn_env` | string | - | Required environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `postgres.schema` | string | `streamt` | Unquoted schema name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `postgres.writer_role_env` | string or null | `null` | Optional environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$`; required by `state migrate-postgres-v2`, ignored by v1 init/status/lock-status |
 
 Provider blocks reject unknown keys, mixed local/PostgreSQL fields, an omitted
 discriminator, and partial PostgreSQL shapes. The DSN itself must not appear in
 YAML. streamt resolves the named variable only when an online command constructs
 the provider, after `.env`, `.env.<environment>`, and the real environment have
-been applied. Validation, compilation, and offline plan do not read it.
+been applied. `writer_role_env` likewise stores only a variable name. Its role
+value is resolved late only by commands that require it, with the real process
+environment taking precedence over the selected environment dotenv and then
+the base dotenv. Neither value is retained in parsed configuration, generated
+schemas, plans, logs, or command output. Validation, compilation, and offline
+plan read neither variable.
 
 !!! warning "PostgreSQL is administrative-only"
     With the optional `postgres` package extra, `state status` inspects an exact
-    version-1 store in a bounded, repeatable-read, read-only transaction.
-    `state init` is the sole PostgreSQL administrative write: it requires exact
-    project, effective-environment, and canonical-address confirmations and can
-    create or register only an empty address. `state lock-status` separately
-    reports instantaneous `available`, `busy`, or `unregistered` diagnostics;
-    it reserves nothing and cannot authorize mutation. A missing extra, DSN,
-    invalid connection policy, unavailable database, or incompatible store
-    fails with a secret-neutral state error. Online plan, apply, and adopt still
-    fail with `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local
-    state. Ownership mutation, migration, recovery, and ordinary operation
-    locking remain deferred.
+    version-1 or version-2 store in a bounded, repeatable-read, read-only
+    transaction. `state init` creates a version-1 store or registers an empty
+    address under the schema owner. `state migrate-postgres-v2` is a separate,
+    schema-mutating but state/history-preserving administrative write:
+    it requires exact role and store confirmations, installs the fixed v2
+    metadata/ACL contract atomically, and never selects the ordinary backend.
+    `state lock-status` reports instantaneous `available`, `busy`, or
+    `unregistered` diagnostics; it reserves nothing and cannot authorize
+    mutation. A missing extra or variable, invalid connection policy,
+    unavailable database, or incompatible store fails with a secret-neutral
+    state error. Online plan, apply, and adopt still fail with
+    `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local state.
+    Recovery and ordinary operation locking remain unavailable from normal
+    commands.
 
 !!! note "PostgreSQL roles and catalog security"
-    The initializer identity owns a newly created schema and all seven state
-    tables, and must own a pre-existing empty schema. Initialization revokes all
-    table access from `PUBLIC` and, for a newly created schema, all schema access
-    from `PUBLIC`. It never creates roles or grants privileges. The exact
-    catalog requires one common schema/table owner and rejects every `PUBLIC`
-    ACL; a named status role may have only non-grantable schema `USAGE` and
-    non-grantable table or column `SELECT`. Any mutating or grantable non-owner
-    ACL fails closed. All three administrative paths set the transaction-local
-    `search_path` to `pg_catalog`, and all state objects use validated,
-    schema-qualified identifiers.
+    The initializer identity owns the schema and all seven state tables.
+    Version-2 migration uses that same owner DSN, but binds a separately
+    pre-created writer named by `writer_role_env`; streamt does not create,
+    alter, drop, or infer the role. The writer must be a direct `LOGIN` with
+    `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT`,
+    no membership edge in either direction, and no ownership. Migration grants
+    only schema `USAGE`, table `SELECT`, and the exact column-level mutation
+    privileges documented in the
+    [PostgreSQL deployment-state migration guide](../guides/postgres-deployment-state.md#exact-writer-acl).
+    Missing, extra, grantable, wrong-grantor, default, or `PUBLIC` privileges
+    fail closed.
+    Status-reader roles remain limited to non-grantable `USAGE` and `SELECT`.
+    Every administrative path fixes `search_path` to `pg_catalog` and uses
+    validated, schema-qualified identifiers.
 
 !!! warning "PostgreSQL endpoint affinity"
     Lock diagnostics require a direct, session-affine primary endpoint.
     Transaction- and statement-pooling endpoints are unsupported because
     PostgreSQL advisory locks are physical-session and reentrant state, and the
-    future operation lock must retain one connection for its complete lifetime.
+    private operation lock retains one connection for its complete lifetime.
     The diagnostic uses one transaction-scoped try-lock and requires successful
     rollback before returning, so even `available` means no reservation remains.
+    Standalone operation requires durable commit on that primary. A future HA
+    support claim additionally requires synchronous replication to every node
+    eligible for promotion; asynchronous failover is outside this boundary.
 
 In multi-environment mode, a root `deployment_state` is inherited when the
 selected environment omits the block. An environment block replaces the whole

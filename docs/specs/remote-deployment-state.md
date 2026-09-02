@@ -2,23 +2,22 @@
 
 ## Status
 
-Partially implemented safety contract. The provider-neutral state boundary,
-local version 1 JSON provider, strict provider configuration, and safe status
-command are implemented. PostgreSQL has a separate optional administrative
-adapter for strict read-only status and explicit, confirmation-gated version-1
-store/address initialization. A separate `state lock-status` command reports
-instantaneous, non-reserving advisory-lock availability. PostgreSQL is not
-selectable as ordinary state authority. Remote ownership mutation and operation
-locking are not operational until an implementation satisfies this
-specification and its conformance tests. Local JSON remains the only ordinary
-provider and the compatibility default for single-user development.
+Partially implemented safety contract. The provider-neutral snapshot/operation
+boundary, local version 1 provider, canonical action identities, and hardened
+local apply/adopt flows are implemented. PostgreSQL has optional administrative
+commands for strict v1/v2 status, confirmed version-1 initialization,
+non-reserving lock diagnostics, and explicit confirmed version-1-to-version-2
+migration. The v2 catalog binds an exact externally created least-privilege
+writer, and the backend protocol is exercised privately through that role on
+PostgreSQL 14 and 18. PostgreSQL is still not selectable as ordinary state
+authority. Local JSON remains the only ordinary provider and compatibility
+default for single-user development.
 
 The remaining implementation must follow
 `docs/plans/2026-09-02-postgres-slice5-foundation.md`. Nothing in the future
 contract sections below enables ordinary PostgreSQL selection: the factory
-stays disabled until command E2E/failure gates, minimum explicit recovery, and
-the schema-version-2 writer-role boundary all pass in the final enablement
-commit.
+stays disabled until command E2E/failure gates, synchronous-HA evidence where
+claimed, and minimum explicit recovery all pass in the final enablement commit.
 
 ## Scope
 
@@ -466,9 +465,10 @@ initialization revokes all schema access from `PUBLIC`, and it revokes all table
 access from `PUBLIC` after every table creation, neutralizing unsafe `PUBLIC`
 default table privileges. streamt creates no roles and issues no grants; role
 creation and allowed status-reader grants remain an external DBA operation.
-There is no ordinary PostgreSQL runtime role yet; any later DML/lock role and
-schema-migration role contract must land with the mutation backend rather than
-weakening this administrative catalog implicitly.
+Version 1 has no ordinary PostgreSQL runtime role. Its owner-only private
+mutation path remains test scaffolding and cannot be selected by normal
+commands. Version 2 adds the separate writer contract below without weakening
+version-1 validation.
 
 ### Mutation schema and role gate
 
@@ -479,13 +479,13 @@ through normal provider selection. That exception is test scaffolding only: an
 owner credential is not an ordinary deployment identity, and a version-1 store
 must never be reported as production mutation-ready.
 
-Before the ordinary factory is enabled, streamt must ship an explicit
-version-1-to-version-2 administrative migration. It must use the same bounded,
-confirmed, validate-before-commit, fresh-read-back, and unknown-outcome rules as
-initialization. Version 2 records the configured ordinary writer-role name in
-immutable catalog metadata and validates its exact non-grantable ACL. It
-does not create the role, infer authority from the current login, silently
-upgrade on `plan`/`apply`/`adopt`, or weaken version-1 validation.
+streamt ships an explicit `state migrate-postgres-v2` administrative migration
+before enabling the ordinary factory. It uses bounded locks, exact store/role
+confirmation, validate-before-commit, fresh read-back, and unknown-outcome
+classification. Version 2 records the configured writer-role name in immutable
+catalog metadata and validates its exact non-grantable ACL. It does not create
+the role, infer authority from the current login, silently upgrade on
+`plan`/`apply`/`adopt`, or weaken version-1 validation.
 
 The role name is the portable logical identity; a cluster-local `pg_roles.oid`
 must not be persisted in user metadata because logical restore does not remap
@@ -501,16 +501,18 @@ The version-2 ordinary writer ACL is exact:
 | Schema | `USAGE` | `CREATE`, grant option, `PUBLIC` access |
 | Store metadata and migration ledger | `SELECT` | `INSERT`, `UPDATE`, `DELETE` |
 | Address and lock-key mapping | `SELECT` | `INSERT`, `UPDATE`, `DELETE` |
-| Current ownership | `SELECT`, plus `INSERT`/`UPDATE` on exactly the required mutation columns | `DELETE`, grant option |
-| Operation control | `SELECT`, plus `UPDATE` on exactly the required mutation columns | `INSERT`, `DELETE`, grant option |
-| State and operation history | `SELECT`, plus `INSERT` on exactly the required append columns | `UPDATE`, `DELETE`, grant option |
+| Current ownership | table `SELECT`; column `INSERT` on `namespace`, `project`, `environment`, `revision`, `state_serial`, `state_checksum`, `state_json`, `updated_at`; column `UPDATE` on `revision`, `state_serial`, `state_checksum`, `state_json`, `updated_at` | table-level `INSERT`/`UPDATE`, key-column `UPDATE`, `DELETE`, grant option |
+| Operation control | table `SELECT`; column `UPDATE` on `revision`, `status`, `control_json`, `updated_at` | `INSERT`, table-level `UPDATE`, key-column `UPDATE`, `DELETE`, grant option |
+| State history | table `SELECT`; column `INSERT` on `namespace`, `project`, `environment`, `revision`, `state_serial`, `state_checksum`, `state_json`, `operation_id`, `recorded_at` | table-level `INSERT`, `UPDATE`, `DELETE`, grant option |
+| Operation history | table `SELECT`; column `INSERT` on `namespace`, `project`, `environment`, `operation_id`, `event_index`, `event_kind`, `control_json`, `recorded_at` | table-level `INSERT`, `UPDATE`, `DELETE`, grant option |
 
-Any sequence or identity privileges introduced by version 2 must also be
-enumerated exactly. The ordinary writer has no ownership, DDL, role membership,
+Version 2 introduces no sequence or identity objects. The ordinary writer has
+no ownership, DDL, role membership,
 default-privilege mutation, address registration, metadata/migration mutation,
 history rewrite, or schema-migration authority. Catalog validation rejects a
-missing, extra, grantable, owner, or `PUBLIC` privilege. Production conformance
-tests run through this least-privilege role, not the private owner identity.
+missing, extra, wrong-level, wrong-grantor, grantable, default, owner, or
+`PUBLIC` privilege. Private conformance tests run the complete mutation
+lifecycle through this least-privilege role, not the version-1 owner identity.
 
 The writer is a direct login distinct from the common owner and has
 `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOBYPASSRLS`,
@@ -520,26 +522,30 @@ and `current_user` equal the stored name. Existing named status readers remain
 limited to direct non-grantable `USAGE` and `SELECT`.
 
 Migration holds the schema initialization lock and every registered address
-session lock before starting its serializable write transaction. It validates
-all addresses, requires every operation control to be clear, and preserves
-populated ownership and history rows. DDL, metadata, ledger, and ACL changes
-commit atomically and are freshly verified. Post-v2 status, lock diagnostics,
-and owner-only address registration validate exact v2 without requiring the
-writer environment variable. Mutation readiness is reported separately from
-ordinary factory authority, which remains disabled until the final gate.
+session lock under one bounded deadline before starting its serializable write
+transaction. It validates all current ownership and both histories
+semantically, requires every operation control to be clear, and preserves the
+durable rows byte-for-byte. DDL, metadata, ledger, and ACL changes commit
+atomically and are freshly verified through a new direct-primary connection.
+Post-v2 status, lock diagnostics, and owner-only address registration validate
+exact v2 without requiring the writer environment variable. Status reports
+`mutation_status: catalog_ready` separately from ordinary factory authority,
+which remains disabled until the final gate.
 
 The version-2 implementation extends the strict PostgreSQL shape with optional
-`writer_role_env`, the name of an environment variable containing the ordinary
-role identifier. Shipped version-1 administrative commands do not require it;
-the version-2 migration and ordinary factory do. Migration requires an exact
-writer-role confirmation before construction, stores the resolved name in
-catalog metadata, and freshly verifies its ACL. An ordinary session must prove
-that `session_user` and `current_user` are that exact role; membership or
-equivalent effective privileges are insufficient. The resolved role and
-database login remain excluded from reviewed plans and ordinary
+`writer_role_env`, the name of an environment variable containing the writer
+role identifier. Version-1 init and v1/v2 status/lock diagnostics do not require
+or resolve it; the version-2 migration does. Migration requires exact role and
+immutable store-ID confirmations before mutation, stores the resolved name in
+catalog metadata, and freshly verifies its ACL. Configuration retains only the
+environment-variable name; resolution uses real environment, selected
+environment dotenv, then base dotenv precedence. An ordinary session must
+prove that `session_user` and `current_user` are that exact role; membership or
+equivalent effective privileges are insufficient. The resolved role, database
+login, DSN, and catalog OID remain excluded from reviewed plans and normal
 text/structured output.
 
-All three administrative paths set transaction-local `search_path` to
+All administrative paths set transaction-local `search_path` to
 `pg_catalog`. All state-object identifiers are validated and schema-qualified.
 Initialization takes a bounded schema-scoped session advisory lock before
 beginning its serializable transaction, so a concurrent waiter starts from a
@@ -639,6 +645,9 @@ streamt state init -p PATH -e ENV \
   --confirm-address streamt-state://NAMESPACE/PROJECT/ENV
 streamt state status -p PATH -e ENV
 streamt state lock-status -p PATH -e ENV
+streamt state migrate-postgres-v2 -p PATH -e ENV \
+  --confirm-store-id UUID \
+  --confirm-writer-role ROLE
 ```
 
 `init` is PostgreSQL-only and requires all three confirmations to exactly match
@@ -650,19 +659,20 @@ schema version, address, absent ownership, clear operation status, and disabled
 ordinary-authority boundary.
 
 For PostgreSQL, `status` uses a separate administrative adapter and one bounded,
-repeatable-read, read-only snapshot. It verifies the exact version-1 catalog
-and reports backend kind, store ID, address, serial, checksum, and safe
-operation status without credentials, endpoint details, SQL, raw exceptions,
-or ownership payload.
+repeatable-read, read-only snapshot. It verifies the exact version-1 or
+version-2 catalog and reports backend kind, store ID, address, serial, checksum,
+and safe operation status without credentials, endpoint details, SQL, raw
+exceptions, or ownership payload.
 
 `lock-status` is a separate diagnostic command. It validates the complete
-version-1 catalog and requires `pg_is_in_recovery()` to report a primary inside
-an explicit repeatable-read, read-only transaction. An unregistered address
-returns `unregistered` without invoking an advisory-lock function. A registered
-address calls `pg_try_advisory_xact_lock(bigint)` once and reports `available`
-or `busy`. All three are successful CLI outcomes. Before returning any result,
-streamt requires rollback to succeed, releasing a transaction-scoped lock; the
-probe therefore reserves nothing and cannot leak a successful acquisition.
+version-1 or version-2 catalog and requires `pg_is_in_recovery()` to report a
+primary inside an explicit repeatable-read, read-only transaction. An
+unregistered address returns `unregistered` without invoking an advisory-lock
+function. A registered address calls `pg_try_advisory_xact_lock(bigint)` once
+and reports `available` or `busy`. All three are successful CLI outcomes.
+Before returning any result, streamt requires rollback to succeed, releasing a
+transaction-scoped lock; the probe therefore reserves nothing and cannot leak
+a successful acquisition.
 
 The result contains only `backend`, safe `store_id`, canonical `address`,
 `lock_status`, `reservation: none`, and
@@ -670,9 +680,13 @@ The result contains only `backend`, safe `store_id`, canonical `address`,
 not a lock for later work and not evidence that mutation is safe. Full catalog
 validation reads the operation-control rows, but the command does not report,
 clear, or interpret durable operation control as mutation safety; use `state
-status` to view it. Ordinary state authority, ownership mutation, operation
-locking, `migrate`, `recover`, and `export` remain deferred. Normal commands
-never initialize or migrate a remote store implicitly.
+status` to view it. `migrate-postgres-v2` requires canonical store-ID and exact
+writer-role confirmations, uses only the owner administrative factory, and
+returns `migrated` or idempotent `already_migrated` plus schema version `2`,
+`mutation_status: catalog_ready`, and
+`ordinary_state_authority: disabled`. Ordinary state authority, recovery,
+export, and ordinary-command wiring remain deferred. Normal commands never
+initialize or migrate a remote store implicitly.
 
 The environment-only `safety.require_remote_state` policy defaults to `false`.
 When enabled, it fails `apply` and `adopt` before confirmation, compilation,
@@ -693,11 +707,11 @@ documented config migration and release notice.
   out of status-only and ordinary deployment jobs. Provision status roles
   externally with only the non-grantable `USAGE`/`SELECT` ACL accepted by the
   exact catalog; streamt never creates or grants a database role.
-- During private Slice 5 development, owner-based mutation is limited to an
-  isolated test store constructed outside the ordinary factory. Before final
-  enablement, provision the separately identified schema-version-2 writer role
-  externally and run production conformance through its exact column/table
-  grants. Do not put the owner credential in ordinary CI or deployment jobs.
+- Version-1 owner-based mutation remains isolated test scaffolding outside the
+  ordinary factory. Package 6 provisions no role itself: operators create the
+  separately identified schema-version-2 writer externally, and conformance
+  runs through its exact column/table grants. Do not put the owner credential
+  in ordinary CI or deployment jobs.
 - Point lock diagnostics directly at a session-affine primary. Do not use a
   transaction- or statement-pooling endpoint. The probe creates no role or
   grant and does not enable ordinary state authority.

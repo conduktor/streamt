@@ -2750,8 +2750,8 @@ class PostgresStateInitializer:
 class PrivatePostgresStateV2Migrator:
     """Direct-only v1-to-v2 catalog and writer-role administrator.
 
-    This class is intentionally absent from configuration and CLI factories.
-    It never creates a role and never makes the ordinary backend selectable.
+    This class is reachable only through the explicit administrative command.
+    It never creates a role or makes the ordinary backend selectable.
     """
 
     __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema", "_writer_role")
@@ -2764,11 +2764,15 @@ class PrivatePostgresStateV2Migrator:
         lock_timeout_seconds: int,
         writer_role: str,
     ) -> None:
+        try:
+            writer_role_length = len(writer_role.encode("utf-8"))
+        except (AttributeError, UnicodeError):
+            writer_role_length = 64
         if (
             not isinstance(writer_role, str)
             or not writer_role
             or "\x00" in writer_role
-            or len(writer_role.encode("utf-8")) > 63
+            or writer_role_length > 63
         ):
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state writer role confirmation is invalid"
@@ -4031,4 +4035,36 @@ def make_postgres_state_initializer(
         dsn=dsn,
         schema=config.postgres.schema_name,
         lock_timeout_seconds=config.lock_timeout_seconds,
+    )
+
+
+def make_postgres_state_v2_migrator(
+    config: DeploymentStateConfig,
+) -> PrivatePostgresStateV2Migrator:
+    """Construct the explicit v1-to-v2 administrator without enabling state use."""
+    if not isinstance(config, PostgresDeploymentStateConfig):
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state migration is not configured"
+        )
+    writer_role_env = config.postgres.writer_role_env
+    if writer_role_env is None:
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state migration credentials are unavailable"
+        )
+    dsn = os.environ.get(config.postgres.dsn_env)
+    writer_role = os.environ.get(writer_role_env)
+    if (
+        dsn is None
+        or not dsn.strip()
+        or writer_role is None
+        or not writer_role.strip()
+    ):
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state migration credentials are unavailable"
+        )
+    return PrivatePostgresStateV2Migrator(
+        dsn=dsn,
+        schema=config.postgres.schema_name,
+        lock_timeout_seconds=config.lock_timeout_seconds,
+        writer_role=writer_role,
     )
