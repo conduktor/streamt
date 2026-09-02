@@ -280,16 +280,23 @@ class RecoveryPlanFile:
                 "Observed recovery candidate changes resources outside the blocked intent"
             )
         for target in self.targets:
-            if target.accepted_as != "candidate":
-                raise RecoveryPlanError(
-                    "Observed recovery targets must all be accepted as candidate state"
+            resource_id = target.action.resource_id
+            if target.accepted_as == "prior":
+                prior_record = prior.resources.get(resource_id)
+                candidate_record = candidate.resources.get(resource_id)
+                if candidate_record != prior_record:
+                    raise RecoveryPlanError(
+                        "Observed recovery target accepted as prior must retain its "
+                        "prior ownership record"
+                    )
+                expected_presence = "present" if prior_record is not None else "absent"
+            else:
+                expected_presence = (
+                    "present" if resource_id in candidate.resources else "absent"
                 )
-            expected_presence = (
-                "present" if target.action.resource_id in candidate.resources else "absent"
-            )
             if target.presence != expected_presence:
                 raise RecoveryPlanError(
-                    "Observed recovery target presence does not match candidate state"
+                    "Observed recovery target presence does not match its accepted state"
                 )
 
     @classmethod

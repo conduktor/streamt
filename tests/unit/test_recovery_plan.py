@@ -288,6 +288,32 @@ def test_observed_candidate_is_authoritative_and_preserves_unrelated_state() -> 
         )
 
 
+def test_observed_plan_accepts_mixed_prior_and_candidate_targets() -> None:
+    prior_plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=_snapshot(with_progress=True),
+        targets=(_target(accepted_as="prior"),),
+        candidate_state=_state(),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert prior_plan.candidate_state == prior_plan.snapshot.state
+    assert prior_plan.targets[0].accepted_as == "prior"
+
+    with pytest.raises(RecoveryPlanError, match="retain its prior ownership record"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(_target(accepted_as="prior"),),
+            candidate_state=_state(serial=2, partitions=6),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
 def test_observed_plan_rejects_credential_like_candidate_text() -> None:
     with pytest.raises(RecoveryPlanError, match="unsafe text"):
         RecoveryPlanFile.create(
