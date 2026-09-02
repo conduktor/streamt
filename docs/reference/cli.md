@@ -18,7 +18,7 @@ Complete reference for all streamt CLI commands.
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
-| Claim an existing declared topic | `adopt` | **Yes** |
+| Claim an existing declared topic or schema subject | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
 
 ## Global Options
@@ -576,8 +576,9 @@ Summary: 2 created, 1 updated, 0 unchanged
 
 ### adopt
 
-Explicitly claim one existing Kafka topic for lifecycle management. The initial
-MVP is deliberately topic-only and never changes Kafka.
+Explicitly claim one existing Kafka topic or Schema Registry subject for
+lifecycle management. Adoption changes only local ownership state; it never
+mutates Kafka or Schema Registry.
 
 ```bash
 streamt adopt \
@@ -589,12 +590,26 @@ streamt adopt \
   --confirm-env prod
 ```
 
-`--name` is the stable logical declaration name, not the physical topic name.
-It must resolve to exactly one compiled topic whose declaration explicitly sets
-`ownership.mode: adopted`. Before confirmation, streamt reads and displays the
-physical topic's partitions, replication factor, dynamic configuration, desired
-managed attributes, and pending differences. Credential-shaped values are
-redacted.
+For a compiled schema subject, use the same logical owner and confirmation
+protocol with `--kind schema`:
+
+```bash
+streamt adopt \
+  --project-dir . \
+  --env prod \
+  --kind schema \
+  --name orders \
+  --confirm-resource streamt://payments/prod/schema/orders \
+  --confirm-env prod
+```
+
+`--name` is the stable logical declaration name, not a physical topic or
+subject name. It must resolve to exactly one compiled artifact whose declaration
+explicitly sets `ownership.mode: adopted`. Topic adoption displays partitions,
+replication factor, dynamic configuration, and pending differences. Schema
+adoption displays only the subject, type, version, schema ID, compatibility,
+content checksums, and pending differences; schema bodies are never printed.
+Credential-shaped values are redacted.
 
 Interactive use requires typing an exact token containing both the full
 resource ID and environment. Non-interactive use requires both exact

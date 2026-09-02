@@ -179,9 +179,10 @@ columns; Protobuf is retained as a pinned external reference.
 Bulk adoption requires a saved selection and non-interactive confirmation token
 suitable for CI review.
 
-### Topic-only MVP
+### Single-resource adoption
 
-The first implementation intentionally supports one Kafka topic at a time:
+The command intentionally supports one resource at a time. Kafka topic adoption
+uses:
 
 ```text
 streamt adopt -p PATH -e ENV --kind topic --name LOGICAL_NAME
@@ -203,9 +204,23 @@ is idempotent. Conflicting state fails closed. Users must produce and review a
 fresh plan before later mutation; normal apply also replans against the new
 state.
 
-Schema Registry, Flink, Kafka Connect, and Gateway adoption remain unsupported
-until their exact management surfaces and compound resource identities have
-equivalent fail-closed workflows.
+Schema Registry subject adoption uses the same protocol:
+
+```text
+streamt adopt -p PATH -e ENV --kind schema --name LOGICAL_NAME
+```
+
+The logical owner must resolve to exactly one compiled subject with explicit
+`ownership.mode: adopted`. streamt reads that exact subject and validates its
+version, schema ID, type, compatibility, and references. Review output contains
+only metadata and deterministic hashes, never schema bodies. The state record
+uses the planner-identical artifact checksum and `schema-registry` backend, so a
+fresh plan can safely distinguish the adopted subject from unowned live data.
+No register, compatibility-update, list, or delete API is called.
+
+Flink, Kafka Connect, and Gateway adoption remain unsupported until their exact
+management surfaces and compound resource identities have equivalent
+fail-closed workflows.
 
 ## Destructive operations
 

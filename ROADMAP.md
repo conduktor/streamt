@@ -62,8 +62,9 @@ to deploy anything.
 
 - [x] Add no-clobber `streamt import` for external Kafka source declarations.
 - [x] Add explicit, fail-closed adoption for one existing Kafka topic at a time.
-- [ ] Extend adoption to schemas, jobs, connectors, and Gateway rules after
-      their exact management surfaces and compound identities are specified.
+- [x] Extend fail-closed adoption to one Schema Registry subject at a time.
+- [ ] Extend adoption to jobs, connectors, and Gateway rules after their exact
+      management surfaces and compound identities are specified.
 - [x] Resolve Schema Registry subjects, versions, references, and compatibility
       rules during validation.
 - [x] Compare the desired project with both the last applied manifest and live

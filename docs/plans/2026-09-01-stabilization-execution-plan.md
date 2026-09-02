@@ -21,7 +21,8 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 - Phase 1 foundations now include live Schema Registry reference and
   compatibility validation, deterministic reviewed plan files, and a
   validate/plan-only first-party GitHub Action. No-clobber Kafka source import
-  and fail-closed single-topic adoption are also implemented. Protected
+  and fail-closed single-topic and single-schema-subject adoption are also
+  implemented. Protected
   environments, plus shared environments that opt in explicitly, now reject
   direct apply and require the integrity-checked reviewed-plan workflow.
 
@@ -91,9 +92,8 @@ Verification:
 
 Continue the minimum viable change-impact plan in
 `docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
-plan artifacts, Kafka source import, and single-topic adoption are implemented;
-richer impact classification, apply blockers, and broader backend adoption are
-next.
+plan artifacts, Kafka source import, and topic/schema adoption are implemented;
+richer impact classification and broader backend adoption are next.
 
 ## Commit strategy
 

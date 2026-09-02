@@ -8,7 +8,7 @@ production-safe stateful upgrades are not implemented.
 | System | Compile | Observe or discover | Direct plan/apply | Current boundary |
 | --- | --- | --- | --- | --- |
 | Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
-| Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility | Register source schemas | Validation is read-only; subject deletion is disabled. |
+| Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility, single-subject adoption | Register source schemas | Adoption is state-only and fail-closed; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates are deterministically blocked before cancel/resubmit until a savepoint-safe or explicitly stateless workflow exists. |
 | Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Rule state | Virtual-topic interceptor rules | Console catalog publication is a separate planned integration. |
@@ -26,8 +26,8 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Extend adoption beyond Kafka topics, followed by remote ownership state and
-   locking for shared deployment workflows.
+1. Extend adoption beyond Kafka topics and Schema Registry subjects, followed
+   by remote ownership state and locking for shared deployment workflows.
 2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a

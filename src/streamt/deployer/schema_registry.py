@@ -413,7 +413,11 @@ class SchemaRegistryDeployer:
         current_schema_str = json.dumps(current.schema, sort_keys=True)
         desired_schema_str = json.dumps(artifact.schema, sort_keys=True)
 
-        if current_schema_str != desired_schema_str:
+        schema_type_changed = (
+            current.schema_type is not None
+            and current.schema_type.upper() != artifact.schema_type.upper()
+        )
+        if current_schema_str != desired_schema_str or schema_type_changed:
             # Check compatibility before allowing update
             is_compatible = self.check_compatibility(
                 artifact.subject,
@@ -426,6 +430,11 @@ class SchemaRegistryDeployer:
                     "to_version": (current.version or 0) + 1,
                     "compatible": True,
                 }
+                if schema_type_changed:
+                    changes["schema_type"] = {
+                        "from": current.schema_type,
+                        "to": artifact.schema_type.upper(),
+                    }
             else:
                 # Get compatibility mode for better error message
                 compat_mode = current.compatibility or artifact.compatibility or "BACKWARD"

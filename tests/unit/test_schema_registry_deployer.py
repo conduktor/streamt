@@ -485,6 +485,34 @@ class TestSchemaRegistryDeployerPlanning:
 
     @patch.object(SchemaRegistryDeployer, "check_compatibility")
     @patch.object(SchemaRegistryDeployer, "get_schema_state")
+    def test_plan_schema_type_transition_is_an_explicit_update(
+        self, mock_get_state, mock_check_compat, deployer, sample_schema
+    ):
+        """A format transition cannot disappear behind an identical JSON body."""
+        mock_get_state.return_value = SchemaState(
+            subject="orders-value",
+            exists=True,
+            version=1,
+            schema=sample_schema,
+            schema_type="AVRO",
+        )
+        mock_check_compat.return_value = True
+        artifact = SchemaArtifact(
+            subject="orders-value",
+            schema=sample_schema,
+            schema_type="JSON",
+        )
+
+        change = deployer.plan_schema(artifact)
+
+        assert change.action == "update"
+        assert change.changes["schema_type"] == {"from": "AVRO", "to": "JSON"}
+        mock_check_compat.assert_called_once_with(
+            "orders-value", sample_schema, "JSON"
+        )
+
+    @patch.object(SchemaRegistryDeployer, "check_compatibility")
+    @patch.object(SchemaRegistryDeployer, "get_schema_state")
     def test_plan_schema_incompatible_update(
         self, mock_get_state, mock_check_compat, deployer, sample_schema
     ):

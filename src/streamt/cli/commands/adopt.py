@@ -1,4 +1,4 @@
-"""Fail-closed ownership adoption for existing Kafka topics."""
+"""Fail-closed ownership adoption for existing runtime resources."""
 
 from __future__ import annotations
 
@@ -17,11 +17,18 @@ from streamt.cli.helpers import (
     handle_parse_error,
     make_formatter,
     make_kafka_deployer,
+    make_sr_deployer,
     redact_sensitive_text,
 )
-from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    Manifest,
+    SchemaArtifact,
+    TopicArtifact,
+)
 from streamt.core.errors import ErrorCode
 from streamt.deployer.kafka import TopicState
+from streamt.deployer.schema_registry import SchemaReference, SchemaState
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     LocalState,
@@ -40,6 +47,20 @@ _SENSITIVE_KEY = re.compile(
     r"|basic[._-]auth[._-]user[._-]info|sasl[._-]jaas[._-]config)($|[._-])",
     re.IGNORECASE,
 )
+_SCHEMA_TYPES = frozenset({"AVRO", "JSON", "PROTOBUF"})
+_COMPATIBILITY_LEVELS = frozenset(
+    {
+        "NONE",
+        "BACKWARD",
+        "BACKWARD_TRANSITIVE",
+        "FORWARD",
+        "FORWARD_TRANSITIVE",
+        "FULL",
+        "FULL_TRANSITIVE",
+    }
+)
+
+
 @dataclass(frozen=True)
 class AdoptionError(ValueError):
     """A fail-closed adoption precondition was not met."""
@@ -130,6 +151,96 @@ def _resolve_topic_artifact(
     return artifact
 
 
+def _resolve_schema_artifact(
+    manifest: Manifest,
+    *,
+    project: str,
+    logical_name: str,
+) -> SchemaArtifact:
+    """Resolve exactly one explicitly adopted schema by stable logical owner."""
+    matches: list[SchemaArtifact] = []
+    for raw_artifact in manifest.artifacts.get("schemas", []):
+        if not isinstance(raw_artifact, dict):
+            raise AdoptionError(
+                ErrorCode.ADOPTION_TARGET_INVALID,
+                "Compiled schema artifact is malformed",
+            )
+        ownership = ArtifactOwnership.from_dict(raw_artifact.get("ownership"))
+        if ownership is None or ownership.owner_name != logical_name:
+            continue
+        subject = raw_artifact.get("subject")
+        schema = raw_artifact.get("schema")
+        schema_type = raw_artifact.get("schema_type", "AVRO")
+        compatibility = raw_artifact.get("compatibility")
+        if (
+            not isinstance(subject, str)
+            or not subject
+            or not isinstance(schema, dict)
+            or not isinstance(schema_type, str)
+            or not schema_type
+            or (compatibility is not None and not isinstance(compatibility, str))
+        ):
+            raise AdoptionError(
+                ErrorCode.ADOPTION_TARGET_INVALID,
+                f"Compiled schema for logical name {logical_name!r} is malformed",
+            )
+        normalized_type = schema_type.upper()
+        if normalized_type not in _SCHEMA_TYPES:
+            raise AdoptionError(
+                ErrorCode.ADOPTION_TARGET_INVALID,
+                f"Compiled schema for logical name {logical_name!r} has unsupported "
+                f"schema type {normalized_type!r}",
+            )
+        if compatibility is not None and compatibility.upper() not in _COMPATIBILITY_LEVELS:
+            raise AdoptionError(
+                ErrorCode.ADOPTION_TARGET_INVALID,
+                f"Compiled schema for logical name {logical_name!r} has unsupported compatibility",
+            )
+        candidate = SchemaArtifact(
+            subject=subject,
+            schema=schema,
+            schema_type=schema_type,
+            compatibility=compatibility,
+            ownership=ownership,
+        )
+        try:
+            artifact_checksum(candidate.to_dict())
+        except StateError as exc:
+            raise AdoptionError(
+                ErrorCode.ADOPTION_TARGET_INVALID,
+                f"Compiled schema for logical name {logical_name!r} is malformed",
+            ) from exc
+        matches.append(candidate)
+
+    if not matches:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            f"No compiled schema is owned by logical name {logical_name!r}",
+        )
+    if len(matches) != 1:
+        subjects = sorted(artifact.subject for artifact in matches)
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            f"Logical name {logical_name!r} resolves to multiple schema subjects: "
+            f"{', '.join(subjects)}",
+        )
+
+    artifact = matches[0]
+    ownership = ArtifactOwnership.from_dict(artifact.ownership)
+    if ownership is None or ownership.project != project:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Compiled schema has no matching stable project ownership metadata",
+        )
+    if ownership.mode != "adopted":
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            f"Schema {artifact.subject!r} declares ownership.mode {ownership.mode!r}; "
+            "set it explicitly to 'adopted' before claiming an existing subject",
+        )
+    return artifact
+
+
 def _pending_topic_diffs(
     current: TopicState,
     desired: TopicArtifact,
@@ -163,6 +274,126 @@ def _pending_topic_diffs(
                 "from": current_value,
                 "to": None,
             }
+    return changes
+
+
+def _validate_live_schema_state(current: SchemaState, *, subject: str) -> None:
+    """Reject incomplete or inconsistent Schema Registry observations."""
+    if current.subject != subject:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Schema Registry returned state for a different subject",
+        )
+    if not current.exists:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_LIVE_NOT_FOUND,
+            f"Live schema subject {subject!r} does not exist; adoption never creates it",
+        )
+    if type(current.version) is not int or current.version < 1:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned no positive version for subject {subject!r}",
+        )
+    if type(current.schema_id) is not int or current.schema_id < 1:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned no valid schema ID for subject {subject!r}",
+        )
+    if current.schema is None:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned no schema content for subject {subject!r}",
+        )
+    if not isinstance(current.schema_type, str) or current.schema_type.upper() not in _SCHEMA_TYPES:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned an unsupported schema type for subject {subject!r}",
+        )
+    if (
+        not isinstance(current.compatibility, str)
+        or current.compatibility.upper() not in _COMPATIBILITY_LEVELS
+    ):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned malformed compatibility for subject {subject!r}",
+        )
+    if not isinstance(current.references, list) or any(
+        not isinstance(reference, SchemaReference)
+        or not isinstance(reference.name, str)
+        or not reference.name
+        or not isinstance(reference.subject, str)
+        or not reference.subject
+        or type(reference.version) is not int
+        or reference.version < 1
+        for reference in current.references
+    ):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned malformed references for subject {subject!r}",
+        )
+
+    try:
+        _schema_content_checksum(
+            schema=current.schema,
+            schema_type=current.schema_type,
+        )
+    except StateError as exc:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            f"Schema Registry returned malformed schema content for subject {subject!r}",
+        ) from exc
+
+
+def _schema_content_checksum(
+    *,
+    schema: object,
+    schema_type: str,
+) -> str:
+    """Hash schema-managed attributes without exposing schema content."""
+    return str(
+        artifact_checksum(
+            {
+                "schema": schema,
+                "schema_type": schema_type.upper(),
+            }
+        )
+    )
+
+
+def _pending_schema_diffs(
+    current: SchemaState,
+    desired: SchemaArtifact,
+) -> dict[str, object]:
+    """Describe deterministic pending schema changes without schema content."""
+    current_checksum = _schema_content_checksum(
+        schema=current.schema,
+        schema_type=current.schema_type or "",
+    )
+    desired_checksum = _schema_content_checksum(
+        schema=desired.schema,
+        schema_type=desired.schema_type,
+    )
+    changes: dict[str, object] = {}
+    if current.schema_type and current.schema_type.upper() != desired.schema_type.upper():
+        changes["schema_type"] = {
+            "from": current.schema_type.upper(),
+            "to": desired.schema_type.upper(),
+        }
+    if current_checksum != desired_checksum:
+        changes["schema_checksum"] = {
+            "from": current_checksum,
+            "to": desired_checksum,
+        }
+    current_compatibility = current.compatibility.upper() if current.compatibility else None
+    desired_compatibility = desired.compatibility.upper() if desired.compatibility else None
+    if (
+        desired_compatibility is not None
+        and current_compatibility != desired_compatibility
+    ):
+        changes["compatibility"] = {
+            "from": current_compatibility,
+            "to": desired_compatibility,
+        }
     return changes
 
 
@@ -266,6 +497,53 @@ def _adoption_data(
     }
 
 
+def _schema_adoption_data(
+    *,
+    resource_uri: str,
+    logical_name: str,
+    artifact: SchemaArtifact,
+    current: SchemaState,
+    state_path: Path,
+    state_serial: int,
+) -> dict[str, object]:
+    current_checksum = _schema_content_checksum(
+        schema=current.schema,
+        schema_type=current.schema_type or "",
+    )
+    desired_checksum = _schema_content_checksum(
+        schema=artifact.schema,
+        schema_type=artifact.schema_type,
+    )
+    return {
+        "resource_id": resource_uri,
+        "kind": "schema",
+        "logical_name": logical_name,
+        "physical_name": _redact(artifact.subject),
+        "observed": _redact(
+            {
+                "subject": current.subject,
+                "schema_type": (current.schema_type or "").upper(),
+                "version": current.version,
+                "schema_id": current.schema_id,
+                "compatibility": current.compatibility.upper() if current.compatibility else None,
+                "schema_checksum": current_checksum,
+            }
+        ),
+        "desired_managed_attributes": _redact(
+            {
+                "subject": artifact.subject,
+                "schema_type": artifact.schema_type.upper(),
+                "compatibility": artifact.compatibility.upper() if artifact.compatibility else None,
+                "schema_checksum": desired_checksum,
+                "artifact_checksum": artifact_checksum(artifact.to_dict()),
+            }
+        ),
+        "pending_diffs": _pending_schema_diffs(current, artifact),
+        "state_file": str(state_path),
+        "state_serial": state_serial,
+    }
+
+
 @click.command()
 @click.option(
     "--project-dir",
@@ -283,9 +561,9 @@ def _adoption_data(
 )
 @click.option(
     "--kind",
-    type=click.Choice(["topic"]),
+    type=click.Choice(["topic", "schema"]),
     required=True,
-    help="Runtime resource kind (topic only in this MVP)",
+    help="Runtime resource kind",
 )
 @click.option(
     "--name",
@@ -312,7 +590,7 @@ def adopt(
     confirm_resource: Optional[str],
     confirm_environment: Optional[str],
 ) -> None:
-    """Claim one declared, existing Kafka topic without mutating Kafka."""
+    """Claim one declared, existing resource without mutating its backend."""
     from streamt.compiler import Compiler
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
@@ -321,6 +599,7 @@ def adopt(
     fmt = make_formatter(ctx, "adopt")
     project_path = get_project_path(project_dir)
     kafka = None
+    schema_registry = None
     data: dict[str, object] = {}
 
     try:
@@ -335,9 +614,7 @@ def adopt(
             warn_callback=lambda message: fmt.print(message),
         )
         project = parser.parse()
-        parsed_environment = (
-            parser.env_config.environment.name if parser.env_config else None
-        )
+        parsed_environment = parser.env_config.environment.name if parser.env_config else None
         effective_environment = (
             parsed_environment
             if isinstance(parsed_environment, str) and parsed_environment
@@ -356,11 +633,26 @@ def adopt(
             raise AdoptionError(ErrorCode.ADOPTION_TARGET_INVALID, message)
 
         manifest = Compiler(project).compile(dry_run=True)
-        artifact = _resolve_topic_artifact(
-            manifest,
-            project=project.project.name,
-            logical_name=logical_name,
-        )
+        topic_artifact: TopicArtifact | None = None
+        schema_artifact: SchemaArtifact | None = None
+        if kind == "topic":
+            topic_artifact = _resolve_topic_artifact(
+                manifest,
+                project=project.project.name,
+                logical_name=logical_name,
+            )
+            physical_name = topic_artifact.name
+            backend = "direct-kafka"
+            artifact_data = topic_artifact.to_dict()
+        else:
+            schema_artifact = _resolve_schema_artifact(
+                manifest,
+                project=project.project.name,
+                logical_name=logical_name,
+            )
+            physical_name = schema_artifact.subject
+            backend = "schema-registry"
+            artifact_data = schema_artifact.to_dict()
         resource_uri = resource_id(
             project.project.name,
             effective_environment,
@@ -382,10 +674,10 @@ def adopt(
         )
 
         desired_record = ManagedResourceRecord(
-            physical_name=artifact.name,
+            physical_name=physical_name,
             ownership="adopted",
-            artifact_checksum=artifact_checksum(artifact.to_dict()),
-            backend="direct-kafka",
+            artifact_checksum=artifact_checksum(artifact_data),
+            backend=backend,
         )
 
         existing = prior_state.resources.get(resource_uri)
@@ -405,39 +697,75 @@ def adopt(
             ):
                 raise AdoptionError(
                     ErrorCode.ADOPTION_STATE_CONFLICT,
-                    f"Physical topic {artifact.name!r} is already claimed by {other_uri}",
+                    f"Physical {kind} {physical_name!r} is already claimed by {other_uri}",
                 )
 
-        kafka = make_kafka_deployer(project, fmt)
-        if kafka is None:
-            raise AdoptionError(
-                ErrorCode.ADOPTION_FAILED,
-                "Kafka is not configured or reachable; adoption requires live observation",
+        if topic_artifact is not None:
+            kafka = make_kafka_deployer(project, fmt)
+            if kafka is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Kafka is not configured or reachable; adoption requires live observation",
+                )
+            try:
+                current_topic = kafka.get_topic_state(
+                    topic_artifact.name,
+                    strict_config=True,
+                )
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not observe topic {topic_artifact.name!r}: {_redact(str(exc))}",
+                ) from exc
+            if not current_topic.exists:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_LIVE_NOT_FOUND,
+                    f"Live topic {topic_artifact.name!r} does not exist; adoption never creates it",
+                )
+            data = _adoption_data(
+                resource_uri=resource_uri,
+                logical_name=logical_name,
+                artifact=topic_artifact,
+                current=current_topic,
+                state_path=state_path,
+                state_serial=prior_state.serial,
             )
-        try:
-            current = kafka.get_topic_state(artifact.name, strict_config=True)
-        except Exception as exc:
-            raise AdoptionError(
-                ErrorCode.ADOPTION_FAILED,
-                f"Could not observe topic {artifact.name!r}: {_redact(str(exc))}",
-            ) from exc
-        if not current.exists:
-            raise AdoptionError(
-                ErrorCode.ADOPTION_LIVE_NOT_FOUND,
-                f"Live topic {artifact.name!r} does not exist; adoption never creates it",
+        else:
+            if schema_artifact is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled adoption target is missing",
+                )
+            schema_registry = make_sr_deployer(project, fmt)
+            if schema_registry is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Schema Registry is not configured or reachable; adoption requires "
+                    "live observation",
+                )
+            try:
+                current_schema = schema_registry.get_schema_state(schema_artifact.subject)
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not observe schema subject {schema_artifact.subject!r}: "
+                    f"{_redact(str(exc))}",
+                ) from exc
+            _validate_live_schema_state(
+                current_schema,
+                subject=schema_artifact.subject,
             )
-
-        data = _adoption_data(
-            resource_uri=resource_uri,
-            logical_name=logical_name,
-            artifact=artifact,
-            current=current,
-            state_path=state_path,
-            state_serial=prior_state.serial,
-        )
+            data = _schema_adoption_data(
+                resource_uri=resource_uri,
+                logical_name=logical_name,
+                artifact=schema_artifact,
+                current=current_schema,
+                state_path=state_path,
+                state_serial=prior_state.serial,
+            )
         fmt.set_data(data)
         fmt.print(f"[cyan]Adoption candidate:[/cyan] {resource_uri}")
-        fmt.print(f"  Physical topic: {artifact.name}")
+        fmt.print(f"  Physical {kind}: {_redact(physical_name)}")
         fmt.print(f"  Observed: {json.dumps(data['observed'], sort_keys=True)}")
         fmt.print(
             "  Desired managed attributes: "
@@ -448,7 +776,7 @@ def adopt(
         if existing is not None:
             data["adopted"] = False
             data["already_owned"] = True
-            fmt.print("[green]Topic already has an identical ownership record.[/green]")
+            fmt.print(f"[green]{kind.title()} already has an identical ownership record.[/green]")
             fmt.flush()
             return
 
@@ -496,15 +824,13 @@ def adopt(
         if parser_environment is not None:
             next_command.extend(["--env", effective_environment])
         reviewed_plan_path = (
-            project_path
-            / ".streamt"
-            / "plans"
-            / f"{effective_environment}-reviewed-plan.json"
+            project_path / ".streamt" / "plans" / f"{effective_environment}-reviewed-plan.json"
         )
         next_command.extend(["--out", str(reviewed_plan_path)])
         data["next_command"] = next_command
         fmt.set_data(data)
-        fmt.print("[green]Ownership adopted. Kafka was not modified.[/green]")
+        backend_name = "Kafka" if kind == "topic" else "Schema Registry"
+        fmt.print(f"[green]Ownership adopted. {backend_name} was not modified.[/green]")
         fmt.print("Run a fresh reviewed plan before any apply.")
         fmt.flush()
 
@@ -513,13 +839,17 @@ def adopt(
     except AdoptionError as exc:
         if data:
             fmt.set_data(data)
-        fmt.add_error(StructuredError(code=exc.code, message=exc.message))
-        fmt.print_error(exc.message)
+        safe_message = redact_sensitive_text(exc.message)
+        fmt.add_error(StructuredError(code=exc.code, message=safe_message))
+        fmt.print_error(safe_message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except StateError as exc:
-        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=str(exc)))
-        fmt.print_error(str(exc))
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_INVALID, message=safe_message)
+        )
+        fmt.print_error(safe_message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     except KeyboardInterrupt as exc:
@@ -528,11 +858,9 @@ def adopt(
         raise click.exceptions.Exit(130) from exc
     except Exception as exc:
         message = f"Adoption failed unexpectedly: {redact_sensitive_text(exc)}"
-        fmt.add_error(
-            StructuredError(code=ErrorCode.ADOPTION_FAILED, message=message)
-        )
+        fmt.add_error(StructuredError(code=ErrorCode.ADOPTION_FAILED, message=message))
         fmt.print_error(message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     finally:
-        close_deployers(kafka)
+        close_deployers(schema_registry, kafka)
