@@ -142,6 +142,24 @@ Target: close the loop between declared intent and runtime evidence.
       catalog validation, primary-only endpoint checks, and explicit proof that
       every successful probe releases its transaction-scoped lock before
       returning. The instantaneous result does not reserve future work.
+- [ ] Add a provider-neutral operation snapshot that reads ownership and
+      control at one locked workflow boundary and compares both at begin;
+      require remote providers to atomically commit ownership, control
+      clearing, and history while preserving local compatibility ordering.
+- [ ] Route local direct/reviewed apply and adoption through canonical planned
+      actions, final state/control rereads, post-confirm adoption observation,
+      and release-before-success before implementing private PostgreSQL
+      operations.
+- [ ] Implement and privately test PostgreSQL ordinary reads, session-affine
+      locking, and mutation transitions without enabling normal provider
+      selection; version-1 owner credentials are test scaffolding only.
+- [ ] Ship an explicit PostgreSQL schema-version-2 migration and validate the
+      exact least-privilege ordinary writer role before production selection.
+- [ ] Pass PostgreSQL command E2E, process-concurrency, failure-injection, and
+      synchronous-HA durability gates, then ship minimum explicit recovery.
+- [ ] Enable the ordinary PostgreSQL factory only in the final implementation
+      commit after every backend, command, recovery, role, and release gate
+      passes; no partial backend may be selectable.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is

@@ -18,6 +18,14 @@ PostgreSQL state reads and mutations for `plan`, `apply`, and `adopt` remain
 deliberately disabled until the full backend and operation protocol pass later
 acceptance gates.
 
+The implementation-ready prerequisite and final enablement checklist for the
+remaining PostgreSQL work is
+`docs/plans/2026-09-02-postgres-slice5-foundation.md`. In particular, ordinary
+factory selection remains disabled through Slice 6 command E2E/failure gates,
+schema-version-2 least-privilege role validation, and the minimum Slice 7
+recovery workflow. Factory enablement is the last implementation commit, not a
+Slice 5 backend milestone.
+
 ## Current implementation audit
 
 The current local implementation has a sound single-host commit primitive:
@@ -324,22 +332,51 @@ beyond tests that prove PostgreSQL selection remains disabled.
 
 ### Slice 5: PostgreSQL mutation backend
 
-This slice consumes the initialized version-1 store from Slice 4B and completes
-the mutation protocol before normal provider selection is enabled.
+This slice builds a private, conforming mutation backend. It does not enable
+normal provider selection. Focused tests may construct it directly with an
+isolated version-1 schema-owner credential, but that is test scaffolding rather
+than a production role or supported command path. The detailed prerequisite is
+`docs/plans/2026-09-02-postgres-slice5-foundation.md`.
 
-1. Implement consistent ordinary reads and atomic CAS transitions with
-   parameterized SQL over the Slice 4B schema.
-2. Implement bounded session advisory-lock acquisition. Store and validate the
-   full address-to-lock-key mapping.
-3. Implement begin/progress/commit/fail operation transitions and append-only
-   history in the same transactional authority as ownership state.
-4. Check connection and lock ownership before every external action and state
-   transition.
-5. Preserve the Slice 4B timeout, size, TLS, transaction, idempotency,
-   unknown-commit, and redaction rules on every mutation path.
-6. Enable the normal PostgreSQL state-service factory only after all backend
-   operation and concurrency acceptance tests pass; selection must remain
-   unreachable before then.
+1. Add a consistent `OperationSnapshot` containing state and control
+   observations with independent opaque revisions; derive store/address
+   identity from the contained state observation and require matching control.
+   Use the additive `observe` and `clear_before_mutation` operation names.
+2. Introduce typed planned actions whose durable `resource_id` string is the
+   canonical logical
+   `streamt://<project>/<environment>/<kind>/<logical-name>` URI.
+   Provider/runtime labels remain separate and never stand in for identity in
+   intent, progress, history, or recovery. Reject duplicates and cross-address
+   values while constructing the complete planner/operation action set.
+3. Migrate local apply and adoption through the provider-neutral snapshot and
+   canonical-action protocol, including final rereads, post-confirmation target
+   observation, `clear_before_mutation`, recovery marking, commit, and
+   release-before-success. Preserve local compatibility and finish this before
+   implementing any private PostgreSQL operation path.
+4. Implement bounded session advisory-lock acquisition on one direct,
+   session-affine primary connection. Store and validate the full
+   address-to-lock-key mapping and check connection, primary, and lock ownership
+   before every external action and state transition.
+5. Implement ordered progress and recovery transitions. Make
+   `begin_operation` compare the operation lock, state revision, serial,
+   checksum, control revision, and clear-marker state before atomically writing
+   intent and its history event. Implement
+   `commit_operation` so ownership replacement when needed, control clearing,
+   state history, and operation history commit in one database transaction,
+   followed by a fresh direct verification read.
+6. Preserve the Slice 4B timeout, size, TLS, transaction, unknown-outcome, and
+   redaction rules on every mutation path. Do not automatically retry an
+   ambiguous commit.
+7. Define an explicit schema-version-2 migration and exact non-grantable
+   least-privilege ordinary writer role. Version 1 remains the frozen
+   administrative contract and is never considered production mutation-ready;
+   do not silently weaken its catalog validator.
+8. Document and test the topology boundary: a direct primary is required for
+   ordinary operation, transaction/statement poolers are unsupported, and HA
+   promotion is supported only where every operation and ownership transition
+   is synchronously durable on every eligible promoted node.
+9. Keep `make_deployment_state_service()` and all normal PostgreSQL
+   `plan`/`apply`/`adopt` selection on the current sanitized unavailable result.
 
 Acceptance:
 
@@ -349,20 +386,50 @@ Acceptance:
   state overwrite.
 - Terminating the lock session releases the advisory lock but leaves the
   prewritten operation marker, blocking the successor.
-- CAS tests cover absent create, update, stale revision, stale serial,
-  same-serial metadata transition, and unknown commit outcome.
+- Snapshot/CAS tests cover consistent state/control reads, absent create,
+  update, stale state or control revision, stale serial/checksum, same-serial
+  metadata transition, atomic finalization, final verification, and unknown
+  commit outcome.
+- Canonical logical identities remain stable when runtime/display names differ.
+- Private owner-only conformance tests pass, then the same suite passes through
+  the exact version-2 least-privilege writer role. Missing, extra, grantable,
+  owner, or `PUBLIC` privileges fail closed.
+- Standby, transaction-pooling, statement-pooling, and asynchronously promoted
+  endpoints cannot be presented as a supported HA operation path.
 - An incompatible database schema version fails closed.
+- Online `plan`, `apply`, and `adopt` with `backend: postgres` still return the
+  sanitized unavailable result and never fall back to local state.
 
 ### Slice 6: apply/adopt integration and failure injection
 
-1. Route the complete apply protocol through acquire, re-read, live replan,
-   begin, mutate, commit/fail, and release.
-2. Re-observe adoption targets under the lock after confirmation and before the
-   ownership write.
-3. Include safe state and operation metadata in structured outputs.
-4. Add deterministic failure injection at every boundary: lock, read, intent,
-   each runtime action, rollback, commit, verification read, and release.
-5. Preserve reviewed-plan, ownership, safety-blocker, confirmation, and
+After Slice 5's private backend and schema-version-2 role contract are complete,
+this slice exercises the already provider-neutral commands through an injected
+private PostgreSQL backend while normal factory selection remains disabled.
+
+1. Exercise the complete apply protocol through acquire, initial snapshot, live
+   replan, final direct snapshot reread, begin, mutate/progress, atomic commit/
+   recovery transition, final verification, and release.
+2. For both direct and reviewed apply, reject any state or control drift found
+   by the final post-plan reread and use only that final snapshot as
+   `begin_operation` CAS authority. Reviewed apply also preserves the complete
+   reviewed-plan comparison.
+3. Persist ordered canonical action identities in intent/progress/history while
+   keeping runtime/display labels separate.
+4. Re-observe the exact adoption target after confirmation, compare its exact
+   fingerprint with the confirmed observation, then perform the state-only
+   operation. Stale confirmation never authorizes ownership.
+5. Release the operation lock before emitting or flushing final success. A
+   release failure after verified commit reports a distinct sanitized
+   committed outcome and never advises replaying the mutation.
+6. Give lock timeout, lock loss, state conflict, unknown outcome, release
+   failure after commit, and recovery-required distinct stable error kinds and
+   structured results.
+7. Add deterministic failure injection at every boundary: acquire, initial
+   read, runtime observation, live plan, final reread, intent, each runtime
+   action and progress transition, rollback, recovery marking or
+   clear-before-mutation, commit before/during/after acknowledgement,
+   verification read, and release.
+8. Preserve reviewed-plan, ownership, safety-blocker, confirmation, and
    protected-environment ordering guarantees.
 
 Acceptance:
@@ -371,40 +438,71 @@ Acceptance:
 - No lock-loss path starts a subsequent mutation.
 - Any possibly successful runtime action plus incomplete finalization leaves
   `recovery_required` or an existing `in_progress` marker.
-- Apply never reports success until the ownership commit is verified.
-- Adoption never mutates runtime infrastructure and cannot write from a stale
-  observation.
+- Apply never reports success until the atomic ownership/control/history commit
+  is freshly verified and the operation lock is released.
+- A verified commit followed by release failure is distinguishable from an
+  uncommitted failure and does not invite an apply retry.
+- Direct and reviewed apply both reject final-reread drift before mutation.
+- Adoption never mutates runtime infrastructure and cannot write from either a
+  stale state snapshot or a stale pre-confirmation target observation.
+- The full command E2E and failure-injection matrix passes while the public
+  factory still rejects ordinary PostgreSQL selection.
 
 ### Slice 7: migration, recovery, and operations documentation
 
-1. Add read-only `state export` with atomic restrictive file creation.
-2. Add local-to-configured `state migrate` with dual locks, destination-absent
+Minimum explicit recovery is a factory-enablement prerequisite; export and
+migration can follow without delaying that safety gate.
+
+1. First add `state recover` for `observed`, `rolled-back`, and
+   `abandoned-before-mutation`. Require a fresh reviewed observation, exact
+   operation ID, exact confirmation, monotonic CAS, and append-only audit.
+2. Prohibit `abandoned-before-mutation` when durable progress says any runtime
+   action started. Recovery never guesses from age and never automatically
+   clears a marker.
+3. Pass local and PostgreSQL command-level recovery E2E and failure injection.
+   Keep the ordinary PostgreSQL factory disabled until this minimum is shipped.
+4. Add read-only `state export` with atomic restrictive file creation.
+5. Add local-to-configured `state migrate` with dual locks, destination-absent
    precondition, exact confirmation, copy/read-back verification, provenance,
    and no source deletion.
-3. Add `state recover` for the three specified explicit outcomes. Require a
-   fresh reviewed observation and operation ID.
-4. Add append-only history queries to `state status` without exposing resource
+6. Add append-only history queries to `state status` without exposing resource
    content by default.
-5. Document backup, database migrations, role grants, monitoring, incident
+7. Document backup, schema-version-2 migration, exact role grants, direct
+   primary/session-affinity, synchronous-HA durability, monitoring, incident
    response, version rollback, and disaster recovery.
 
 Acceptance:
 
+- All three explicit recovery resolutions reject wrong operation IDs and stale
+  evidence, preserve history, and never lower ownership serial.
+- A retained `in_progress` marker after lock-session loss blocks a successor
+  until an explicit recovery resolution succeeds.
 - Migration is idempotent only for an identical completed copy and rejects
   every divergent populated destination.
 - Interrupted migration leaves neither an authoritative partial destination nor
   a deleted source.
-- Recovery never lowers state serial or overwrites without CAS.
 - A retained local backup is never selected after configuration points remote.
 
 ### Slice 8: release gate and compatibility rollout
 
-1. Run the full unit, scenario, packaging, strict documentation, Ruff, and mypy
+1. Run the final checklist in
+   `docs/plans/2026-09-02-postgres-slice5-foundation.md`, including schema v2,
+   least-privilege writer, command E2E/failure injection, minimum recovery,
+   direct-primary/session-affinity, and synchronous-HA durability evidence.
+2. Run the full unit, scenario, packaging, strict documentation, Ruff, and mypy
    gates with both local-only and PostgreSQL-extra installations.
-2. Add a process/concurrency test job and PostgreSQL service job to CI.
-3. Keep remote state opt-in for one alpha compatibility window. Emit a warning
+3. Add or retain process/concurrency and supported-major PostgreSQL service jobs
+   in CI. Test the base installation without Psycopg independently.
+4. Only in the final implementation commit, enable the ordinary PostgreSQL
+   factory for an exactly compatible version-2 store and writer role. That
+   commit must not add local/empty fallback, automatic schema upgrade, automatic
+   operation retry, force unlock, or automatic recovery.
+5. Update public configuration, support, operations, recovery, migration,
+   backup, and release documentation at the same release boundary. Do not
+   publish success or support claims in an earlier commit.
+6. Keep remote state opt-in for one alpha compatibility window. Emit a warning
    when a protected/shared mutating workflow still uses local state.
-4. After migration documentation and telemetry are validated, propose making
+7. After migration documentation and telemetry are validated, propose making
    remote state mandatory for protected environments in a separately announced
    configuration migration.
 
@@ -415,13 +513,15 @@ Acceptance:
 | Parsing | Tagged provider shapes, unknown keys, booleans/integers, env-var name validation, no embedded DSN |
 | Identity | Namespace/project/environment isolation, wrong store ID, wrong address, canonical URI validation |
 | Integrity | Duplicate fields, unsupported versions, invalid checksums, same-serial different-content drift |
-| CAS | Absent create, exact update, stale revision, stale serial, monotonic serial, unknown outcome |
-| Locking | Timeout, wait, process contention, session termination, lock health, release failure |
-| Operations | Intent before mutation, progress ordering, verified clear, recovery-required preservation |
-| Apply | Reviewed-plan order, live drift, partial failure, rollback success/failure, state commit failure |
-| Adoption | Confirmation, under-lock re-observation, idempotency, conflicting claim, no runtime writes |
+| CAS | Consistent state/control snapshot, absent create, exact update, stale state/control revision, stale serial/checksum, atomic finalization, unknown outcome |
+| Locking | Timeout, wait, process contention, session termination, primary loss, session affinity, lock health, release failure |
+| Operations | Intent before mutation, canonical action identity, progress ordering, atomic ownership/control/history commit, final verification, recovery-required preservation |
+| Apply | Direct/reviewed final reread, reviewed-plan order, live/state/control drift, partial failure, rollback success/failure, state commit failure, release before success |
+| Adoption | Confirmation, post-confirm exact-target re-observation/fingerprint, final state reread, idempotency, conflicting claim, no runtime writes |
 | Migration | Empty destination, identical retry, divergent destination, interruption, read-back mismatch |
 | Recovery | Each explicit resolution, wrong operation ID, stale evidence, append-only history |
+| Schema/roles | Private owner-only v1 tests, explicit v2 migration, exact writer ACL, missing/extra/grantable/`PUBLIC` privilege rejection |
+| Topology/HA | Direct primary, pooler rejection, standby rejection, synchronous eligible promotion, asynchronous failover unsupported |
 | Security | DSN/provider-error redaction in text, JSON, plans, logs, exceptions, and metrics |
 | Compatibility | Existing local files, local CLI outputs/warnings, offline no-read behavior, old plan rejection |
 
@@ -433,10 +533,13 @@ external-action pause and during transaction commit.
 
 Commit each slice separately after its focused tests and the relevant full
 gates pass. Do not combine provider implementation, CLI config, and apply
-integration in one change. Remote selection remains unreachable until the
-backend and operation protocol are both complete. Do not enable destructive
-removal merely because remote state exists; that requires its own reviewed
-workflow and safety tests.
+integration in one change. Remote selection remains unreachable through Slice
+6 E2E/failure injection and the minimum Slice 7 recovery workflow. The final
+implementation commit may enable the ordinary factory only after the complete
+checklist in `docs/plans/2026-09-02-postgres-slice5-foundation.md`, including
+schema version 2 and its exact least-privilege writer role, passes. Do not enable
+destructive removal merely because remote state exists; that requires its own
+reviewed workflow and safety tests.
 
 ## Suggested follow-up edits when implementation lands
 
