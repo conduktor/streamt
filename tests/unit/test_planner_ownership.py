@@ -7,6 +7,15 @@ from unittest.mock import MagicMock
 import pytest
 
 from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, Manifest
+from streamt.core.models import ProjectInfo, StreamtProject
+from streamt.core.runtime import (
+    ConduktorConfig,
+    ConnectClusterConfig,
+    ConnectConfig,
+    GatewayConfig,
+    KafkaConfig,
+    RuntimeConfig,
+)
 from streamt.deployer.connect import (
     ConnectClusterBinding,
     ConnectDeployer,
@@ -14,7 +23,10 @@ from streamt.deployer.connect import (
     ConnectorState,
 )
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
-from streamt.deployer.gateway import AliasTopicState, GatewayRuleChange
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    ManagedGatewayRuleObservation,
+)
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.planner import DeploymentPlanner
 from streamt.deployer.schema_registry import SchemaChange, SchemaState
@@ -30,6 +42,28 @@ _CONNECT_BINDING = ConnectClusterBinding.from_endpoint(
     "production",
     "https://connect.example.test",
 )
+_GATEWAY_URL = "https://gateway.example.test"
+_GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(_GATEWAY_URL)
+
+
+def _project() -> StreamtProject:
+    return StreamtProject(
+        project=ProjectInfo(name="payments"),
+        runtime=RuntimeConfig(
+            kafka=KafkaConfig(bootstrap_servers="broker:9092"),
+            connect=ConnectConfig(
+                default="production",
+                clusters={
+                    "production": ConnectClusterConfig(
+                        rest_url="https://connect.example.test"
+                    )
+                },
+            ),
+            conduktor=ConduktorConfig(
+                gateway=GatewayConfig(admin_url=_GATEWAY_URL)
+            ),
+        ),
+    )
 
 
 def _ownership(owner_type: str, owner_name: str, mode: str = "managed") -> dict[str, str]:
@@ -138,19 +172,18 @@ def _deployers(*, exists: bool, no_op_topic: bool = False) -> dict[str, MagicMoc
     connect.plan_connector.side_effect = plan_connector
 
     gateway = MagicMock()
-    gateway.plan.return_value = GatewayRuleChange(
-        name="alias_rule",
-        action="update" if exists else "create",
-        current_alias=(
-            AliasTopicState(
-                name="virtual-events",
-                exists=True,
-                physical_topic="payments.events.v1",
-            )
-            if exists
-            else None
-        ),
+    gateway.cluster_binding = _GATEWAY_BINDING
+    snapshot = MagicMock()
+    snapshot.binding = _GATEWAY_BINDING
+    snapshot.rule.return_value = ManagedGatewayRuleObservation(
+        binding=_GATEWAY_BINDING,
+        logical_name="alias_rule",
+        alias_name="virtual-events",
+        exists=exists,
+        physical_name="payments.events.old" if exists else None,
+        physical_cluster="main" if exists else None,
     )
+    gateway.observe_managed_gateway_snapshot.return_value = snapshot
     return {
         "schema_registry_deployer": schema,
         "kafka_deployer": kafka,
@@ -194,7 +227,8 @@ def _prior_state() -> LocalState:
                 backend=_CONNECT_BINDING.backend_identity,
             ),
             resource_id("payments", "prod", "gateway_rule", "alias_rule"): _record(
-                "virtual-events"
+                "virtual-events",
+                backend=_GATEWAY_BINDING.backend_identity,
             ),
         },
     )
@@ -214,6 +248,7 @@ class TestOwnershipPlanning:
     def test_existing_resources_without_prior_state_require_adoption(self):
         planner = DeploymentPlanner(
             _manifest(),
+            project=_project(),
             environment="prod",
             **_deployers(exists=True),
         )
@@ -233,6 +268,7 @@ class TestOwnershipPlanning:
     def test_absent_managed_resources_may_be_created_without_prior_state(self):
         plan = DeploymentPlanner(
             _manifest(),
+            project=_project(),
             environment="prod",
             **_deployers(exists=False),
         ).plan()
@@ -245,6 +281,7 @@ class TestOwnershipPlanning:
     def test_matching_managed_or_adopted_state_allows_updates_and_no_ops(self):
         plan = DeploymentPlanner(
             _manifest(),
+            project=_project(),
             prior_state=_prior_state(),
             **_deployers(exists=True, no_op_topic=True),
         ).plan()
@@ -256,6 +293,7 @@ class TestOwnershipPlanning:
     def test_external_resources_are_observe_only_even_when_absent(self):
         plan = DeploymentPlanner(
             _manifest(mode="external"),
+            project=_project(),
             environment="prod",
             **_deployers(exists=False),
         ).plan()
@@ -271,6 +309,7 @@ class TestOwnershipPlanning:
         manifest = _manifest()
         manifest.artifacts["topics"][0].pop("ownership")
         manifest.artifacts["connectors"] = []
+        manifest.artifacts["gateway_rules"] = []
         deployers = _deployers(exists=True)
         plan = DeploymentPlanner(
             manifest,
@@ -293,6 +332,7 @@ class TestOwnershipPlanning:
 
         manifest = _manifest()
         manifest.artifacts["connectors"] = []
+        manifest.artifacts["gateway_rules"] = []
         plan = DeploymentPlanner(
             manifest,
             prior_state=state,
@@ -306,6 +346,7 @@ class TestOwnershipPlanning:
         deployers = _deployers(exists=True)
         planner = DeploymentPlanner(
             _manifest(),
+            project=_project(),
             environment="prod",
             **deployers,
         )
@@ -329,6 +370,7 @@ class TestOwnershipRequirementOutput:
         deployers = _deployers(exists=True)
         manifest = _manifest()
         manifest.artifacts["connectors"] = []
+        manifest.artifacts["gateway_rules"] = []
         plan = DeploymentPlanner(
             manifest,
             environment="prod",

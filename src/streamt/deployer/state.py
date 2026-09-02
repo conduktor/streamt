@@ -19,8 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
 from streamt.compiler.manifest import ArtifactOwnership
 from streamt.deployer.connect import is_connect_backend_identity
+from streamt.deployer.gateway import is_gateway_backend_identity
 
 if TYPE_CHECKING:
     from streamt.deployer.planner import DeploymentPlan
@@ -622,17 +624,26 @@ def desired_managed_records(
         )
     for gateway_change in getattr(plan, "gateway_changes", []):
         desired = gateway_change.desired
-        physical_name = (
-            desired.virtual_topic if desired is not None else gateway_change.name
-        )
+        if desired is None:
+            continue
+        backend_identity = getattr(gateway_change, "backend_identity", None)
+        if not isinstance(backend_identity, str):
+            raise StateFormatError(
+                "desired Gateway change requires a strict artifact and backend identity"
+            )
+        if not is_gateway_backend_identity(backend_identity):
+            raise StateFormatError(
+                "desired Gateway change requires a canonical Gateway backend identity"
+            )
+        parsed_desired = parse_compiled_gateway_rule_artifact(desired.to_dict())
         _add_desired_record(
             resources,
             project=project,
             environment=environment,
             kind="gateway_rule",
-            physical_name=physical_name,
-            backend="conduktor-gateway",
-            artifact=desired,
+            physical_name=parsed_desired.virtual_topic,
+            backend=backend_identity,
+            artifact=parsed_desired,
             blocked_resource_ids=blocked_resource_ids,
         )
     return resources

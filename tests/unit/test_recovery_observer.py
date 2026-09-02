@@ -26,8 +26,12 @@ from streamt.deployer.connect import (
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
 from streamt.deployer.gateway import (
     AliasTopicState,
+    GatewayBackendBinding,
     GatewayRuleChange,
     InterceptorState,
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    plan_managed_gateway_rule,
 )
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.planner import (
@@ -72,6 +76,10 @@ CONNECT_BINDING = ConnectClusterBinding.from_endpoint(
     "https://connect.example.test/api",
 )
 CONNECT_BACKEND = CONNECT_BINDING.backend_identity
+GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
+    "https://gateway.example.test",
+    virtual_cluster="payments-prod",
+)
 
 
 class _Artifact(Protocol):
@@ -292,33 +300,6 @@ def _candidate_cases() -> Iterator[tuple[OperationAction, DeploymentPlan, str]]:
         CONNECT_BACKEND,
     )
 
-    gateway = GatewayRuleArtifact(
-        name="orders_alias",
-        virtual_topic="orders.public",
-        physical_topic="orders.v1",
-        ownership=_ownership("orders_alias"),
-    )
-    yield (
-        _action("gateway_rule", "orders_alias", "create"),
-        DeploymentPlan(
-            gateway_changes=[
-                GatewayRuleChange(
-                    name=gateway.name,
-                    action="none",
-                    current_alias=AliasTopicState(
-                        name=gateway.virtual_topic,
-                        exists=True,
-                        physical_topic=gateway.physical_topic,
-                    ),
-                    current_interceptors=[],
-                    desired=gateway,
-                )
-            ]
-        ),
-        "conduktor-gateway",
-    )
-
-
 @pytest.mark.parametrize(("action", "plan", "backend"), list(_candidate_cases()))
 def test_observed_candidate_supported_kinds(
     action: OperationAction,
@@ -336,6 +317,35 @@ def test_observed_candidate_supported_kinds(
     assert result.candidate_state is not None
     assert result.candidate_state.serial == state.serial + 1
     assert result.candidate_state.resources[action.resource_id].backend == backend
+
+
+def test_normalized_gateway_recovery_fails_closed_until_aggregate_integration() -> None:
+    artifact = GatewayRuleArtifact(
+        name="orders_alias",
+        virtual_topic="orders.public",
+        physical_topic="orders.v1",
+        ownership=_ownership("orders_alias"),
+    )
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    current = ManagedGatewayRuleObservation(
+        binding=GATEWAY_BINDING,
+        logical_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        exists=False,
+    )
+    plan = DeploymentPlan(
+        gateway_changes=[plan_managed_gateway_rule(artifact, desired, current)]
+    )
+
+    with pytest.raises(
+        RecoveryObservationError,
+        match="Normalized Gateway recovery is not yet supported",
+    ):
+        _observe(
+            _state(),
+            plan,
+            (_action("gateway_rule", "orders_alias", "create"),),
+        )
 
 
 def test_connector_observation_can_prove_exact_prior_artifact() -> None:
@@ -1115,7 +1125,12 @@ def test_partial_observations_fail_closed(
     plan: DeploymentPlan,
     target: OperationAction,
 ) -> None:
-    with pytest.raises(RecoveryObservationError, match="partial"):
+    expected = (
+        "ambiguous desired ownership evidence"
+        if target.resource_id.endswith("/gateway_rule/orders")
+        else "partial"
+    )
+    with pytest.raises(RecoveryObservationError, match=expected):
         _observe(_state(), plan, (target,))
 
 
@@ -1359,7 +1374,7 @@ def test_abandoned_resolution_rejects_observer_invocation() -> None:
         )
 
 
-def test_gateway_duplicate_interceptor_observation_is_partial() -> None:
+def test_legacy_gateway_duplicate_interceptor_observation_fails_closed() -> None:
     artifact = GatewayRuleArtifact(
         name="orders",
         virtual_topic="orders.public",
@@ -1389,5 +1404,8 @@ def test_gateway_duplicate_interceptor_observation_is_partial() -> None:
         ]
     )
 
-    with pytest.raises(RecoveryObservationError, match="partial"):
+    with pytest.raises(
+        RecoveryObservationError,
+        match="ambiguous desired ownership evidence",
+    ):
         _observe(_state(), plan, (_action("gateway_rule", "orders", "create"),))

@@ -18,9 +18,21 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.core.models import ProjectInfo, StreamtProject
+from streamt.core.runtime import (
+    ConduktorConfig,
+    GatewayConfig,
+    KafkaConfig,
+    RuntimeConfig,
+)
 from streamt.deployer.connect import ConnectDeployer, ConnectorChange
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
-from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayDeployer,
+    GatewayRuleChange,
+    ManagedGatewayRuleObservation,
+)
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
@@ -58,6 +70,18 @@ def _mock_flink() -> MagicMock:
 
 def _mock_gw() -> MagicMock:
     return MagicMock(spec=GatewayDeployer)
+
+
+def _gateway_project() -> StreamtProject:
+    return StreamtProject(
+        project=ProjectInfo(name="test"),
+        runtime=RuntimeConfig(
+            kafka=KafkaConfig(bootstrap_servers="broker:9092"),
+            conduktor=ConduktorConfig(
+                gateway=GatewayConfig(admin_url="https://gateway.example.test")
+            ),
+        ),
+    )
 
 
 # ===========================================================================
@@ -351,11 +375,19 @@ class TestPlannerDelegation:
 
     def test_delegates_to_gateway(self):
         gw = _mock_gw()
-        gw.plan.return_value = GatewayRuleChange(
-            name="r1",
-            action="create",
-            desired=GatewayRuleArtifact(name="r1", virtual_topic="vt", physical_topic="pt"),
+        binding = GatewayBackendBinding.from_endpoint(
+            "https://gateway.example.test"
         )
+        gw.cluster_binding = binding
+        snapshot = MagicMock()
+        snapshot.binding = binding
+        snapshot.rule.return_value = ManagedGatewayRuleObservation(
+            binding=binding,
+            logical_name="r1",
+            alias_name="vt",
+            exists=False,
+        )
+        gw.observe_managed_gateway_snapshot.return_value = snapshot
         plan = DeploymentPlanner(
             _manifest(
                 gateway_rules=[
@@ -363,8 +395,11 @@ class TestPlannerDelegation:
                 ]
             ),
             gateway_deployer=gw,
+            project=_gateway_project(),
         ).plan()
         assert plan.gateway_changes[0].action == "create"
+        gw.plan.assert_not_called()
+        gw.observe_managed_gateway_snapshot.assert_called_once_with()
 
 
 class TestPlannerApplyRouting:

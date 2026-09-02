@@ -23,6 +23,7 @@ from streamt.cli.helpers import (
 )
 from streamt.core.errors import ErrorCode
 from streamt.deployer.connect import ConnectorChange, secret_neutral_connector_changes
+from streamt.deployer.gateway import GatewayRuleChange, secret_neutral_gateway_changes
 from streamt.deployer.plan_file import (
     PLAN_FILE_VERSION,
     PlanFileError,
@@ -49,6 +50,16 @@ def _connector_change_data(change: ConnectorChange) -> dict[str, object]:
         "name": change.connector_name,
         "action": change.action,
         "changes": secret_neutral_connector_changes(change.changes),
+    }
+
+
+def _gateway_change_data(change: GatewayRuleChange) -> dict[str, object]:
+    """Serialize a Gateway plan with exact secret-neutral aggregate evidence."""
+    return {
+        "type": "gateway_rule",
+        "name": change.name,
+        "action": change.action,
+        "changes": secret_neutral_gateway_changes(change.changes),
     }
 
 
@@ -189,7 +200,7 @@ def plan(
                 changes.append(_connector_change_data(connector_change))
         for gateway_change in deployment_plan.gateway_changes:
             if gateway_change.action != "none":
-                changes.append({"type": "gateway_rule", "name": gateway_change.name, "action": gateway_change.action, "changes": gateway_change.changes})
+                changes.append(_gateway_change_data(gateway_change))
 
         plan_data: dict[str, object] = {
             "offline": offline,

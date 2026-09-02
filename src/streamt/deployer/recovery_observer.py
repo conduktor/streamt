@@ -185,6 +185,13 @@ def _mapped_changes(
 ) -> dict[str, _MappedChange]:
     result: dict[str, _MappedChange] = {}
     for kind, change in _iter_changes(plan):
+        if kind == "gateway_rule" and any(
+            getattr(change, field, None) is not None
+            for field in ("current", "desired_managed", "backend_identity")
+        ):
+            raise RecoveryObservationError(
+                "Normalized Gateway recovery is not yet supported"
+            )
         physical_name = _physical_name(kind, change)
         if physical_name is None:
             continue

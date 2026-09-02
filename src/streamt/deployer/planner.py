@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
-from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, Manifest
+from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    ConnectorArtifact,
+    GatewayRuleArtifact,
+    Manifest,
+)
 from streamt.core.models import StreamtProject
 from streamt.deployer.connect import (
     ConnectClusterBinding,
@@ -20,11 +26,23 @@ from streamt.deployer.connect import (
     secret_neutral_connector_changes,
 )
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
-from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayBindingError,
+    GatewayDeployer,
+    GatewayRuleChange,
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    classify_gateway_interceptor_name,
+    is_gateway_backend_identity,
+    plan_managed_gateway_rule,
+    secret_neutral_gateway_changes,
+)
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
 from streamt.deployer.state import (
     LocalState,
+    ManagedResourceRecord,
     ResourceIdentity,
     StateIdentityError,
     resource_id,
@@ -37,6 +55,15 @@ class _PlannedChange(Protocol):
     """Common mutable action carried by backend-specific change records."""
 
     action: str
+
+
+@dataclass(frozen=True)
+class _ResolvedGatewayRule:
+    """One strict compiled rule and its exact provider-managed desired surface."""
+
+    artifact: GatewayRuleArtifact
+    desired: ManagedGatewayRuleObservation
+    logical_owner: str
 
 
 @dataclass(frozen=True)
@@ -679,13 +706,14 @@ class DeploymentPlan:
                 )
         for change in self.gateway_changes:
             if change.action != "none":
+                changes = secret_neutral_gateway_changes(change.changes)
                 assessments.append(
                     self._classify_change(
                         kind="gateway_rule",
                         resource=change.name,
                         action=change.action,
-                        current=change.current_alias,
-                        changes=change.changes,
+                        current=change.current,
+                        changes=changes,
                         impact_by_resource=impact_by_resource,
                     )
                 )
@@ -895,8 +923,19 @@ class DeploymentPlan:
                 lines.append(_add(f"+ gateway_rule: {change.name}"))
             elif change.action == "update":
                 lines.append(_upd(f"~ gateway_rule: {change.name}"))
-                for key, val in (change.changes or {}).items():
-                    lines.append(f"    {key}: {val['from']} -> {val['to']}")
+                evidence = secret_neutral_gateway_changes(change.changes)
+                categories = evidence.get("categories", [])
+                lines.append(
+                    "    drift: "
+                    + ", ".join(str(category) for category in categories)
+                )
+                for surface in ("current", "desired"):
+                    value = evidence.get(surface)
+                    if isinstance(value, dict):
+                        lines.append(
+                            f"    {surface}: {value['fingerprint']} "
+                            f"({value['managed_interceptor_count']} interceptor(s))"
+                        )
             elif change.action == "delete":
                 lines.append(_rm(f"- gateway_rule: {change.name}"))
 
@@ -1185,6 +1224,168 @@ class DeploymentPlanner:
             artifacts.append(artifact)
         return artifacts
 
+    def _gateway_binding_from_project(self) -> GatewayBackendBinding:
+        """Resolve the exact configured Gateway endpoint and effective vCluster."""
+        if not isinstance(self.project, StreamtProject):
+            raise GatewayBindingError(
+                "Gateway planning requires parsed project runtime configuration"
+            )
+        conduktor = self.project.runtime.conduktor
+        gateway = conduktor.gateway if conduktor is not None else None
+        if gateway is None or gateway.admin_url is None:
+            raise GatewayBindingError(
+                "Gateway planning requires a configured project runtime"
+            )
+        return GatewayBackendBinding.from_endpoint(
+            gateway.admin_url,
+            virtual_cluster=gateway.virtual_cluster,
+        )
+
+    def _prior_gateway_records(
+        self,
+    ) -> list[tuple[ResourceIdentity, ManagedResourceRecord]]:
+        """Return canonical prior Gateway identities after rejecting claim collisions."""
+        if self.prior_state is None:
+            return []
+        records: list[tuple[ResourceIdentity, ManagedResourceRecord]] = []
+        canonical_claims: dict[tuple[str, str], ResourceIdentity] = {}
+        for resource_uri, record in self.prior_state.resources.items():
+            identity = ResourceIdentity.parse(resource_uri)
+            if identity.kind != "gateway_rule":
+                continue
+            records.append((identity, record))
+            if not is_gateway_backend_identity(record.backend):
+                continue
+            claim = (record.backend, record.physical_name)
+            previous = canonical_claims.get(claim)
+            if previous is not None and previous != identity:
+                raise StateIdentityError(
+                    "Gateway prior state contains duplicate canonical provider claims"
+                )
+            canonical_claims[claim] = identity
+        return records
+
+    def _resolved_gateway_rules(
+        self,
+        binding: GatewayBackendBinding,
+    ) -> list[_ResolvedGatewayRule]:
+        """Strictly bind all Gateway rules and reject collisions before observation."""
+        resolved: list[_ResolvedGatewayRule] = []
+        logical_owners: set[str] = set()
+        alias_locators: set[tuple[str, str]] = set()
+        interceptor_locators: set[tuple[str, object, str]] = set()
+
+        for raw_rule in self.manifest.artifacts.get("gateway_rules", []):
+            artifact = parse_compiled_gateway_rule_artifact(raw_rule)
+            desired = build_desired_gateway_rule(artifact, binding)
+            ownership = ArtifactOwnership.from_dict(artifact.ownership)
+            logical_owner = (
+                ownership.owner_name if ownership is not None else artifact.name
+            )
+            if logical_owner in logical_owners:
+                raise StateIdentityError(
+                    "Gateway manifest maps one logical owner to multiple rules"
+                )
+            logical_owners.add(logical_owner)
+
+            alias_locator = (binding.backend_identity, desired.alias_name)
+            if alias_locator in alias_locators:
+                raise StateIdentityError(
+                    "Gateway manifest contains a duplicate canonical alias locator"
+                )
+            alias_locators.add(alias_locator)
+
+            for interceptor in desired.interceptors:
+                locator = (
+                    binding.backend_identity,
+                    interceptor.scope,
+                    interceptor.name,
+                )
+                if locator in interceptor_locators:
+                    raise StateIdentityError(
+                        "Gateway manifest contains a duplicate interceptor locator"
+                    )
+                interceptor_locators.add(locator)
+            resolved.append(
+                _ResolvedGatewayRule(
+                    artifact=artifact,
+                    desired=desired,
+                    logical_owner=logical_owner,
+                )
+            )
+
+        # A desired generated name must belong to exactly its declaring rule.
+        # Classifying against every declared logical rule also detects malformed
+        # generated-looking namespaces without relying on prefix ownership.
+        for rule in resolved:
+            for interceptor in rule.desired.interceptors:
+                owners: list[str] = []
+                for candidate in resolved:
+                    try:
+                        classified = classify_gateway_interceptor_name(
+                            candidate.artifact.name,
+                            interceptor.name,
+                        )
+                    except ValueError:
+                        raise StateIdentityError(
+                            "Gateway manifest contains an ambiguous generated namespace"
+                        ) from None
+                    if classified is not None:
+                        owners.append(candidate.artifact.name)
+                if owners != [rule.artifact.name]:
+                    raise StateIdentityError(
+                        "Gateway generated interceptor identity maps to multiple rules"
+                    )
+
+        prior_records = self._prior_gateway_records()
+        for rule in resolved:
+            for identity, record in prior_records:
+                if identity.logical_name == rule.logical_owner:
+                    continue
+                claims_desired_backend = record.backend == binding.backend_identity
+                is_legacy_unbound = record.backend == "conduktor-gateway"
+                if (
+                    record.physical_name == rule.desired.alias_name
+                    and (claims_desired_backend or is_legacy_unbound)
+                ):
+                    raise StateIdentityError(
+                        "Gateway desired alias is claimed by another logical record"
+                    )
+        return resolved
+
+    @staticmethod
+    def _absent_gateway_rule(
+        rule: _ResolvedGatewayRule,
+    ) -> ManagedGatewayRuleObservation:
+        """Construct explicit complete absence for deterministic offline planning."""
+        return ManagedGatewayRuleObservation(
+            binding=rule.desired.binding,
+            logical_name=rule.artifact.name,
+            alias_name=rule.artifact.virtual_topic,
+            exists=False,
+        )
+
+    def _append_planned_gateway_rule(
+        self,
+        plan: DeploymentPlan,
+        rule: _ResolvedGatewayRule,
+        current: ManagedGatewayRuleObservation,
+    ) -> None:
+        """Purely plan and apply ownership policy to one resolved Gateway rule."""
+        change = plan_managed_gateway_rule(rule.artifact, rule.desired, current)
+        self._apply_ownership_policy(
+            plan,
+            kind="gateway_rule",
+            logical_name=rule.logical_owner,
+            physical_name=rule.artifact.virtual_topic,
+            ownership=rule.artifact.ownership,
+            change=change,
+            current=change.current,
+            create_actions=frozenset({"create"}),
+            expected_backend=rule.desired.binding.backend_identity,
+        )
+        plan.gateway_changes.append(change)
+
     def offline_plan(self) -> DeploymentPlan:
         """Create a plan assuming no current state (all creates).
 
@@ -1193,7 +1394,6 @@ class DeploymentPlanner:
         """
         from streamt.compiler.manifest import (
             FlinkJobArtifact,
-            GatewayRuleArtifact,
             TopicArtifact,
         )
         from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
@@ -1291,32 +1491,16 @@ class DeploymentPlanner:
             )
             plan.connector_changes.append(change)
 
-        for rule_data in self.manifest.artifacts.get("gateway_rules", []):
-            try:
-                artifact = GatewayRuleArtifact(
-                    name=rule_data["name"],
-                    virtual_topic=rule_data["virtualTopic"],
-                    physical_topic=rule_data["physicalTopic"],
-                    interceptors=rule_data.get("interceptors", []),
-                    ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
-                )
-                change = GatewayRuleChange(
-                    name=artifact.name,
-                    action="create",
-                    desired=artifact,
-                )
-                self._apply_ownership_policy(
+        gateway_data = self.manifest.artifacts.get("gateway_rules", [])
+        if gateway_data:
+            binding = self._gateway_binding_from_project()
+            gateway_rules = self._resolved_gateway_rules(binding)
+            for rule in gateway_rules:
+                self._append_planned_gateway_rule(
                     plan,
-                    kind="gateway_rule",
-                    logical_name=artifact.name,
-                    physical_name=artifact.virtual_topic,
-                    ownership=artifact.ownership,
-                    change=change,
-                    create_actions=frozenset({"create"}),
+                    rule,
+                    self._absent_gateway_rule(rule),
                 )
-                plan.gateway_changes.append(change)
-            except KeyError:
-                pass
 
         plan.refresh_safety_blockers()
         self._compute_impact_radius(plan)
@@ -1325,6 +1509,23 @@ class DeploymentPlanner:
     def plan(self) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()
+
+        # Gateway identities are a whole-manifest preflight. Complete strict
+        # parsing, binding, and collision checks before any provider is read.
+        gateway_rules: list[_ResolvedGatewayRule] = []
+        gateway_deployer = self.gateway_deployer
+        gateway_data = self.manifest.artifacts.get("gateway_rules", [])
+        if gateway_data:
+            configured_gateway_binding = self._gateway_binding_from_project()
+            if gateway_deployer is None:
+                raise GatewayBindingError(
+                    "Live Gateway planning requires a bound Gateway deployer"
+                )
+            if gateway_deployer.cluster_binding != configured_gateway_binding:
+                raise GatewayBindingError(
+                    "Gateway deployer binding does not match project runtime configuration"
+                )
+            gateway_rules = self._resolved_gateway_rules(configured_gateway_binding)
 
         # Plan schemas first (before topics that may depend on them)
         if self.schema_registry_deployer:
@@ -1438,35 +1639,23 @@ class DeploymentPlanner:
                 )
                 plan.connector_changes.append(change)
 
-        # Plan gateway rules
-        if self.gateway_deployer:
-            from streamt.compiler.manifest import GatewayRuleArtifact
-
-            for rule_data in self.manifest.artifacts.get("gateway_rules", []):
-                try:
-                    artifact = GatewayRuleArtifact(
-                        name=rule_data["name"],
-                        virtual_topic=rule_data["virtualTopic"],
-                        physical_topic=rule_data["physicalTopic"],
-                        interceptors=rule_data.get("interceptors", []),
-                        ownership=ArtifactOwnership.from_dict(rule_data.get("ownership")),
-                    )
-                    change = self.gateway_deployer.plan(artifact)
-                    self._apply_ownership_policy(
-                        plan,
-                        kind="gateway_rule",
-                        logical_name=artifact.name,
-                        physical_name=artifact.virtual_topic,
-                        ownership=artifact.ownership,
-                        change=change,
-                        current=change.current_alias,
-                        create_actions=frozenset({"create"}),
-                    )
-                    plan.gateway_changes.append(change)
-                except KeyError as e:
-                    logger.error(
-                        "Malformed gateway_rule artifact, missing key %s: %s", e, rule_data
-                    )
+        # Plan all Gateway rules from one exact, complete two-list snapshot.
+        if gateway_rules:
+            if gateway_deployer is None:  # pragma: no cover - preflight narrows this
+                raise GatewayBindingError(
+                    "Live Gateway planning requires a bound Gateway deployer"
+                )
+            snapshot = gateway_deployer.observe_managed_gateway_snapshot()
+            if snapshot.binding != configured_gateway_binding:
+                raise GatewayBindingError(
+                    "Gateway observation does not match project runtime configuration"
+                )
+            for rule in gateway_rules:
+                current = snapshot.rule(
+                    rule.artifact.name,
+                    rule.artifact.virtual_topic,
+                )
+                self._append_planned_gateway_rule(plan, rule, current)
 
         # Compute impact radius for planned changes
         plan.refresh_safety_blockers()
