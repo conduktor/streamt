@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -19,7 +20,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol, cast, overload, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, cast, overload, runtime_checkable
 
 from streamt.core.deployment_state import DeploymentStateConfig
 from streamt.deployer.state import (
@@ -33,9 +34,19 @@ from streamt.deployer.state import (
     local_state_path,
 )
 
+if TYPE_CHECKING:
+    from streamt.deployer.recovery import (
+        RecoveryResolutionRecord,
+        RecoverySnapshotEvidence,
+    )
+
 LOCAL_STATE_NAMESPACE = "local"
 ABSENT_STATE_REVISION = "ABSENT"
 CURRENT_CONTROL_VERSION = 1
+CURRENT_RECOVERY_HISTORY_VERSION = 1
+CURRENT_RECOVERY_HISTORY_EVENT_VERSION = 1
+MAX_LOCAL_RECOVERY_HISTORY_BYTES = 1024 * 1024
+MAX_LOCAL_RECOVERY_HISTORY_EVENTS = 4096
 _BACKEND_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 _CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -818,6 +829,14 @@ class DeploymentStateOperation(Protocol):
         observation: OperationSnapshot,
     ) -> OperationSnapshot: ...
 
+    def finalize_recovery(
+        self,
+        observation: OperationSnapshot,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot: ...
+
     def compare_and_swap(
         self,
         observation: StateObservation,
@@ -872,11 +891,367 @@ def local_control_path(project_path: Path, *, environment: str) -> Path:
     return state_path.with_name(f"{environment}.control.json")
 
 
+def local_recovery_history_path(project_path: Path, *, environment: str) -> Path:
+    """Return the append-only recovery audit sidecar for an environment."""
+    state_path = local_state_path(project_path, environment=environment)
+    return state_path.with_name(f"{environment}.recovery-history.json")
+
+
 def operation_timestamp() -> str:
     """Return a canonical UTC timestamp suitable for durable control records."""
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
     )
+
+
+RecoveryHistoryEventKind = Literal["recovery_intent", "recovery_resolution"]
+
+
+def _same_recovery_resolution_identity(
+    left: RecoveryResolutionRecord,
+    right: RecoveryResolutionRecord,
+) -> bool:
+    """Compare retry identity while preserving first-attempt audit time."""
+    left_data = left.to_dict()
+    right_data = right.to_dict()
+    del left_data["resolved_at"]
+    del right_data["resolved_at"]
+    return left_data == right_data
+
+
+def _validate_recovery_transition_inputs(
+    observation: OperationSnapshot,
+    evidence: RecoverySnapshotEvidence,
+    resolution: RecoveryResolutionRecord,
+    replacement: LocalState | None,
+) -> bool:
+    """Validate shared invariants and report an exact prior-state match.
+
+    ``False`` means the state is already the exact declared result. Providers
+    may accept that only when their durable audit proves this recovery wrote it.
+    """
+    from streamt.deployer.recovery import control_checksum
+
+    control = observation.control.control
+    intent = control.intent
+    if control.status not in ("in_progress", "recovery_required") or intent is None:
+        raise StateBackendRecoveryRequiredError(
+            "clear deployment state control is not recoverable"
+        )
+    if evidence.store != observation.state.store:
+        raise StateIdentityError("recovery evidence belongs to another state store")
+    if evidence.address != observation.address or resolution.address != observation.address:
+        raise StateIdentityError("recovery evidence belongs to another state address")
+    if evidence.control != control or (
+        evidence.control_checksum != control_checksum(control)
+    ):
+        raise StateBackendConflictError(
+            "operation control changed after recovery evidence was reviewed"
+        )
+    if resolution.blocked_operation_id != intent.operation_id or (
+        evidence.blocked_operation_id != intent.operation_id
+    ):
+        raise StateIdentityError("recovery evidence belongs to another blocked operation")
+    if (
+        resolution.prior_state_serial != evidence.state.serial
+        or resolution.prior_state_checksum != evidence.state_checksum
+        or state_checksum(evidence.state) != evidence.state_checksum
+    ):
+        raise StateBackendConflictError(
+            "recovery resolution does not match its reviewed prior state"
+        )
+    if (
+        intent.prior_state_serial != evidence.state.serial
+        or intent.prior_state_checksum != evidence.state_checksum
+    ):
+        raise StateBackendConflictError(
+            "blocked operation intent does not match recovery prior state"
+        )
+    if resolution.resolution == "abandoned_before_mutation" and control.progress:
+        raise StateBackendRecoveryRequiredError(
+            "abandoned-before-mutation recovery is forbidden after an action started"
+        )
+
+    if replacement is None:
+        if resolution.state_changed:
+            raise StateFormatError("changed observed recovery requires exact replacement state")
+        if (
+            resolution.result_state_serial != evidence.state.serial
+            or resolution.result_state_checksum != evidence.state_checksum
+        ):
+            raise StateFormatError("unchanged recovery must preserve the reviewed prior state")
+        if observation.state.state != evidence.state:
+            raise StateBackendConflictError(
+                "state changed after recovery evidence was reviewed"
+            )
+        return True
+
+    if resolution.resolution != "observed" or not resolution.state_changed:
+        raise StateFormatError(
+            "replacement state is allowed only for changed observed recovery"
+        )
+    if (
+        replacement.project != observation.address.project
+        or replacement.environment != observation.address.environment
+    ):
+        raise StateIdentityError("recovery replacement state belongs to another address")
+    if replacement.resources == evidence.state.resources:
+        raise StateFormatError(
+            "recovery must not increment state serial when ownership is unchanged"
+        )
+    if (
+        replacement.serial != evidence.state.serial + 1
+        or resolution.result_state_serial != replacement.serial
+        or resolution.result_state_checksum != state_checksum(replacement)
+    ):
+        raise StateFormatError("recovery replacement does not match its declared result state")
+    if observation.state.state == evidence.state:
+        return True
+    if observation.state.state == replacement:
+        return False
+    raise StateBackendConflictError(
+        "state does not match the reviewed prior or declared recovery result"
+    )
+
+
+def _recovery_history_event_checksum(
+    *,
+    sequence: int,
+    kind: RecoveryHistoryEventKind,
+    previous_checksum: str | None,
+    record: RecoveryResolutionRecord,
+) -> str:
+    payload = json.dumps(
+        {
+            "event_version": CURRENT_RECOVERY_HISTORY_EVENT_VERSION,
+            "sequence": sequence,
+            "kind": kind,
+            "previous_checksum": previous_checksum,
+            "record": record.to_dict(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class _LocalRecoveryHistoryEvent:
+    """One checksum-chained local recovery intent or resolution event."""
+
+    sequence: int
+    kind: RecoveryHistoryEventKind
+    previous_checksum: str | None
+    record: RecoveryResolutionRecord
+    checksum: str
+    event_version: int = CURRENT_RECOVERY_HISTORY_EVENT_VERSION
+
+    def __post_init__(self) -> None:
+        if type(self.event_version) is not int or (
+            self.event_version != CURRENT_RECOVERY_HISTORY_EVENT_VERSION
+        ):
+            raise StateFormatError(
+                f"unsupported recovery history event version {self.event_version!r}; "
+                f"expected {CURRENT_RECOVERY_HISTORY_EVENT_VERSION}"
+            )
+        if type(self.sequence) is not int or self.sequence < 0:
+            raise StateFormatError("recovery history sequence must be a non-negative integer")
+        if self.kind not in ("recovery_intent", "recovery_resolution"):
+            raise StateFormatError("recovery history event kind is invalid")
+        if self.previous_checksum is not None:
+            _require_checksum(
+                self.previous_checksum,
+                "recovery history previous_checksum",
+            )
+        _require_checksum(self.checksum, "recovery history event checksum")
+        expected = _recovery_history_event_checksum(
+            sequence=self.sequence,
+            kind=self.kind,
+            previous_checksum=self.previous_checksum,
+            record=self.record,
+        )
+        if self.checksum != expected:
+            raise StateFormatError("recovery history event checksum does not match")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        sequence: int,
+        kind: RecoveryHistoryEventKind,
+        previous_checksum: str | None,
+        record: RecoveryResolutionRecord,
+    ) -> _LocalRecoveryHistoryEvent:
+        return cls(
+            sequence=sequence,
+            kind=kind,
+            previous_checksum=previous_checksum,
+            record=record,
+            checksum=_recovery_history_event_checksum(
+                sequence=sequence,
+                kind=kind,
+                previous_checksum=previous_checksum,
+                record=record,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "event_version": self.event_version,
+            "sequence": self.sequence,
+            "kind": self.kind,
+            "previous_checksum": self.previous_checksum,
+            "record": self.record.to_dict(),
+            "checksum": self.checksum,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> _LocalRecoveryHistoryEvent:
+        from streamt.deployer.recovery import RecoveryResolutionRecord
+
+        data = _strict_object(
+            value,
+            label="recovery history event",
+            expected={
+                "event_version",
+                "sequence",
+                "kind",
+                "previous_checksum",
+                "record",
+                "checksum",
+            },
+        )
+        kind = data["kind"]
+        if kind not in ("recovery_intent", "recovery_resolution"):
+            raise StateFormatError("recovery history event kind is invalid")
+        return cls(
+            event_version=cast(int, data["event_version"]),
+            sequence=cast(int, data["sequence"]),
+            kind=cast(RecoveryHistoryEventKind, kind),
+            previous_checksum=cast(str | None, data["previous_checksum"]),
+            record=RecoveryResolutionRecord.from_dict(data["record"]),
+            checksum=cast(str, data["checksum"]),
+        )
+
+
+@dataclass(frozen=True)
+class _LocalRecoveryHistory:
+    """Strict bounded append-only local recovery audit payload."""
+
+    address: StateAddress
+    events: tuple[_LocalRecoveryHistoryEvent, ...] = ()
+    history_version: int = CURRENT_RECOVERY_HISTORY_VERSION
+
+    def __post_init__(self) -> None:
+        if type(self.history_version) is not int or (
+            self.history_version != CURRENT_RECOVERY_HISTORY_VERSION
+        ):
+            raise StateFormatError(
+                f"unsupported recovery history version {self.history_version!r}; "
+                f"expected {CURRENT_RECOVERY_HISTORY_VERSION}"
+            )
+        if not isinstance(self.events, tuple):
+            raise StateFormatError("recovery history events must be an ordered tuple")
+        if len(self.events) > MAX_LOCAL_RECOVERY_HISTORY_EVENTS:
+            raise StateFormatError("local recovery history contains too many events")
+
+        expected_previous: str | None = None
+        pending: RecoveryResolutionRecord | None = None
+        completed_operation_ids: set[str] = set()
+        recovered_blocked_operation_ids: set[str] = set()
+        for sequence, event in enumerate(self.events):
+            if event.sequence != sequence:
+                raise StateFormatError(
+                    "recovery history event sequences must be contiguous from zero"
+                )
+            if event.previous_checksum != expected_previous:
+                raise StateFormatError("recovery history checksum chain is broken")
+            if event.record.address != self.address:
+                raise StateIdentityError("recovery history event belongs to another address")
+            operation_id = event.record.recovery_operation_id
+            if event.kind == "recovery_intent":
+                if pending is not None:
+                    raise StateFormatError("recovery history contains an unresolved prior intent")
+                if operation_id in completed_operation_ids:
+                    raise StateFormatError(
+                        "recovery history contains a duplicate recovery operation"
+                    )
+                if event.record.blocked_operation_id in recovered_blocked_operation_ids:
+                    raise StateFormatError(
+                        "recovery history resolves one blocked operation more than once"
+                    )
+                pending = event.record
+            else:
+                if pending is None or event.record != pending:
+                    raise StateFormatError(
+                        "recovery resolution does not match its preceding intent"
+                    )
+                completed_operation_ids.add(operation_id)
+                recovered_blocked_operation_ids.add(event.record.blocked_operation_id)
+                pending = None
+            expected_previous = event.checksum
+
+    def events_for(
+        self,
+        recovery_operation_id: str,
+    ) -> tuple[_LocalRecoveryHistoryEvent, ...]:
+        return tuple(
+            event
+            for event in self.events
+            if event.record.recovery_operation_id == recovery_operation_id
+        )
+
+    def append(
+        self,
+        kind: RecoveryHistoryEventKind,
+        record: RecoveryResolutionRecord,
+    ) -> _LocalRecoveryHistory:
+        previous_checksum = self.events[-1].checksum if self.events else None
+        event = _LocalRecoveryHistoryEvent.create(
+            sequence=len(self.events),
+            kind=kind,
+            previous_checksum=previous_checksum,
+            record=record,
+        )
+        return _LocalRecoveryHistory(
+            address=self.address,
+            events=(*self.events, event),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "history_version": self.history_version,
+            "address": self.address.uri,
+            "events": [event.to_dict() for event in self.events],
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        expected_address: StateAddress,
+    ) -> _LocalRecoveryHistory:
+        data = _strict_object(
+            value,
+            label="local recovery history",
+            expected={"history_version", "address", "events"},
+        )
+        address = StateAddress.parse(data["address"])
+        if address != expected_address:
+            raise StateIdentityError("local recovery history belongs to another address")
+        raw_events = data["events"]
+        if not isinstance(raw_events, list):
+            raise StateFormatError("local recovery history events must be an array")
+        if len(raw_events) > MAX_LOCAL_RECOVERY_HISTORY_EVENTS:
+            raise StateFormatError("local recovery history contains too many events")
+        return cls(
+            history_version=cast(int, data["history_version"]),
+            address=address,
+            events=tuple(_LocalRecoveryHistoryEvent.from_dict(item) for item in raw_events),
+        )
 
 
 class _LocalDeploymentStateOperation:
@@ -1200,6 +1575,177 @@ class _LocalDeploymentStateOperation:
         cleared = self.clear_operation(observation)
         return cleared
 
+    def finalize_recovery(
+        self,
+        observation: OperationSnapshot,
+        evidence: RecoverySnapshotEvidence,
+        resolution: RecoveryResolutionRecord,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot:
+        """Durably reconcile one blocked local operation and clear its marker.
+
+        Local state and sidecars cannot share one atomic commit.  A declared,
+        checksum-chained intent therefore precedes an optional ownership write;
+        a matching resolution follows it before operation control is cleared.
+        The exact intent also makes retries safe across either durable boundary.
+        """
+        self._active_operation_id = resolution.recovery_operation_id
+        self._validate_snapshot(observation)
+        current_control = self._backend._read_control(self._address)
+        if current_control.revision != observation.control.revision:
+            raise StateBackendConflictError(
+                "operation control changed after the recovery snapshot was observed"
+            )
+
+        if observation.control.control.status == "clear":
+            history = self._backend._read_recovery_history(self._address)
+            matching_events = history.events_for(resolution.recovery_operation_id)
+            if not matching_events:
+                raise StateBackendRecoveryRequiredError(
+                    "clear deployment state control is not recoverable"
+                )
+            if len(matching_events) != 2 or any(
+                not _same_recovery_resolution_identity(event.record, resolution)
+                for event in matching_events
+            ):
+                raise StateBackendConflictError("a conflicting recovery attempt already exists")
+            # The immutable reviewed evidence necessarily contains the former
+            # active control. Reconstruct only that validation view; the actual
+            # fresh observation remains clear and is never mutated here.
+            evidence_snapshot = OperationSnapshot(
+                state=observation.state,
+                control=ControlObservation(
+                    control=evidence.control,
+                    revision=observation.control.revision,
+                ),
+            )
+            _validate_recovery_transition_inputs(
+                evidence_snapshot,
+                evidence,
+                resolution,
+                replacement,
+            )
+            expected_state = replacement if replacement is not None else evidence.state
+            if observation.state.state != expected_state:
+                raise StateBackendConflictError(
+                    "completed recovery state does not match its audited result"
+                )
+            self._active_operation_id = None
+            return observation
+
+        prior_matches = _validate_recovery_transition_inputs(
+            observation,
+            evidence,
+            resolution,
+            replacement,
+        )
+
+        history = self._backend._read_recovery_history(self._address)
+        matching_events = history.events_for(resolution.recovery_operation_id)
+        if len(matching_events) > 2 or any(
+            not _same_recovery_resolution_identity(event.record, resolution)
+            for event in matching_events
+        ):
+            raise StateBackendConflictError("a conflicting recovery attempt already exists")
+        if matching_events and matching_events[0].kind != "recovery_intent":
+            raise StateBackendInvalidStateError("local recovery history is invalid")
+        if len(matching_events) == 2 and (matching_events[1].kind != "recovery_resolution"):
+            raise StateBackendInvalidStateError("local recovery history is invalid")
+        if (
+            not matching_events
+            and history.events
+            and (history.events[-1].kind == "recovery_intent")
+        ):
+            raise StateBackendConflictError("a different recovery attempt is already in progress")
+
+        result_matches = not prior_matches
+        if not matching_events:
+            if not prior_matches:
+                raise StateBackendConflictError(
+                    "state changed after recovery evidence was reviewed"
+                )
+            history = self._backend._append_recovery_history_locked(
+                self._address,
+                history,
+                "recovery_intent",
+                resolution,
+                self._lock,
+            )
+            matching_events = history.events_for(resolution.recovery_operation_id)
+
+        committed_state = observation.state
+        has_resolution = len(matching_events) == 2
+        effective_resolution = matching_events[0].record
+        if has_resolution and not (result_matches or (replacement is None and prior_matches)):
+            raise StateBackendInvalidStateError(
+                "local recovery resolution precedes its declared state result"
+            )
+        if replacement is not None and prior_matches:
+            if has_resolution:
+                raise StateBackendInvalidStateError(
+                    "local recovery resolution precedes its ownership update"
+                )
+            try:
+                committed_state = self.compare_and_swap(
+                    observation.state,
+                    replacement,
+                )
+            except StateBackendError:
+                raise
+            except StateConflictError as error:
+                raise StateBackendConflictError(
+                    "state changed while finalizing explicit recovery"
+                ) from error
+            except BaseException as error:
+                raise StateBackendUnknownCommitError(
+                    "local recovery ownership commit could not be confirmed",
+                    operation_id=resolution.recovery_operation_id,
+                ) from error
+        elif replacement is not None:
+            # A matching durable intent makes this the only permitted state
+            # mismatch from the immutable reviewed evidence on retry.
+            committed_state = observation.state
+
+        if not has_resolution:
+            history = self._backend._append_recovery_history_locked(
+                self._address,
+                history,
+                "recovery_resolution",
+                effective_resolution,
+                self._lock,
+            )
+            matching_events = history.events_for(resolution.recovery_operation_id)
+            if len(matching_events) != 2:
+                raise StateBackendUnknownCommitError(
+                    "local recovery audit commit could not be confirmed",
+                    operation_id=resolution.recovery_operation_id,
+                )
+
+        final_state = self._backend._read(self._address)
+        expected_state = replacement if replacement is not None else evidence.state
+        if final_state.state != expected_state:
+            raise StateBackendConflictError(
+                "state changed before recovery control could be cleared"
+            )
+        committed_state = final_state
+        try:
+            cleared = self._backend._save_control_locked(
+                self._address,
+                observation.control,
+                OperationControlState.clear(self._address),
+                self._lock,
+            )
+        except StateBackendUnknownCommitError:
+            # A clear may have reached durable storage before a later fsync
+            # failed. Verify the exact terminal state instead of suggesting a
+            # replay of a recovery that has already completed.
+            current_control = self._backend._read_control(self._address)
+            if current_control.control.status != "clear":
+                raise
+            cleared = current_control
+        self._active_operation_id = None
+        return OperationSnapshot(state=committed_state, control=cleared)
+
     def compare_and_swap(
         self,
         observation: StateObservation,
@@ -1258,6 +1804,170 @@ class LocalDeploymentStateBackend:
             self.project_path,
             environment=address.environment,
         )
+
+    def _recovery_history_path(self, address: StateAddress) -> Path:
+        # Reuse the local namespace and environment validation of the v1 path.
+        self._path(address)
+        return local_recovery_history_path(
+            self.project_path,
+            environment=address.environment,
+        )
+
+    @staticmethod
+    def _load_recovery_history_payload(path: Path) -> object:
+        def reject_duplicates(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise StateFormatError(
+                        f"local recovery history contains duplicate field {key!r}"
+                    )
+                result[key] = value
+            return result
+
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            file_status = os.fstat(descriptor)
+            if not stat.S_ISREG(file_status.st_mode):
+                raise StateFormatError("local recovery history must be a regular file")
+            if stat.S_IMODE(file_status.st_mode) != 0o600:
+                raise StateFormatError("local recovery history must have mode 0600")
+            chunks: list[bytes] = []
+            remaining = MAX_LOCAL_RECOVERY_HISTORY_BYTES + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+            if len(payload) > MAX_LOCAL_RECOVERY_HISTORY_BYTES:
+                raise StateFormatError("local recovery history exceeds the size limit")
+            return json.loads(
+                payload.decode("utf-8"),
+                object_pairs_hook=reject_duplicates,
+            )
+        except StateFormatError:
+            raise
+        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+            raise StateBackendInvalidStateError("local recovery history is unreadable") from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _read_recovery_history(
+        self,
+        address: StateAddress,
+    ) -> _LocalRecoveryHistory:
+        path = self._recovery_history_path(address)
+        try:
+            payload = self._load_recovery_history_payload(path)
+        except StateBackendInvalidStateError as error:
+            cause = error.__cause__
+            if isinstance(cause, FileNotFoundError):
+                return _LocalRecoveryHistory(address=address)
+            raise
+        except StateFormatError as error:
+            raise StateBackendInvalidStateError("local recovery history is invalid") from error
+        try:
+            return _LocalRecoveryHistory.from_dict(
+                payload,
+                expected_address=address,
+            )
+        except StateIdentityError:
+            raise
+        except StateFormatError as error:
+            raise StateBackendInvalidStateError("local recovery history is invalid") from error
+
+    @staticmethod
+    def _write_recovery_history(
+        path: Path,
+        history: _LocalRecoveryHistory,
+        *,
+        operation_id: str,
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(history.to_dict(), indent=2, sort_keys=True)
+        if len(payload.encode("utf-8")) > MAX_LOCAL_RECOVERY_HISTORY_BYTES:
+            raise StateBackendInvalidStateError("local recovery history exceeds the size limit")
+        temp_name: str | None = None
+        file_descriptor: int | None = None
+        try:
+            file_descriptor, temp_name = tempfile.mkstemp(
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            )
+            os.fchmod(file_descriptor, 0o600)
+            handle = os.fdopen(file_descriptor, "w", encoding="utf-8")
+            file_descriptor = None
+            with handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+            temp_name = None
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except StateBackendInvalidStateError:
+            raise
+        except BaseException as error:
+            if file_descriptor is not None:
+                try:
+                    os.close(file_descriptor)
+                except OSError:
+                    pass
+            if temp_name is not None:
+                try:
+                    Path(temp_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise StateBackendUnknownCommitError(
+                "local recovery audit commit could not be confirmed",
+                operation_id=operation_id,
+            ) from error
+
+    def _append_recovery_history_locked(
+        self,
+        address: StateAddress,
+        observed: _LocalRecoveryHistory,
+        kind: RecoveryHistoryEventKind,
+        record: RecoveryResolutionRecord,
+        lock: LocalStateOperationLock,
+    ) -> _LocalRecoveryHistory:
+        operation_id = record.recovery_operation_id
+        if not lock.is_held:
+            raise StateBackendLockLostError(
+                "deployment state operation lock was lost",
+                operation_id=operation_id,
+            )
+        current = self._read_recovery_history(address)
+        if current != observed:
+            raise StateBackendConflictError("local recovery history changed after it was observed")
+        try:
+            replacement = observed.append(kind, record)
+        except StateFormatError as error:
+            raise StateBackendInvalidStateError(
+                "local recovery history cannot accept another event"
+            ) from error
+        self._write_recovery_history(
+            self._recovery_history_path(address),
+            replacement,
+            operation_id=operation_id,
+        )
+        committed = self._read_recovery_history(address)
+        if committed != replacement:
+            raise StateBackendUnknownCommitError(
+                "local recovery audit commit could not be confirmed",
+                operation_id=operation_id,
+            )
+        return committed
 
     @staticmethod
     def _load_control_payload(path: Path) -> object:
