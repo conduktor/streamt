@@ -70,7 +70,7 @@ def _constraint_rows() -> list[tuple[object, ...]]:
         actions: tuple[object, object, object] = (
             ("a", "r", "s") if kind == "f" else (None, None, None)
         )
-        result.append((*constraint, False, False, True, *actions, False))
+        result.append((*constraint, False, False, True, *actions, kind != "c", True))
     return result
 
 
@@ -100,9 +100,9 @@ def _base_responses(
             (1, state.serial, state_checksum(state), state_json, len(state_json.encode()))
         ]
     return {
-        "schema": [("streamt",)],
+        "schema": [("streamt", True)],
         "relations": [
-            (table, "r", "p", False, False, False)
+            (table, "r", "p", False, False, False, True, True)
             for table in postgres_state._EXPECTED_TABLES
         ],
         "functions": [],
@@ -390,13 +390,17 @@ def test_absent_schema_is_uninitialized_and_transaction_is_read_only(
             {"connect_timeout": 10, "sslmode": "require"},
         )
     ]
-    assert cursor.calls[:3] == [
+    assert cursor.calls[:4] == [
         ("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY", None),
         (
-            "SELECT set_config('statement_timeout', %s, true)",
+            "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)",
+            None,
+        ),
+        (
+            "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
             ("30000ms",),
         ),
-        ("SELECT set_config('lock_timeout', %s, true)", ("17000ms",)),
+        ("SELECT pg_catalog.set_config('lock_timeout', %s, true)", ("17000ms",)),
     ]
     assert connection.rolled_back is True
     assert connection.closed is True
@@ -407,7 +411,7 @@ def test_nonempty_schema_object_without_tables_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     responses = {
-        "schema": [("streamt",)],
+        "schema": [("streamt", True)],
         "relations": [],
         "functions": [("provider_secret_function",)],
         "types": [],
@@ -426,8 +430,10 @@ def test_standalone_composite_relation_makes_empty_schema_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     responses = {
-        "schema": [("streamt",)],
-        "relations": [("unexpected_composite", "c", "p", False, False, False)],
+        "schema": [("streamt", True)],
+        "relations": [
+            ("unexpected_composite", "c", "p", False, False, False, True, True)
+        ],
         "functions": [],
         "types": [],
         "schema_objects": [],
@@ -462,6 +468,34 @@ def test_ready_unregistered_store_uses_composed_identifiers_and_bound_values(
     assert "platform" not in address_call[0]
     index_call = next(call for call in cursor.calls if "pg_catalog.pg_index" in call[0])
     assert "to_jsonb(i)->>'indnullsnotdistinct'" in index_call[0]
+    constraint_call = next(
+        call for call in cursor.calls if "pg_catalog.pg_constraint" in call[0]
+    )
+    assert "c.contype <> 'n'" in constraint_call[0]
+    assert "to_jsonb(c)->>'conenforced'" in constraint_call[0]
+    relation_call = next(
+        call for call in cursor.calls if "FROM pg_catalog.pg_class AS c" in call[0]
+    )
+    assert "acl.grantee = 0" in relation_call[0]
+    assert "acl.is_grantable" in relation_call[0]
+
+
+@pytest.mark.parametrize("surface", ["schema_acl", "table_owner", "table_acl"])
+def test_unsafe_acl_or_mixed_owner_catalog_is_not_ready(
+    surface: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _base_responses(_address())
+    if surface == "schema_acl":
+        responses["schema"] = [("streamt", False)]
+    else:
+        relation = list(responses["relations"][0])
+        relation[6 if surface == "table_owner" else 7] = False
+        responses["relations"][0] = tuple(relation)
+    _install_fake(monkeypatch, responses)
+
+    with pytest.raises(StateBackendInvalidStateError):
+        _administration().status(_address())
 
 
 def test_registered_absent_state_reports_strict_empty_checksum(

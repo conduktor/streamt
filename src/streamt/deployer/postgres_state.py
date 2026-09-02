@@ -1,12 +1,13 @@
-"""Read-only PostgreSQL deployment-state administration.
+"""Narrow PostgreSQL deployment-state administration.
 
 This module is deliberately not a ``DeploymentStateBackend``.  It can inspect
-an initialized store for ``streamt state status``, but it cannot authorize an
-ordinary plan, apply, adopt, state mutation, or operation lock.
+or explicitly initialize a store for ``streamt state status`` and
+``streamt state init``, but it cannot authorize an ordinary plan, apply, adopt,
+state mutation, or operation lock.
 
-Psycopg is an optional dependency and is imported only when ``status`` opens a
-connection.  Provider exceptions are translated to fixed, secret-neutral
-errors and are never chained into user-visible command failures.
+Psycopg is an optional dependency and is imported only when an administrative
+operation opens a connection.  Provider exceptions are translated to fixed,
+secret-neutral errors and are never chained into user-visible command failures.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import shlex
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal, Protocol, cast
 from urllib.parse import parse_qs, urlsplit
 
@@ -33,6 +35,7 @@ from streamt.deployer.state_backend import (
     StateAddress,
     StateBackendInvalidStateError,
     StateBackendUnavailableError,
+    StateBackendUnknownCommitError,
     StateStoreIdentity,
     state_checksum,
 )
@@ -73,6 +76,8 @@ class _Cursor(Protocol):
 
 class _Connection(Protocol):
     def cursor(self) -> _Cursor: ...
+
+    def commit(self) -> None: ...
 
     def rollback(self) -> None: ...
 
@@ -632,6 +637,175 @@ _EXPECTED_MIGRATION = (
     POSTGRES_SCHEMA_V1_CHECKSUM,
 )
 
+# Each template's first placeholder is the table being created.  Templates
+# with a second placeholder reference the qualified state-address table.  The
+# statements intentionally have no IF NOT EXISTS or defaults: initialization
+# first proves that the schema is empty, and every durable value is explicit.
+_SCHEMA_V1_DDL: tuple[tuple[str, str, str | None], ...] = (
+    (
+        "store_metadata",
+        """CREATE TABLE {} (
+            singleton boolean NOT NULL,
+            store_id uuid NOT NULL,
+            schema_version integer NOT NULL,
+            initialized_at timestamp with time zone NOT NULL,
+            CONSTRAINT store_metadata_pkey PRIMARY KEY (singleton),
+            CONSTRAINT store_metadata_store_id_key UNIQUE (store_id),
+            CONSTRAINT store_metadata_singleton_check CHECK (singleton),
+            CONSTRAINT store_metadata_schema_version_check CHECK (schema_version = 1)
+        )""",
+        None,
+    ),
+    (
+        "schema_migrations",
+        """CREATE TABLE {} (
+            schema_version integer NOT NULL,
+            migration_name text NOT NULL,
+            migration_checksum text NOT NULL,
+            applied_at timestamp with time zone NOT NULL,
+            CONSTRAINT schema_migrations_pkey PRIMARY KEY (schema_version),
+            CONSTRAINT schema_migrations_migration_name_key UNIQUE (migration_name),
+            CONSTRAINT schema_migrations_schema_version_check CHECK (schema_version > 0),
+            CONSTRAINT schema_migrations_checksum_check
+                CHECK (migration_checksum ~ '^sha256:[0-9a-f]{{64}}$')
+        )""",
+        None,
+    ),
+    (
+        "state_addresses",
+        """CREATE TABLE {} (
+            namespace text NOT NULL,
+            project text NOT NULL,
+            environment text NOT NULL,
+            address_uri text NOT NULL,
+            advisory_lock_key bigint NOT NULL,
+            registered_at timestamp with time zone NOT NULL,
+            CONSTRAINT state_addresses_pkey
+                PRIMARY KEY (namespace, project, environment),
+            CONSTRAINT state_addresses_address_uri_key UNIQUE (address_uri),
+            CONSTRAINT state_addresses_advisory_lock_key_key UNIQUE (advisory_lock_key),
+            CONSTRAINT state_addresses_namespace_check
+                CHECK (namespace <> '' AND strpos(namespace, '/') = 0),
+            CONSTRAINT state_addresses_project_check
+                CHECK (project <> '' AND strpos(project, '/') = 0),
+            CONSTRAINT state_addresses_environment_check
+                CHECK (environment ~ '^[A-Za-z0-9][A-Za-z0-9-]*$'),
+            CONSTRAINT state_addresses_uri_check
+                CHECK (
+                    address_uri = 'streamt-state://' || namespace || '/' || project ||
+                        '/' || environment
+                )
+        )""",
+        None,
+    ),
+    (
+        "current_state",
+        """CREATE TABLE {} (
+            namespace text NOT NULL,
+            project text NOT NULL,
+            environment text NOT NULL,
+            revision bigint NOT NULL,
+            state_serial bigint NOT NULL,
+            state_checksum text NOT NULL,
+            state_json text NOT NULL,
+            updated_at timestamp with time zone NOT NULL,
+            CONSTRAINT current_state_pkey
+                PRIMARY KEY (namespace, project, environment),
+            CONSTRAINT current_state_address_fkey
+                FOREIGN KEY (namespace, project, environment) REFERENCES {}
+                    (namespace, project, environment)
+                    MATCH SIMPLE ON DELETE RESTRICT ON UPDATE NO ACTION,
+            CONSTRAINT current_state_revision_check CHECK (revision >= 1),
+            CONSTRAINT current_state_serial_check CHECK (state_serial >= 1),
+            CONSTRAINT current_state_checksum_check
+                CHECK (state_checksum ~ '^sha256:[0-9a-f]{{64}}$'),
+            CONSTRAINT current_state_size_check
+                CHECK (octet_length(state_json) <= 10485760)
+        )""",
+        "state_addresses",
+    ),
+    (
+        "operation_control",
+        """CREATE TABLE {} (
+            namespace text NOT NULL,
+            project text NOT NULL,
+            environment text NOT NULL,
+            revision bigint NOT NULL,
+            status text NOT NULL,
+            control_json text NOT NULL,
+            updated_at timestamp with time zone NOT NULL,
+            CONSTRAINT operation_control_pkey
+                PRIMARY KEY (namespace, project, environment),
+            CONSTRAINT operation_control_address_fkey
+                FOREIGN KEY (namespace, project, environment) REFERENCES {}
+                    (namespace, project, environment)
+                    MATCH SIMPLE ON DELETE RESTRICT ON UPDATE NO ACTION,
+            CONSTRAINT operation_control_revision_check CHECK (revision >= 0),
+            CONSTRAINT operation_control_status_check
+                CHECK (
+                    status = ANY (
+                        ARRAY['clear', 'in_progress', 'recovery_required']
+                    )
+                ),
+            CONSTRAINT operation_control_size_check
+                CHECK (octet_length(control_json) <= 10485760)
+        )""",
+        "state_addresses",
+    ),
+    (
+        "state_history",
+        """CREATE TABLE {} (
+            namespace text NOT NULL,
+            project text NOT NULL,
+            environment text NOT NULL,
+            revision bigint NOT NULL,
+            state_serial bigint NOT NULL,
+            state_checksum text NOT NULL,
+            state_json text NOT NULL,
+            operation_id uuid,
+            recorded_at timestamp with time zone NOT NULL,
+            CONSTRAINT state_history_pkey
+                PRIMARY KEY (namespace, project, environment, revision),
+            CONSTRAINT state_history_address_fkey
+                FOREIGN KEY (namespace, project, environment) REFERENCES {}
+                    (namespace, project, environment)
+                    MATCH SIMPLE ON DELETE RESTRICT ON UPDATE NO ACTION,
+            CONSTRAINT state_history_revision_check CHECK (revision >= 1),
+            CONSTRAINT state_history_serial_check CHECK (state_serial >= 1),
+            CONSTRAINT state_history_checksum_check
+                CHECK (state_checksum ~ '^sha256:[0-9a-f]{{64}}$'),
+            CONSTRAINT state_history_size_check
+                CHECK (octet_length(state_json) <= 10485760)
+        )""",
+        "state_addresses",
+    ),
+    (
+        "operation_history",
+        """CREATE TABLE {} (
+            namespace text NOT NULL,
+            project text NOT NULL,
+            environment text NOT NULL,
+            operation_id uuid NOT NULL,
+            event_index integer NOT NULL,
+            event_kind text NOT NULL,
+            control_json text NOT NULL,
+            recorded_at timestamp with time zone NOT NULL,
+            CONSTRAINT operation_history_pkey
+                PRIMARY KEY (
+                    namespace, project, environment, operation_id, event_index
+                ),
+            CONSTRAINT operation_history_address_fkey
+                FOREIGN KEY (namespace, project, environment) REFERENCES {}
+                    (namespace, project, environment)
+                    MATCH SIMPLE ON DELETE RESTRICT ON UPDATE NO ACTION,
+            CONSTRAINT operation_history_event_index_check CHECK (event_index >= 0),
+            CONSTRAINT operation_history_size_check
+                CHECK (octet_length(control_json) <= 10485760)
+        )""",
+        "state_addresses",
+    ),
+)
+
 
 StoreStatus = Literal["uninitialized", "ready"]
 AddressStatus = Literal["unregistered", "registered"]
@@ -687,6 +861,37 @@ class PostgresStateStatus:
                 self.operation_status.to_dict() if self.operation_status is not None else None
             ),
             "mutation_status": "disabled",
+        }
+
+
+@dataclass(frozen=True)
+class PostgresStateInitialization:
+    """Safe result of one explicitly confirmed initialization request."""
+
+    store_id: str
+    address: StateAddress
+    created_store: bool
+    registered_address: bool
+
+    @property
+    def outcome(self) -> str:
+        if self.created_store:
+            return "initialized"
+        if self.registered_address:
+            return "address_registered"
+        return "already_initialized"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "backend": "postgres",
+            "outcome": self.outcome,
+            "store_id": self.store_id,
+            "schema_version": POSTGRES_SCHEMA_VERSION,
+            "address": self.address.uri,
+            "address_status": "registered",
+            "state_status": "absent",
+            "operation_status": "clear",
+            "ordinary_state_authority": "disabled",
         }
 
 
@@ -887,17 +1092,19 @@ def _normalized_constraints(
 ) -> list[tuple[object, ...]]:
     result: list[tuple[object, ...]] = []
     for row in rows:
-        if len(row) != 14:
+        if len(row) != 15:
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state constraints are invalid"
             )
         deferrable, deferred, validated = row[7:10]
-        update_action, delete_action, match_type, no_inherit = row[10:14]
+        update_action, delete_action, match_type, no_inherit, enforced = row[10:15]
         if (
             deferrable is not False
             or deferred is not False
             or validated is not True
-            or no_inherit is not False
+            or enforced is not True
+            or (row[2] == "c" and no_inherit is not False)
+            or (row[2] != "c" and no_inherit is not True)
             or (row[2] == "f" and (update_action, delete_action, match_type) != ("a", "r", "s"))
             or (row[2] != "f" and (update_action, delete_action, match_type) != (None, None, None))
         ):
@@ -911,6 +1118,23 @@ def _normalized_constraints(
 def _advisory_lock_key(address: StateAddress) -> int:
     digest = hashlib.sha256(f"streamt-postgres-state-address-v1\0{address.uri}".encode()).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def _initialization_lock_key(schema: str) -> tuple[int, int]:
+    digest = hashlib.sha256(f"streamt-postgres-state-init-v1\0{schema}".encode()).digest()
+    return (
+        int.from_bytes(digest[:4], byteorder="big", signed=True),
+        int.from_bytes(digest[4:8], byteorder="big", signed=True),
+    )
+
+
+def _canonical_json(value: dict[str, object]) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 class PostgresStateAdministration:
@@ -947,11 +1171,14 @@ class PostgresStateAdministration:
             cursor = connection.cursor()
             cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             cursor.execute(
-                "SELECT set_config('statement_timeout', %s, true)",
+                "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
                 (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
             )
             cursor.execute(
-                "SELECT set_config('lock_timeout', %s, true)",
+                "SELECT pg_catalog.set_config('lock_timeout', %s, true)",
                 (f"{self._lock_timeout_seconds * 1000}ms",),
             )
             result = self._read_status(cursor, bundle.sql, address)
@@ -993,19 +1220,39 @@ class PostgresStateAdministration:
     ) -> PostgresStateStatus:
         schema_rows = _rows(
             cursor,
-            ("SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname = %s ORDER BY nspname"),
+            (
+                "SELECT n.nspname, NOT EXISTS (SELECT 1 FROM "
+                "pg_catalog.aclexplode(COALESCE(n.nspacl, "
+                "pg_catalog.acldefault('n', n.nspowner))) AS acl "
+                "WHERE acl.grantee <> n.nspowner AND "
+                "(acl.grantee = 0 OR acl.privilege_type <> 'USAGE' "
+                "OR acl.is_grantable)) "
+                "FROM pg_catalog.pg_namespace AS n WHERE n.nspname = %s "
+                "ORDER BY n.nspname"
+            ),
             (self._schema,),
         )
         if not schema_rows:
             return self._uninitialized(address)
-        if schema_rows != [(self._schema,)]:
+        if schema_rows != [(self._schema, True)]:
             raise StateBackendInvalidStateError("PostgreSQL deployment state catalog is invalid")
 
         relation_rows = _rows(
             cursor,
             (
                 "SELECT c.relname, c.relkind, c.relpersistence, c.relispartition, "
-                "c.relrowsecurity, c.relforcerowsecurity "
+                "c.relrowsecurity, c.relforcerowsecurity, c.relowner = n.nspowner, "
+                "NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl, "
+                "pg_catalog.acldefault('r', c.relowner))) AS acl "
+                "WHERE acl.grantee <> c.relowner AND "
+                "(acl.grantee = 0 OR acl.privilege_type <> 'SELECT' "
+                "OR acl.is_grantable)) "
+                "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute AS a "
+                "CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS acl "
+                "WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped "
+                "AND acl.grantee <> c.relowner AND "
+                "(acl.grantee = 0 OR acl.privilege_type <> 'SELECT' "
+                "OR acl.is_grantable)) "
                 "FROM pg_catalog.pg_class AS c "
                 "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
                 "WHERE n.nspname = %s AND c.relkind IN ('r','p','v','m','S','f','c') "
@@ -1077,7 +1324,10 @@ class PostgresStateAdministration:
             return self._uninitialized(address)
         if (
             relation_rows
-            != [(table, "r", "p", False, False, False) for table in _EXPECTED_TABLES]
+            != [
+                (table, "r", "p", False, False, False, True, True)
+                for table in _EXPECTED_TABLES
+            ]
             or function_rows
             or type_rows
             or schema_object_rows
@@ -1118,13 +1368,18 @@ class PostgresStateAdministration:
                 "CASE WHEN c.contype = 'f' THEN c.confupdtype ELSE NULL END, "
                 "CASE WHEN c.contype = 'f' THEN c.confdeltype ELSE NULL END, "
                 "CASE WHEN c.contype = 'f' THEN c.confmatchtype ELSE NULL END, "
-                "c.connoinherit "
+                "c.connoinherit, "
+                # PostgreSQL 18 added enforced NOT NULL constraints and the
+                # catalog flag. Columns already enforce nullability; ignore
+                # their contype='n' rows while still rejecting other extras.
+                "COALESCE((to_jsonb(c)->>'conenforced')::boolean, true) "
                 "FROM pg_catalog.pg_constraint AS c "
                 "JOIN pg_catalog.pg_class AS r ON r.oid = c.conrelid "
                 "JOIN pg_catalog.pg_namespace AS n ON n.oid = r.relnamespace "
                 "LEFT JOIN pg_catalog.pg_class AS rr ON rr.oid = c.confrelid "
                 "LEFT JOIN pg_catalog.pg_namespace AS rrn ON rrn.oid = rr.relnamespace "
-                "WHERE n.nspname = %s ORDER BY r.relname, c.conname"
+                "WHERE n.nspname = %s AND c.contype <> 'n' "
+                "ORDER BY r.relname, c.conname"
             ),
             (self._schema,),
         )
@@ -1447,6 +1702,394 @@ class PostgresStateAdministration:
         return state, checksum
 
 
+class PostgresStateInitializer:
+    """Explicit schema/address initializer; not an ordinary state backend."""
+
+    __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema")
+
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        schema: str,
+        lock_timeout_seconds: int,
+    ) -> None:
+        self._dsn = dsn
+        self._schema = schema
+        self._lock_timeout_seconds = lock_timeout_seconds
+
+    def initialize(self, address: StateAddress) -> PostgresStateInitialization:
+        """Initialize or exactly repeat initialization for one address."""
+        options = _dsn_tls_options(self._dsn)
+        bundle = _load_psycopg()
+        connection: _Connection | None = None
+        cursor: _Cursor | None = None
+        result: PostgresStateInitialization | None = None
+        invalid = False
+        unavailable = False
+        unknown_commit = False
+        commit_attempted = False
+        transaction_started = False
+        session_lock_acquired = False
+        initialization_lock_key = _initialization_lock_key(self._schema)
+        try:
+            connection = bundle.driver.connect(
+                self._dsn,
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                autocommit=True,
+                **options,
+            )
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
+                (f"{self._lock_timeout_seconds * 1000}ms",),
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('lock_timeout', %s, false)",
+                (f"{self._lock_timeout_seconds * 1000}ms",),
+            )
+            cursor.execute(
+                "SELECT pg_catalog.pg_advisory_lock(%s, %s)",
+                initialization_lock_key,
+            )
+            session_lock_acquired = True
+            cursor.execute(
+                "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE"
+            )
+            transaction_started = True
+            cursor.execute(
+                "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('lock_timeout', %s, true)",
+                (f"{self._lock_timeout_seconds * 1000}ms",),
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
+                (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
+            )
+            result = self._initialize_transaction(cursor, bundle.sql, address)
+            commit_attempted = True
+            connection.commit()
+            transaction_started = False
+        except StateBackendInvalidStateError:
+            if commit_attempted:
+                unknown_commit = True
+            else:
+                invalid = True
+        except (KeyboardInterrupt, SystemExit):
+            if commit_attempted:
+                unknown_commit = True
+            else:
+                raise
+        except Exception:
+            if commit_attempted:
+                unknown_commit = True
+            else:
+                unavailable = True
+        finally:
+            if connection is not None and transaction_started and not commit_attempted:
+                try:
+                    connection.rollback()
+                    transaction_started = False
+                except Exception:
+                    unavailable = True
+            if cursor is not None and session_lock_acquired and not unknown_commit:
+                try:
+                    unlock_rows = _rows(
+                        cursor,
+                        "SELECT pg_catalog.pg_advisory_unlock(%s, %s)",
+                        initialization_lock_key,
+                    )
+                    if unlock_rows != [(True,)] and not commit_attempted:
+                        unavailable = True
+                except Exception:
+                    if not commit_attempted:
+                        unavailable = True
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    if not unknown_commit and not commit_attempted:
+                        unavailable = True
+            if connection is not None:
+                if transaction_started and not commit_attempted:
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        unavailable = True
+                try:
+                    connection.close()
+                except Exception:
+                    if not unknown_commit and not commit_attempted:
+                        unavailable = True
+
+        if unknown_commit:
+            raise StateBackendUnknownCommitError(
+                "PostgreSQL deployment state initialization outcome is unknown; "
+                "run state status or repeat the same state init confirmation"
+            ) from None
+        if invalid:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state initialization is incompatible"
+            ) from None
+        if unavailable or result is None:
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state initialization is unavailable"
+            ) from None
+
+        verified = PostgresStateAdministration(
+            dsn=self._dsn,
+            schema=self._schema,
+            lock_timeout_seconds=self._lock_timeout_seconds,
+        ).status(address)
+        if not self._verification_matches(verified, result):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state initialization verification failed"
+            ) from None
+        return result
+
+    def _initialize_transaction(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+        address: StateAddress,
+    ) -> PostgresStateInitialization:
+        schema_rows = _rows(
+            cursor,
+            (
+                "SELECT n.nspname, n.nspowner = (SELECT r.oid "
+                "FROM pg_catalog.pg_roles AS r WHERE r.rolname = current_user) "
+                "FROM pg_catalog.pg_namespace AS n WHERE n.nspname = %s "
+                "ORDER BY n.nspname"
+            ),
+            (self._schema,),
+        )
+        if schema_rows not in ([], [(self._schema, True)]):
+            raise StateBackendInvalidStateError("PostgreSQL deployment state catalog is invalid")
+        status = PostgresStateAdministration(
+            dsn=self._dsn,
+            schema=self._schema,
+            lock_timeout_seconds=self._lock_timeout_seconds,
+        )._read_status(cursor, sql_module, address)
+        created_store = status.store_status == "uninitialized"
+        initialized_at = datetime.now(timezone.utc)
+
+        if created_store:
+            self._create_schema_v1(
+                cursor,
+                sql_module,
+                schema_exists=bool(schema_rows),
+            )
+            store_uuid = uuid.uuid4()
+            cursor.execute(
+                _query(
+                    sql_module,
+                    (
+                        "INSERT INTO {} "
+                        "(singleton, store_id, schema_version, initialized_at) "
+                        "VALUES (%s, %s, %s, %s)"
+                    ),
+                    self._schema,
+                    "store_metadata",
+                ),
+                (True, store_uuid, POSTGRES_SCHEMA_VERSION, initialized_at),
+            )
+            cursor.execute(
+                _query(
+                    sql_module,
+                    (
+                        "INSERT INTO {} (schema_version, migration_name, "
+                        "migration_checksum, applied_at) VALUES (%s, %s, %s, %s)"
+                    ),
+                    self._schema,
+                    "schema_migrations",
+                ),
+                (*_EXPECTED_MIGRATION, initialized_at),
+            )
+            store_id = str(store_uuid)
+        else:
+            if status.store_id is None:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state metadata is invalid"
+                )
+            store_id = status.store_id
+
+        registered_address = self._register_address(
+            cursor,
+            sql_module,
+            address,
+            status=status,
+            registered_at=initialized_at,
+        )
+        result = PostgresStateInitialization(
+            store_id=store_id,
+            address=address,
+            created_store=created_store,
+            registered_address=registered_address,
+        )
+        precommit_status = PostgresStateAdministration(
+            dsn=self._dsn,
+            schema=self._schema,
+            lock_timeout_seconds=self._lock_timeout_seconds,
+        )._read_status(cursor, sql_module, address)
+        if not self._verification_matches(precommit_status, result):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state initialization verification failed"
+            )
+        return result
+
+    def _create_schema_v1(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+        *,
+        schema_exists: bool,
+    ) -> None:
+        if not schema_exists:
+            cursor.execute(
+                sql_module.SQL("CREATE SCHEMA {}").format(sql_module.Identifier(self._schema))
+            )
+            cursor.execute(
+                sql_module.SQL("REVOKE ALL ON SCHEMA {} FROM PUBLIC").format(
+                    sql_module.Identifier(self._schema)
+                )
+            )
+        for table, template, reference in _SCHEMA_V1_DDL:
+            identifiers = [_qualified(sql_module, self._schema, table)]
+            if reference is not None:
+                identifiers.append(_qualified(sql_module, self._schema, reference))
+            cursor.execute(sql_module.SQL(template).format(*identifiers))
+            cursor.execute(
+                sql_module.SQL("REVOKE ALL ON TABLE {} FROM PUBLIC").format(
+                    _qualified(sql_module, self._schema, table)
+                )
+            )
+
+    def _register_address(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+        address: StateAddress,
+        *,
+        status: PostgresStateStatus,
+        registered_at: datetime,
+    ) -> bool:
+        lock_key = _advisory_lock_key(address)
+        collision = _one_or_none(
+            _rows(
+                cursor,
+                _query(
+                    sql_module,
+                    (
+                        "SELECT namespace, project, environment, address_uri FROM {} "
+                        "WHERE advisory_lock_key = %s LIMIT 2"
+                    ),
+                    self._schema,
+                    "state_addresses",
+                ),
+                (lock_key,),
+            ),
+            label="address lock mapping",
+        )
+        expected_collision = (
+            address.namespace,
+            address.project,
+            address.environment,
+            address.uri,
+        )
+        if collision is not None and collision != expected_collision:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state address registration conflicts"
+            )
+
+        if status.address_status == "registered":
+            operation = status.operation_status
+            if (
+                collision != expected_collision
+                or status.state_status != "absent"
+                or status.state_serial != 0
+                or operation is None
+                or operation.status != "clear"
+                or operation.operation_id is not None
+                or operation.kind is not None
+                or operation.failure_code is not None
+                or operation.last_completed_action_index is not None
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state address is not empty"
+                )
+            return False
+        if collision is not None or status.address_status != "unregistered":
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state address registration conflicts"
+            )
+
+        cursor.execute(
+            _query(
+                sql_module,
+                (
+                    "INSERT INTO {} (namespace, project, environment, address_uri, "
+                    "advisory_lock_key, registered_at) VALUES (%s, %s, %s, %s, %s, %s)"
+                ),
+                self._schema,
+                "state_addresses",
+            ),
+            (
+                address.namespace,
+                address.project,
+                address.environment,
+                address.uri,
+                lock_key,
+                registered_at,
+            ),
+        )
+        clear_control = _canonical_json(OperationControlState.clear(address).to_dict())
+        cursor.execute(
+            _query(
+                sql_module,
+                (
+                    "INSERT INTO {} (namespace, project, environment, revision, status, "
+                    "control_json, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                ),
+                self._schema,
+                "operation_control",
+            ),
+            (
+                address.namespace,
+                address.project,
+                address.environment,
+                0,
+                "clear",
+                clear_control,
+                registered_at,
+            ),
+        )
+        return True
+
+    @staticmethod
+    def _verification_matches(
+        status: PostgresStateStatus,
+        result: PostgresStateInitialization,
+    ) -> bool:
+        operation = status.operation_status
+        return (
+            status.store_status == "ready"
+            and status.store_id == result.store_id
+            and status.schema_version == POSTGRES_SCHEMA_VERSION
+            and status.address == result.address
+            and status.address_status == "registered"
+            and status.state_status == "absent"
+            and status.state_serial == 0
+            and operation is not None
+            and operation.status == "clear"
+            and operation.operation_id is None
+            and operation.kind is None
+            and operation.failure_code is None
+            and operation.last_completed_action_index is None
+        )
+
+
 def make_postgres_state_administration(
     config: DeploymentStateConfig,
 ) -> PostgresStateAdministration:
@@ -1461,6 +2104,26 @@ def make_postgres_state_administration(
             "PostgreSQL deployment state credentials are unavailable"
         )
     return PostgresStateAdministration(
+        dsn=dsn,
+        schema=config.postgres.schema_name,
+        lock_timeout_seconds=config.lock_timeout_seconds,
+    )
+
+
+def make_postgres_state_initializer(
+    config: DeploymentStateConfig,
+) -> PostgresStateInitializer:
+    """Construct the separate explicit PostgreSQL initializer without fallback."""
+    if not isinstance(config, PostgresDeploymentStateConfig):
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state initialization is not configured"
+        )
+    dsn = os.environ.get(config.postgres.dsn_env)
+    if dsn is None or not dsn.strip():
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state credentials are unavailable"
+        )
+    return PostgresStateInitializer(
         dsn=dsn,
         schema=config.postgres.schema_name,
         lock_timeout_seconds=config.lock_timeout_seconds,
