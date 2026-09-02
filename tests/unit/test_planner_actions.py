@@ -18,7 +18,14 @@ from streamt.compiler.manifest import (
 )
 from streamt.deployer.connect import ConnectorChange
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
-from streamt.deployer.gateway import AliasTopicState, GatewayRuleChange
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayRuleChange,
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    plan_managed_gateway_rule,
+    plan_managed_gateway_rule_deletion,
+)
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
 from streamt.deployer.schema_registry import SchemaChange
@@ -31,6 +38,11 @@ from streamt.deployer.state import (
     resource_id,
 )
 
+_GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
+    "https://gateway.example.test",
+    virtual_cluster="production",
+)
+
 
 def _ownership(logical_name: str) -> ArtifactOwnership:
     return ArtifactOwnership(
@@ -40,12 +52,16 @@ def _ownership(logical_name: str) -> ArtifactOwnership:
     )
 
 
-def _record(physical_name: str) -> ManagedResourceRecord:
+def _record(
+    physical_name: str,
+    *,
+    backend: str = "test",
+) -> ManagedResourceRecord:
     return ManagedResourceRecord(
         physical_name=physical_name,
         ownership="managed",
         artifact_checksum=artifact_checksum({"physical_name": physical_name}),
-        backend="test",
+        backend=backend,
     )
 
 
@@ -82,7 +98,8 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
                 "runtime-connector-delete"
             ),
             resource_id("payments", "prod", "gateway_rule", "gateway_delete"): _record(
-                "runtime-gateway-alias-delete"
+                "runtime-gateway-alias-delete",
+                backend=_GATEWAY_BINDING.backend_identity,
             ),
         },
     )
@@ -142,6 +159,24 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
         physical_topic="physical-input",
         ownership=_ownership("gateway_update"),
     )
+    gateway_binding = _GATEWAY_BINDING
+    gateway_create_desired = build_desired_gateway_rule(
+        gateway_create,
+        gateway_binding,
+    )
+    gateway_update_desired = build_desired_gateway_rule(
+        gateway_update,
+        gateway_binding,
+    )
+    gateway_delete_current = ManagedGatewayRuleObservation(
+        binding=gateway_binding,
+        logical_name="runtime-gateway-delete",
+        alias_name="runtime-gateway-alias-delete",
+        exists=True,
+        physical_name="physical-input",
+        physical_cluster="main",
+    )
+    gateway_delete = plan_managed_gateway_rule_deletion(gateway_delete_current)
     plan = DeploymentPlan(
         schema_changes=[
             SchemaChange(
@@ -207,24 +242,29 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
             ),
         ],
         gateway_changes=[
-            GatewayRuleChange(
-                name=gateway_create.name,
-                action="create",
-                desired=gateway_create,
-            ),
-            GatewayRuleChange(
-                name=gateway_update.name,
-                action="update",
-                desired=gateway_update,
-            ),
-            GatewayRuleChange(
-                name="runtime-gateway-delete",
-                action="delete",
-                current_alias=AliasTopicState(
-                    name="runtime-gateway-alias-delete",
-                    exists=True,
+            plan_managed_gateway_rule(
+                gateway_create,
+                gateway_create_desired,
+                ManagedGatewayRuleObservation(
+                    binding=gateway_binding,
+                    logical_name=gateway_create.name,
+                    alias_name=gateway_create.virtual_topic,
+                    exists=False,
                 ),
             ),
+            plan_managed_gateway_rule(
+                gateway_update,
+                gateway_update_desired,
+                ManagedGatewayRuleObservation(
+                    binding=gateway_binding,
+                    logical_name=gateway_update.name,
+                    alias_name=gateway_update.virtual_topic,
+                    exists=True,
+                    physical_name="previous-physical-input",
+                    physical_cluster="main",
+                ),
+            ),
+            gateway_delete,
         ],
     )
     planner = _planner(prior_state)
@@ -315,7 +355,7 @@ def test_planned_actions_skip_runtime_actions_apply_would_not_attempt() -> None:
             )
         ],
         connector_changes=[ConnectorChange(connector_name="connector", action="none")],
-        gateway_changes=[GatewayRuleChange(name="gateway", action="update")],
+        gateway_changes=[GatewayRuleChange(name="gateway", action="none")],
     )
 
     assert planner.planned_actions(plan) == []

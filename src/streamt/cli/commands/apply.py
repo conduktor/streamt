@@ -708,6 +708,7 @@ def apply(
                     fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
                     rolled_back, rb_errors = planner.rollback(
                         rollback_candidates,
+                        plan=deployment_plan,
                         before_action=lambda _label, _index: (
                             state_operation.check_lock()
                         ),

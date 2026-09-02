@@ -1103,3 +1103,45 @@ def test_cli_external_ownership_visibility_does_not_block_other_apply(tmp_path: 
         "stop_on_error",
     }
     assert apply_plan.call_args.kwargs["stop_on_error"] is True
+
+
+def test_cli_rollback_receives_the_exact_deployment_plan(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    deployment_plan = DeploymentPlan()
+    results = {
+        "created": ["gateway_rule:orders_rule"],
+        "updated": [],
+        "deleted": [],
+        "unchanged": [],
+        "errors": ["gateway_rule:archive_rule: failed"],
+        "rollback_candidates": ["gateway_rule:orders_rule"],
+        "summary": {"total": 2, "succeeded": 1, "failed": 1, "unchanged": 0},
+    }
+
+    with (
+        patch(
+            "streamt.deployer.planner.DeploymentPlanner.plan",
+            return_value=deployment_plan,
+        ),
+        patch(
+            "streamt.deployer.planner.DeploymentPlanner.apply",
+            return_value=results,
+        ),
+        patch(
+            "streamt.deployer.planner.DeploymentPlanner.rollback",
+            return_value=(["gateway_rule:orders_rule"], []),
+        ) as rollback,
+    ):
+        result = CliRunner().invoke(main, ["apply", "-p", str(tmp_path)])
+
+    assert result.exit_code == 1
+    rollback.assert_called_once()
+    assert rollback.call_args.args == (["gateway_rule:orders_rule"],)
+    assert rollback.call_args.kwargs["plan"] is deployment_plan
+    assert set(rollback.call_args.kwargs) == {
+        "plan",
+        "before_action",
+        "after_action",
+        "stop_on_error",
+    }
+    assert rollback.call_args.kwargs["stop_on_error"] is True

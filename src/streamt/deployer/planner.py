@@ -30,12 +30,15 @@ from streamt.deployer.gateway import (
     GatewayBackendBinding,
     GatewayBindingError,
     GatewayDeployer,
+    GatewayDesiredAggregateError,
+    GatewayManagedMutationError,
     GatewayRuleChange,
     ManagedGatewayRuleObservation,
     build_desired_gateway_rule,
     classify_gateway_interceptor_name,
     is_gateway_backend_identity,
     plan_managed_gateway_rule,
+    plan_managed_gateway_rule_deletion,
     secret_neutral_gateway_changes,
 )
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
@@ -1994,6 +1997,102 @@ class DeploymentPlanner:
             return "created"
         return "updated" if result == "updated" else "unchanged"
 
+    @staticmethod
+    def _require_managed_gateway_action(
+        change: object,
+    ) -> tuple[
+        ManagedGatewayRuleObservation,
+        ManagedGatewayRuleObservation | None,
+        str,
+    ]:
+        """Validate one actionable Gateway change and return its exact locator surfaces."""
+        action = str(getattr(change, "action", ""))
+        if action not in {"create", "update", "delete"}:
+            raise StateIdentityError("Gateway change is not actionable")
+        if not isinstance(change, GatewayRuleChange):
+            raise StateIdentityError(
+                "Actionable Gateway change requires the normalized change model"
+            )
+
+        current = getattr(change, "current", None)
+        desired = getattr(change, "desired_managed", None)
+        backend_identity = getattr(change, "backend_identity", None)
+        logical_name = getattr(change, "name", None)
+        if (
+            not isinstance(current, ManagedGatewayRuleObservation)
+            or not isinstance(logical_name, str)
+            or not is_gateway_backend_identity(backend_identity)
+            or backend_identity != current.binding.backend_identity
+            or logical_name != current.logical_name
+        ):
+            raise StateIdentityError(
+                "Actionable Gateway change requires complete normalized aggregate evidence"
+            )
+
+        try:
+            if action == "delete":
+                if (
+                    desired is not None
+                    or getattr(change, "desired", None) is not None
+                    or not current.exists
+                ):
+                    raise StateIdentityError(
+                        "Actionable Gateway change has incoherent normalized aggregate evidence"
+                    )
+                canonical = plan_managed_gateway_rule_deletion(current)
+                if (
+                    logical_name != canonical.name
+                    or action != canonical.action
+                    or getattr(change, "current_alias", None) is not None
+                    or getattr(change, "current_interceptors", None) is not None
+                    or getattr(change, "desired", None) is not canonical.desired
+                    or desired is not canonical.desired_managed
+                    or current != canonical.current
+                    or getattr(change, "changes", None) != canonical.changes
+                    or backend_identity != canonical.backend_identity
+                ):
+                    raise StateIdentityError(
+                        "Actionable Gateway change differs from its canonical normalized evidence"
+                    )
+                return current, None, current.alias_name
+
+            artifact = getattr(change, "desired", None)
+            if (
+                not isinstance(artifact, GatewayRuleArtifact)
+                or not isinstance(desired, ManagedGatewayRuleObservation)
+                or backend_identity != desired.binding.backend_identity
+                or artifact.name != logical_name
+                or artifact.virtual_topic != desired.alias_name
+                or build_desired_gateway_rule(artifact, desired.binding) != desired
+            ):
+                raise StateIdentityError(
+                    "Actionable Gateway change requires complete normalized aggregate evidence"
+                )
+            canonical = plan_managed_gateway_rule(
+                artifact,
+                desired,
+                current=current,
+            )
+            if (
+                logical_name != canonical.name
+                or action != canonical.action
+                or getattr(change, "current_alias", None) is not None
+                or getattr(change, "current_interceptors", None) is not None
+                or artifact != canonical.desired
+                or desired != canonical.desired_managed
+                or current != canonical.current
+                or getattr(change, "changes", None) != canonical.changes
+                or backend_identity != canonical.backend_identity
+            ):
+                raise StateIdentityError(
+                    "Actionable Gateway change differs from its canonical normalized evidence"
+                )
+            return current, desired, desired.alias_name
+        except (GatewayDesiredAggregateError, GatewayManagedMutationError) as exc:
+            raise StateIdentityError(
+                "Actionable Gateway change has incoherent normalized aggregate evidence"
+            ) from exc
+
     def _apply_resource_changes(
         self,
         results: dict[str, object],
@@ -2061,6 +2160,16 @@ class DeploymentPlanner:
     def operation_actions(self, plan: DeploymentPlan) -> list[tuple[str, str]]:
         """Return the exact ordered runtime actions apply will attempt."""
         actions: list[tuple[str, str]] = []
+        gateway_changes = list(getattr(plan, "gateway_changes", []))
+        actionable_gateway_changes = [
+            change
+            for change in gateway_changes
+            if str(change.action) in {"create", "update", "delete"}
+        ]
+        if actionable_gateway_changes and self.gateway_deployer is None:
+            raise StateIdentityError(
+                "Actionable Gateway plan requires a configured Gateway deployer"
+            )
 
         def add_changes(
             deployer: object | None,
@@ -2112,12 +2221,11 @@ class DeploymentPlanner:
             label_fn=lambda change: f"connector:{change.connector_name}",
             upsert_actions=("create", "update"),
         )
-        add_changes(
-            self.gateway_deployer,
-            list(getattr(plan, "gateway_changes", [])),
-            label_fn=lambda change: f"gateway_rule:{change.name}",
-            upsert_actions=("create", "update"),
-        )
+        if self.gateway_deployer is not None:
+            for change in actionable_gateway_changes:
+                action = str(change.action)
+                self._require_managed_gateway_action(change)
+                actions.append((f"gateway_rule:{change.name}", action))
         return actions
 
     def _planned_resource_id(
@@ -2126,6 +2234,7 @@ class DeploymentPlanner:
         kind: str,
         change: object,
         physical_name: str,
+        expected_backend: str | None = None,
     ) -> str:
         """Resolve an action to ownership identity, never to its runtime label."""
         desired = getattr(change, "desired", None)
@@ -2139,7 +2248,14 @@ class DeploymentPlanner:
             if self.prior_state is not None:
                 for prior_resource_id, record in self.prior_state.resources.items():
                     identity = ResourceIdentity.parse(prior_resource_id)
-                    if identity.kind == kind and record.physical_name == physical_name:
+                    if (
+                        identity.kind == kind
+                        and record.physical_name == physical_name
+                        and (
+                            expected_backend is None
+                            or record.backend == expected_backend
+                        )
+                    ):
                         logical_names.add(identity.logical_name)
             if len(logical_names) > 1:
                 raise StateIdentityError(
@@ -2158,6 +2274,16 @@ class DeploymentPlanner:
     def planned_actions(self, plan: DeploymentPlan) -> list[PlannedAction]:
         """Return ordered runtime actions with canonical ownership identities."""
         actions: list[PlannedAction] = []
+        gateway_changes = list(getattr(plan, "gateway_changes", []))
+        actionable_gateway_changes = [
+            change
+            for change in gateway_changes
+            if str(change.action) in {"create", "update", "delete"}
+        ]
+        if actionable_gateway_changes and self.gateway_deployer is None:
+            raise StateIdentityError(
+                "Actionable Gateway plan requires a configured Gateway deployer"
+            )
 
         def add_changes(
             deployer: object | None,
@@ -2225,20 +2351,22 @@ class DeploymentPlanner:
             physical_name_fn=lambda change: str(change.connector_name),
             upsert_actions=("create", "update"),
         )
-        add_changes(
-            self.gateway_deployer,
-            list(getattr(plan, "gateway_changes", [])),
-            kind="gateway_rule",
-            label_fn=lambda change: f"gateway_rule:{change.name}",
-            physical_name_fn=lambda change: str(
-                change.desired.virtual_topic
-                if change.desired is not None
-                else (
-                    change.current_alias.name if change.current_alias is not None else change.name
+        if self.gateway_deployer is not None:
+            for change in actionable_gateway_changes:
+                action = str(change.action)
+                _, _, alias_name = self._require_managed_gateway_action(change)
+                actions.append(
+                    PlannedAction(
+                        resource_id=self._planned_resource_id(
+                            kind="gateway_rule",
+                            change=change,
+                            physical_name=alias_name,
+                            expected_backend=change.backend_identity,
+                        ),
+                        runtime_label=f"gateway_rule:{change.name}",
+                        action=action,
+                    )
                 )
-            ),
-            upsert_actions=("create", "update"),
-        )
 
         seen_resource_ids: set[str] = set()
         for planned_action in actions:
@@ -2268,6 +2396,28 @@ class DeploymentPlanner:
         """Apply a deployment plan."""
         if plan is None:
             plan = self.plan()
+
+        gd = self.gateway_deployer
+        actionable_gateway_changes = [
+            change
+            for change in plan.gateway_changes
+            if change.action in {"create", "update", "delete"}
+        ]
+        if actionable_gateway_changes and gd is None:
+            raise StateIdentityError(
+                "Actionable Gateway plan requires a configured Gateway deployer"
+            )
+        gateway_actions: list[
+            tuple[
+                GatewayRuleChange,
+                ManagedGatewayRuleObservation,
+                ManagedGatewayRuleObservation | None,
+            ]
+        ] = []
+        if gd is not None:
+            for change in actionable_gateway_changes:
+                current, desired, _ = self._require_managed_gateway_action(change)
+                gateway_actions.append((change, current, desired))
 
         results: dict[str, object] = {
             "created": [],
@@ -2377,22 +2527,48 @@ class DeploymentPlanner:
             stop_requested=stop_requested,
         )
 
-        gd = self.gateway_deployer
-        self._apply_resource_changes(
-            results,
-            gd,
-            plan.gateway_changes,
-            upsert_actions=("create", "update"),
-            label_fn=lambda c: f"gateway_rule:{c.name}",
-            apply_fn=lambda desired: gd.apply(desired),  # type: ignore[union-attr]
-            create_verb="created",
-            delete_fn=lambda c: gd.delete(c.name),  # type: ignore[union-attr]
-            before_action=before_action,
-            after_action=after_action,
-            action_index=action_index,
-            stop_on_error=stop_on_error,
-            stop_requested=stop_requested,
-        )
+        if gd is not None:
+            for change, current, desired in gateway_actions:
+                if stop_requested[0]:
+                    break
+                label = f"gateway_rule:{change.name}"
+                current_index = action_index[0]
+                if before_action is not None:
+                    before_action(label, current_index)
+                try:
+                    if change.action == "delete":
+                        result = gd.delete_managed_gateway_rule(current)
+                        if result != "deleted":
+                            raise StateIdentityError(
+                                "Gateway managed delete returned an invalid result"
+                            )
+                        results["deleted"].append(label)
+                    else:
+                        if desired is None:
+                            raise StateIdentityError(
+                                "Actionable Gateway change requires a desired aggregate"
+                            )
+                        result = gd.apply_managed_gateway_rule(current, desired)
+                        expected_result = (
+                            "created" if change.action == "create" else "updated"
+                        )
+                        if result != expected_result:
+                            raise StateIdentityError(
+                                "Gateway managed apply returned an invalid result"
+                            )
+                        results[
+                            "created" if change.action == "create" else "updated"
+                        ].append(label)
+                except Exception as e:
+                    results["errors"].append(f"{label}: {_sanitize_error(e)}")
+                    if after_action is not None:
+                        after_action(label, current_index, False)
+                    if stop_on_error:
+                        stop_requested[0] = True
+                else:
+                    if after_action is not None:
+                        after_action(label, current_index, True)
+                action_index[0] += 1
 
         # Track rollback candidates (newly created resources that could be undone)
         results["rollback_candidates"] = list(results["created"]) if results["errors"] else []
@@ -2411,6 +2587,7 @@ class DeploymentPlanner:
         self,
         labels: list[str],
         *,
+        plan: DeploymentPlan | None = None,
         before_action: Callable[[str, int], None] | None = None,
         after_action: Callable[[str, int, bool], None] | None = None,
         stop_on_error: bool = False,
@@ -2421,11 +2598,50 @@ class DeploymentPlanner:
         """
         rolled_back: list[str] = []
         errors: list[str] = []
+        gateway_rollbacks: dict[int, ManagedGatewayRuleObservation] = {}
+        gateway_preflight_errors: list[tuple[int, str, Exception]] = []
+        seen_gateway_labels: set[str] = set()
+        for index, label in enumerate(labels):
+            if label.partition(":")[0] != "gateway_rule":
+                continue
+            if label in seen_gateway_labels:
+                gateway_preflight_errors.append(
+                    (
+                        index,
+                        label,
+                        StateIdentityError(
+                            "Gateway rollback labels must identify unique exact creates"
+                        ),
+                    )
+                )
+                continue
+            seen_gateway_labels.add(label)
+            try:
+                gateway_rollbacks[index] = self._resolve_gateway_create_rollback(
+                    label,
+                    plan,
+                )
+            except Exception as exc:
+                gateway_preflight_errors.append((index, label, exc))
+
+        if gateway_preflight_errors:
+            failures = gateway_preflight_errors[:1] if stop_on_error else gateway_preflight_errors
+            for index, label, exc in failures:
+                if before_action is not None:
+                    before_action(label, index)
+                errors.append(f"{label}: {_sanitize_error(exc)}")
+                if after_action is not None:
+                    after_action(label, index, False)
+            return rolled_back, errors
+
         for index, label in enumerate(labels):
             if before_action is not None:
                 before_action(label, index)
             try:
-                self._rollback_resource(label)
+                self._rollback_resource(
+                    label,
+                    gateway_rollback=gateway_rollbacks.get(index),
+                )
                 rolled_back.append(label)
             except Exception as e:
                 errors.append(f"{label}: {_sanitize_error(e)}")
@@ -2438,7 +2654,38 @@ class DeploymentPlanner:
                     after_action(label, index, True)
         return rolled_back, errors
 
-    def _rollback_resource(self, label: str) -> None:
+    def _resolve_gateway_create_rollback(
+        self,
+        label: str,
+        plan: DeploymentPlan | None,
+    ) -> ManagedGatewayRuleObservation:
+        """Resolve one Gateway create rollback from the exact reviewed plan."""
+        if self.gateway_deployer is None:
+            raise StateIdentityError(
+                "Gateway rollback requires a configured Gateway deployer"
+            )
+        if plan is None:
+            raise StateIdentityError("Gateway rollback requires the exact reviewed plan")
+        matches = [
+            change
+            for change in plan.gateway_changes
+            if change.action == "create" and f"gateway_rule:{change.name}" == label
+        ]
+        if len(matches) != 1:
+            raise StateIdentityError(
+                "Gateway rollback requires one exact normalized create change"
+            )
+        _, desired, _ = self._require_managed_gateway_action(matches[0])
+        if desired is None:
+            raise StateIdentityError("Gateway rollback requires the exact desired aggregate")
+        return desired
+
+    def _rollback_resource(
+        self,
+        label: str,
+        *,
+        gateway_rollback: ManagedGatewayRuleObservation | None = None,
+    ) -> None:
         """Attempt to delete a resource by its apply label (e.g. 'topic:foo')."""
         kind, _, name = label.partition(":")
         if kind == "schema" and self.schema_registry_deployer:
@@ -2447,5 +2694,15 @@ class DeploymentPlanner:
             self.kafka_deployer.delete_topic(name)
         elif kind == "connector" and self.connect_deployer:
             self.connect_deployer.delete_connector(name)
-        elif kind == "gateway_rule" and self.gateway_deployer:
-            self.gateway_deployer.delete(name)
+        elif kind == "gateway_rule":
+            if self.gateway_deployer is None or gateway_rollback is None:
+                raise StateIdentityError(
+                    "Gateway rollback requires exact normalized mutation evidence"
+                )
+            result = self.gateway_deployer.delete_managed_gateway_rule(
+                gateway_rollback
+            )
+            if result != "deleted":
+                raise StateIdentityError(
+                    "Gateway managed rollback delete returned an invalid result"
+                )

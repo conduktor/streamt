@@ -32,6 +32,8 @@ from streamt.deployer.gateway import (
     GatewayDeployer,
     GatewayRuleChange,
     ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    plan_managed_gateway_rule,
 )
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
@@ -244,11 +246,21 @@ class TestPlannerPartialFailure:
     def test_gateway_error_captured_in_results(self):
         """Planner.apply() wraps gateway errors into results['errors']."""
         gw = _mock_gw()
-        gw.apply.side_effect = RuntimeError("Gateway connection refused")
+        gw.apply_managed_gateway_rule.side_effect = RuntimeError(
+            "Gateway connection refused"
+        )
 
         artifact = GatewayRuleArtifact(name="r1", virtual_topic="vt", physical_topic="pt")
+        binding = GatewayBackendBinding.from_endpoint("https://gateway.example.test")
+        desired = build_desired_gateway_rule(artifact, binding)
+        current = ManagedGatewayRuleObservation(
+            binding=binding,
+            logical_name="r1",
+            alias_name="vt",
+            exists=False,
+        )
         plan = DeploymentPlan(
-            gateway_changes=[GatewayRuleChange(name="r1", action="create", desired=artifact)],
+            gateway_changes=[plan_managed_gateway_rule(artifact, desired, current)],
         )
 
         planner = DeploymentPlanner(_manifest(), gateway_deployer=gw)
@@ -256,6 +268,7 @@ class TestPlannerPartialFailure:
 
         assert len(results["errors"]) == 1
         assert "r1" in results["errors"][0]
+        gw.apply.assert_not_called()
 
 
 # ===========================================================================
