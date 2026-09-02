@@ -56,6 +56,8 @@ def compile(
         manifest = compiler.compile(dry_run=dry_run)
 
         artifacts = manifest.artifacts
+        artifact_kinds = ["topics", "flink_jobs", "connectors", "gateway_rules", "schemas"]
+        counts = {kind: len(artifacts.get(kind, [])) for kind in artifact_kinds}
         data: dict[str, object] = {
             "dry_run": dry_run,
             "artifacts": {
@@ -68,7 +70,7 @@ def compile(
                     for s in artifacts.get("schemas", [])
                 ],
             },
-            "counts": {k: len(artifacts.get(k, [])) for k in ["topics", "flink_jobs", "connectors", "gateway_rules", "schemas"]},
+            "counts": counts,
         }
         if not dry_run:
             data["output_dir"] = str(compiler.output_dir)
@@ -78,7 +80,7 @@ def compile(
         if dry_run:
             fmt.print("[yellow]Dry run - no files written[/yellow]")
             fmt.print("\nArtifacts that would be generated:")
-            for kind in ["topics", "flink_jobs", "connectors", "gateway_rules", "schemas"]:
+            for kind in artifact_kinds:
                 items = artifacts.get(kind, [])
                 if items:
                     label = kind.replace("_", " ").title()
@@ -90,7 +92,7 @@ def compile(
             fmt.print_table(
                 "Generated Artifacts",
                 [("Type", "cyan"), ("Count", "green")],
-                [[k.replace("_", " ").title(), str(v)] for k, v in data["counts"].items()],
+                [[kind.replace("_", " ").title(), str(count)] for kind, count in counts.items()],
             )
 
         fmt.flush()

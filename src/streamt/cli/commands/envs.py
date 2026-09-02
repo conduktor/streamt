@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import Optional
 
 import click
@@ -133,12 +134,12 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
         handle_parse_error(fmt, e, ErrorCode.ENVIRONMENT_ERROR)
 
 
-def _flatten_dict(d: dict, prefix: str = "") -> dict[str, object]:
+def _flatten_dict(d: Mapping[str, object], prefix: str = "") -> dict[str, object]:
     """Flatten a nested dict to dot-separated keys."""
     items: dict[str, object] = {}
     for k, v in d.items():
         key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
+        if isinstance(v, Mapping):
             items.update(_flatten_dict(v, key))
         else:
             items[key] = v
@@ -209,11 +210,22 @@ def envs_diff(ctx: click.Context, project_dir: Optional[str], env_a: str, env_b:
             fmt.print(f"[cyan]Differences: {env_a} vs {env_b}[/cyan]\n")
             rows = []
             for d in diffs:
-                va = mask_secrets({d["key"]: d[env_a]}).get(d["key"], d[env_a])
-                vb = mask_secrets({d["key"]: d[env_b]}).get(d["key"], d[env_b])
+                diff_key = d.get("key")
+                if not isinstance(diff_key, str):
+                    continue
+                value_a = d.get(env_a)
+                value_b = d.get(env_b)
+                masked_a = mask_secrets({diff_key: value_a})
+                masked_b = mask_secrets({diff_key: value_b})
+                va = (
+                    masked_a.get(diff_key, value_a) if isinstance(masked_a, dict) else value_a
+                )
+                vb = (
+                    masked_b.get(diff_key, value_b) if isinstance(masked_b, dict) else value_b
+                )
                 rows.append(
                     [
-                        str(d["key"]),
+                        diff_key,
                         str(va) if va is not None else "-",
                         str(vb) if vb is not None else "-",
                     ]

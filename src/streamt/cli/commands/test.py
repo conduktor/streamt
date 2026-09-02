@@ -12,6 +12,13 @@ from streamt.core.errors import ErrorCode
 from streamt.output import StructuredError
 
 
+def _normalize_test_errors(value: object) -> list[str]:
+    """Return stable diagnostics for the runner's broad result payload boundary."""
+    if not isinstance(value, list):
+        return ["Malformed test result: 'errors' must be a list"]
+    return [item if isinstance(item, str) else str(item) for item in value]
+
+
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option(
@@ -114,9 +121,10 @@ def test(
                 passed += 1
             else:
                 fmt.print(f"[red]FAIL[/red]: {test_result['name']}")
-                tr["errors"] = test_result.get("errors", [])
-                for error in test_result.get("errors", []):
-                    fmt.print(f"  - {error}")
+                test_errors = _normalize_test_errors(test_result.get("errors", []))
+                tr["errors"] = test_errors
+                for test_error in test_errors:
+                    fmt.print(f"  - {test_error}")
                 failed += 1
             test_results.append(tr)
 

@@ -78,12 +78,12 @@ def show_resource(
 def _resolve_jinja_sql(sql: str, project: StreamtProject) -> str:
     """Resolve Jinja source()/ref() calls to actual topic/table names."""
     source_map = {s.name: s.topic for s in project.sources}
-    model_map = {
-        m.name: m.get_topic_config().name
-        if m.get_topic_config() and m.get_topic_config().name
-        else m.name
-        for m in project.models
-    }
+    model_map: dict[str, str] = {}
+    for model in project.models:
+        topic_config = model.get_topic_config()
+        model_map[model.name] = (
+            topic_config.name if topic_config is not None and topic_config.name else model.name
+        )
 
     def _replace_source(m: re.Match[str]) -> str:
         name = m.group(1)

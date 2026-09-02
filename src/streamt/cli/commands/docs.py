@@ -103,13 +103,14 @@ def docs_openapi(
             }
 
         for mdl in project.models:
-            cols = mdl.columns or []
+            cols: list[tuple[str, Optional[str]]] = [
+                (col.name, col.type) for col in (mdl.columns or [])
+            ]
             if mdl.contract and mdl.contract.columns:
-                cols = mdl.contract.columns
+                cols = [(col.name, col.type) for col in mdl.contract.columns]
             props = {}
-            for col in cols:
-                col_name = col.name if hasattr(col, "name") else str(col)
-                col_type = getattr(col, "type", "STRING") or "STRING"
+            for col_name, declared_type in cols:
+                col_type = declared_type or "STRING"
                 props[col_name] = {"type": _flink_to_json_type(col_type)}
             if props:
                 schema_name = f"{mdl.name}_value"
@@ -250,33 +251,33 @@ def docs_dictionary(
                 )
 
         for mdl in project.models:
-            cols = mdl.columns or []
             if mdl.contract and mdl.contract.columns:
-                cols = [
-                    type(
-                        "Col",
-                        (),
+                for contract_col in mdl.contract.columns:
+                    entries.append(
                         {
-                            "name": c.name,
-                            "type": c.type,
-                            "classification": None,
-                            "description": c.description,
-                        },
+                            "resource_type": "model",
+                            "resource": mdl.name,
+                            "column": contract_col.name,
+                            "type": contract_col.type or "",
+                            "classification": "",
+                            "description": contract_col.description or "",
+                        }
                     )
-                    for c in mdl.contract.columns
-                ]
-            for col in cols:
-                entries.append(
-                    {
-                        "resource_type": "model",
-                        "resource": mdl.name,
-                        "column": col.name,
-                        "type": col.type or "",
-                        "classification": col.classification.value if col.classification else "",
-                        "description": col.description or "",
-                    }
-                )
-            if not cols:
+            elif mdl.columns:
+                for model_col in mdl.columns:
+                    entries.append(
+                        {
+                            "resource_type": "model",
+                            "resource": mdl.name,
+                            "column": model_col.name,
+                            "type": model_col.type or "",
+                            "classification": (
+                                model_col.classification.value if model_col.classification else ""
+                            ),
+                            "description": model_col.description or "",
+                        }
+                    )
+            else:
                 entries.append(
                     {
                         "resource_type": "model",
