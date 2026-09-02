@@ -7,7 +7,7 @@ production-safe stateful upgrades are not implemented.
 
 | System | Compile | Observe or discover | Direct plan/apply | Current boundary |
 | --- | --- | --- | --- | --- |
-| Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
+| Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Topic changes include canonical downstream graph and consumer evidence. Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
 | Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility, single-subject adoption | Register source schemas | Adoption is state-only and fail-closed; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates are deterministically blocked before cancel/resubmit until a savepoint-safe or explicitly stateless workflow exists. |
 | Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. |

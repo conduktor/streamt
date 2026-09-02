@@ -253,6 +253,53 @@ def _markdown_cell(value: object) -> str:
     return html.escape(_sanitize(value, limit=300)).replace("|", "&#124;")
 
 
+def _reviewed_plan_impact(config: ActionConfig, data: Mapping[str, object]) -> list[object]:
+    """Read checksum-verified impact evidence from the canonical reviewed plan."""
+    try:
+        from streamt.deployer.plan_file import ReviewedPlanFile
+
+        impact = ReviewedPlanFile.load(config.plan_path).plan.get("impact")
+    except (OSError, ValueError):
+        inline = data.get("impact")
+        return inline if isinstance(inline, list) else []
+    return impact if isinstance(impact, list) else []
+
+
+def _impact_exposures(value: object) -> str:
+    if not isinstance(value, list):
+        return "—"
+    rendered: list[str] = []
+    for exposure in value:
+        if not isinstance(exposure, dict):
+            continue
+        name = str(exposure.get("name", "unknown"))
+        owners = exposure.get("owners")
+        if isinstance(owners, list) and owners:
+            name += f" ({', '.join(str(owner) for owner in owners)})"
+        rendered.append(name)
+    return ", ".join(rendered) or "—"
+
+
+def _impact_consumers(value: object) -> str:
+    if not isinstance(value, list):
+        return "—"
+    rendered: list[str] = []
+    for consumer in value:
+        if not isinstance(consumer, dict):
+            continue
+        declaration = "declared" if consumer.get("declared") is True else "undeclared"
+        rendered.append(
+            f"{consumer.get('group_id', 'unknown')} ({declaration}, lag={consumer.get('lag', 0)})"
+        )
+    return ", ".join(rendered) or "—"
+
+
+def _impact_owners(value: object) -> str:
+    if not isinstance(value, list):
+        return "—"
+    return ", ".join(str(owner) for owner in value) or "—"
+
+
 def render_summary(
     config: ActionConfig,
     validation: CommandExecution,
@@ -305,6 +352,50 @@ def render_summary(
             )
         if len(changes) > 50:
             lines.append(f"\n_…and {len(changes) - 50} more change(s)._ ")
+
+    impact = _reviewed_plan_impact(config, data)
+    if impact:
+        lines.extend(
+            [
+                "",
+                "### Impact evidence",
+                "",
+                "| Physical topic | Logical identity | Downstream models | Owners | Exposures | "
+                "Live consumers | Evidence |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for entry in impact[:30]:
+            if not isinstance(entry, dict):
+                continue
+            downstream = entry.get("downstream_models")
+            downstream_text = (
+                ", ".join(str(model) for model in downstream)
+                if isinstance(downstream, list) and downstream
+                else "—"
+            )
+            consumer_evidence = entry.get("consumer_evidence")
+            if isinstance(consumer_evidence, dict):
+                evidence_text = str(consumer_evidence.get("status", "unavailable"))
+                reason = consumer_evidence.get("reason")
+                if reason:
+                    evidence_text += f" ({reason})"
+                failures = consumer_evidence.get("failures")
+                if isinstance(failures, list) and failures:
+                    evidence_text += f"; {len(failures)} failure(s)"
+            else:
+                evidence_text = "unavailable"
+            lines.append(
+                f"| {_markdown_cell(entry.get('resource', 'unknown'))} | "
+                f"{_markdown_cell(entry.get('logical_resource') or 'unavailable')} | "
+                f"{_markdown_cell(downstream_text)} | "
+                f"{_markdown_cell(_impact_owners(entry.get('owners')))} | "
+                f"{_markdown_cell(_impact_exposures(entry.get('exposures')))} | "
+                f"{_markdown_cell(_impact_consumers(entry.get('consumers')))} | "
+                f"{_markdown_cell(evidence_text)} |"
+            )
+        if len(impact) > 30:
+            lines.append(f"\n_…and {len(impact) - 30} more impact entries._ ")
 
     requirements = data.get("ownership_requirements", [])
     if isinstance(requirements, list) and requirements:

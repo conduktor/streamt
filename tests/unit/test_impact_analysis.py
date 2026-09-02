@@ -1,309 +1,407 @@
-"""TDD tests for P5: Impact Analysis at plan time — live consumer discovery.
+"""Canonical change-impact evidence tests."""
 
-Tests drive the design: DeploymentPlan gains an impact_radius field;
-planner._compute_impact_radius() uses DAG + optional live Kafka consumer data.
-"""
+from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
-from streamt.compiler.manifest import Manifest
+import pytest
+
+from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
+from streamt.core.models import Exposure, Model, ProjectInfo, Source, StreamtProject
+from streamt.core.runtime import KafkaConfig, RuntimeConfig
+from streamt.deployer.kafka import ConsumerGroupLag, TopicChange
+from streamt.deployer.plan_file import (
+    ReviewedPlanFile,
+    StalePlanError,
+    deployment_plan_payload,
+)
+from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner, ImpactEntry
+
+PHYSICAL_CLEAN = "prod.payments.clean.v2"
 
 
-def _make_manifest(topics=None, flink_jobs=None):
-    m = Manifest(version="1.0.0", project_name="test")
-    if topics:
-        m.artifacts["topics"] = [t.to_dict() if hasattr(t, "to_dict") else t for t in topics]
-    if flink_jobs:
-        m.artifacts["flink_jobs"] = flink_jobs
-    return m
-
-
-class TestImpactRadiusDataclass:
-    """DeploymentPlan.impact_radius is populated by plan()."""
-
-    def test_deployment_plan_has_impact_radius_field(self):
-        """DeploymentPlan has an impact_radius attribute (list of dicts)."""
-        from streamt.deployer.planner import DeploymentPlan
-
-        plan = DeploymentPlan()
-        assert hasattr(plan, "impact_radius")
-        assert isinstance(plan.impact_radius, list)
-
-    def test_impact_radius_item_shape(self):
-        """Each impact_radius entry has resource, downstream_models, consumers keys."""
-        from streamt.deployer.planner import DeploymentPlan, ImpactEntry
-
-        entry = ImpactEntry(
-            resource="payments_clean",
-            change_type="schema_update",
-            downstream_models=["fraud_scoring", "analytics"],
-            consumers=[{"group_id": "fraud-prod", "lag": 0}],
-        )
-        plan = DeploymentPlan()
-        plan.impact_radius.append(entry)
-        assert plan.impact_radius[0].resource == "payments_clean"
-        assert "fraud_scoring" in plan.impact_radius[0].downstream_models
-
-
-class TestImpactAnalysisDAGPropagation:
-    """Impact analysis uses DAG to find downstream models."""
-
-    def _make_planner(self, manifest, project, kafka_deployer=None, flink_deployer=None):
-        from streamt.deployer.planner import DeploymentPlanner
-
-        return DeploymentPlanner(
-            manifest=manifest,
-            project=project,
-            kafka_deployer=kafka_deployer,
-            flink_deployer=flink_deployer,
-        )
-
-    def _simple_project(self):
-        """Build a small project: raw → clean → enriched (three-model chain)."""
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from streamt.core.parser import ProjectParser
-
-        cfg = {
-            "project": {"name": "test", "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-            "sources": [{"name": "raw", "topic": "raw.v1"}],
-            "models": [
-                {"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'},
-                {"name": "enriched", "sql": 'SELECT * FROM {{ ref("clean") }}'},
-            ],
-        }
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
-            return ProjectParser(Path(d)).parse()
-
-    def test_schema_change_shows_downstream_models(self):
-        """Changing a schema that a model depends on lists downstream models in impact."""
-        project = self._simple_project()
-        manifest = _make_manifest(topics=[{"name": "clean"}, {"name": "enriched"}])
-        planner = self._make_planner(manifest, project)
-        plan = planner.plan()
-
-        # impact_radius should exist; if clean topic changes, enriched is downstream
-        assert isinstance(plan.impact_radius, list)
-
-    def test_no_impact_when_no_changes(self):
-        """Empty plan produces empty impact_radius."""
-        project = self._simple_project()
-        manifest = _make_manifest()
-        planner = self._make_planner(manifest, project)
-        plan = planner.plan()
-        # With no artifacts in manifest, nothing changes
-        assert isinstance(plan.impact_radius, list)
-
-
-class TestImpactAnalysisLiveConsumers:
-    """Impact analysis fetches live consumer group lag when kafka_deployer is available."""
-
-    def _make_kafka_deployer_mock(self, groups, lag_map):
-        """groups: list of group_ids; lag_map: {(group, topic): ConsumerGroupLag}"""
-
-        mock = MagicMock()
-        mock.get_consumer_groups.return_value = groups
-
-        def _lag(group_id, topic):
-            key = (group_id, topic)
-            if key in lag_map:
-                return lag_map[key]
-            return None
-
-        mock.get_consumer_group_lag.side_effect = _lag
-        return mock
-
-    def test_live_consumers_appear_in_impact_for_changed_topic(self):
-        """Consumer groups consuming an affected topic appear in impact_radius."""
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from streamt.core.parser import ProjectParser
-        from streamt.deployer.kafka import ConsumerGroupLag
-        from streamt.deployer.planner import DeploymentPlanner
-
-        cfg = {
-            "project": {"name": "test", "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-            "sources": [{"name": "raw", "topic": "raw.v1"}],
-            "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
-        }
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
-            project = ProjectParser(Path(d)).parse()
-
-        # Manifest has no 'clean' topic → plan will create it → that's a change
-        manifest = _make_manifest()
-
-        lag = ConsumerGroupLag(group_id="fraud-prod", topic="clean", total_lag=5000)
-        kafka_mock = self._make_kafka_deployer_mock(
-            groups=["fraud-prod", "analytics-v2"],
-            lag_map={("fraud-prod", "clean"): lag},
-        )
-
-        planner = DeploymentPlanner(manifest=manifest, project=project, kafka_deployer=kafka_mock)
-        plan = planner.plan()
-
-        assert isinstance(plan.impact_radius, list)
-        # Find an entry for 'clean'
-        clean_entries = [e for e in plan.impact_radius if e.resource == "clean"]
-        if clean_entries:
-            consumer_groups = [c["group_id"] for c in clean_entries[0].consumers]
-            assert "fraud-prod" in consumer_groups
-
-    def test_impact_radius_empty_when_no_kafka_deployer(self):
-        """When kafka_deployer is None, impact_radius has no consumer data but still runs."""
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from streamt.core.parser import ProjectParser
-        from streamt.deployer.planner import DeploymentPlanner
-
-        cfg = {
-            "project": {"name": "test", "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-            "sources": [{"name": "raw", "topic": "raw.v1"}],
-            "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
-        }
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
-            project = ProjectParser(Path(d)).parse()
-
-        manifest = _make_manifest()
-        planner = DeploymentPlanner(manifest=manifest, project=project, kafka_deployer=None)
-        plan = planner.plan()
-        # Should run without error; consumers list is empty in entries
-        assert isinstance(plan.impact_radius, list)
-        for entry in plan.impact_radius:
-            assert entry.consumers == []
-
-    def test_undeclared_consumer_flagged(self):
-        """Consumer group not in exposures is flagged as undeclared in impact entry."""
-        import tempfile
-        from pathlib import Path
-
-        import yaml
-
-        from streamt.core.parser import ProjectParser
-        from streamt.deployer.kafka import ConsumerGroupLag
-        from streamt.deployer.planner import DeploymentPlanner
-
-        cfg = {
-            "project": {"name": "test", "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-            "sources": [{"name": "raw", "topic": "raw.v1"}],
-            "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
-            # No exposures declared
-        }
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
-            project = ProjectParser(Path(d)).parse()
-
-        manifest = _make_manifest()
-        lag = ConsumerGroupLag(group_id="mystery-svc", topic="clean", total_lag=100)
-        kafka_mock = self._make_kafka_deployer_mock(
-            groups=["mystery-svc"],
-            lag_map={("mystery-svc", "clean"): lag},
-        )
-        planner = DeploymentPlanner(manifest=manifest, project=project, kafka_deployer=kafka_mock)
-        plan = planner.plan()
-
-        # If mystery-svc appears, it should be flagged as undeclared
-        for entry in plan.impact_radius:
-            if entry.resource == "clean":
-                for consumer in entry.consumers:
-                    if consumer["group_id"] == "mystery-svc":
-                        assert consumer.get("declared") is False
-
-
-class TestPlanOutputIncludesImpact:
-    """plan JSON output includes impact_radius when present."""
-
-    def test_deployment_plan_to_dict_includes_impact_radius(self):
-        """DeploymentPlan serialises impact_radius into its dict/json representation."""
-        from streamt.deployer.planner import DeploymentPlan, ImpactEntry
-
-        plan = DeploymentPlan()
-        plan.impact_radius.append(
-            ImpactEntry(
-                resource="payments_clean",
-                change_type="topic_create",
-                downstream_models=["fraud_scoring"],
-                consumers=[{"group_id": "fraud-prod", "lag": 0, "declared": True}],
+def _project() -> StreamtProject:
+    """Build raw -> clean -> enriched -> scored -> fraud_service."""
+    return StreamtProject(
+        project=ProjectInfo(name="payments", version="1.0.0"),
+        runtime=RuntimeConfig(kafka=KafkaConfig(bootstrap_servers="broker:9092")),
+        sources=[Source(name="raw", topic="vendor.payments.v1", owner="ingest-team")],
+        models=[
+            Model(
+                name="clean",
+                owner="payments-platform",
+                **{"from": [{"source": "raw"}]},
+            ),
+            Model(
+                name="enriched",
+                owner="feature-platform",
+                **{"from": [{"ref": "clean"}]},
+            ),
+            Model(
+                name="scored",
+                owner="fraud-ml",
+                **{"from": [{"ref": "enriched"}]},
+            ),
+        ],
+        exposures=[
+            Exposure(
+                name="fraud_service",
+                type="application",
+                owners=[{"name": "risk-platform"}, {"name": "fraud-team"}],
+                consumer_group="fraud-prod",
+                consumes=[{"ref": "scored"}],
             )
-        )
-        # Plan details() or a to_dict() method should include impact
-        detail = plan.details()
-        assert "impact" in detail.lower() or isinstance(plan.impact_radius, list)
+        ],
+    )
 
 
-class TestDeclaredConsumerGroupMatching:
-    """exposure.consumer_group matches live consumer groups → declared=True."""
+def _manifest(*, physical_name: str = PHYSICAL_CLEAN) -> Manifest:
+    ownership = ArtifactOwnership(
+        project="payments",
+        owner_type="model",
+        owner_name="clean",
+        mode="managed",
+    )
+    topic = TopicArtifact(
+        name=physical_name,
+        partitions=6,
+        replication_factor=3,
+        ownership=ownership,
+    )
+    return Manifest(
+        version="1.0.0",
+        project_name="payments",
+        artifacts={"topics": [topic.to_dict()]},
+    )
 
-    def test_declared_consumer_group_flagged_as_declared(self):
-        """Consumer group declared in exposure.consumer_group is marked declared=True."""
-        import tempfile
-        from pathlib import Path
 
-        import yaml
+def _changed_plan(*, physical_name: str = PHYSICAL_CLEAN) -> DeploymentPlan:
+    return DeploymentPlan(
+        topic_changes=[TopicChange(topic=physical_name, action="update")]
+    )
 
-        from streamt.core.parser import ProjectParser
-        from streamt.deployer.kafka import ConsumerGroupLag
-        from streamt.deployer.planner import DeploymentPlanner
 
-        cfg = {
-            "project": {"name": "test", "version": "1.0.0"},
-            "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
-            "sources": [{"name": "raw", "topic": "raw.v1"}],
-            "models": [{"name": "clean", "sql": 'SELECT * FROM {{ source("raw") }}'}],
-            "exposures": [
-                {
-                    "name": "fraud_service",
-                    "type": "application",
-                    "consumer_group": "fraud-prod",  # declared in project
-                    "consumes": [{"ref": "clean"}],
-                }
-            ],
+def _impact(
+    *,
+    kafka: object | None = None,
+    manifest: Manifest | None = None,
+    project: StreamtProject | None = None,
+) -> tuple[DeploymentPlan, DeploymentPlanner]:
+    plan = _changed_plan()
+    planner = DeploymentPlanner(
+        manifest or _manifest(),
+        project=_project() if project is None else project,
+        kafka_deployer=kafka,  # type: ignore[arg-type]
+    )
+    planner._compute_impact_radius(plan)
+    return plan, planner
+
+
+def test_physical_topic_maps_to_logical_dag_with_transitive_exposure_and_consumers() -> None:
+    kafka = MagicMock()
+    kafka.get_consumer_groups.return_value = ["mystery-service", "fraud-prod"]
+    kafka.get_consumer_group_lag.side_effect = lambda group, topic: ConsumerGroupLag(
+        group_id=group,
+        topic=topic,
+        total_lag=11 if group == "fraud-prod" else 29,
+    )
+
+    plan, _ = _impact(kafka=kafka)
+
+    assert len(plan.impact_radius) == 1
+    entry = plan.impact_radius[0]
+    assert entry.resource == PHYSICAL_CLEAN
+    assert entry.logical_type == "model"
+    assert entry.logical_name == "clean"
+    assert entry.logical_resource == "model/clean"
+    assert entry.change_type == "topic_update"
+    assert entry.downstream_models == ["enriched", "scored"]
+    assert entry.exposures == [
+        {
+            "name": "fraud_service",
+            "owners": ["fraud-team", "risk-platform"],
+            "consumer_group": "fraud-prod",
         }
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "stream_project.yml").write_text(yaml.dump(cfg))
-            project = ProjectParser(Path(d)).parse()
+    ]
+    assert entry.owners == [
+        "feature-platform",
+        "fraud-ml",
+        "fraud-team",
+        "payments-platform",
+        "risk-platform",
+    ]
+    assert entry.consumers == [
+        {
+            "group_id": "fraud-prod",
+            "lag": 11,
+            "declared": True,
+            "declared_exposures": ["fraud_service"],
+        },
+        {
+            "group_id": "mystery-service",
+            "lag": 29,
+            "declared": False,
+            "declared_exposures": [],
+        },
+    ]
+    assert entry.identity_evidence == {
+        "status": "verified",
+        "source": "manifest_artifact_ownership",
+    }
+    assert entry.graph_evidence == {
+        "status": "verified",
+        "source": "declared_project_dag",
+    }
+    assert entry.consumer_evidence == {
+        "status": "verified",
+        "source": "kafka_consumer_groups",
+        "reason": None,
+        "failures": [],
+    }
+    assert kafka.get_consumer_group_lag.call_args_list[0].args[1] == PHYSICAL_CLEAN
 
-        manifest = _make_manifest()
-        lag = ConsumerGroupLag(group_id="fraud-prod", topic="clean", total_lag=100)
-        kafka_mock = MagicMock()
-        kafka_mock.get_consumer_groups.return_value = ["fraud-prod", "unknown-svc"]
-        kafka_mock.get_consumer_group_lag.side_effect = lambda g, t: (
-            lag if (g, t) == ("fraud-prod", "clean") else None
+
+def test_no_kafka_access_is_explicitly_unavailable_not_clean() -> None:
+    plan, _ = _impact()
+
+    entry = plan.impact_radius[0]
+    assert entry.consumers == []
+    assert entry.consumer_evidence == {
+        "status": "unavailable",
+        "source": "kafka_consumer_groups",
+        "reason": "kafka_not_configured",
+        "failures": [],
+    }
+    assert "consumer evidence: unavailable (kafka_not_configured)" in plan.details(
+        color=False
+    )
+
+
+def test_partial_consumer_query_failure_is_preserved_and_redacted() -> None:
+    kafka = MagicMock()
+    kafka.get_consumer_groups.return_value = ["z-broken", "a-observed"]
+
+    def lag(group: str, topic: str) -> ConsumerGroupLag:
+        if group == "z-broken":
+            raise RuntimeError(
+                "https://admin:super-secret@broker.test password=hunter2 token=abc"
+            )
+        return ConsumerGroupLag(group_id=group, topic=topic, total_lag=4)
+
+    kafka.get_consumer_group_lag.side_effect = lag
+
+    plan, _ = _impact(kafka=kafka)
+    entry = plan.impact_radius[0]
+
+    assert entry.consumers == [
+        {
+            "group_id": "a-observed",
+            "lag": 4,
+            "declared": False,
+            "declared_exposures": [],
+        }
+    ]
+    assert entry.consumer_evidence == {
+        "status": "partial",
+        "source": "kafka_consumer_groups",
+        "reason": "consumer_queries_failed",
+        "failures": [
+            {
+                "scope": "consumer_group/z-broken",
+                "code": "consumer_group_lag_failed",
+                "message": "https://***:***@broker.test password=*** token=***",
+            }
+        ],
+    }
+    serialized = json.dumps(deployment_plan_payload(plan))
+    assert "super-secret" not in serialized
+    assert "hunter2" not in serialized
+    assert "token=abc" not in serialized
+
+
+def test_consumer_group_listing_failure_is_unavailable_and_redacted() -> None:
+    kafka = MagicMock()
+    kafka.get_consumer_groups.side_effect = RuntimeError("authorization=Bearer top-secret")
+
+    plan, _ = _impact(kafka=kafka)
+
+    evidence = plan.impact_radius[0].consumer_evidence
+    assert evidence["status"] == "unavailable"
+    assert evidence["reason"] == "consumer_group_listing_failed"
+    assert evidence["failures"] == [
+        {
+            "scope": "consumer_group_list",
+            "code": "consumer_group_listing_failed",
+            "message": "authorization=***",
+        }
+    ]
+    assert "top-secret" not in plan.details(color=False)
+
+
+def test_missing_manifest_ownership_does_not_guess_from_physical_name() -> None:
+    manifest = Manifest(
+        version="1.0.0",
+        project_name="payments",
+        artifacts={
+            "topics": [
+                TopicArtifact(
+                    name=PHYSICAL_CLEAN,
+                    partitions=1,
+                    replication_factor=1,
+                ).to_dict()
+            ]
+        },
+    )
+
+    plan, _ = _impact(manifest=manifest)
+
+    entry = plan.impact_radius[0]
+    assert entry.logical_resource is None
+    assert entry.downstream_models == []
+    assert entry.exposures == []
+    assert entry.identity_evidence == {
+        "status": "unavailable",
+        "reason": "manifest_ownership_missing",
+    }
+    assert entry.graph_evidence == {
+        "status": "unavailable",
+        "reason": "logical_identity_unavailable",
+    }
+
+
+def test_missing_project_preserves_identity_and_marks_graph_unavailable() -> None:
+    plan = _changed_plan()
+    planner = DeploymentPlanner(_manifest(), project=None)
+
+    planner._compute_impact_radius(plan)
+
+    entry = plan.impact_radius[0]
+    assert entry.logical_resource == "model/clean"
+    assert entry.downstream_models == []
+    assert entry.exposures == []
+    assert entry.graph_evidence == {
+        "status": "unavailable",
+        "reason": "project_not_provided",
+    }
+    assert entry.consumer_evidence["status"] == "unavailable"
+
+
+def test_impact_order_and_reviewed_payload_are_canonical() -> None:
+    second = "aaa.physical"
+    manifest = _manifest()
+    manifest.artifacts["topics"].insert(
+        0,
+        TopicArtifact(
+            name=second,
+            partitions=1,
+            replication_factor=1,
+            ownership=ArtifactOwnership(
+                project="payments",
+                owner_type="source",
+                owner_name="raw",
+            ),
+        ).to_dict(),
+    )
+    plan = DeploymentPlan(
+        topic_changes=[
+            TopicChange(topic=PHYSICAL_CLEAN, action="update"),
+            TopicChange(topic=second, action="create"),
+        ]
+    )
+    planner = DeploymentPlanner(manifest, project=_project())
+    planner._compute_impact_radius(plan)
+
+    assert [entry.resource for entry in plan.impact_radius] == [second, PHYSICAL_CLEAN]
+    payload = deployment_plan_payload(plan)
+    assert [entry["resource"] for entry in payload["impact"]] == [second, PHYSICAL_CLEAN]
+    clean = payload["impact"][1]
+    assert set(clean) == {
+        "resource",
+        "logical_type",
+        "logical_name",
+        "logical_resource",
+        "change_type",
+        "downstream_models",
+        "exposures",
+        "owners",
+        "consumers",
+        "identity_evidence",
+        "graph_evidence",
+        "consumer_evidence",
+    }
+    assert clean["logical_resource"] == "model/clean"
+    assert clean["exposures"] == [
+        {
+            "consumer_group": "fraud-prod",
+            "name": "fraud_service",
+            "owners": ["fraud-team", "risk-platform"],
+        }
+    ]
+    assert clean["owners"] == [
+        "feature-platform",
+        "fraud-ml",
+        "fraud-team",
+        "payments-platform",
+        "risk-platform",
+    ]
+    assert clean["consumer_evidence"]["status"] == "unavailable"
+
+
+def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -> None:
+    kafka = MagicMock()
+    kafka.get_consumer_groups.return_value = ["fraud-prod"]
+    kafka.get_consumer_group_lag.return_value = ConsumerGroupLag(
+        group_id="fraud-prod", topic=PHYSICAL_CLEAN, total_lag=10
+    )
+    original, planner = _impact(kafka=kafka)
+    reviewed = ReviewedPlanFile.create(
+        original,
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime=_project().runtime,
+    )
+
+    kafka.get_consumer_group_lag.return_value = ConsumerGroupLag(
+        group_id="fraud-prod", topic=PHYSICAL_CLEAN, total_lag=999
+    )
+    lag_changed = _changed_plan()
+    planner._compute_impact_radius(lag_changed)
+    reviewed.verify_current_plan(lag_changed)
+
+    evidence_changed = _changed_plan()
+    evidence_changed.impact_radius = [
+        ImpactEntry(
+            resource=PHYSICAL_CLEAN,
+            change_type="topic_update",
+            logical_type="model",
+            logical_name="other",
+            logical_resource="model/other",
         )
+    ]
+    with pytest.raises(StalePlanError, match="impact evidence"):
+        reviewed.verify_current_plan(evidence_changed)
 
-        planner = DeploymentPlanner(manifest=manifest, project=project, kafka_deployer=kafka_mock)
-        plan = planner.plan()
 
-        for entry in plan.impact_radius:
-            if entry.resource == "clean":
-                for consumer in entry.consumers:
-                    if consumer["group_id"] == "fraud-prod":
-                        assert consumer["declared"] is True, (
-                            "Known consumer group should be declared=True"
-                        )
-                    if consumer["group_id"] == "unknown-svc":
-                        assert consumer["declared"] is False
+def test_offline_plan_includes_graph_impact_with_unavailable_live_evidence() -> None:
+    planner = DeploymentPlanner(_manifest(), project=_project())
 
-    def test_project_none_produces_empty_impact_radius(self):
-        """DeploymentPlanner with project=None skips impact analysis entirely."""
-        from streamt.deployer.planner import DeploymentPlanner
+    plan = planner.offline_plan()
 
-        manifest = _make_manifest(topics=[{"name": "payments"}])
-        planner = DeploymentPlanner(manifest=manifest, project=None)
-        plan = planner.plan()
-        assert plan.impact_radius == []
+    assert [(entry.resource, entry.logical_resource) for entry in plan.impact_radius] == [
+        (PHYSICAL_CLEAN, "model/clean")
+    ]
+    assert plan.impact_radius[0].consumer_evidence["status"] == "unavailable"
+
+
+def test_recomputing_impact_replaces_stale_evidence() -> None:
+    planner = DeploymentPlanner(_manifest(), project=_project())
+    plan = _changed_plan()
+
+    planner._compute_impact_radius(plan)
+    plan.impact_radius[0].logical_resource = "stale/value"
+    planner._compute_impact_radius(plan)
+
+    assert len(plan.impact_radius) == 1
+    assert plan.impact_radius[0].logical_resource == "model/clean"

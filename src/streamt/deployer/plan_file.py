@@ -27,6 +27,14 @@ _SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 _CREDENTIAL_URL = re.compile(r"://([^:@/\s]+):([^@/\s]+)@")
+_INLINE_SENSITIVE_KV = re.compile(
+    r"(password|passwd|secret|token|api[_-]?key|apikey)\s*[=:]\s*\S+",
+    re.IGNORECASE,
+)
+_INLINE_SENSITIVE_AUTH = re.compile(
+    r"(authorization|bearer)\s*[=:]\s*\S+(?:\s+\S+)?",
+    re.IGNORECASE,
+)
 
 
 class PlanFileError(ValueError):
@@ -75,6 +83,8 @@ def _redact_inline_credentials(value: object) -> object:
     """Redact credentials embedded in otherwise non-sensitive string fields."""
     normalized = _jsonable(value)
     if isinstance(normalized, str):
+        normalized = _INLINE_SENSITIVE_KV.sub(r"\1=<redacted>", normalized)
+        normalized = _INLINE_SENSITIVE_AUTH.sub(r"\1=<redacted>", normalized)
         return _CREDENTIAL_URL.sub(r"://<redacted>:<redacted>@", normalized)
     if isinstance(normalized, list):
         return [_redact_inline_credentials(item) for item in normalized]
@@ -160,18 +170,36 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
         )
 
     resources.sort(key=lambda item: (str(item["kind"]), str(item["name"]), str(item["action"])))
-    impact = [
-        {
-            "resource": entry.resource,
-            "change_type": entry.change_type,
-            "downstream_models": sorted(entry.downstream_models),
-            "consumers": sorted(
-                (_redact_inline_credentials(consumer) for consumer in entry.consumers),
-                key=lambda consumer: canonical_json(consumer),
-            ),
-        }
-        for entry in plan.impact_radius
-    ]
+    impact: list[dict[str, object]] = []
+    for entry in plan.impact_radius:
+        normalized_exposures = sorted(
+            (_redact_inline_credentials(exposure) for exposure in entry.exposures),
+            key=canonical_json,
+        )
+        normalized_consumers = sorted(
+            (_redact_inline_credentials(consumer) for consumer in entry.consumers),
+            key=canonical_json,
+        )
+        normalized_owners = _redact_inline_credentials(sorted(entry.owners))
+        identity_evidence = _redact_inline_credentials(entry.identity_evidence)
+        graph_evidence = _redact_inline_credentials(entry.graph_evidence)
+        consumer_evidence = _redact_inline_credentials(entry.consumer_evidence)
+        impact.append(
+            {
+                "resource": entry.resource,
+                "logical_type": entry.logical_type,
+                "logical_name": entry.logical_name,
+                "logical_resource": entry.logical_resource,
+                "change_type": entry.change_type,
+                "downstream_models": sorted(entry.downstream_models),
+                "exposures": normalized_exposures,
+                "owners": normalized_owners,
+                "consumers": normalized_consumers,
+                "identity_evidence": identity_evidence,
+                "graph_evidence": graph_evidence,
+                "consumer_evidence": consumer_evidence,
+            }
+        )
     impact.sort(key=lambda item: (str(item["resource"]), str(item["change_type"])))
     ownership_requirements = [
         {
@@ -215,6 +243,32 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
         "ownership_requirements": ownership_requirements,
         "safety_blockers": safety_blockers,
     }
+
+
+def _impact_drift_payload(value: object) -> object:
+    """Normalize impact evidence for drift checks while excluding volatile lag metrics."""
+    normalized = _jsonable(value)
+    if not isinstance(normalized, list):
+        return normalized
+    result: list[object] = []
+    for entry in normalized:
+        if not isinstance(entry, dict):
+            result.append(entry)
+            continue
+        stable_entry = dict(entry)
+        consumers = stable_entry.get("consumers")
+        if isinstance(consumers, list):
+            stable_consumers: list[object] = []
+            for consumer in consumers:
+                if isinstance(consumer, dict):
+                    stable_consumer = dict(consumer)
+                    stable_consumer.pop("lag", None)
+                    stable_consumers.append(stable_consumer)
+                else:
+                    stable_consumers.append(consumer)
+            stable_entry["consumers"] = stable_consumers
+        result.append(stable_entry)
+    return result
 
 
 @dataclass(frozen=True)
@@ -439,16 +493,18 @@ class ReviewedPlanFile:
         current_payload = deployment_plan_payload(current_plan)
         reviewed_live_state = {
             "resources": self.plan.get("resources"),
+            "impact": _impact_drift_payload(self.plan.get("impact")),
             "ownership_requirements": self.plan.get("ownership_requirements"),
             "safety_blockers": self.plan.get("safety_blockers"),
         }
         current_live_state = {
             "resources": current_payload["resources"],
+            "impact": _impact_drift_payload(current_payload["impact"]),
             "ownership_requirements": current_payload["ownership_requirements"],
             "safety_blockers": current_payload["safety_blockers"],
         }
         if canonical_json(reviewed_live_state) != canonical_json(current_live_state):
             raise StalePlanError(
-                "Reviewed plan is stale; live resource actions, diffs, ownership "
-                "requirements, or safety blockers changed after planning"
+                "Reviewed plan is stale; live resource actions, diffs, impact evidence, "
+                "ownership requirements, or safety blockers changed after planning"
             )

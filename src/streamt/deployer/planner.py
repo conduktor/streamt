@@ -51,7 +51,32 @@ class ImpactEntry:
     resource: str
     change_type: str
     downstream_models: list[str] = field(default_factory=list)
-    consumers: list[dict] = field(default_factory=list)
+    consumers: list[dict[str, object]] = field(default_factory=list)
+    logical_type: str | None = None
+    logical_name: str | None = None
+    logical_resource: str | None = None
+    exposures: list[dict[str, object]] = field(default_factory=list)
+    owners: list[str] = field(default_factory=list)
+    identity_evidence: dict[str, object] = field(
+        default_factory=lambda: {
+            "status": "unavailable",
+            "reason": "manifest_ownership_missing",
+        }
+    )
+    graph_evidence: dict[str, object] = field(
+        default_factory=lambda: {
+            "status": "unavailable",
+            "reason": "project_not_provided",
+        }
+    )
+    consumer_evidence: dict[str, object] = field(
+        default_factory=lambda: {
+            "status": "unavailable",
+            "source": "kafka_consumer_groups",
+            "reason": "kafka_not_configured",
+            "failures": [],
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -407,15 +432,51 @@ class DeploymentPlan:
             lines.append("")
             lines.append("Impact Analysis:")
             for entry in self.impact_radius:
-                lines.append(f"  {entry.resource} ({entry.change_type})")
+                logical = entry.logical_resource or "logical identity unavailable"
+                lines.append(f"  {entry.resource} ({entry.change_type}) [{logical}]")
+                if entry.identity_evidence.get("status") != "verified":
+                    lines.append(
+                        "    identity evidence: "
+                        f"{entry.identity_evidence.get('status', 'unavailable')} "
+                        f"({entry.identity_evidence.get('reason', 'unknown')})"
+                    )
+                if entry.graph_evidence.get("status") != "verified":
+                    lines.append(
+                        "    graph evidence: "
+                        f"{entry.graph_evidence.get('status', 'unavailable')} "
+                        f"({entry.graph_evidence.get('reason', 'unknown')})"
+                    )
                 if entry.downstream_models:
                     lines.append(f"    downstream: {', '.join(entry.downstream_models)}")
+                if entry.owners:
+                    lines.append(f"    owners: {', '.join(entry.owners)}")
+                for exposure in entry.exposures:
+                    owners = exposure.get("owners", [])
+                    owner_suffix = (
+                        f" owners={','.join(str(owner) for owner in owners)}"
+                        if isinstance(owners, list) and owners
+                        else ""
+                    )
+                    lines.append(f"    exposure: {exposure.get('name', 'unknown')}{owner_suffix}")
+                evidence_status = entry.consumer_evidence.get("status", "unavailable")
+                evidence_reason = entry.consumer_evidence.get("reason")
+                evidence_suffix = f" ({evidence_reason})" if evidence_reason else ""
+                lines.append(f"    consumer evidence: {evidence_status}{evidence_suffix}")
                 if entry.consumers:
                     for c in entry.consumers:
                         declared = "" if c.get("declared", True) else " [undeclared]"
                         lines.append(
                             f"    consumer: {c['group_id']}{declared} lag={c.get('lag', 0)}"
                         )
+                failures = entry.consumer_evidence.get("failures", [])
+                if isinstance(failures, list):
+                    for failure in failures:
+                        if isinstance(failure, dict):
+                            lines.append(
+                                "    evidence failure: "
+                                f"{failure.get('scope', 'kafka')} "
+                                f"{failure.get('message', 'unavailable')}"
+                            )
 
         return "\n".join(lines)
 
@@ -687,6 +748,7 @@ class DeploymentPlanner:
                 pass
 
         plan.refresh_safety_blockers()
+        self._compute_impact_radius(plan)
         return plan
 
     def plan(self) -> DeploymentPlan:
@@ -835,70 +897,328 @@ class DeploymentPlanner:
         return plan
 
     def _compute_impact_radius(self, plan: DeploymentPlan) -> None:
-        """Compute impact_radius for all planned topic creates/updates."""
-        if not self.project:
-            return
-
-        # Find topics being created or updated
-        changed_topics = [c.topic for c in plan.topic_changes if c.action in ("create", "update")]
+        """Compute canonical graph and live-consumer evidence for changed topics."""
+        plan.impact_radius.clear()
+        changed_topics = sorted(
+            (change.topic, change.action)
+            for change in plan.topic_changes
+            if change.action in ("create", "update")
+        )
         if not changed_topics:
             return
 
-        # Build DAG to find downstream models
-        try:
-            from streamt.core.dag import DAGBuilder
+        ownership_by_topic: dict[str, ArtifactOwnership] = {}
+        ambiguous_topics: set[str] = set()
+        for artifact in self.manifest.artifacts.get("topics", []):
+            physical_name = artifact.get("name")
+            ownership = ArtifactOwnership.from_dict(artifact.get("ownership"))
+            if not isinstance(physical_name, str) or ownership is None:
+                continue
+            if ownership.owner_type not in ("source", "model"):
+                continue
+            previous = ownership_by_topic.get(physical_name)
+            if previous is not None and previous != ownership:
+                ambiguous_topics.add(physical_name)
+                ownership_by_topic.pop(physical_name, None)
+                continue
+            if physical_name not in ambiguous_topics:
+                ownership_by_topic[physical_name] = ownership
 
-            dag = DAGBuilder(self.project).build()  # type: ignore[arg-type]
-        except Exception as e:
-            logger.debug("Could not build DAG for impact analysis: %s", e)
-            return
-
-        # Declared consumer groups from project exposures
-        declared_groups: set[str] = set()
-        for exposure in getattr(self.project, "exposures", []):
-            cg = getattr(exposure, "consumer_group", None)
-            if cg:
-                declared_groups.add(cg)
-
-        for topic_name in changed_topics:
-            # Find downstream models (those that depend on this topic)
-            downstream: list[str] = []
+        dag = None
+        graph_failure: dict[str, object] | None = None
+        if self.project is None:
+            graph_failure = {
+                "status": "unavailable",
+                "reason": "project_not_provided",
+            }
+        else:
             try:
-                downstream = dag.get_downstream(topic_name)
-            except Exception:
-                pass
+                from streamt.core.dag import DAGBuilder
 
-            change_type = next(
-                (c.action for c in plan.topic_changes if c.topic == topic_name), "update"
-            )
-            change_type = "topic_create" if change_type == "create" else "topic_update"
+                dag = DAGBuilder(self.project).build()  # type: ignore[arg-type]
+            except Exception as error:
+                safe_error = _sanitize_error(str(error))
+                logger.debug("Could not build DAG for impact analysis: %s", safe_error)
+                graph_failure = {
+                    "status": "failed",
+                    "reason": "dag_build_failed",
+                    "message": safe_error,
+                }
 
-            # Fetch live consumers if kafka_deployer available
-            consumers: list[dict] = []
-            if self.kafka_deployer:
+        exposure_by_name = {
+            exposure.name: exposure
+            for exposure in getattr(self.project, "exposures", [])
+            if isinstance(getattr(exposure, "name", None), str)
+        }
+
+        for topic_name, action in changed_topics:
+            ownership = ownership_by_topic.get(topic_name)
+            if ownership is not None:
+                logical_type = ownership.owner_type
+                logical_name = ownership.owner_name
+                logical_resource = f"{logical_type}/{logical_name}"
+                identity_evidence: dict[str, object] = {
+                    "status": "verified",
+                    "source": "manifest_artifact_ownership",
+                }
+            else:
+                logical_type = None
+                logical_name = None
+                logical_resource = None
+                identity_evidence = {
+                    "status": "failed" if topic_name in ambiguous_topics else "unavailable",
+                    "reason": (
+                        "ambiguous_manifest_ownership"
+                        if topic_name in ambiguous_topics
+                        else "manifest_ownership_missing"
+                    ),
+                }
+
+            downstream_models: list[str] = []
+            exposure_entries: list[dict[str, object]] = []
+            owners: set[str] = set()
+            graph_evidence = dict(graph_failure) if graph_failure else {"status": "verified"}
+            if self.project is not None and logical_name is not None:
+                declaration = self._logical_declaration(logical_type, logical_name)
+                declared_owner = getattr(declaration, "owner", None)
+                if isinstance(declared_owner, str) and declared_owner:
+                    owners.add(_sanitize_error(declared_owner))
+            changed_declaration_owners = set(owners)
+            if dag is not None and logical_name is not None:
+                if dag.get_node(logical_name) is None:
+                    graph_evidence = {
+                        "status": "failed",
+                        "reason": "logical_identity_not_in_dag",
+                    }
+                    consumers, consumer_evidence = self._consumer_impact(topic_name, {})
+                    plan.impact_radius.append(
+                        ImpactEntry(
+                            resource=topic_name,
+                            logical_type=logical_type,
+                            logical_name=logical_name,
+                            logical_resource=logical_resource,
+                            change_type=(
+                                "topic_create" if action == "create" else "topic_update"
+                            ),
+                            owners=sorted(owners),
+                            consumers=consumers,
+                            identity_evidence=identity_evidence,
+                            graph_evidence=graph_evidence,
+                            consumer_evidence=consumer_evidence,
+                        )
+                    )
+                    continue
                 try:
-                    groups = self.kafka_deployer.get_consumer_groups()
-                    for group_id in groups:
-                        lag = self.kafka_deployer.get_consumer_group_lag(group_id, topic_name)
-                        if lag is not None:
-                            consumers.append(
-                                {
-                                    "group_id": group_id,
-                                    "lag": lag.total_lag,
-                                    "declared": group_id in declared_groups,
-                                }
-                            )
-                except Exception as e:
-                    logger.debug("Could not fetch consumer groups for impact analysis: %s", e)
+                    downstream_nodes = dag.get_downstream(logical_name)
+                    downstream_models = sorted(
+                        name
+                        for name in downstream_nodes
+                        if dag.nodes[name].type.value == "model"
+                    )
+                    for model_name in downstream_models:
+                        model = self._logical_declaration("model", model_name)
+                        model_owner = getattr(model, "owner", None)
+                        if isinstance(model_owner, str) and model_owner:
+                            owners.add(_sanitize_error(model_owner))
+                    exposure_names = sorted(
+                        name
+                        for name in downstream_nodes
+                        if dag.nodes[name].type.value == "exposure"
+                    )
+                    for exposure_name in exposure_names:
+                        exposure = exposure_by_name.get(exposure_name)
+                        if exposure is None:
+                            continue
+                        exposure_owners = self._exposure_owners(exposure)
+                        owners.update(exposure_owners)
+                        exposure_entries.append(
+                            {
+                                "name": exposure_name,
+                                "owners": exposure_owners,
+                                "consumer_group": getattr(exposure, "consumer_group", None),
+                            }
+                        )
+                    graph_evidence = {
+                        "status": "verified",
+                        "source": "declared_project_dag",
+                    }
+                except Exception as error:
+                    safe_error = _sanitize_error(str(error))
+                    logger.debug("Could not traverse DAG for impact analysis: %s", safe_error)
+                    downstream_models = []
+                    exposure_entries = []
+                    owners = changed_declaration_owners
+                    graph_evidence = {
+                        "status": "failed",
+                        "reason": "dag_traversal_failed",
+                        "message": safe_error,
+                    }
+            elif graph_failure is None:
+                graph_evidence = {
+                    "status": "unavailable",
+                    "reason": "logical_identity_unavailable",
+                }
 
+            declared_exposures: dict[str, list[str]] = {}
+            for exposure in exposure_entries:
+                group_id = exposure.get("consumer_group")
+                exposure_name = exposure.get("name")
+                if isinstance(group_id, str) and isinstance(exposure_name, str):
+                    declared_exposures.setdefault(group_id, []).append(exposure_name)
+
+            consumers, consumer_evidence = self._consumer_impact(
+                topic_name,
+                declared_exposures,
+            )
             plan.impact_radius.append(
                 ImpactEntry(
                     resource=topic_name,
-                    change_type=change_type,
-                    downstream_models=downstream,
+                    logical_type=logical_type,
+                    logical_name=logical_name,
+                    logical_resource=logical_resource,
+                    change_type="topic_create" if action == "create" else "topic_update",
+                    downstream_models=downstream_models,
+                    exposures=exposure_entries,
+                    owners=sorted(owners),
                     consumers=consumers,
+                    identity_evidence=identity_evidence,
+                    graph_evidence=graph_evidence,
+                    consumer_evidence=consumer_evidence,
                 )
             )
+
+    def _logical_declaration(self, logical_type: str | None, name: str) -> object | None:
+        """Resolve a source or model declaration without assuming a project subtype."""
+        getter_name = "get_source" if logical_type == "source" else "get_model"
+        getter = getattr(self.project, getter_name, None)
+        return getter(name) if callable(getter) else None
+
+    @staticmethod
+    def _exposure_owners(exposure: object) -> list[str]:
+        """Return every declared exposure owner as a deterministic identity list."""
+        result: set[str] = set()
+        owner = getattr(exposure, "owner", None)
+        if isinstance(owner, str) and owner:
+            result.add(_sanitize_error(owner))
+        declared = getattr(exposure, "owners", None)
+        if isinstance(declared, list):
+            for item in declared:
+                if isinstance(item, dict):
+                    name = item.get("name")
+                    if isinstance(name, str) and name:
+                        result.add(_sanitize_error(name))
+        return sorted(result)
+
+    def _consumer_impact(
+        self,
+        topic_name: str,
+        declared_exposures: dict[str, list[str]],
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        """Discover live topic consumers without converting failures into absence."""
+        source = "kafka_consumer_groups"
+        if self.kafka_deployer is None:
+            return [], {
+                "status": "unavailable",
+                "source": source,
+                "reason": "kafka_not_configured",
+                "failures": [],
+            }
+
+        try:
+            raw_groups = self.kafka_deployer.get_consumer_groups()
+        except Exception as error:
+            safe_error = _sanitize_error(str(error))
+            logger.debug("Could not list consumer groups for impact analysis: %s", safe_error)
+            return [], {
+                "status": "unavailable",
+                "source": source,
+                "reason": "consumer_group_listing_failed",
+                "failures": [
+                    {
+                        "scope": "consumer_group_list",
+                        "code": "consumer_group_listing_failed",
+                        "message": safe_error,
+                    }
+                ],
+            }
+
+        if not isinstance(raw_groups, list):
+            return [], {
+                "status": "unavailable",
+                "source": source,
+                "reason": "invalid_consumer_group_response",
+                "failures": [
+                    {
+                        "scope": "consumer_group_list",
+                        "code": "invalid_consumer_group_response",
+                        "message": "Kafka returned a non-list consumer group response.",
+                    }
+                ],
+            }
+
+        failures: list[dict[str, object]] = []
+        group_ids: set[str] = set()
+        for group_id in raw_groups:
+            if isinstance(group_id, str) and group_id:
+                group_ids.add(group_id)
+            else:
+                failures.append(
+                    {
+                        "scope": "consumer_group_list",
+                        "code": "invalid_consumer_group_identity",
+                        "message": "Kafka returned a non-string consumer group identity.",
+                    }
+                )
+
+        consumers: list[dict[str, object]] = []
+        for group_id in sorted(group_ids):
+            try:
+                lag = self.kafka_deployer.get_consumer_group_lag(group_id, topic_name)
+                if lag is None:
+                    continue
+                total_lag = lag.total_lag
+                if not isinstance(total_lag, int) or isinstance(total_lag, bool):
+                    raise ValueError("Kafka returned a non-integer consumer lag.")
+            except Exception as error:
+                safe_group = _sanitize_error(group_id)
+                safe_error = _sanitize_error(str(error))
+                logger.debug(
+                    "Could not query consumer group %s for impact analysis: %s",
+                    safe_group,
+                    safe_error,
+                )
+                failures.append(
+                    {
+                        "scope": f"consumer_group/{safe_group}",
+                        "code": "consumer_group_lag_failed",
+                        "message": safe_error,
+                    }
+                )
+                continue
+            safe_group = _sanitize_error(group_id)
+            declared_by = sorted(declared_exposures.get(group_id, []))
+            consumers.append(
+                {
+                    "group_id": safe_group,
+                    "lag": total_lag,
+                    "declared": bool(declared_by),
+                    "declared_exposures": declared_by,
+                }
+            )
+
+        failures.sort(
+            key=lambda failure: (
+                str(failure.get("scope", "")),
+                str(failure.get("code", "")),
+                str(failure.get("message", "")),
+            )
+        )
+        return consumers, {
+            "status": "partial" if failures else "verified",
+            "source": source,
+            "reason": "consumer_queries_failed" if failures else None,
+            "failures": failures,
+        }
 
     @staticmethod
     def _bucket_for(result: str, create_verb: str) -> str:

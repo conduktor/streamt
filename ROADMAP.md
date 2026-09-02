@@ -71,11 +71,11 @@ to deploy anything.
       infrastructure.
 - [ ] Classify changes as safe, risky, destructive, schema-breaking, or
       state-migration-requiring.
-- [ ] Include downstream models, exposures, owners, and live consumer groups in
+- [x] Include downstream models, exposures, owners, and live consumer groups in
       impact analysis.
 - [x] Emit a deterministic plan file with an integrity checksum and reject it
       when project, environment, ownership state, or live actions drift.
-- [ ] Require protected/shared-environment `apply` workflows to use a reviewed
+- [x] Require protected/shared-environment `apply` workflows to use a reviewed
       plan.
 - [x] Ship a first-party GitHub Action with job summaries and machine-readable
       annotations.

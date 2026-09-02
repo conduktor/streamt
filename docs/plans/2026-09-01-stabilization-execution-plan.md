@@ -16,15 +16,18 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 - Milestone C CLI reliability: the broken observe and sample-test paths are
   repaired and all top-level commands have smoke coverage.
 - Milestone D CI gates: unit/scenario matrices, strict docs, wheel installation,
-  Ruff, and a mypy non-regression baseline are implemented. Trusted publishing
-  and the first public alpha release remain open.
+  Ruff, a mypy non-regression baseline, and a guarded trusted-publishing
+  workflow are implemented. Configuring the protected PyPI environment and
+  publishing the first public alpha release remain open.
 - Phase 1 foundations now include live Schema Registry reference and
   compatibility validation, deterministic reviewed plan files, and a
   validate/plan-only first-party GitHub Action. No-clobber Kafka source import
   and fail-closed single-topic and single-schema-subject adoption are also
-  implemented. Protected
-  environments, plus shared environments that opt in explicitly, now reject
-  direct apply and require the integrity-checked reviewed-plan workflow.
+  implemented. Canonical topic-impact evidence now resolves physical topics to
+  logical DAG identities and includes transitive models, exposures, owners, and
+  live consumer groups with explicit evidence quality. Protected environments,
+  plus shared environments that opt in explicitly, reject direct apply and
+  require the integrity-checked reviewed-plan workflow.
 
 ## Work order
 
@@ -92,8 +95,9 @@ Verification:
 
 Continue the minimum viable change-impact plan in
 `docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
-plan artifacts, Kafka source import, and topic/schema adoption are implemented;
-richer impact classification and broader backend adoption are next.
+plan artifacts, Kafka source import, topic/schema adoption, and canonical topic
+impact evidence are implemented; richer schema/contract/stateful impact
+classification and broader backend adoption are next.
 
 ## Commit strategy
 

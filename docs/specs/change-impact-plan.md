@@ -2,7 +2,9 @@
 
 ## Status
 
-Product specification for the primary streamt output.
+Product specification for the primary streamt output. The canonical topic-impact
+evidence described below is implemented; schema, contract-column, test, and
+stateful-job impact remain roadmap work.
 
 ## Purpose
 
@@ -21,6 +23,20 @@ access to infrastructure.
 
 Plans clearly distinguish verified live facts, stored facts, and inferences.
 Missing live access degrades evidence but does not invent a clean state.
+
+## Canonical topic identity
+
+Kafka topic names are deployment identities, not graph identities. For each
+topic create or update, the planner resolves the physical topic through the
+compiled artifact's explicit `ArtifactOwnership` and records both identities:
+
+- `resource`: the physical Kafka topic used for live observation.
+- `logical_type`, `logical_name`, and `logical_resource`: the owning project
+  `source` or `model` used as the DAG traversal root.
+
+The planner never guesses a logical name from a physical topic string. Missing
+or conflicting ownership is emitted as unavailable or failed identity evidence,
+with an empty graph result.
 
 ## Change classes
 
@@ -58,6 +74,72 @@ For every changed resource, the plan includes:
 
 Unknown consumers remain visible as an uncertainty; absence of declared
 exposures is not treated as proof of no consumers.
+
+Topic impact currently computes deterministic, transitive downstream model and
+exposure sets. Each exposure includes its stable name, all declared owner names,
+and its declared consumer group. Live groups are sorted and labelled
+`declared: true` only when a downstream exposure declares that exact group;
+other observed groups remain in the plan as undeclared consumers.
+The entry-level `owners` set is the sorted union of the changed source or model
+owner, all downstream model owners, and all impacted exposure owners.
+
+## Evidence semantics
+
+Identity, graph, and live-consumer evidence have explicit status. Live consumer
+evidence uses:
+
+- `verified`: group listing and every per-topic group query completed.
+- `partial`: listing completed, but one or more group queries failed.
+- `unavailable`: Kafka was not configured for the plan or group listing failed.
+
+Failures contain a stable scope and code plus a credential-redacted message.
+They are ordered deterministically. A `null` result from the Kafka lag API means
+the group has no committed offsets for that topic; it is not emitted as a live
+consumer. Backend APIs must raise access/query failures so the planner can
+distinguish them from that documented absence result.
+
+Example canonical impact entry:
+
+```json
+{
+  "resource": "prod.payments.clean.v2",
+  "logical_type": "model",
+  "logical_name": "payments_clean",
+  "logical_resource": "model/payments_clean",
+  "change_type": "topic_update",
+  "downstream_models": ["fraud_features"],
+  "exposures": [
+    {
+      "name": "fraud_service",
+      "owners": ["risk-platform"],
+      "consumer_group": "fraud-prod"
+    }
+  ],
+  "owners": ["payments-platform", "risk-platform"],
+  "consumers": [
+    {
+      "group_id": "fraud-prod",
+      "lag": 14,
+      "declared": true,
+      "declared_exposures": ["fraud_service"]
+    }
+  ],
+  "identity_evidence": {
+    "status": "verified",
+    "source": "manifest_artifact_ownership"
+  },
+  "graph_evidence": {
+    "status": "verified",
+    "source": "declared_project_dag"
+  },
+  "consumer_evidence": {
+    "status": "verified",
+    "source": "kafka_consumer_groups",
+    "reason": null,
+    "failures": []
+  }
+}
+```
 
 ## Stateful Flink changes
 
@@ -102,6 +184,13 @@ The JSON plan contains:
 Text, PR summaries, SARIF, and catalog events are renderings of this canonical
 object.
 
+The impact fields are additive inside reviewed-plan format v2, whose plan
+payload is already checksum-protected and extensible, so they do not require a
+format-version bump. Structural impact evidence participates in apply-time
+drift checks. Consumer lag is intentionally excluded from drift comparison
+because it is a volatile metric, while the reviewed checksum still protects the
+exact lag value observed at plan creation.
+
 ## Exit behavior
 
 - Exit `0`: allowed, including warnings unless strict mode is selected.
@@ -123,4 +212,3 @@ The first release needs:
 5. Live consumer groups when available.
 6. Deterministic JSON and checksum.
 7. A GitHub-friendly Markdown renderer.
-
