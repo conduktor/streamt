@@ -232,6 +232,8 @@ def test_reviewed_plan_checks_risk_classification_drift() -> None:
         project="payments",
         environment="prod",
         runtime={},
+        state=None,
+        offline=True,
     )
     payload = deployment_plan_payload(original)
 
@@ -242,7 +244,10 @@ def test_reviewed_plan_checks_risk_classification_drift() -> None:
         topic_changes=[TopicChange(topic="new-topic", action="create")]
     )
     with pytest.raises(StalePlanError, match="risk classification"):
-        reviewed.verify_current_plan(unverified_absence)
+        reviewed.verify_current_plan(
+            unverified_absence,
+            state_observation=None,
+        )
 
 
 def test_github_summary_renders_checksum_verified_risk(tmp_path: Path) -> None:
@@ -261,6 +266,8 @@ def test_github_summary_renders_checksum_verified_risk(tmp_path: Path) -> None:
         project="payments",
         environment="prod",
         runtime={},
+        state=None,
+        offline=True,
     )
     reviewed.save(plan_path)
     config = ActionConfig(

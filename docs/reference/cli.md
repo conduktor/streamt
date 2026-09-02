@@ -430,8 +430,9 @@ streamt plan --env staging --out staging.plan.json
 Online planning reports ordered `safety_blockers` for Kafka partition
 reductions, incompatible schemas, and Flink job updates. A blocked plan still
 exits successfully and can be saved for review; its JSON data sets
-`is_apply_blocked: true`. Reviewed plan format version 2 includes these blockers
-in its integrity checksum. Older version 1 files are rejected explicitly.
+`is_apply_blocked: true`. Reviewed plan format version 3 includes these blockers
+and an exact ownership-state reference in its integrity checksum. Older version
+1 and 2 files are rejected with regeneration guidance.
 
 **Output:**
 
@@ -501,11 +502,14 @@ streamt apply --select tag:critical
 streamt apply --env staging --plan staging.plan.json
 ```
 
-A reviewed plan records the project, environment fingerprint, manifest checksum,
-ownership-state serial, resource actions, ownership requirements, and an
-integrity checksum. `apply --plan` recompiles and replans before making changes,
-then rejects modified plans or drift in the project, environment, ownership
-state, resource actions, or ownership decisions.
+A reviewed plan records the project, environment fingerprint, manifest
+checksum, exact ownership-state backend/store/address/serial/checksum, resource
+actions, ownership requirements, and an integrity checksum. `apply --plan`
+recompiles the project, acquires the state operation lock, verifies that exact
+state before runtime setup, and then replans live infrastructure before making
+changes. It rejects modified plans or drift in the project, environment,
+ownership state, resource actions, or ownership decisions. Offline plans record
+`state: null` and cannot authorize apply.
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -30,6 +31,7 @@ from streamt.deployer.state import (
 
 LOCAL_STATE_NAMESPACE = "local"
 ABSENT_STATE_REVISION = "ABSENT"
+_BACKEND_KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class StateBackendError(StateError):
@@ -118,8 +120,22 @@ class StateStoreIdentity:
     store_id: str
 
     def __post_init__(self) -> None:
-        _require_address_segment(self.backend, "backend")
-        _require_address_segment(self.store_id, "store_id")
+        if not isinstance(self.backend, str) or not _BACKEND_KIND_PATTERN.fullmatch(
+            self.backend
+        ):
+            raise StateFormatError(
+                "state backend must be a lowercase backend identifier"
+            )
+        if not isinstance(self.store_id, str):
+            raise StateFormatError("state store_id must be a canonical UUID")
+        try:
+            parsed_store_id = uuid.UUID(self.store_id)
+        except (ValueError, AttributeError) as error:
+            raise StateFormatError(
+                "state store_id must be a canonical UUID"
+            ) from error
+        if str(parsed_store_id) != self.store_id:
+            raise StateFormatError("state store_id must be a canonical UUID")
 
 
 @dataclass(frozen=True)
@@ -197,14 +213,19 @@ class DeploymentStateBackend(Protocol):
     ) -> AbstractContextManager[DeploymentStateOperation]: ...
 
 
-def _state_revision(state: LocalState) -> StateRevision:
+def state_checksum(state: LocalState) -> str:
+    """Hash the complete strict ownership payload using canonical JSON."""
     payload = json.dumps(
         state.to_dict(),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode("utf-8")
-    return StateRevision(f"sha256:{hashlib.sha256(payload).hexdigest()}")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _state_revision(state: LocalState) -> StateRevision:
+    return StateRevision(state_checksum(state))
 
 
 class _LocalDeploymentStateOperation:

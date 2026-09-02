@@ -361,6 +361,8 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
         project="payments",
         environment="prod",
         runtime=_project().runtime,
+        state=None,
+        offline=True,
     )
 
     kafka.get_consumer_group_lag.return_value = ConsumerGroupLag(
@@ -368,7 +370,7 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
     )
     lag_changed = _changed_plan()
     planner._compute_impact_radius(lag_changed)
-    reviewed.verify_current_plan(lag_changed)
+    reviewed.verify_current_plan(lag_changed, state_observation=None)
 
     evidence_changed = _changed_plan()
     evidence_changed.impact_radius = [
@@ -381,7 +383,7 @@ def test_reviewed_plan_checks_impact_identity_and_evidence_drift_but_not_lag() -
         )
     ]
     with pytest.raises(StalePlanError, match="impact evidence"):
-        reviewed.verify_current_plan(evidence_changed)
+        reviewed.verify_current_plan(evidence_changed, state_observation=None)
 
 
 def test_offline_plan_includes_graph_impact_with_unavailable_live_evidence() -> None:

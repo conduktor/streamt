@@ -21,7 +21,12 @@ from streamt.cli.helpers import (
     make_sr_deployer,
 )
 from streamt.core.errors import ErrorCode
-from streamt.deployer.plan_file import PLAN_FILE_VERSION, PlanFileError, ReviewedPlanFile
+from streamt.deployer.plan_file import (
+    PLAN_FILE_VERSION,
+    PlanFileError,
+    ReviewedPlanFile,
+    StateReference,
+)
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     LocalState,
@@ -87,6 +92,7 @@ def plan(
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
         prior_state: LocalState | None = None
+        state_reference: StateReference | None = None
 
         if offline:
             planner = DeploymentPlanner(
@@ -104,7 +110,9 @@ def plan(
                 project=project.project.name,
                 environment=effective_environment,
             )
-            prior_state = state_service.read().state
+            state_observation = state_service.read()
+            prior_state = state_observation.state
+            state_reference = StateReference.from_observation(state_observation)
             fmt.print_warning(
                 f"{LOCAL_STATE_CI_WARNING} State file: "
                 f"{local_state_path(project_path, environment=effective_environment)}",
@@ -188,8 +196,8 @@ def plan(
                 project=project.project.name,
                 environment=effective_environment,
                 runtime=project.runtime,
+                state=state_reference,
                 offline=offline,
-                state_serial=prior_state.serial if prior_state is not None else None,
             )
             reviewed_plan.save(plan_output)
             fmt.print(f"[green]Saved reviewed plan to {plan_output.resolve()}[/green]")

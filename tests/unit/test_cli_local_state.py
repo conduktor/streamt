@@ -15,7 +15,7 @@ from click.testing import CliRunner
 from streamt.cli import main
 from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
 from streamt.deployer.kafka import TopicChange, TopicState
-from streamt.deployer.plan_file import ReviewedPlanFile
+from streamt.deployer.plan_file import ReviewedPlanFile, StateReference
 from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
@@ -486,7 +486,10 @@ def test_online_plan_reads_injected_backend_without_touching_local_state(
         environment="default",
     )
     observation = StateObservation(
-        store=StateStoreIdentity(backend="fake", store_id="test-store"),
+        store=StateStoreIdentity(
+            backend="fake",
+            store_id="00000000-0000-4000-8000-000000000007",
+        ),
         address=address,
         state=LocalState(project="plan-test", environment="default", serial=7),
         revision=StateRevision("fake:7"),
@@ -515,7 +518,10 @@ def test_online_plan_reads_injected_backend_without_touching_local_state(
         )
 
     assert result.exit_code == 0, result.output
-    assert ReviewedPlanFile.load(reviewed_path).state_serial == 7
+    loaded = ReviewedPlanFile.load(reviewed_path)
+    assert loaded.state_serial == 7
+    assert loaded.state == StateReference.from_observation(observation)
+    assert "fake:7" not in reviewed_path.read_text()
     assert state_path.read_text() == "{malformed-but-not-selected"
 
 

@@ -316,7 +316,7 @@ def apply(
                 project=project.project.name,
                 environment=effective_environment,
                 runtime=project.runtime,
-                state_serial=prior_state.serial,
+                state_observation=prior_observation,
             )
 
         # --target / --select filtering
@@ -424,8 +424,16 @@ def apply(
                 environment=effective_environment,
             )
             deployment_plan = planner.plan()
+            commit_observation = prior_observation
             if reviewed_plan:
-                reviewed_plan.verify_current_plan(deployment_plan)
+                # Re-read immediately after live planning.  The reviewed state
+                # must still be exact before any runtime mutation starts, and
+                # the fresh opaque revision becomes the final CAS authority.
+                commit_observation = state_operation.read()
+                reviewed_plan.verify_current_plan(
+                    deployment_plan,
+                    state_observation=commit_observation,
+                )
 
             if deployment_plan.is_apply_blocked is True:
                 all_requirements = [
@@ -561,7 +569,7 @@ def apply(
             if next_state is not None:
                 try:
                     state_operation.compare_and_swap(
-                        prior_observation,
+                        commit_observation,
                         next_state,
                     )
                 except OSError as error:

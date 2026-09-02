@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from pathlib import Path
@@ -16,12 +17,31 @@ from streamt.compiler.manifest import Manifest, TopicArtifact
 from streamt.deployer.connect import ConnectorChange
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.plan_file import (
+    PLAN_FILE_VERSION,
     PlanFileError,
     ReviewedPlanFile,
     StalePlanError,
+    StateReference,
+    canonical_json,
     deployment_plan_payload,
 )
 from streamt.deployer.planner import DeploymentPlan, OwnershipRequirement
+from streamt.deployer.state import (
+    LocalState,
+    ManagedResourceRecord,
+    artifact_checksum,
+    local_state_path,
+    resource_id,
+)
+from streamt.deployer.state_backend import (
+    StateAddress,
+    StateObservation,
+    StateRevision,
+    StateStoreIdentity,
+    make_deployment_state_service,
+)
+
+_TEST_STORE_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def _manifest(*, compiled_at: str = "2026-01-01T00:00:00Z") -> Manifest:
@@ -49,6 +69,59 @@ def _deployment_plan() -> DeploymentPlan:
     )
 
 
+def _state_observation(
+    *,
+    project: str = "payments",
+    environment: str = "prod",
+    serial: int = 0,
+    store_id: str = _TEST_STORE_ID,
+    backend: str = "local",
+    namespace: str = "local",
+    resources: dict[str, ManagedResourceRecord] | None = None,
+    revision: str = "provider-revision-not-portable",
+) -> StateObservation:
+    return StateObservation(
+        store=StateStoreIdentity(backend=backend, store_id=store_id),
+        address=StateAddress(
+            namespace=namespace,
+            project=project,
+            environment=environment,
+        ),
+        state=LocalState(
+            project=project,
+            environment=environment,
+            serial=serial,
+            resources=resources or {},
+        ),
+        revision=StateRevision(revision),
+    )
+
+
+def _state_reference(
+    *,
+    project: str = "payments",
+    environment: str = "prod",
+    serial: int = 0,
+    store_id: str = _TEST_STORE_ID,
+    backend: str = "local",
+    namespace: str = "local",
+    resources: dict[str, ManagedResourceRecord] | None = None,
+    revision: str = "provider-revision-not-portable",
+) -> StateReference:
+    return StateReference.from_observation(
+        _state_observation(
+            project=project,
+            environment=environment,
+            serial=serial,
+            store_id=store_id,
+            backend=backend,
+            namespace=namespace,
+            resources=resources,
+            revision=revision,
+        )
+    )
+
+
 def _reviewed_plan() -> ReviewedPlanFile:
     return ReviewedPlanFile.create(
         _deployment_plan(),
@@ -56,6 +129,7 @@ def _reviewed_plan() -> ReviewedPlanFile:
         project="payments",
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
+        state=_state_reference(),
     )
 
 
@@ -110,6 +184,26 @@ def _json_output(result: object) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+def _resign_plan_data(data: dict[str, object]) -> None:
+    unsigned = {key: value for key, value in data.items() if key != "checksum"}
+    digest = hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+    data["checksum"] = f"sha256:{digest}"
+
+
+def _managed_topic_record(*, partitions: int) -> dict[str, ManagedResourceRecord]:
+    identity = resource_id("payments", "prod", "topic", "payments_clean")
+    return {
+        identity: ManagedResourceRecord(
+            physical_name="payments.clean.v1",
+            ownership="managed",
+            artifact_checksum=artifact_checksum(
+                {"name": "payments.clean.v1", "partitions": partitions}
+            ),
+            backend="direct-kafka",
+        )
+    }
+
+
 def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) -> None:
     first = ReviewedPlanFile.create(
         _deployment_plan(),
@@ -117,6 +211,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
         project="payments",
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
+        state=_state_reference(),
     )
     second = ReviewedPlanFile.create(
         _deployment_plan(),
@@ -124,6 +219,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
         project="payments",
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
+        state=_state_reference(),
     )
     first_path = tmp_path / "first.plan.json"
     second_path = tmp_path / "second.plan.json"
@@ -134,6 +230,121 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
     assert first.manifest_checksum == second.manifest_checksum
     assert first_path.read_bytes() == second_path.read_bytes()
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_v3_online_state_reference_is_exact_and_excludes_provider_revision() -> None:
+    observation = _state_observation(
+        serial=7,
+        resources=_managed_topic_record(partitions=3),
+        revision="postgres://alice:provider-password@db/revision-token",
+    )
+    reviewed = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=StateReference.from_observation(observation),
+    )
+    payload = reviewed.to_dict()
+
+    assert PLAN_FILE_VERSION == 3
+    assert payload["state"] == {
+        "backend": "local",
+        "store_id": _TEST_STORE_ID,
+        "address": "streamt-state://local/payments/prod",
+        "serial": 7,
+        "checksum": StateReference.from_observation(observation).checksum,
+    }
+    assert "state_serial" not in payload
+    serialized = json.dumps(payload)
+    assert "provider-password" not in serialized
+    assert "revision-token" not in serialized
+
+
+def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -> None:
+    offline = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=None,
+        offline=True,
+    )
+
+    assert offline.to_dict()["state"] is None
+    with pytest.raises(PlanFileError, match="Offline reviewed plans must encode state as null"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=_state_reference(),
+            offline=True,
+        )
+    with pytest.raises(PlanFileError, match="require an exact ownership-state reference"):
+        ReviewedPlanFile.create(
+            _deployment_plan(),
+            _manifest(),
+            project="payments",
+            environment="prod",
+            runtime={},
+            state=None,
+        )
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_v1_and_v2_plans_require_explicit_regeneration(
+    tmp_path: Path,
+    version: int,
+) -> None:
+    path = tmp_path / f"v{version}.plan.json"
+    data = _reviewed_plan().to_dict()
+    data["format_version"] = version
+    if version == 2:
+        state = data.pop("state")
+        assert isinstance(state, dict)
+        data["state_serial"] = state["serial"]
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(
+        PlanFileError,
+        match=(
+            rf"format version {version} predates exact ownership-state binding.*"
+            r"regenerate.*streamt plan --out"
+        ),
+    ):
+        ReviewedPlanFile.load(path)
+
+
+def test_state_reference_strictly_rejects_unknown_and_credential_shaped_fields() -> None:
+    valid = _state_reference().to_dict()
+
+    with pytest.raises(PlanFileError, match=r"unknown field.*revision"):
+        StateReference.from_dict({**valid, "revision": "provider-secret"})
+    with pytest.raises(PlanFileError, match=r"missing field.*checksum"):
+        StateReference.from_dict(
+            {key: value for key, value in valid.items() if key != "checksum"}
+        )
+    with pytest.raises(PlanFileError, match="canonical UUID"):
+        StateReference.from_dict({**valid, "store_id": "password=provider-secret"})
+    with pytest.raises(PlanFileError, match="non-negative integer"):
+        StateReference.from_dict({**valid, "serial": True})
+
+
+def test_loaded_v3_plan_strictly_rejects_extra_state_fields(tmp_path: Path) -> None:
+    path = tmp_path / "extra-state.plan.json"
+    data = _reviewed_plan().to_dict()
+    state = data["state"]
+    assert isinstance(state, dict)
+    state["provider_revision"] = "must-not-be-portable"
+    _resign_plan_data(data)
+    path.write_text(json.dumps(data))
+
+    with pytest.raises(PlanFileError, match=r"unknown field.*provider_revision"):
+        ReviewedPlanFile.load(path)
 
 
 def test_plan_file_load_detects_tampering(tmp_path: Path) -> None:
@@ -160,15 +371,27 @@ def test_context_verification_detects_project_environment_and_manifest_drift() -
     runtime = {"kafka": {"bootstrap_servers": "broker:9092"}}
 
     reviewed.verify_context(
-        _manifest(), project="payments", environment="prod", runtime=runtime
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime=runtime,
+        state_observation=_state_observation(),
     )
     with pytest.raises(StalePlanError, match="does not match current project"):
         reviewed.verify_context(
-            _manifest(), project="other", environment="prod", runtime=runtime
+            _manifest(),
+            project="other",
+            environment="prod",
+            runtime=runtime,
+            state_observation=_state_observation(),
         )
     with pytest.raises(StalePlanError, match="does not match 'stage'"):
         reviewed.verify_context(
-            _manifest(), project="payments", environment="stage", runtime=runtime
+            _manifest(),
+            project="payments",
+            environment="stage",
+            runtime=runtime,
+            state_observation=_state_observation(),
         )
     with pytest.raises(StalePlanError, match="runtime endpoints"):
         reviewed.verify_context(
@@ -176,6 +399,7 @@ def test_context_verification_detects_project_environment_and_manifest_drift() -
             project="payments",
             environment="prod",
             runtime={"kafka": {"bootstrap_servers": "other:9092"}},
+            state_observation=_state_observation(),
         )
 
     changed_manifest = _manifest()
@@ -186,17 +410,18 @@ def test_context_verification_detects_project_environment_and_manifest_drift() -
             project="payments",
             environment="prod",
             runtime=runtime,
+            state_observation=_state_observation(),
         )
 
 
-def test_context_verification_checks_optional_state_serial() -> None:
+def test_context_verification_checks_state_serial() -> None:
     reviewed = ReviewedPlanFile.create(
         _deployment_plan(),
         _manifest(),
         project="payments",
         environment="prod",
         runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
-        state_serial=7,
+        state=_state_reference(serial=7),
     )
     runtime = {"kafka": {"bootstrap_servers": "broker:9092"}}
 
@@ -205,7 +430,7 @@ def test_context_verification_checks_optional_state_serial() -> None:
         project="payments",
         environment="prod",
         runtime=runtime,
-        state_serial=7,
+        state_observation=_state_observation(serial=7),
     )
     with pytest.raises(StalePlanError, match="state serial 7"):
         reviewed.verify_context(
@@ -213,7 +438,80 @@ def test_context_verification_checks_optional_state_serial() -> None:
             project="payments",
             environment="prod",
             runtime=runtime,
-            state_serial=8,
+            state_observation=_state_observation(serial=8),
+        )
+
+
+def test_exact_state_reference_rejects_every_identity_and_content_drift() -> None:
+    reviewed_observation = _state_observation(
+        serial=7,
+        resources=_managed_topic_record(partitions=3),
+    )
+    reviewed = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=StateReference.from_observation(reviewed_observation),
+    )
+
+    reviewed.verify_state(
+        _state_observation(
+            serial=7,
+            resources=_managed_topic_record(partitions=3),
+            revision="a-different-provider-revision",
+        )
+    )
+    with pytest.raises(StalePlanError, match=r"backend 'local'.*'postgres'"):
+        reviewed.verify_state(
+            _state_observation(
+                backend="postgres",
+                serial=7,
+                resources=_managed_topic_record(partitions=3),
+            )
+        )
+    with pytest.raises(StalePlanError, match="backend instance"):
+        reviewed.verify_state(
+            _state_observation(
+                store_id="00000000-0000-4000-8000-000000000002",
+                serial=7,
+                resources=_managed_topic_record(partitions=3),
+            )
+        )
+    with pytest.raises(StalePlanError, match="state address"):
+        reviewed.verify_state(
+            _state_observation(
+                namespace="another-store",
+                serial=7,
+                resources=_managed_topic_record(partitions=3),
+            )
+        )
+    with pytest.raises(StalePlanError, match=r"state serial 7.*8"):
+        reviewed.verify_state(
+            _state_observation(
+                serial=8,
+                resources=_managed_topic_record(partitions=3),
+            )
+        )
+    with pytest.raises(StalePlanError, match="state checksum"):
+        reviewed.verify_state(
+            _state_observation(
+                serial=7,
+                resources=_managed_topic_record(partitions=6),
+            )
+        )
+
+
+def test_current_plan_verification_rechecks_exact_state_reference() -> None:
+    reviewed = _reviewed_plan()
+
+    with pytest.raises(StalePlanError, match="state checksum"):
+        reviewed.verify_current_plan(
+            _deployment_plan(),
+            state_observation=_state_observation(
+                resources=_managed_topic_record(partitions=6)
+            ),
         )
 
 
@@ -221,13 +519,19 @@ def test_live_action_drift_is_rejected_but_impact_metrics_may_change() -> None:
     reviewed = _reviewed_plan()
     same_actions = _deployment_plan()
     same_actions.impact_radius = []
-    reviewed.verify_current_plan(same_actions)
+    reviewed.verify_current_plan(
+        same_actions,
+        state_observation=_state_observation(),
+    )
 
     drifted = DeploymentPlan(
         topic_changes=[TopicChange(topic="payments.clean.v1", action="none")]
     )
     with pytest.raises(StalePlanError, match="live resource actions"):
-        reviewed.verify_current_plan(drifted)
+        reviewed.verify_current_plan(
+            drifted,
+            state_observation=_state_observation(),
+        )
 
 
 def test_plan_payload_redacts_sensitive_change_evidence() -> None:
@@ -304,8 +608,16 @@ def test_cli_saves_offline_plan_but_rejects_it_for_apply(tmp_path: Path) -> None
     planned_output = _json_output(planned)
     assert planned_output["data"]["plan_file"] == str(plan_path)
     assert plan_path.exists()
+    offline_review = ReviewedPlanFile.load(plan_path)
+    assert offline_review.state is None
+    assert offline_review.to_dict()["state"] is None
 
-    with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
+    with (
+        patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka,
+        patch(
+            "streamt.cli.commands.apply.make_deployment_state_service"
+        ) as make_state_service,
+    ):
         applied = runner.invoke(
             main, ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)]
         )
@@ -315,6 +627,7 @@ def test_cli_saves_offline_plan_but_rejects_it_for_apply(tmp_path: Path) -> None
     assert applied_output["errors"][0]["code"] == "E408_PLAN_FILE_INVALID"
     assert "preview-only" in applied_output["errors"][0]["message"]
     make_kafka.assert_not_called()
+    make_state_service.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -604,6 +917,104 @@ def test_cli_rejects_live_plan_drift_before_apply(tmp_path: Path) -> None:
     apply_plan.assert_not_called()
 
 
+def test_cli_rejects_same_serial_state_content_drift_before_runtime_setup(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    plan_path = tmp_path / "reviewed.plan.json"
+    runner = CliRunner()
+    planned = runner.invoke(
+        main,
+        ["plan", "-p", str(tmp_path), "--out", str(plan_path)],
+    )
+    assert planned.exit_code == 0, planned.output
+    resource_uri = resource_id(
+        "plan-test",
+        "default",
+        "topic",
+        "concurrent_owner",
+    )
+    LocalState(
+        project="plan-test",
+        environment="default",
+        serial=0,
+        resources={
+            resource_uri: ManagedResourceRecord(
+                physical_name="concurrent.v1",
+                ownership="adopted",
+                artifact_checksum=artifact_checksum({"name": "concurrent.v1"}),
+                backend="direct-kafka",
+            )
+        },
+    ).save(local_state_path(tmp_path, environment="default"))
+
+    with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
+        applied = runner.invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)],
+        )
+
+    assert applied.exit_code == 1
+    payload = _json_output(applied)
+    assert payload["errors"][0]["code"] == "E409_PLAN_STALE"
+    assert "state checksum" in payload["errors"][0]["message"]
+    make_kafka.assert_not_called()
+
+
+def test_cli_rereads_state_after_live_plan_and_blocks_before_mutation(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    plan_path = tmp_path / "reviewed.plan.json"
+    runner = CliRunner()
+    planned = runner.invoke(
+        main,
+        ["plan", "-p", str(tmp_path), "--out", str(plan_path)],
+    )
+    assert planned.exit_code == 0, planned.output
+    state_path = local_state_path(tmp_path, environment="default")
+
+    def live_plan_with_concurrent_state_change() -> DeploymentPlan:
+        resource_uri = resource_id(
+            "plan-test",
+            "default",
+            "topic",
+            "changed_during_live_plan",
+        )
+        LocalState(
+            project="plan-test",
+            environment="default",
+            serial=0,
+            resources={
+                resource_uri: ManagedResourceRecord(
+                    physical_name="changed.v1",
+                    ownership="adopted",
+                    artifact_checksum=artifact_checksum({"name": "changed.v1"}),
+                    backend="direct-kafka",
+                )
+            },
+        ).save(state_path)
+        return DeploymentPlan()
+
+    with (
+        patch(
+            "streamt.deployer.planner.DeploymentPlanner.plan",
+            side_effect=live_plan_with_concurrent_state_change,
+        ),
+        patch("streamt.deployer.planner.DeploymentPlanner.apply") as apply_plan,
+    ):
+        applied = runner.invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)],
+        )
+
+    assert applied.exit_code == 1
+    payload = _json_output(applied)
+    assert payload["errors"][0]["code"] == "E409_PLAN_STALE"
+    assert "state checksum" in payload["errors"][0]["message"]
+    apply_plan.assert_not_called()
+
+
 def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
     tmp_path: Path,
 ) -> None:
@@ -622,7 +1033,13 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
         project=project.project.name,
         environment="default",
         runtime=project.runtime,
-        state_serial=0,
+        state=StateReference.from_observation(
+            make_deployment_state_service(
+                tmp_path,
+                project=project.project.name,
+                environment="default",
+            ).read()
+        ),
     )
     plan_path = tmp_path / "blocked.plan.json"
     reviewed.save(plan_path)

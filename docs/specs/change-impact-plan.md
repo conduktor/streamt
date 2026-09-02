@@ -190,7 +190,8 @@ The JSON plan contains:
 
 - Plan schema version and streamt version.
 - Project, environment, and selection.
-- Desired manifest checksum and prior-state serial.
+- Desired manifest checksum and exact prior-state backend, store, address,
+  serial, and checksum.
 - Evidence timestamps and source types.
 - Ordered resource changes.
 - Ordered per-resource risk assessments and a fixed-shape plan risk summary.

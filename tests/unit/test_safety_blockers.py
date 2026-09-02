@@ -24,6 +24,7 @@ from streamt.deployer.plan_file import (
     PlanFileError,
     ReviewedPlanFile,
     StalePlanError,
+    StateReference,
     deployment_plan_payload,
 )
 from streamt.deployer.planner import (
@@ -32,6 +33,7 @@ from streamt.deployer.planner import (
     SafetyBlocker,
 )
 from streamt.deployer.schema_registry import SchemaChange, SchemaState
+from streamt.deployer.state_backend import make_deployment_state_service
 
 
 def _topic_reduction() -> TopicChange:
@@ -240,12 +242,14 @@ class TestReviewedPlanSafetyBlockers:
             project="safety-test",
             environment="prod",
             runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
+            state=None,
+            offline=True,
         )
         path = tmp_path / "blocked.plan.json"
         reviewed.save(path)
         loaded = ReviewedPlanFile.load(path)
 
-        assert PLAN_FILE_VERSION == 2
+        assert PLAN_FILE_VERSION == 3
         assert loaded == reviewed
         assert [
             blocker["code"] for blocker in loaded.plan["safety_blockers"]
@@ -263,6 +267,8 @@ class TestReviewedPlanSafetyBlockers:
             project="safety-test",
             environment="prod",
             runtime={"kafka": {"bootstrap_servers": "broker:9092"}},
+            state=None,
+            offline=True,
         )
         assert safe.checksum != reviewed.checksum
 
@@ -273,6 +279,8 @@ class TestReviewedPlanSafetyBlockers:
             project="safety-test",
             environment="prod",
             runtime={},
+            state=None,
+            offline=True,
         )
         path = tmp_path / "old.plan.json"
         reviewed.save(path)
@@ -280,7 +288,7 @@ class TestReviewedPlanSafetyBlockers:
         data["format_version"] = 1
         path.write_text(json.dumps(data))
 
-        with pytest.raises(PlanFileError, match="Unsupported plan format version 1"):
+        with pytest.raises(PlanFileError, match="predates exact ownership-state binding"):
             ReviewedPlanFile.load(path)
 
     def test_verify_current_plan_detects_safety_blocker_drift(self) -> None:
@@ -307,11 +315,13 @@ class TestReviewedPlanSafetyBlockers:
             project="safety-test",
             environment="prod",
             runtime={},
+            state=None,
+            offline=True,
         )
         current = DeploymentPlan(topic_changes=[change])
 
         with pytest.raises(StalePlanError, match="safety blockers changed"):
-            reviewed.verify_current_plan(current)
+            reviewed.verify_current_plan(current, state_observation=None)
 
     def test_machine_payload_contains_no_blockers_for_safe_plan(self) -> None:
         payload = deployment_plan_payload(
@@ -402,7 +412,13 @@ class TestCliSafetyBlockers:
                 project=project.project.name,
                 environment="default",
                 runtime=project.runtime,
-                state_serial=0,
+                state=StateReference.from_observation(
+                    make_deployment_state_service(
+                        tmp_path,
+                        project=project.project.name,
+                        environment="default",
+                    ).read()
+                ),
             )
             plan_path = tmp_path / "reviewed.plan.json"
             reviewed.save(plan_path)

@@ -34,6 +34,7 @@ from streamt.deployer.state_backend import (
     StateRevision,
     StateStoreIdentity,
     make_deployment_state_service,
+    state_checksum,
 )
 
 
@@ -88,6 +89,11 @@ def test_local_store_identity_is_stable_and_path_content_is_not_exposed(
     assert first.store_id != other.store_id
     assert str(tmp_path) not in first.store_id
 
+    with pytest.raises(StateFormatError, match="lowercase backend identifier"):
+        StateStoreIdentity(backend="Postgres URL", store_id=first.store_id)
+    with pytest.raises(StateFormatError, match="canonical UUID"):
+        StateStoreIdentity(backend="postgres", store_id="password=provider-secret")
+
 
 def test_absent_address_is_explicit_and_read_only(tmp_path: Path) -> None:
     backend = LocalDeploymentStateBackend(tmp_path)
@@ -118,6 +124,23 @@ def test_factory_has_no_remote_selection_surface(tmp_path: Path) -> None:
     assert isinstance(service.backend, LocalDeploymentStateBackend)
     assert service.store.backend == "local"
     assert service.address == _address()
+
+
+def test_state_checksum_is_canonical_public_and_covers_complete_content(
+    tmp_path: Path,
+) -> None:
+    original = _state(serial=7, partitions=3)
+    same = LocalState.from_dict(original.to_dict())
+    content_changed = _state(serial=7, partitions=6)
+    serial_changed = _state(serial=8, partitions=3)
+
+    assert state_checksum(original) == state_checksum(same)
+    assert state_checksum(original) != state_checksum(content_changed)
+    assert state_checksum(original) != state_checksum(serial_changed)
+
+    original.save(local_state_path(tmp_path, environment="prod"))
+    observation = LocalDeploymentStateBackend(tmp_path).read(_address())
+    assert observation.revision.value == state_checksum(original)
 
 
 def test_local_backend_preserves_v1_persistence_bytes_and_file_mode(

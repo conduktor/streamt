@@ -159,7 +159,7 @@ Logical serial and backend revision solve different problems:
 - The state checksum detects same-serial content replacement, accidental
   restoration, and a plan/apply switch between snapshots.
 
-The next reviewed-plan format must add a strict state reference:
+Reviewed-plan format version 3 adds this strict state reference:
 
 ```json
 {
@@ -179,8 +179,9 @@ requires the state reference to match before live replanning. It then uses the
 new observation revision for operation CAS. Offline plan files use `state:
 null`; they remain ineligible to authorize mutation.
 
-Changing this envelope requires a plan-format version bump. Older formats are
-rejected rather than interpreted with weaker remote-state semantics.
+Changing this envelope required a plan-format version bump. Versions 1 and 2
+are rejected with regeneration guidance rather than interpreted with weaker
+remote-state semantics.
 
 ## Lock and operation protocol
 

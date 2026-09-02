@@ -9,7 +9,8 @@ import math
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, is_dataclass
+import uuid
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -17,9 +18,15 @@ from typing import Optional
 from streamt import __version__
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.planner import DeploymentPlan
+from streamt.deployer.state import StateError
+from streamt.deployer.state_backend import (
+    StateAddress,
+    StateObservation,
+    state_checksum,
+)
 
 PLAN_FILE_KIND = "streamt.reviewed-plan"
-PLAN_FILE_VERSION = 2
+PLAN_FILE_VERSION = 3
 _MAX_PLAN_FILE_BYTES = 10 * 1024 * 1024
 _SENSITIVE_KEY = re.compile(
     r"(^|[._-])(?:password|passwd|secret|token|api[_-]?key|authorization|credentials?"
@@ -35,6 +42,8 @@ _INLINE_SENSITIVE_AUTH = re.compile(
     r"(authorization|bearer)\s*[=:]\s*\S+(?:\s+\S+)?",
     re.IGNORECASE,
 )
+_BACKEND_KIND = re.compile(r"^[a-z][a-z0-9_-]*$")
+_STATE_CHECKSUM = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class PlanFileError(ValueError):
@@ -285,6 +294,93 @@ def _impact_drift_payload(value: object) -> object:
 
 
 @dataclass(frozen=True)
+class StateReference:
+    """Portable exact-state evidence embedded in an online reviewed plan."""
+
+    backend: str
+    store_id: str
+    address: str
+    serial: int
+    checksum: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.backend, str) or not _BACKEND_KIND.fullmatch(
+            self.backend
+        ):
+            raise PlanFileError(
+                "Plan state backend must be a lowercase backend identifier"
+            )
+        if not isinstance(self.store_id, str):
+            raise PlanFileError("Plan state store_id must be a canonical UUID")
+        try:
+            parsed_store_id = uuid.UUID(self.store_id)
+        except (ValueError, AttributeError) as error:
+            raise PlanFileError("Plan state store_id must be a canonical UUID") from error
+        if str(parsed_store_id) != self.store_id:
+            raise PlanFileError("Plan state store_id must be a canonical UUID")
+        try:
+            StateAddress.parse(self.address)
+        except StateError as error:
+            raise PlanFileError(f"Plan state address is invalid: {error}") from error
+        if type(self.serial) is not int or self.serial < 0:
+            raise PlanFileError("Plan state serial must be a non-negative integer")
+        if not isinstance(self.checksum, str) or not _STATE_CHECKSUM.fullmatch(
+            self.checksum
+        ):
+            raise PlanFileError(
+                "Plan state checksum must be a sha256:<64 lowercase hex> value"
+            )
+
+    @property
+    def parsed_address(self) -> StateAddress:
+        """Return the already validated canonical address."""
+        return StateAddress.parse(self.address)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "store_id": self.store_id,
+            "address": self.address,
+            "serial": self.serial,
+            "checksum": self.checksum,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> StateReference:
+        if not isinstance(value, dict):
+            raise PlanFileError("Plan file 'state' field must be an object or null")
+        expected = {"backend", "store_id", "address", "serial", "checksum"}
+        unknown = set(value) - expected
+        missing = expected - set(value)
+        if unknown:
+            raise PlanFileError(
+                f"Plan state has unknown field(s): {', '.join(sorted(unknown))}"
+            )
+        if missing:
+            raise PlanFileError(
+                f"Plan state is missing field(s): {', '.join(sorted(missing))}"
+            )
+        return cls(
+            backend=value["backend"],
+            store_id=value["store_id"],
+            address=value["address"],
+            serial=value["serial"],
+            checksum=value["checksum"],
+        )
+
+    @classmethod
+    def from_observation(cls, observation: StateObservation) -> StateReference:
+        """Create portable evidence without exposing the provider revision."""
+        return cls(
+            backend=observation.store.backend,
+            store_id=observation.store.store_id,
+            address=observation.address.uri,
+            serial=observation.state_serial,
+            checksum=state_checksum(observation.state),
+        )
+
+
+@dataclass(frozen=True)
 class ReviewedPlanFile:
     """Versioned envelope containing a deterministic reviewed-plan payload."""
 
@@ -293,11 +389,30 @@ class ReviewedPlanFile:
     environment_fingerprint: str
     manifest_checksum: str
     plan: dict[str, object]
+    state: Optional[StateReference]
     offline: bool = False
     selection: Optional[dict[str, str]] = None
-    state_serial: Optional[int] = None
     streamt_version: str = __version__
     checksum: str = ""
+
+    def __post_init__(self) -> None:
+        if self.offline and self.state is not None:
+            raise PlanFileError("Offline reviewed plans must encode state as null")
+        if not self.offline and self.state is None:
+            raise PlanFileError(
+                "Online reviewed plans require an exact ownership-state reference"
+            )
+        if self.state is not None:
+            address = self.state.parsed_address
+            if address.project != self.project or address.environment != self.environment:
+                raise PlanFileError(
+                    "Plan state address does not match the plan project and environment"
+                )
+
+    @property
+    def state_serial(self) -> Optional[int]:
+        """Retain the existing CLI-facing serial accessor."""
+        return self.state.serial if self.state is not None else None
 
     @classmethod
     def create(
@@ -308,9 +423,9 @@ class ReviewedPlanFile:
         project: str,
         environment: str,
         runtime: object,
+        state: Optional[StateReference],
         offline: bool = False,
         selection: Optional[dict[str, str]] = None,
-        state_serial: Optional[int] = None,
     ) -> ReviewedPlanFile:
         """Create and checksum a reviewed plan envelope."""
         plan_file = cls(
@@ -319,11 +434,11 @@ class ReviewedPlanFile:
             environment_fingerprint=environment_fingerprint(runtime, environment),
             manifest_checksum=manifest_checksum(manifest),
             plan=deployment_plan_payload(deployment_plan),
+            state=state,
             offline=offline,
             selection=selection,
-            state_serial=state_serial,
         )
-        return cls(**{**plan_file.__dict__, "checksum": _checksum(plan_file._unsigned_dict())})
+        return replace(plan_file, checksum=_checksum(plan_file._unsigned_dict()))
 
     def _unsigned_dict(self) -> dict[str, object]:
         return {
@@ -334,7 +449,7 @@ class ReviewedPlanFile:
             "environment": self.environment,
             "environment_fingerprint": self.environment_fingerprint,
             "manifest_checksum": self.manifest_checksum,
-            "state_serial": self.state_serial,
+            "state": self.state.to_dict() if self.state is not None else None,
             "selection": self.selection,
             "offline": self.offline,
             "plan": self.plan,
@@ -397,6 +512,21 @@ class ReviewedPlanFile:
         if not isinstance(data, dict):
             raise PlanFileError("Plan file root must be a JSON object")
 
+        if data.get("kind") != PLAN_FILE_KIND:
+            raise PlanFileError(f"Unsupported plan file kind: {data.get('kind')!r}")
+        format_version = data.get("format_version")
+        if type(format_version) is int and format_version in (1, 2):
+            raise PlanFileError(
+                f"Reviewed plan format version {format_version} predates exact ownership-state "
+                "binding and cannot authorize apply; regenerate it with the current "
+                "'streamt plan --out <path>' command"
+            )
+        if format_version != PLAN_FILE_VERSION:
+            raise PlanFileError(
+                f"Unsupported plan format version {format_version!r}; "
+                f"expected {PLAN_FILE_VERSION}"
+            )
+
         expected_fields = {
             "kind",
             "format_version",
@@ -405,7 +535,7 @@ class ReviewedPlanFile:
             "environment",
             "environment_fingerprint",
             "manifest_checksum",
-            "state_serial",
+            "state",
             "selection",
             "offline",
             "plan",
@@ -417,13 +547,6 @@ class ReviewedPlanFile:
             raise PlanFileError(f"Plan file has unknown field(s): {', '.join(sorted(unknown))}")
         if missing:
             raise PlanFileError(f"Plan file is missing field(s): {', '.join(sorted(missing))}")
-        if data["kind"] != PLAN_FILE_KIND:
-            raise PlanFileError(f"Unsupported plan file kind: {data['kind']!r}")
-        if data["format_version"] != PLAN_FILE_VERSION:
-            raise PlanFileError(
-                f"Unsupported plan format version {data['format_version']!r}; "
-                f"expected {PLAN_FILE_VERSION}"
-            )
         if not isinstance(data["plan"], dict):
             raise PlanFileError("Plan file 'plan' field must be an object")
         if not isinstance(data["checksum"], str):
@@ -449,10 +572,11 @@ class ReviewedPlanFile:
             raise PlanFileError("Plan file 'offline' field must be boolean")
         if data["selection"] is not None and not isinstance(data["selection"], dict):
             raise PlanFileError("Plan file 'selection' field must be an object or null")
-        if data["state_serial"] is not None and (
-            not isinstance(data["state_serial"], int) or isinstance(data["state_serial"], bool)
-        ):
-            raise PlanFileError("Plan file 'state_serial' field must be an integer or null")
+        state = (
+            None
+            if data["state"] is None
+            else StateReference.from_dict(data["state"])
+        )
 
         return cls(
             project=data["project"],
@@ -460,9 +584,9 @@ class ReviewedPlanFile:
             environment_fingerprint=data["environment_fingerprint"],
             manifest_checksum=data["manifest_checksum"],
             plan=data["plan"],
+            state=state,
             offline=data["offline"],
             selection=data["selection"],
-            state_serial=data["state_serial"],
             streamt_version=data["streamt_version"],
             checksum=data["checksum"],
         )
@@ -474,7 +598,7 @@ class ReviewedPlanFile:
         project: str,
         environment: str,
         runtime: object,
-        state_serial: Optional[int] = None,
+        state_observation: Optional[StateObservation],
     ) -> None:
         """Reject a plan created for different or changed project content."""
         if self.project != project:
@@ -495,14 +619,60 @@ class ReviewedPlanFile:
             raise StalePlanError(
                 "Plan manifest checksum is stale; project content changed after planning"
             )
-        if self.state_serial != state_serial:
+        self.verify_state(state_observation)
+
+    def verify_state(
+        self,
+        state_observation: Optional[StateObservation],
+    ) -> None:
+        """Reject any backend, address, serial, or content drift."""
+        current = (
+            StateReference.from_observation(state_observation)
+            if state_observation is not None
+            else None
+        )
+        if self.state is None:
+            if current is not None:
+                raise StalePlanError(
+                    "Offline plan state does not match an online ownership-state observation"
+                )
+            return
+        if current is None:
             raise StalePlanError(
-                f"Plan state serial {self.state_serial!r} does not match current state serial "
-                f"{state_serial!r}"
+                "Reviewed plan requires an authoritative ownership-state observation"
+            )
+        if self.state.backend != current.backend:
+            raise StalePlanError(
+                f"Plan state backend {self.state.backend!r} does not match current backend "
+                f"{current.backend!r}"
+            )
+        if self.state.store_id != current.store_id:
+            raise StalePlanError(
+                "Plan state store does not match the current backend instance"
+            )
+        if self.state.address != current.address:
+            raise StalePlanError(
+                f"Plan state address {self.state.address!r} does not match current address "
+                f"{current.address!r}"
+            )
+        if self.state.serial != current.serial:
+            raise StalePlanError(
+                f"Plan state serial {self.state.serial!r} does not match current state serial "
+                f"{current.serial!r}"
+            )
+        if self.state.checksum != current.checksum:
+            raise StalePlanError(
+                "Plan state checksum does not match current ownership-state content"
             )
 
-    def verify_current_plan(self, current_plan: DeploymentPlan) -> None:
+    def verify_current_plan(
+        self,
+        current_plan: DeploymentPlan,
+        *,
+        state_observation: Optional[StateObservation],
+    ) -> None:
         """Reject live-state drift that changes reviewed resource actions or diffs."""
+        self.verify_state(state_observation)
         current_payload = deployment_plan_payload(current_plan)
         reviewed_live_state = {
             "resources": self.plan.get("resources"),

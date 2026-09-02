@@ -206,10 +206,10 @@ Apply complete
 ```
 
 The reviewed apply verifies the checksum, project and environment fingerprints,
-ownership-state serial, current live actions, ownership requirements, and
-safety blockers before mutation. Protected-environment confirmation remains a
-separate check. In an interactive terminal, omit `--confirm-env` and type the
-environment name at the prompt.
+exact ownership-state backend/store/address/serial/checksum, current live
+actions, ownership requirements, and safety blockers before mutation.
+Protected-environment confirmation remains a separate check. In an interactive
+terminal, omit `--confirm-env` and type the environment name at the prompt.
 
 ### Shared Environments
 

@@ -13,15 +13,17 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
   the final state read, live re-observation, mutation, and state commit, closing
   the old local stale-serial race. State access is now routed through a typed
   provider-neutral boundary while preserving version 1 JSON compatibility;
-  only the local provider is selectable. Durable operation/recovery markers,
-  remote state, distributed locking, broader adoption, and an explicit destroy
+  only the local provider is selectable. Reviewed-plan format version 3 binds
+  review to the exact backend store, canonical address, serial, and ownership
+  checksum used during planning. Durable operation/recovery markers, remote
+  state, distributed locking, broader adoption, and an explicit destroy
   workflow remain.
 - Milestone B strict public contract: implemented with `streamt.dev/v1alpha1`
   and parser-backed documentation validation.
 - Milestone C CLI reliability: the broken observe and sample-test paths are
   repaired and all top-level commands have smoke coverage.
 - Milestone D CI gates: unit/scenario matrices, strict docs, wheel installation,
-  Ruff, a mypy non-regression baseline, and a guarded trusted-publishing
+  Ruff, a zero-error mypy gate, and a guarded trusted-publishing
   workflow are implemented. Configuring the protected PyPI environment and
   publishing the first public alpha release remain open.
 - Phase 1 foundations now include live Schema Registry reference and
@@ -86,7 +88,7 @@ Verification:
 1. Run unit and scenario tests in CI.
 2. Build the wheel and install it in a clean environment for CLI smoke testing.
 3. Build documentation strictly.
-4. Establish and enforce a mypy baseline, then reduce it incrementally.
+4. Enforce a zero-error mypy gate.
 5. Add a tagged release workflow with trusted publishing.
 6. Publish the first installable alpha and verify the documented command.
 

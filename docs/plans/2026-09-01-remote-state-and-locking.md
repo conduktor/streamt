@@ -22,7 +22,9 @@ The current local implementation has a sound single-host commit primitive:
   writes, while an already-held operation lock can perform the CAS without
   reacquiring and deadlocking.
 - `plan`, `apply`, and `adopt` load the same environment-scoped state.
-- Reviewed plans bind to the state serial; apply replans live actions.
+- Reviewed-plan format version 3 binds to the exact backend store, canonical
+  address, state serial, and canonical state checksum; apply verifies that
+  reference under the operation lock before replanning live actions.
 - Failed applies and completed rollback paths do not advance state.
 - Targeted apply retains records outside the selection, and absence never
   deletes a record.
@@ -34,10 +36,6 @@ The remaining gaps are material:
 - Local adoption holds the operation lock while interactive confirmation is
   pending. This preserves authoritative evidence but can intentionally block a
   second same-host mutator until the prompt completes.
-- State access is coupled to paths and `LocalState` methods rather than a
-  provider-neutral application service.
-- A plan records only `state_serial`, not the state checksum, backend instance,
-  or canonical state address.
 - An apply that succeeds in infrastructure but cannot save state is reported as
   invalid local state, but the next command has no durable indication that
   reconciliation is required.
@@ -96,6 +94,14 @@ Acceptance:
 - No remote backend can be selected yet.
 
 ### Slice 2: bind reviewed plans to exact state
+
+Progress: implemented. Online format-version 3 plans contain a strict exact
+state reference derived from the `StateObservation` used by planning. Apply
+rechecks backend kind, immutable store ID, address, serial, and checksum after
+acquiring the operation lock and again on the live-plan verification path.
+Format versions 1 and 2 require explicit regeneration. Offline plans encode
+`state: null`, cannot authorize apply, and do not construct a state backend.
+Provider revisions and credential-shaped provider data are excluded.
 
 1. Add canonical `state_checksum(LocalState)` using the same strict canonical
    JSON rules as persistence.
