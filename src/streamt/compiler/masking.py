@@ -116,7 +116,7 @@ def _apply_masking_ast(
         return sql
 
     select.set("expressions", new_expressions)
-    return cast(str, parsed.sql(dialect=FlinkDialect))
+    return parsed.sql(dialect=FlinkDialect)
 
 
 def _get_select_column_name(expr: exp.Expression) -> str | None:
@@ -124,9 +124,9 @@ def _get_select_column_name(expr: exp.Expression) -> str | None:
     from sqlglot import exp
 
     if isinstance(expr, exp.Alias):
-        return cast(str, expr.alias)
+        return expr.alias
     if isinstance(expr, exp.Column):
-        return cast(str, expr.name)
+        return expr.name
     return None
 
 
