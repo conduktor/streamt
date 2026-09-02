@@ -1,0 +1,425 @@
+"""Tests for strict, integrity-checked recovery plan files."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import stat
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from streamt.deployer.recovery import (
+    RecoverySnapshotEvidence,
+    RecoveryTargetEvidence,
+)
+from streamt.deployer.recovery_plan import (
+    MAX_RECOVERY_PLAN_FILE_BYTES,
+    RECOVERY_PLAN_FILE_KIND,
+    RECOVERY_PLAN_FILE_VERSION,
+    RecoveryPlanError,
+    RecoveryPlanFile,
+)
+from streamt.deployer.state import (
+    LocalState,
+    ManagedResourceRecord,
+    artifact_checksum,
+    resource_id,
+)
+from streamt.deployer.state_backend import (
+    ControlObservation,
+    OperationAction,
+    OperationControlState,
+    OperationIntent,
+    OperationProgress,
+    OperationSnapshot,
+    StateAddress,
+    StateObservation,
+    StateRevision,
+    StateStoreIdentity,
+    state_checksum,
+)
+
+BLOCKED_OPERATION_ID = "00000000-0000-4000-8000-000000000011"
+RECOVERY_OPERATION_ID = "00000000-0000-4000-8000-000000000012"
+STORE_ID = "00000000-0000-4000-8000-000000000013"
+CHECKSUM = "sha256:" + "a" * 64
+
+
+def _address() -> StateAddress:
+    return StateAddress(namespace="platform", project="payments", environment="prod")
+
+
+def _resource() -> str:
+    return resource_id("payments", "prod", "topic", "payments_clean")
+
+
+def _record(*, partitions: int) -> ManagedResourceRecord:
+    return ManagedResourceRecord(
+        physical_name="payments.clean.v1",
+        ownership="managed",
+        artifact_checksum=artifact_checksum(
+            {"name": "payments.clean.v1", "partitions": partitions}
+        ),
+        backend="direct-kafka",
+    )
+
+
+def _state(*, serial: int = 1, partitions: int = 3) -> LocalState:
+    return LocalState(
+        project="payments",
+        environment="prod",
+        serial=serial,
+        resources={_resource(): _record(partitions=partitions)},
+    )
+
+
+def _action() -> OperationAction:
+    return OperationAction(index=0, resource_id=_resource(), action="update")
+
+
+def _snapshot(*, with_progress: bool = False) -> RecoverySnapshotEvidence:
+    state = _state()
+    action = _action()
+    intent = OperationIntent(
+        operation_id=BLOCKED_OPERATION_ID,
+        kind="apply",
+        started_at="2026-09-02T12:00:00Z",
+        actor="operator",
+        prior_state_serial=state.serial,
+        prior_state_checksum=state_checksum(state),
+        reviewed_plan_checksum=None,
+        actions=(action,),
+    )
+    progress = (
+        OperationProgress(
+            operation_id=BLOCKED_OPERATION_ID,
+            action_index=0,
+            resource_id=action.resource_id,
+            action=action.action,
+            status="started",
+            succeeded=None,
+            recorded_at="2026-09-02T12:01:00Z",
+        ),
+    ) if with_progress else ()
+    control = OperationControlState(
+        address=_address(),
+        status="in_progress",
+        intent=intent,
+        progress=progress,
+    )
+    return RecoverySnapshotEvidence.from_operation_snapshot(
+        OperationSnapshot(
+            state=StateObservation(
+                store=StateStoreIdentity(backend="postgres", store_id=STORE_ID),
+                address=_address(),
+                state=state,
+                revision=StateRevision("provider-state-revision"),
+            ),
+            control=ControlObservation(
+                control=control,
+                revision=StateRevision("provider-control-revision"),
+            ),
+        )
+    )
+
+
+def _target(*, accepted_as: str = "candidate") -> RecoveryTargetEvidence:
+    return RecoveryTargetEvidence(
+        action=_action(),
+        presence="present",
+        accepted_as=accepted_as,  # type: ignore[arg-type]
+        fingerprint=CHECKSUM,
+    )
+
+
+def _observed_plan() -> RecoveryPlanFile:
+    return RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=_snapshot(with_progress=True),
+        targets=(_target(),),
+        candidate_state=_state(serial=2, partitions=6),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum="sha256:" + "b" * 64,
+    )
+
+
+def _resign(data: dict[str, object]) -> None:
+    unsigned = {key: value for key, value in data.items() if key != "evidence_checksum"}
+    canonical = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    data["evidence_checksum"] = "sha256:" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+
+def test_observed_plan_is_deterministic_exact_and_omits_provider_revisions(
+    tmp_path: Path,
+) -> None:
+    first = _observed_plan()
+    second = _observed_plan()
+    first_path = tmp_path / "first.recovery.json"
+    second_path = tmp_path / "second.recovery.json"
+
+    first.save(first_path)
+    second.save(second_path)
+
+    assert RECOVERY_PLAN_FILE_KIND == "streamt.recovery-plan"
+    assert RECOVERY_PLAN_FILE_VERSION == 1
+    assert first.evidence_checksum == second.evidence_checksum
+    assert first_path.read_bytes() == second_path.read_bytes()
+    serialized = first_path.read_text(encoding="utf-8")
+    assert "provider-state-revision" not in serialized
+    assert "provider-control-revision" not in serialized
+    assert "dsn_env" not in serialized
+    assert "writer_role" not in serialized
+    assert RecoveryPlanFile.load(first_path) == first
+
+
+def test_abandoned_with_nonempty_intent_requires_no_live_evidence() -> None:
+    plan = RecoveryPlanFile.create(
+        resolution="abandoned_before_mutation",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=_snapshot(),
+        targets=(),
+    )
+
+    assert plan.snapshot.control.intent is not None
+    assert plan.snapshot.control.intent.actions == (_action(),)
+    assert plan.targets == ()
+    assert plan.environment_fingerprint is None
+    assert plan.candidate_state is None
+    with pytest.raises(RecoveryPlanError, match="empty durable progress"):
+        RecoveryPlanFile.create(
+            resolution="abandoned_before_mutation",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(),
+        )
+
+
+def test_rolled_back_requires_prior_classification_and_no_candidate() -> None:
+    plan = RecoveryPlanFile.create(
+        resolution="rolled_back",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=_snapshot(with_progress=True),
+        targets=(_target(accepted_as="prior"),),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert plan.candidate_state is None
+    with pytest.raises(RecoveryPlanError, match="accepted as prior"):
+        RecoveryPlanFile.create(
+            resolution="rolled_back",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(_target(),),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_observed_candidate_is_authoritative_and_preserves_unrelated_state() -> None:
+    plan = _observed_plan()
+
+    assert plan.candidate_state is not None
+    assert plan.candidate_state.serial == plan.snapshot.state.serial + 1
+    with pytest.raises(RecoveryPlanError, match="presence"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(
+                RecoveryTargetEvidence(
+                    action=_action(),
+                    presence="absent",
+                    accepted_as="candidate",
+                    fingerprint=CHECKSUM,
+                ),
+            ),
+            candidate_state=_state(serial=2, partitions=6),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+    with pytest.raises(RecoveryPlanError, match="exactly one evidence target"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(),
+            candidate_state=_state(serial=2, partitions=6),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+    unrelated_id = resource_id("payments", "prod", "topic", "unrelated")
+    with pytest.raises(RecoveryPlanError, match="outside the blocked intent"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(_target(),),
+            candidate_state=LocalState(
+                project="payments",
+                environment="prod",
+                serial=2,
+                resources={
+                    _resource(): _record(partitions=6),
+                    unrelated_id: ManagedResourceRecord(
+                        physical_name="unrelated.v1",
+                        ownership="managed",
+                        artifact_checksum=CHECKSUM,
+                        backend="direct-kafka",
+                    ),
+                },
+            ),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_observed_plan_rejects_credential_like_candidate_text() -> None:
+    with pytest.raises(RecoveryPlanError, match="unsafe text"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=_snapshot(with_progress=True),
+            targets=(_target(),),
+            candidate_state=LocalState(
+                project="payments",
+                environment="prod",
+                serial=2,
+                resources={
+                    _resource(): ManagedResourceRecord(
+                        physical_name="postgresql://owner:password@db/state",
+                        ownership="managed",
+                        artifact_checksum=CHECKSUM,
+                        backend="direct-kafka",
+                    )
+                },
+            ),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_plan_load_rejects_tamper_unknown_duplicate_and_nonfinite(
+    tmp_path: Path,
+) -> None:
+    original = _observed_plan().to_dict()
+
+    tampered = dict(original)
+    tampered["resolution"] = "rolled_back"
+    tampered_path = tmp_path / "tampered.json"
+    tampered_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(RecoveryPlanError, match="checksum mismatch"):
+        RecoveryPlanFile.load(tampered_path)
+
+    unknown = dict(original)
+    unknown["owner_dsn"] = "secret"
+    _resign(unknown)
+    unknown_path = tmp_path / "unknown.json"
+    unknown_path.write_text(json.dumps(unknown), encoding="utf-8")
+    with pytest.raises(RecoveryPlanError, match="unknown field"):
+        RecoveryPlanFile.load(unknown_path)
+
+    duplicate_path = tmp_path / "duplicate.json"
+    duplicate_path.write_text('{"kind":"a","kind":"b"}', encoding="utf-8")
+    with pytest.raises(RecoveryPlanError, match="duplicate field"):
+        RecoveryPlanFile.load(duplicate_path)
+
+    nonfinite_path = tmp_path / "nonfinite.json"
+    nonfinite_path.write_text('{"value":NaN}', encoding="utf-8")
+    with pytest.raises(RecoveryPlanError, match="non-finite"):
+        RecoveryPlanFile.load(nonfinite_path)
+
+
+def test_plan_load_revalidates_nested_uuid_address_state_and_control(
+    tmp_path: Path,
+) -> None:
+    mutations: tuple[tuple[str, Callable[[dict[str, Any]], None]], ...] = (
+        ("uuid", lambda data: data.__setitem__("blocked_operation_id", "not-a-uuid")),
+        (
+            "address",
+            lambda data: data["snapshot"].__setitem__(
+                "address", "streamt-state://platform/other/prod"
+            ),
+        ),
+        (
+            "state",
+            lambda data: data["snapshot"]["state"].__setitem__(
+                "serial", -1
+            ),
+        ),
+        (
+            "control",
+            lambda data: data["snapshot"]["control"].__setitem__(
+                "status", "clear"
+            ),
+        ),
+    )
+    for label, mutate in mutations:
+        data: dict[str, Any] = _observed_plan().to_dict()
+        mutate(data)
+        _resign(data)
+        path = tmp_path / f"{label}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(RecoveryPlanError):
+            RecoveryPlanFile.load(path)
+
+
+def test_plan_write_is_0600_atomic_no_overwrite_and_no_symlink(
+    tmp_path: Path,
+) -> None:
+    plan = _observed_plan()
+    path = tmp_path / "recovery.json"
+    plan.save(path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".*.tmp"))
+    with pytest.raises(RecoveryPlanError, match="already exists"):
+        plan.save(path)
+
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "linked.json"
+    link.symlink_to(target)
+    with pytest.raises(RecoveryPlanError, match="already exists"):
+        plan.save(link)
+    with pytest.raises(RecoveryPlanError, match="Cannot read"):
+        RecoveryPlanFile.load(link)
+
+
+def test_plan_rejects_oversize_before_json_parsing(tmp_path: Path) -> None:
+    path = tmp_path / "large.json"
+    file_descriptor = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        os.write(file_descriptor, b"{" + b" " * MAX_RECOVERY_PLAN_FILE_BYTES)
+    finally:
+        os.close(file_descriptor)
+
+    with pytest.raises(RecoveryPlanError, match="10 MiB"):
+        RecoveryPlanFile.load(path)
+
+
+def test_resolution_record_is_derived_from_exact_plan() -> None:
+    plan = _observed_plan()
+
+    record = plan.make_resolution_record(resolved_at="2026-09-02T13:00:00Z")
+
+    assert record.recovery_operation_id == plan.recovery_operation_id
+    assert record.blocked_operation_id == plan.blocked_operation_id
+    assert record.evidence_checksum == plan.evidence_checksum
+    assert record.prior_state_serial == 1
+    assert record.result_state_serial == 2
+    assert record.state_changed is True
