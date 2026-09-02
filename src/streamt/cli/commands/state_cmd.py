@@ -14,8 +14,10 @@ from streamt.cli.helpers import (
     redact_sensitive_text,
 )
 from streamt.core.errors import ErrorCode
+from streamt.deployer.postgres_state import make_postgres_state_administration
 from streamt.deployer.state import StateError
 from streamt.deployer.state_backend import (
+    StateAddress,
     StateBackendUnavailableError,
     make_deployment_state_service,
     state_checksum,
@@ -70,6 +72,29 @@ def state_status(
             else "default"
         )
 
+        if project.deployment_state.backend == "postgres":
+            address = StateAddress(
+                namespace=project.deployment_state.namespace,
+                project=project.project.name,
+                environment=effective_environment,
+            )
+            administration = make_postgres_state_administration(project.deployment_state)
+            postgres_status = administration.status(address)
+            postgres_data = postgres_status.to_dict()
+            fmt.set_data(postgres_data)
+
+            fmt.print("[cyan]PostgreSQL deployment state[/cyan]")
+            fmt.print(f"  Store: {postgres_status.store_status}")
+            fmt.print(f"  Address: {address.uri}")
+            fmt.print(f"  Registration: {postgres_status.address_status}")
+            fmt.print(f"  Ownership: {postgres_status.state_status}")
+            postgres_operation_status = postgres_status.operation_status
+            if postgres_operation_status is not None:
+                fmt.print(f"  Operation: {postgres_operation_status.status}")
+            fmt.print("  Mutation: disabled")
+            fmt.flush()
+            return
+
         service = make_deployment_state_service(
             project_path,
             project=project.project.name,
@@ -78,7 +103,7 @@ def state_status(
         )
         observation = service.read()
         control = service.read_control()
-        operation_status = control.safe_status()
+        local_operation_status = control.safe_status()
         ownership_checksum = state_checksum(observation.state)
         state_status_value = (
             "absent" if observation.revision.is_absent else "present"
@@ -90,7 +115,7 @@ def state_status(
             "state_status": state_status_value,
             "state_serial": observation.state_serial,
             "state_checksum": ownership_checksum,
-            "operation_status": operation_status,
+            "operation_status": local_operation_status,
         }
         fmt.set_data(data)
 
@@ -103,8 +128,8 @@ def state_status(
             f"(serial {observation.state_serial})"
         )
         fmt.print(f"  Checksum: {ownership_checksum}")
-        fmt.print(f"  Operation: {operation_status['status']}")
-        if operation_status["status"] != "clear":
+        fmt.print(f"  Operation: {local_operation_status['status']}")
+        if local_operation_status["status"] != "clear":
             fmt.print(
                 "[yellow]  Unfinished operation blocks apply/adopt. Retain the "
                 "control sidecar as evidence; do not delete or edit it. "
