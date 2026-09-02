@@ -16,9 +16,10 @@ of resource identity. Delivery is deliberately ordered:
 7. defer Flink adoption until stable job identity, artifact evidence, routing,
    and state-advancement semantics exist.
 
-This is an implementation plan, not a support claim. The public `adopt`
-command continues to accept only `topic` and `schema` until the corresponding
-provider slice and all of its gates are complete.
+This plan also records the implemented boundary; it is not by itself a broad
+production-readiness claim. Packages 1 through 5 are complete and the public
+`adopt` command accepts `topic`, `schema`, and the deliberately narrow
+`connector` slice. Package 6 onward remains planned.
 
 ## Current boundary
 
@@ -35,9 +36,15 @@ protocol:
 - record a state-only `adopt` operation and commit with compare-and-swap; and
 - leave every non-target ownership record unchanged.
 
-Kafka Connect, Gateway, and Flink do not yet provide enough exact provider
-evidence to enter that protocol safely. Existing planning and recovery helpers
-must not be mistaken for adoption readiness.
+Kafka Connect now enters this protocol only through an exact default-cluster
+binding: the effective cluster alias, versioned normalized-endpoint
+fingerprint, and connector name. One percent-encoded resource `GET` provides
+each strict observation, once for review and once after confirmation. An
+artifact with no cluster or with the explicit default alias enters this slice;
+an explicit non-default cluster fails closed. An identical existing state claim
+returns after the first strict observation without confirmation or a state
+write. Gateway and Flink do not yet provide enough exact provider evidence to
+enter the protocol safely.
 
 ## Cross-provider invariants
 
@@ -108,12 +115,10 @@ that the recovery workflow cannot later validate.
 
 ## Package 1: secret-neutral Connector planning
 
-Status: planned; blocks every later Connector package.
+Status: complete.
 
-Current Connector planning reads configuration and status separately, compares
-values after string conversion and case folding, and places raw values in its
-change structure. The first package establishes a safe planning surface before
-that code is reused by adoption.
+Connector planning now uses the strict artifact parser and secret-neutral
+change evidence shared with adoption.
 
 Required changes:
 
@@ -132,8 +137,10 @@ Required changes:
    and case semantics. Treat missing and explicit null as different unless the
    Connect API documents equivalence for that specific field.
 5. Replace raw `from` and `to` values in plan changes with secret-neutral
-   evidence such as changed-key categories and deterministic current/desired
-   checksums. Provider exception text passes through the existing sanitizer.
+   evidence: sanitized changed-key categories, directions, and presence only,
+   never per-value fingerprints. Adoption review separately includes
+   whole-configuration current and desired checksums. Provider exception text
+   passes through the existing sanitizer.
 6. Add regression fixtures containing passwords, tokens, JAAS strings, URLs
    with user information, mixed-case values, booleans, numbers, null, and
    nested structures. Assert that no raw value reaches text, JSON, plan files,
@@ -145,7 +152,7 @@ no raw provider configuration values.
 
 ## Package 2: canonical Connector artifact and cluster binding
 
-Status: planned; follows Package 1.
+Status: complete.
 
 The logical resource ID is based on `ownership.owner_name`. Its provider
 locator is the tuple:
@@ -173,18 +180,18 @@ Required changes:
 3. Reject two compiled artifacts that resolve to the same provider locator or
    one logical owner that resolves to multiple Connector artifacts.
 4. Treat existing records with only `backend: kafka-connect` as legacy and
-   unbound. They may be observed, but may not authorize mutation, recovery
-   finalization, or adoption idempotency against a selected cluster.
-5. Provide an explicit, confirmation-gated migration or re-adoption path that
-   proves the exact legacy connector on the exact target cluster. Never rewrite
-   legacy records automatically during plan or apply.
+   unbound. They may not authorize mutation, recovery finalization, or adoption
+   idempotency against a selected cluster.
+5. Fail closed until an operator separately migrates or removes a legacy claim
+   before an explicit re-adoption. Never rewrite legacy records automatically
+   during plan, apply, recovery, or adoption.
 
 Exit gate: changing the default cluster alias, its normalized endpoint, the
 artifact cluster, or the connector name cannot reuse prior authority.
 
 ## Package 3: strict one-request Connector observer
 
-Status: planned; follows Package 2.
+Status: complete.
 
 Observe one connector with one resource request:
 
@@ -220,7 +227,7 @@ secret-neutral on success and every failure path.
 
 ## Package 4: Connector recovery
 
-Status: planned; follows Package 3 and precedes adoption.
+Status: complete.
 
 Replace Connector recovery's status/task-based normalization with the strict
 managed observation. Reviewed recovery may accept a present connector only
@@ -238,22 +245,27 @@ neutrality, and operation/control conflicts.
 
 ## Package 5: single-Connector adoption
 
-Status: planned; follows Package 4.
+Status: complete.
 
-Only after Packages 1 through 4 pass may `streamt adopt --kind connector` be
-accepted. It resolves exactly one compiled adopted artifact by
-`ownership.owner_name`, resolves and binds its effective cluster, and invokes
-the strict observer twice around confirmation.
+`streamt adopt --kind connector` resolves exactly one compiled adopted artifact
+by `ownership.owner_name`, resolves and binds an omitted or explicitly matching
+default cluster alias, and invokes the strict observer twice around
+confirmation. An explicit non-default cluster is rejected.
 
 Review output includes the canonical resource ID, cluster alias, endpoint
-fingerprint, connector name, current and desired configuration checksums,
-changed-key categories, and whether a later plan has pending changes. It never
-contains raw configuration. The state operation records `adopt` only; no
-Connect mutation endpoint is reachable.
+fingerprint, connector name, whole-configuration current and desired checksums,
+sanitized changed-key categories and directions, and whether a later plan has
+pending changes. It never contains raw configuration or per-value fingerprints.
+The state operation records `adopt` only; no Connect mutation endpoint is
+reachable. An identical state claim is idempotent after one strict observation:
+it performs no confirmation and no state write.
 
-Exit gate: source and installed-wheel command tests prove exact selection,
-zero mutation, re-observation, idempotency, conflict handling, remote-state
-policy, local/PostgreSQL CAS behavior, and secret-neutral output.
+Source command coverage proves exact selection, zero mutation,
+re-observation, idempotency, conflict handling, state policy, local state, and
+secret-neutral output. The project release gates also exercise command
+availability from the isolated installed wheel, strict observation against a
+real Connect service, and the Connector path through the real PostgreSQL v2
+writer and operation history.
 
 ## Package 6: normalized scoped Gateway aggregate
 

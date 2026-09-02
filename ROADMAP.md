@@ -66,9 +66,9 @@ to deploy anything.
 - [ ] Extend fail-closed adoption beyond topics and schemas in the scoped order
       defined by the
       [extended resource adoption plan](docs/plans/2026-09-02-extended-resource-adoption.md):
-  - [ ] Make Connector planning secret-neutral, bind the canonical artifact to
+  - [x] Make Connector planning secret-neutral, bind the canonical artifact to
         an exact Connect cluster locator, and add a strict one-request observer.
-  - [ ] Use that Connector observer for reviewed recovery before enabling
+  - [x] Use that Connector observer for reviewed recovery and enable
         single-Connector state-only adoption.
   - [ ] Normalize the complete scoped Gateway alias/interceptor aggregate, then
         enable only exact alias-only rules with zero interceptors.

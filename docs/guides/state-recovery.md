@@ -252,7 +252,7 @@ provider response or every action is recoverable.
 | --- | --- | --- | --- |
 | Schema Registry subject | Exact prior or candidate content can be proven for supported register/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Partial schema metadata, identity mismatch, or a checksum that cannot be reconstructed fails closed. |
 | Kafka topic | Exact partitions, replication factor, and complete config can prove prior or candidate state for supported create/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Recovery requires a strict, complete config read; filtered or partial broker config is rejected. |
-| Kafka Connect connector | Exact connector config can prove supported create/update prior or candidate state. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Partial config/status/task observations, unsupported cluster representation, or ambiguous identity fails closed. |
+| Kafka Connect connector | Exact connector config can prove supported create/update/adopt prior or candidate state. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Evidence is bound to the effective alias, normalized-endpoint fingerprint, and connector name. Partial config/status/task observations, legacy unbound state, unsupported cluster representation, or ambiguous identity fails closed. |
 | Conduktor Gateway rule | A candidate is representable only when both desired and observed interceptor sets are empty and alias mapping is exact. | Exact absence with an empty interceptor observation can prove a completed delete candidate or not-yet-created prior state. | Present prior Gateway state and non-empty/transformed interceptors cannot be reconstructed exactly. |
 | Flink job | Unsupported. Current live status and job ID cannot prove the managed SQL artifact or execution settings. | Exact absence can prove a not-yet-submitted prior state or a completed cancel candidate. | Any present Flink target fails closed, even when its runtime status looks healthy. |
 
@@ -270,8 +270,8 @@ Additional action constraints apply:
   action never produced a target.
 - `observed` may mix prior and candidate classifications across the ordered
   action list. Every individual classification must still be exact.
-- Adoption recovery is limited to exact schema-subject and Kafka-topic
-  observations declared with adopted ownership.
+- Adoption recovery is limited to exact schema-subject, Kafka-topic, and bound
+  default-cluster Connector observations declared with adopted ownership.
 
 When a target is outside these boundaries, do not choose the closest-looking
 resolution. Preserve the marker and evidence, freeze mutations, and escalate to

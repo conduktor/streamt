@@ -268,23 +268,39 @@ uses the planner-identical artifact checksum and `schema-registry` backend, so a
 fresh plan can safely distinguish the adopted subject from unowned live data.
 No register, compatibility-update, list, or delete API is called.
 
-Flink, Kafka Connect, and Gateway adoption remain unsupported. Their safe
-sequence is specified in the
-[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md)
-and must not be reordered merely by adding a CLI kind.
+Kafka Connect connector adoption uses the same state-only protocol:
 
-Connector work starts by making normal planning secret-neutral and exact. A
-Connector's logical identity uses `ownership.owner_name`; its provider locator
+```text
+streamt adopt -p PATH -e ENV --kind connector --name LOGICAL_NAME
+```
+
+The compiled owner must resolve to exactly one adopted Connector. An omitted
+cluster or explicit cluster equal to the configured default is accepted; an
+explicit non-default cluster fails closed. A Connector's logical identity uses
+`ownership.owner_name`; its provider locator
 binds the effective Connect cluster alias, a normalized REST-endpoint
 fingerprint, and the connector name. The strict observer uses one
 `GET /connectors/<encoded-name>` response and fingerprints stable name and
-configuration only. Volatile status and tasks cannot authorize ownership.
-Exact case and JSON types are preserved, reserved generated configuration keys
-cannot be overridden, and raw configuration never enters output or durable
-control data. That observer must support reviewed recovery before
-single-Connector adoption is enabled. Legacy `backend: kafka-connect` records
-are unbound and require explicit migration or re-adoption; they never silently
-authorize a selected cluster.
+configuration only. The command performs that exact read before confirmation
+and again afterward for a new claim, rejects fingerprint drift, and calls no
+Connect mutation, list, status, or task endpoint. An identical claim returns
+after the first read, without confirmation or a state write. Exact case and
+JSON types are preserved, reserved generated configuration keys cannot be
+overridden, and raw configuration never enters output or durable control data;
+review uses checksums for the whole configuration and sanitized changed-key
+categories/directions, never per-value fingerprints. Legacy
+`backend: kafka-connect` records are unbound and fail closed rather than
+silently authorizing the selected cluster.
+
+Connector adoption inherits the same local and PostgreSQL v2 state-operation,
+locking, intent, compare-and-swap, and idempotency boundaries as topic and
+schema adoption. Reviewed Connector recovery uses the same strict managed
+observation and rejects partial, status/task-based, or unbound evidence.
+
+Flink and Gateway adoption remain unsupported. Their safe sequence is
+specified in the
+[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md)
+and must not be reordered merely by adding a CLI kind.
 
 A Gateway rule has compound provider identity: the backend and vCluster-scoped
 AliasTopic key plus the exact deterministic set of scoped Interceptor keys. Its

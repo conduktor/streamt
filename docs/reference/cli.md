@@ -631,9 +631,9 @@ Summary: 2 created, 1 updated, 0 unchanged
 
 ### adopt
 
-Explicitly claim one existing Kafka topic or Schema Registry subject for
-lifecycle management. Adoption changes only the configured ownership state; it
-never mutates Kafka or Schema Registry.
+Explicitly claim one existing Kafka topic, Schema Registry subject, or Kafka
+Connect connector for lifecycle management. Adoption changes only the
+configured ownership state; it never mutates the provider resource.
 
 ```bash
 streamt adopt \
@@ -658,33 +658,55 @@ streamt adopt \
   --confirm-env prod
 ```
 
-`--name` is the stable logical declaration name, not a physical topic or
-subject name. It must resolve to exactly one compiled artifact whose declaration
-explicitly sets `ownership.mode: adopted`. Topic adoption displays partitions,
-replication factor, dynamic configuration, and pending differences. Schema
-adoption displays only the subject, type, version, schema ID, compatibility,
-content checksums, and pending differences; schema bodies are never printed.
-Credential-shaped values are redacted.
+For a compiled Kafka Connect connector bound to the configured default Connect
+cluster, use `--kind connector`:
+
+```bash
+streamt adopt \
+  --project-dir . \
+  --env prod \
+  --kind connector \
+  --name orders_sink \
+  --confirm-resource streamt://payments/prod/connector/orders_sink \
+  --confirm-env prod
+```
+
+`--name` is the stable logical declaration name, not a physical topic, subject,
+or connector name. It must resolve to exactly one compiled artifact whose
+declaration explicitly sets `ownership.mode: adopted`. Topic adoption displays
+partitions, replication factor, dynamic configuration, and pending differences.
+Schema adoption displays only the subject, type, version, schema ID,
+compatibility, content checksums, and pending differences; schema bodies are
+never printed. Connector adoption accepts an omitted cluster or an explicit
+cluster equal to the effective default; an explicit non-default cluster fails
+closed. The claim binds the default alias, versioned normalized-endpoint
+fingerprint, and exact connector name. Review output contains checksums for the
+whole configuration plus sanitized changed-key categories and directions,
+never raw connector configuration or per-value fingerprints.
 
 Interactive use requires typing an exact token containing both the full
 resource ID and environment. Non-interactive use requires both exact
 `--confirm-resource` and `--confirm-env` values; there is no generic yes/force
 flag. A successful adoption atomically advances only the configured
 environment-scoped ownership state. Repeating an identical adoption is a no-op
-and does not advance its serial.
+and does not advance its serial. Connector idempotency returns after one strict
+resource `GET`, without confirmation or a state write.
 
-The only accepted `--kind` values are currently `topic` and `schema`. Kafka
-Connect, Conduktor Gateway, and Flink adoption are not supported. They require
-provider-specific exact identity, observation, recovery, and secret-neutrality
-gates described in the
-[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md);
-configuration or direct plan/apply support does not make those resources
-adoptable.
+The accepted `--kind` values are `topic`, `schema`, and `connector`. A new
+Connector adoption performs exactly one percent-encoded
+`GET /connectors/<connector-name>` before confirmation and the same strict read
+again after confirmation. It does not call Connect list, status, task, create,
+update, delete, pause, resume, or restart APIs. A legacy unbound
+`backend: kafka-connect` ownership record fails closed; it is never silently
+rebound to the selected endpoint. Conduktor Gateway and Flink adoption remain
+unsupported under the gates in the
+[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md).
 
 !!! warning "Adoption uses configured state"
     Local adoption state is safe only for a single-user checkout. PostgreSQL v2
-    adoption uses the same exact writer and distributed address lock as apply,
-    and requires `writer_dsn_env`; owner/admin and local fallback are forbidden.
+    adoption for every supported kind, including Connector, uses the same exact
+    writer and distributed address lock as apply, and requires
+    `writer_dsn_env`; owner/admin and local fallback are forbidden.
     Run `streamt plan --out ...` after adoption and review that plan before
     applying any pending differences.
 

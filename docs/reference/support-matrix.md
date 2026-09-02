@@ -12,7 +12,7 @@ are not enabled.
 | Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Topic changes include canonical downstream graph and consumer evidence. Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
 | Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility, single-subject adoption | Register source schemas | Registry-incompatible updates are classified schema-breaking and blocked. Compatible updates remain risky until downstream column/contract impact exists. Adoption is state-only and fail-closed; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates and resubmissions are classified state-migration-requiring and blocked until a savepoint-safe or explicitly stateless workflow exists. Adoption is not supported: current status cannot prove SQL or managed execution settings. |
-| Kafka Connect REST | Yes | Connector state | Sink connectors | Connector profiles remain deliberately generic. Adoption is not supported until planning is secret-neutral, artifacts are bound to an exact cluster locator, and one strict managed-content observer passes reviewed recovery. |
+| Kafka Connect REST | Yes | Strict connector managed content and single-connector adoption | Sink connectors | Adoption is state-only: an omitted or explicitly matching default cluster is accepted; a non-default cluster fails closed. The claim binds its alias, versioned normalized-endpoint fingerprint, and exact connector name. Two encoded resource reads bracket confirmation for a new claim; an identical claim returns after one read with no confirmation or write. Output exposes only whole-config checksums and sanitized changed-key categories/directions. Legacy `backend: kafka-connect` state fails closed. Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Alias/rule presence | Virtual-topic interceptor rules | Adoption is not supported. It first requires one normalized backend/vCluster-scoped alias-and-interceptor aggregate; the planned initial slice is limited to exact rules with no interceptors. Console catalog publication is separate. |
 | Local deployment state | No | Status and explicit reviewed recovery | Ordinary local plan/apply/adopt | Single-host file locking, durable intent/progress, and crash-safe recovery history are supported. It provides no cross-host exclusion, shared-runner fencing, or HA durability. |
 | PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, confirmed v1-to-v2 migration, and reviewed recovery | Ordinary plan/apply/adopt and recovery through the exact v2 writer | Requires `streamt[postgres]`, `writer_dsn_env`, an exact v2 catalog/ACL, and a direct standalone primary. The owner/admin credential is never a runtime fallback. Version 1 remains administrative only. PostgreSQL 14 and 18 run real-server, command, ACL, mutation, recovery, and process-concurrency gates. All poolers and every HA/failover topology are unsupported. |
@@ -32,12 +32,12 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Extend adoption beyond Kafka topics and Schema Registry subjects in the
+1. Continue adoption beyond Kafka topics, Schema Registry subjects, and the
+   exact default-cluster Kafka Connect slice in the
    [fail-closed provider order](../plans/2026-09-02-extended-resource-adoption.md):
-   Connector planning/identity/observation/recovery/adoption, then normalized
-   Gateway alias-only adoption. Flink remains gated on artifact evidence and
-   lifecycle semantics. Add export/import workflows for deployment ownership
-   state separately.
+   normalized Gateway aggregate and alias-only adoption are next. Flink remains
+   gated on artifact evidence and lifecycle semantics. Add export/import
+   workflows for deployment ownership state separately.
 2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a
