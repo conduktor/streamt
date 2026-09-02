@@ -76,6 +76,17 @@ class StateBackendUnknownCommitError(StateBackendError):
     """The backend cannot prove whether a state transition committed."""
 
 
+class StateBackendReleaseAfterCommitError(StateBackendError):
+    """A verified commit succeeded, but operation authority release failed.
+
+    Callers must report the committed outcome and must not suggest replaying the
+    mutation. Providers should keep implementation details in the exception
+    cause and expose only a sanitized message here.
+    """
+
+    committed: Literal[True] = True
+
+
 def _require_address_segment(value: object, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise StateFormatError(f"state address {label} must be a non-empty string")

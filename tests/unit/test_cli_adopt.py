@@ -28,6 +28,11 @@ from streamt.deployer.state_backend import (
     OperationIntent,
     OperationSnapshot,
     RecoveryRecord,
+    StateBackendConflictError,
+    StateBackendLockLostError,
+    StateBackendLockTimeoutError,
+    StateBackendReleaseAfterCommitError,
+    StateBackendUnknownCommitError,
     StateObservation,
     make_deployment_state_service,
     operation_timestamp,
@@ -240,6 +245,104 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
         ).read_control().control.status
         == "clear"
     )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (
+            StateBackendLockTimeoutError("lock timeout password=lock-secret"),
+            "E422_STATE_LOCK_TIMEOUT",
+        ),
+        (
+            StateBackendLockLostError("lock lost token=lock-secret"),
+            "E423_STATE_LOCK_LOST",
+        ),
+        (
+            StateBackendConflictError("state conflict password=state-secret"),
+            "E424_STATE_CONFLICT",
+        ),
+        (
+            StateBackendUnknownCommitError("unknown token=commit-secret"),
+            "E425_STATE_UNKNOWN_OUTCOME",
+        ),
+    ],
+)
+def test_adopt_reports_distinct_redacted_state_backend_failures(
+    tmp_path: Path,
+    error: Exception,
+    expected_code: str,
+) -> None:
+    _write_project(tmp_path)
+
+    @contextmanager
+    def failed_operation() -> Iterator[MagicMock]:
+        raise error
+        yield  # pragma: no cover
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = failed_operation
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), _kafka())
+    with (
+        compiler_patch,
+        kafka_patch,
+        patch(
+            "streamt.cli.commands.adopt.make_deployment_state_service",
+            return_value=state_service,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == expected_code
+    assert "secret" not in json.dumps(payload)
+
+
+def test_adopt_release_failure_after_commit_reports_committed_without_success(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    artifact = _topic()
+    kafka = _kafka()
+    delegate_service = make_deployment_state_service(
+        tmp_path,
+        project="adoption-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    )
+
+    @contextmanager
+    def operation() -> Iterator[object]:
+        with delegate_service.operation() as delegate:
+            yield delegate
+        raise StateBackendReleaseAfterCommitError(
+            "operation release failed password=release-secret"
+        )
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(artifact), kafka)
+    with (
+        compiler_patch,
+        kafka_patch,
+        patch(
+            "streamt.cli.commands.adopt.make_deployment_state_service",
+            return_value=state_service,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == "E426_STATE_RELEASE_FAILED_AFTER_COMMIT"
+    assert payload["data"]["committed"] is True
+    assert payload["data"]["adopted"] is True
+    assert payload["data"]["state_serial"] == 1
+    assert "suggestion" not in payload["errors"][0]
+    assert "release-secret" not in json.dumps(payload)
+    assert "Ownership adopted" not in result.output
+    assert LocalState.load(local_state_path(tmp_path, environment="default")).serial == 1
 
 
 def test_existing_recovery_marker_blocks_adoption_before_runtime_setup(
@@ -813,7 +916,7 @@ def test_atomic_save_failure_reports_error_and_leaves_no_state(tmp_path: Path) -
 
     assert result.exit_code == 1
     payload = _payload(result)
-    assert payload["errors"][0]["code"] == "E416_ADOPTION_FAILED"
+    assert payload["errors"][0]["code"] == "E425_STATE_UNKNOWN_OUTCOME"
     assert "state-secret" not in json.dumps(payload)
     assert not local_state_path(tmp_path, environment="default").exists()
     control = make_deployment_state_service(

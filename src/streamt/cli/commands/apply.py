@@ -46,8 +46,12 @@ from streamt.deployer.state_backend import (
     OperationSnapshot,
     RecoveryRecord,
     StateBackendConflictError,
+    StateBackendLockLostError,
+    StateBackendLockTimeoutError,
     StateBackendRecoveryRequiredError,
+    StateBackendReleaseAfterCommitError,
     StateBackendUnavailableError,
+    StateBackendUnknownCommitError,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -179,6 +183,7 @@ def apply(
         sys.exit(1)
 
     operation_stack = ExitStack()
+    verified_commit_data: dict[str, object] | None = None
     try:
         parser = ProjectParser(
             project_path,
@@ -750,7 +755,7 @@ def apply(
                         next_state,
                     )
                 except OSError as error:
-                    raise StateFormatError(
+                    raise StateBackendUnknownCommitError(
                         "deployment succeeded but ownership state commit "
                         "could not be confirmed"
                     ) from error
@@ -760,10 +765,14 @@ def apply(
                     results["state_file"] = str(state_path)
                 else:
                     results["state_serial"] = prior_state.serial
+                results["committed"] = True
+                verified_commit_data = results
+                # Preserve the verified outcome if releasing provider authority
+                # fails. Output remains buffered until after release succeeds.
+                fmt.set_data(results)
 
                 # Do not emit a success result while operation ownership is held.
                 operation_stack.close()
-                fmt.set_data(results)
                 if created:
                     fmt.print("\n[green]Created:[/green]")
                     for item in created:
@@ -823,6 +832,55 @@ def apply(
         fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
+    except StateBackendReleaseAfterCommitError as e:
+        safe_message = redact_sensitive_text(e)
+        release_data = dict(verified_commit_data or {})
+        release_data["committed"] = e.committed
+        fmt.set_data(release_data)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_RELEASE_FAILED_AFTER_COMMIT,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendLockTimeoutError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_LOCK_TIMEOUT, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendLockLostError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_LOCK_LOST, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendConflictError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_CONFLICT, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendUnknownCommitError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_UNKNOWN_OUTCOME,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
     except StateBackendUnavailableError as e:
         safe_message = redact_sensitive_text(e)
         fmt.add_error(
@@ -835,13 +893,14 @@ def apply(
         fmt.flush()
         sys.exit(1)
     except StateBackendRecoveryRequiredError as e:
+        safe_message = redact_sensitive_text(e)
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.STATE_RECOVERY_REQUIRED,
-                message=str(e),
+                message=safe_message,
             )
         )
-        fmt.print_error(str(e))
+        fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
     except StateError as e:

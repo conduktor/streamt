@@ -51,7 +51,11 @@ from streamt.deployer.state_backend import (
     OperationProgress,
     OperationSnapshot,
     RecoveryRecord,
+    StateBackendConflictError,
+    StateBackendLockLostError,
+    StateBackendLockTimeoutError,
     StateBackendRecoveryRequiredError,
+    StateBackendReleaseAfterCommitError,
     StateBackendUnavailableError,
     StateBackendUnknownCommitError,
     make_deployment_state_service,
@@ -1032,6 +1036,8 @@ def adopt(
                 next_state,
             )
             operation_finalized = True
+        except StateBackendConflictError:
+            raise
         except StateConflictError as exc:
             raise AdoptionError(
                 (
@@ -1045,9 +1051,10 @@ def adopt(
                     else str(exc)
                 ),
             ) from exc
-        except (OSError, StateBackendUnknownCommitError) as exc:
-            raise AdoptionError(
-                ErrorCode.ADOPTION_FAILED,
+        except StateBackendUnknownCommitError:
+            raise
+        except OSError as exc:
+            raise StateBackendUnknownCommitError(
                 "Could not confirm the atomic adoption state commit",
             ) from exc
         finally:
@@ -1082,13 +1089,10 @@ def adopt(
                         # The existing in_progress marker remains conservative.
                         pass
 
-        # A provider may own a remote session or lease for the entire context.
-        # Do not report success until releasing that authority has succeeded.
-        operation_stack.close()
-
         data["adopted"] = True
         data["already_owned"] = False
         data["state_serial"] = next_state.serial
+        data["committed"] = True
         next_command = [
             "streamt",
             "plan",
@@ -1103,6 +1107,12 @@ def adopt(
         next_command.extend(["--out", str(reviewed_plan_path)])
         data["next_command"] = next_command
         fmt.set_data(data)
+
+        # A provider may own a remote session or lease for the entire context.
+        # Keep the verified result buffered until releasing that authority has
+        # succeeded.
+        operation_stack.close()
+
         backend_name = "Kafka" if kind == "topic" else "Schema Registry"
         fmt.print(f"[green]Ownership adopted. {backend_name} was not modified.[/green]")
         fmt.print("Run a fresh reviewed plan before any apply.")
@@ -1123,6 +1133,54 @@ def adopt(
         fmt.add_error(
             StructuredError(
                 code=ErrorCode.REMOTE_STATE_REQUIRED,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendReleaseAfterCommitError as exc:
+        safe_message = redact_sensitive_text(exc)
+        data["committed"] = exc.committed
+        fmt.set_data(data)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_RELEASE_FAILED_AFTER_COMMIT,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendLockTimeoutError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_LOCK_TIMEOUT, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendLockLostError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_LOCK_LOST, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendConflictError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_CONFLICT, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendUnknownCommitError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_UNKNOWN_OUTCOME,
                 message=safe_message,
             )
         )
