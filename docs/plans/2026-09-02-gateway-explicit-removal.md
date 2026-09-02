@@ -92,6 +92,7 @@ This plan does not:
 The exact initial spelling is:
 
 ```yaml title="stream_project.yml"
+# streamt:skip -- planned lifecycle schema; not accepted until Slice 1 lands
 apiVersion: streamt.dev/v1alpha1
 project:
   name: payments
@@ -112,6 +113,7 @@ lifecycle:
 An alias-only removal uses an explicit empty interceptor list:
 
 ```yaml
+# streamt:skip -- partial planned lifecycle fragment
 lifecycle:
   gateway_rule_removals:
     - logical_owner: customer_view
