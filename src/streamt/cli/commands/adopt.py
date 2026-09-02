@@ -569,10 +569,10 @@ def _adoption_data(
     logical_name: str,
     artifact: TopicArtifact,
     current: TopicState,
-    state_path: Path,
+    state_path: Path | None,
     state_serial: int,
 ) -> dict[str, object]:
-    return {
+    data: dict[str, object] = {
         "resource_id": resource_uri,
         "kind": "topic",
         "logical_name": logical_name,
@@ -592,9 +592,11 @@ def _adoption_data(
         ),
         "desired_replication_factor": artifact.replication_factor,
         "pending_diffs": _redact(_pending_topic_diffs(current, artifact)),
-        "state_file": str(state_path),
         "state_serial": state_serial,
     }
+    if state_path is not None:
+        data["state_file"] = str(state_path)
+    return data
 
 
 def _schema_adoption_data(
@@ -603,7 +605,7 @@ def _schema_adoption_data(
     logical_name: str,
     artifact: SchemaArtifact,
     current: SchemaState,
-    state_path: Path,
+    state_path: Path | None,
     state_serial: int,
 ) -> dict[str, object]:
     current_checksum = _schema_content_checksum(
@@ -614,7 +616,7 @@ def _schema_adoption_data(
         schema=artifact.schema,
         schema_type=artifact.schema_type,
     )
-    return {
+    data: dict[str, object] = {
         "resource_id": resource_uri,
         "kind": "schema",
         "logical_name": logical_name,
@@ -639,9 +641,11 @@ def _schema_adoption_data(
             }
         ),
         "pending_diffs": _pending_schema_diffs(current, artifact),
-        "state_file": str(state_path),
         "state_serial": state_serial,
     }
+    if state_path is not None:
+        data["state_file"] = str(state_path)
+    return data
 
 
 @click.command()
@@ -784,10 +788,12 @@ def adopt(
         prior_snapshot = state_operation.observe()
         prior_state = prior_snapshot.state.state
         state_operation.ensure_ready(prior_snapshot)
-        fmt.print_warning(
-            f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
-            code=ErrorCode.LOCAL_STATE_ONLY,
-        )
+        local_state_output = project.deployment_state.backend == "local"
+        if local_state_output:
+            fmt.print_warning(
+                f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
+                code=ErrorCode.LOCAL_STATE_ONLY,
+            )
 
         desired_record = ManagedResourceRecord(
             physical_name=physical_name,
@@ -842,7 +848,7 @@ def adopt(
                 logical_name=logical_name,
                 artifact=topic_artifact,
                 current=current_topic,
-                state_path=state_path,
+                state_path=state_path if local_state_output else None,
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = _topic_observation_fingerprint(current_topic)
@@ -876,7 +882,7 @@ def adopt(
                 logical_name=logical_name,
                 artifact=schema_artifact,
                 current=current_schema,
-                state_path=state_path,
+                state_path=state_path if local_state_output else None,
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = _schema_observation_fingerprint(current_schema)

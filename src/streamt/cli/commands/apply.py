@@ -337,10 +337,11 @@ def apply(
         state_operation.ensure_ready(planning_snapshot)
         prior_observation = planning_snapshot.state
         prior_state = prior_observation.state
-        fmt.print_warning(
-            f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
-            code=ErrorCode.LOCAL_STATE_ONLY,
-        )
+        if project.deployment_state.backend == "local":
+            fmt.print_warning(
+                f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
+                code=ErrorCode.LOCAL_STATE_ONLY,
+            )
         if reviewed_plan is not None:
             reviewed_plan.verify_context(
                 manifest,
@@ -764,7 +765,8 @@ def apply(
                 operation_finalized = True
                 if next_state is not None:
                     results["state_serial"] = next_state.serial
-                    results["state_file"] = str(state_path)
+                    if project.deployment_state.backend == "local":
+                        results["state_file"] = str(state_path)
                 else:
                     results["state_serial"] = prior_state.serial
                 results["committed"] = True

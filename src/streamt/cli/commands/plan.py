@@ -126,11 +126,12 @@ def plan(
             operation_status = state_service.read_control().safe_status()
             prior_state = state_observation.state
             state_reference = StateReference.from_observation(state_observation)
-            fmt.print_warning(
-                f"{LOCAL_STATE_CI_WARNING} State file: "
-                f"{local_state_path(project_path, environment=effective_environment)}",
-                code=ErrorCode.LOCAL_STATE_ONLY,
-            )
+            if project.deployment_state.backend == "local":
+                fmt.print_warning(
+                    f"{LOCAL_STATE_CI_WARNING} State file: "
+                    f"{local_state_path(project_path, environment=effective_environment)}",
+                    code=ErrorCode.LOCAL_STATE_ONLY,
+                )
 
             # Create deployers
             sr_deployer = make_sr_deployer(project, fmt)
