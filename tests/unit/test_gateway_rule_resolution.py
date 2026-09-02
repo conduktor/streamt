@@ -109,6 +109,7 @@ def test_resolved_rule_repr_hides_artifact_config_and_gateway_endpoint() -> None
 @pytest.mark.parametrize(
     ("collision", "message"),
     [
+        ("rule_name", "Gateway manifest contains a duplicate rule name"),
         ("owner", "Gateway manifest maps one logical owner to multiple rules"),
         ("alias", "Gateway manifest contains a duplicate canonical alias locator"),
         ("interceptor", "Gateway manifest contains a duplicate interceptor locator"),
@@ -117,6 +118,7 @@ def test_resolved_rule_repr_hides_artifact_config_and_gateway_endpoint() -> None
 def test_resolver_rejects_each_exact_manifest_collision(
     collision: str,
     message: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _rule(
         "first_rule",
@@ -130,12 +132,17 @@ def test_resolver_rejects_each_exact_manifest_collision(
         "second_owner",
         where="region = 'eu'" if collision == "interceptor" else None,
     )
-    if collision == "owner":
+    if collision == "rule_name":
+        second["name"] = first["name"]
+    elif collision == "owner":
         second["ownership"] = deepcopy(first["ownership"])
     elif collision == "alias":
         second["virtualTopic"] = first["virtualTopic"]
     else:
-        second["name"] = first["name"]
+        monkeypatch.setattr(
+            "streamt.deployer.gateway.generate_gateway_interceptor_name",
+            lambda _logical_name, _declaration_type, _ordinal: "shared_filter_0",
+        )
 
     with pytest.raises(GatewayManifestResolutionError, match=message):
         resolve_managed_gateway_rules([first, second], _binding())

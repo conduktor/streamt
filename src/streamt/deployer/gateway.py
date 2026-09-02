@@ -1137,12 +1137,18 @@ def resolve_managed_gateway_rules(
 
     rules = tuple(raw_rules)
     resolved: list[ResolvedManagedGatewayRule] = []
+    rule_names: set[str] = set()
     logical_owners: set[str] = set()
     alias_locators: set[GatewayAliasLocator] = set()
     interceptor_locators: set[GatewayInterceptorLocator] = set()
 
     for raw_rule in rules:
         artifact = parse_compiled_gateway_rule_artifact(raw_rule)
+        if artifact.name in rule_names:
+            raise GatewayManifestResolutionError(
+                "Gateway manifest contains a duplicate rule name"
+            )
+        rule_names.add(artifact.name)
         desired = build_desired_gateway_rule(artifact, binding)
         ownership = ArtifactOwnership.from_dict(artifact.ownership)
         logical_owner = ownership.owner_name if ownership is not None else artifact.name

@@ -362,6 +362,7 @@ def test_live_gateway_binding_must_match_project_before_provider_access(
 @pytest.mark.parametrize(
     ("collision", "message"),
     [
+        ("rule_name", "Gateway manifest contains a duplicate rule name"),
         ("owner", "Gateway manifest maps one logical owner to multiple rules"),
         ("alias", "Gateway manifest contains a duplicate canonical alias locator"),
         ("interceptor", "Gateway manifest contains a duplicate interceptor locator"),
@@ -396,18 +397,22 @@ def test_gateway_identity_collisions_fail_before_provider_access(
             else None
         ),
     )
-    if collision == "owner":
+    if collision == "rule_name":
+        second["name"] = first["name"]
+    elif collision == "owner":
         second["ownership"] = _ownership("first_owner")
     elif collision == "alias":
         second["virtualTopic"] = first["virtualTopic"]
+    elif collision == "interceptor":
+        monkeypatch.setattr(
+            "streamt.deployer.gateway.generate_gateway_interceptor_name",
+            lambda _logical_name, _declaration_type, _ordinal: "shared_filter_0",
+        )
     else:
-        if collision == "interceptor":
-            second["name"] = first["name"]
-        else:
-            monkeypatch.setattr(
-                "streamt.deployer.gateway.classify_gateway_interceptor_name",
-                lambda _logical_name, _candidate: object(),
-            )
+        monkeypatch.setattr(
+            "streamt.deployer.gateway.classify_gateway_interceptor_name",
+            lambda _logical_name, _candidate: object(),
+        )
 
     with _mocked_gateway() as (deployer, request):
         with pytest.raises(StateIdentityError, match=message):

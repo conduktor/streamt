@@ -280,6 +280,7 @@ def test_gateway_status_reuses_one_snapshot_for_exact_multiple_rules(
 @pytest.mark.parametrize(
     ("collision", "message"),
     [
+        ("rule_name", "Gateway manifest contains a duplicate rule name"),
         ("owner", "Gateway manifest maps one logical owner to multiple rules"),
         ("alias", "Gateway manifest contains a duplicate canonical alias locator"),
         ("interceptor", "Gateway manifest contains a duplicate interceptor locator"),
@@ -325,12 +326,17 @@ def test_gateway_status_rejects_the_same_manifest_collisions_before_snapshot(
         "type": "model",
         "name": "second_owner",
     }
-    if collision == "owner":
+    if collision == "rule_name":
+        second["name"] = first["name"]
+    elif collision == "owner":
         second["ownership"] = dict(first["ownership"])  # type: ignore[arg-type]
     elif collision == "alias":
         second["virtualTopic"] = first["virtualTopic"]
     elif collision == "interceptor":
-        second["name"] = first["name"]
+        monkeypatch.setattr(
+            "streamt.deployer.gateway.generate_gateway_interceptor_name",
+            lambda _logical_name, _declaration_type, _ordinal: "shared_filter_0",
+        )
     else:
         monkeypatch.setattr(
             "streamt.deployer.gateway.classify_gateway_interceptor_name",
