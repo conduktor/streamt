@@ -15,6 +15,7 @@ Complete reference for all streamt CLI commands.
 | Generate SQL/JSON artifacts | `compile` | No |
 | Package artifacts + manifest + checksums | `build` | No |
 | View data lineage | `lineage` | No |
+| Export OpenLineage design metadata | `docs openlineage` | No |
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
@@ -1180,6 +1181,59 @@ servers, runtime endpoints, credentials, SQL, catalog publication state, or a
 separate contract per model. See [ODCS export](odcs.md) for the exact mapping,
 validation, and omission boundary.
 
+#### docs openlineage
+
+Export deterministic, offline-validated OpenLineage 1.53.0 design metadata as
+canonical JSON Lines.
+
+```bash
+streamt docs openlineage [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--job-namespace NAMESPACE` | Job namespace; falls back to `OPENLINEAGE_NAMESPACE` and is semantically required |
+| `--kafka-namespace KAFKA-URI` | Kafka dataset namespace; falls back to `STREAMT_OPENLINEAGE_KAFKA_NAMESPACE` or safe single-bootstrap derivation |
+| `--gateway-namespace KAFKA-URI` | Gateway dataset namespace; falls back to `STREAMT_OPENLINEAGE_GATEWAY_NAMESPACE` or safe single-bootstrap derivation |
+| `--output-file PATH` | Atomically replace this file instead of writing JSONL to stdout |
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# Write validated JSONL to stdout
+streamt docs openlineage \
+  --job-namespace https://lineage.example/namespaces/prod
+
+# Use explicit catalog identities and atomic file output
+streamt docs openlineage \
+  --job-namespace https://lineage.example/namespaces/prod \
+  --kafka-namespace kafka://catalog-kafka.example:9092 \
+  --gateway-namespace kafka://catalog-gateway.example:6969 \
+  --output-file lineage.jsonl
+
+# Retain events and warnings in the normal structured envelope
+streamt --output json docs openlineage \
+  --job-namespace https://lineage.example/namespaces/prod
+```
+
+Text-mode stdout contains only compact canonical JSONL when no output file is
+selected; warnings go to stderr. In global JSON mode, events and counts are
+under `data`, while warnings use the normal top-level `warnings` array. All
+events are generated, validated against bundled official schemas, and
+serialized before event output begins. Failures use
+`E506_OPENLINEAGE_INVALID` and never emit a partial event stream.
+
+This command exports static `DatasetEvent` and `JobEvent` records from one
+dry-run compile. It performs no live-service or deployment-state reads and does
+not emit `RunEvent` records. Ordinary compile/apply/test commands and deployed
+Flink, Gateway, or Connect processes do not currently emit OpenLineage
+telemetry. See [OpenLineage static export](openlineage.md) for exact mapping,
+namespace, validation, and security boundaries.
+
 #### docs openapi
 
 Deprecated compatibility alias for `streamt docs asyncapi`. It emits the exact
@@ -1395,6 +1449,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E503_ENVIRONMENT_ERROR` | Environment configuration error |
 | `E504_ASYNCAPI_INVALID` | AsyncAPI generation or validation failed |
 | `E505_ODCS_INVALID` | ODCS metadata, mapping, validation, serialization, or output failed |
+| `E506_OPENLINEAGE_INVALID` | OpenLineage namespace, mapping, validation, serialization, or output failed |
 
 **Governance Errors (E6xx):**
 
@@ -1426,6 +1481,8 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `W107_SCHEMA_ENRICHMENT_SKIPPED` | Optional Schema Registry enrichment was unavailable or unsupported |
 | `W108_IMPORT_TARGET_EXISTS` | Dry-run target exists; a real import would refuse to overwrite it |
 | `W109_ODCS_SCHEMA_INCOMPLETE` | A source or model has no declared columns, so its ODCS object omits properties |
+| `W110_OPENLINEAGE_SCHEMA_INCOMPLETE` | A dataset has no declared columns, so its OpenLineage event omits the schema facet |
+| `W111_OPENLINEAGE_SINK_OUTPUT_OMITTED` | A sink job has no normalized OpenLineage output dataset |
 | `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
 | `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
 | `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |

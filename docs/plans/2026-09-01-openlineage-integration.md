@@ -12,14 +12,14 @@ reviewable commit after its focused and repository-wide gates pass.
 Slice 1 is complete in commits `5491f0d` and `665dd4d`. The repository now has
 the pinned OpenLineage schemas, pure typed event/identity helpers, fail-closed
 offline validation, and an installed-wheel resource smoke test. The normal CI
-unit matrix runs that coverage on Python 3.10 through 3.12; there is no
-OpenLineage command, transport, or runtime-emission job yet.
+unit matrix runs that coverage on Python 3.10 through 3.12.
 
-Slice 2 is active. Its shared resolved-model SQL and dependency prerequisite
-landed in `c2cc695`, so static export can consume the compiler's canonical
-resolution rather than adding a separate parser. Static export itself is not
-implemented or supported yet, and the corresponding roadmap item remains
-open.
+Slice 2 is complete. Shared resolved-model SQL and dependencies landed in
+`c2cc695`; the secret-safe compiled-model projection landed in `40dc830`; the
+pure namespace and static event mapper landed in `925eb40`; and the public
+`streamt docs openlineage` command and acceptance suite landed in `537252e`.
+Static `DatasetEvent` and `JobEvent` export is supported. No transport or
+runtime-emission command is implemented yet.
 
 The target is OpenLineage 1.53.0 at signed release commit
 `8ad5c14c63fbab63fedd8ff42f9a208d86ad07fe`. The core schema retains its
@@ -91,9 +91,11 @@ validate representative DatasetEvent, JobEvent, and RunEvent records.
 
 ## Slice 2: deterministic static export
 
-Progress: active. Commit `c2cc695` completed the shared compiler/DAG dependency
-resolution prerequisite. The command, project-to-event mapping, user-facing
-documentation, and acceptance tests below remain to be implemented.
+Progress: complete in `c2cc695`, `40dc830`, `925eb40`, and `537252e`. The
+implementation uses compiler-resolved macro dependencies, an immutable
+secret-safe primary-artifact projection, strict namespace resolution, a pure
+validated mapper, and the public offline CLI. User-facing reference and
+support-matrix updates landed only after the executable command gate passed.
 
 ### Scope
 

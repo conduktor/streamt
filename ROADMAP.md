@@ -97,7 +97,11 @@ plane.
 - [x] Generate Open Data Contract Standard 3.1.0 project-wide schema documents
       with pinned offline validation and explicit contract identity, status,
       and version metadata.
-- [ ] Emit OpenLineage-compatible compile and runtime events.
+- [x] Export offline-validated OpenLineage 1.53.0 static `DatasetEvent` and
+      `JobEvent` design metadata as deterministic JSONL.
+- [ ] Emit opt-in OpenLineage `RunEvent` telemetry for finite streamt commands;
+      this must not be presented as deployed Flink, Gateway, or Connect runtime
+      telemetry.
 - [ ] Publish catalog metadata to Conduktor Console and support portable exports
       for Backstage/DataHub-style catalogs.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.

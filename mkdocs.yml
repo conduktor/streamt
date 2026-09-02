@@ -123,6 +123,7 @@ nav:
     - Integration Support: reference/support-matrix.md
     - AsyncAPI Export: reference/asyncapi.md
     - ODCS Export: reference/odcs.md
+    - OpenLineage Export: reference/openlineage.md
     - YAML Schema: reference/yaml-schema.md
     - Flink Options: reference/flink-options.md
     - Materializations: reference/materializations.md

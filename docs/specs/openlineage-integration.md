@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed normative contract for design-time OpenLineage export and narrowly
-scoped streamt command telemetry. No OpenLineage capability may be described as
-supported until the corresponding acceptance requirements in this specification
-are executable.
+The design-time `DatasetEvent` and `JobEvent` export is supported against its
+executable acceptance gates. The remaining normative contract for narrowly
+scoped streamt command telemetry is proposed and must not be described as
+supported until its separate acceptance requirements are executable.
 
 The first implementation is static export. Runtime command events are separate
 later slices. Neither static export nor command telemetry is deployed Apache
@@ -398,8 +398,10 @@ printing JSONL. `data` contains:
 - `core_schema: "2-0-2"`;
 - `events`, in canonical order;
 - total, dataset, and job event counts;
-- structured warnings;
 - `output_file` when one was requested.
+
+Structured warnings remain in the normal envelope's top-level `warnings`
+array. They are not duplicated under `data`.
 
 No progress text or warning line may precede or follow the structured envelope.
 
