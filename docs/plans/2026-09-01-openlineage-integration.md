@@ -18,8 +18,18 @@ Slice 2 is complete. Shared resolved-model SQL and dependencies landed in
 `c2cc695`; the secret-safe compiled-model projection landed in `40dc830`; the
 pure namespace and static event mapper landed in `925eb40`; and the public
 `streamt docs openlineage` command and acceptance suite landed in `537252e`.
-Static `DatasetEvent` and `JobEvent` export is supported. No transport or
-runtime-emission command is implemented yet.
+Static `DatasetEvent` and `JobEvent` export is supported.
+
+Slice 3 is complete. It provides strict modern File/HTTP transport
+configuration and bounded synchronous delivery without an OpenLineage client
+dependency or implicit console fallback.
+
+Slice 4 is complete. An explicitly enabled finite `streamt test` invocation
+preflights a validated aggregate run, emits only the selected sample-test Kafka
+inputs, and attempts START plus exactly one truthful terminal event. Delivery
+and close failures are fixed `W112_OPENLINEAGE_EMIT_FAILED` warnings and do not
+change the test result. Apply telemetry and its durable operation boundaries
+remain in slice 5.
 
 The target is OpenLineage 1.53.0 at signed release commit
 `8ad5c14c63fbab63fedd8ff42f9a208d86ad07fe`. The core schema retains its
@@ -164,8 +174,9 @@ adapter opens an explicit regular target append-only and durably syncs every
 event. The dedicated synchronous HTTP adapter disables environment inheritance,
 redirects, and adapter retries; enforces TLS and timeout bounds; closes every
 response; and performs at most the one explicitly configured retry. Delivery
-and close failures expose fixed secret-neutral errors. No command calls either
-adapter yet, so runtime emission remains unsupported.
+and close failures expose fixed secret-neutral errors. Slice 4 consumes this
+boundary only behind the explicit test-command emission flag; no apply command
+hook exists yet.
 
 The File/HTTP boundary does not use `openlineage-python`. streamt already owns
 the validated event dictionaries and has `requests` as a core dependency. A
@@ -232,6 +243,17 @@ Slice 3B tests use a fake transport or local mock HTTP server and must prove:
   OpenLineage runtime dependency.
 
 ## Slice 4: finite test-command RunEvents
+
+Progress: complete. The command adds the four shared options while keeping
+emission strictly flag-gated. Namespace, transport, job/run identity, sorted
+sample inputs, and all terminal shapes are validated before `TestRunner` is
+constructed. The runner and event mapper share one exact sample-topic resolver.
+START is attempted immediately before execution; COMPLETE, FAIL, or ABORT is
+attempted once with stable UUIDv4/job/input identity. Fixed bounded W112
+warnings preserve normal text, structured JSON, exit status, and uncaught
+exceptions when START, terminal delivery, or close fails. Coverage, empty
+selection, and the unimplemented deployment path do not open a transport or
+claim a run.
 
 ### Scope
 

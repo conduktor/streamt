@@ -62,6 +62,22 @@ _ASSERTION_CONFIG_MODELS: dict[str, type[BaseModel]] = {
 }
 
 
+def resolve_sample_test_topic(project: StreamtProject, target_name: str) -> str | None:
+    """Resolve the exact Kafka topic consumed by a sample test target."""
+    model = project.get_model(target_name)
+    if model:
+        topic_config = model.get_topic_config()
+        if topic_config and topic_config.name:
+            return topic_config.name
+        return model.name
+
+    source = project.get_source(target_name)
+    if source:
+        return source.topic
+
+    return None
+
+
 def _format_assertion_error(index: int, assertion_type: str, exc: ValidationError) -> str:
     """Format assertion validation failures with stable collection paths."""
     details = []
@@ -340,20 +356,7 @@ class TestRunner:
 
     def _get_topic_for_test(self, model_name: str) -> str | None:
         """Get the Kafka topic for a model or source."""
-        # Check models first
-        model = self.project.get_model(model_name)
-        if model:
-            topic_config = model.get_topic_config()
-            if topic_config and topic_config.name:
-                return topic_config.name
-            return model.name
-
-        # Check sources
-        source = self.project.get_source(model_name)
-        if source:
-            return source.topic
-
-        return None
+        return resolve_sample_test_topic(self.project, model_name)
 
     def _sample_messages_from_kafka(
         self, topic: str, sample_size: int, timeout_ms: int = 10000
