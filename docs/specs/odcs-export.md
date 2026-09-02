@@ -70,6 +70,7 @@ Every schema object identifies its streamt role with this truthful ODCS custom
 property:
 
 ```yaml
+# streamt:skip
 customProperties:
   - property: streamtResourceType
     value: source
@@ -126,6 +127,7 @@ streamt field location when one is available.
 The emitted root key order is:
 
 ```yaml
+# streamt:skip
 apiVersion: v3.1.0
 kind: DataContract
 id: <explicit contract ID>
@@ -225,10 +227,13 @@ The first release maps only these case-insensitive Flink SQL type families:
 | `TIME` | `time` |
 | `TIMESTAMP`, `TIMESTAMP_LTZ` | `timestamp` |
 
-Parameters such as precision and scale remain in `physicalType`. Unknown,
-binary, interval, `ROW`, `MAP`, and incompletely parsed `ARRAY` types retain
-their exact physical type but omit `logicalType`. The exporter never falls back
-to `string`, never creates array items, and never derives a type from SQL.
+Parameters such as precision and scale remain in `physicalType`. Parameterized
+forms are mapped only when their complete syntax and bounds are valid: character
+length is `1..2147483647`, decimal precision is `1..38` with scale `0..precision`,
+and temporal precision is `0..9`. Unknown, malformed, out-of-range, binary,
+interval, `ROW`, `MAP`, and incompletely parsed `ARRAY` types retain their exact
+physical type but omit `logicalType`. The exporter never falls back to `string`,
+never creates array items, and never derives a type from SQL.
 
 ## Deterministic identifiers and ordering
 
