@@ -420,10 +420,10 @@ class ProjectParser:
         except ValidationError as e:
             raise ParseError(f"Invalid rules: {_format_pydantic_error(e)}") from e
 
-    def _parse_lifecycle(self, data: dict[str, object]) -> LifecycleConfig | None:
+    def _parse_lifecycle(self, data: dict[str, object]) -> LifecycleConfig:
         """Parse explicit lifecycle transitions from the project file."""
         if "lifecycle" not in data:
-            return None
+            return LifecycleConfig()
         lifecycle_data = _require_mapping(
             data["lifecycle"], context="stream_project.yml", path="lifecycle"
         )

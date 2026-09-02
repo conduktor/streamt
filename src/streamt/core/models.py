@@ -278,6 +278,7 @@ class GatewayRulePriorMaskConfig(BaseModel):
     for_roles: list[NonEmptyGatewayConfigString] = Field(
         default_factory=list,
         alias="forRoles",
+        json_schema_extra={"uniqueItems": True},
     )
 
     @field_validator("field", "method")
@@ -304,22 +305,24 @@ class GatewayRulePriorMaskConfig(BaseModel):
         return value
 
 
-class GatewayRulePriorInterceptor(BaseModel):
-    """One exact supported compiler-level Gateway interceptor."""
+class GatewayRulePriorFilterInterceptor(BaseModel):
+    """One exact compiler-level filter retained by a tombstone."""
 
-    type: Literal["filter", "mask"]
-    config: GatewayRulePriorFilterConfig | GatewayRulePriorMaskConfig
+    type: Literal["filter"]
+    config: GatewayRulePriorFilterConfig
 
-    @model_validator(mode="after")
-    def validate_type_specific_config(self) -> GatewayRulePriorInterceptor:
-        expected = (
-            GatewayRulePriorFilterConfig
-            if self.type == "filter"
-            else GatewayRulePriorMaskConfig
-        )
-        if not isinstance(self.config, expected):
-            raise ValueError(f"{self.type} interceptor has incompatible config")
-        return self
+
+class GatewayRulePriorMaskInterceptor(BaseModel):
+    """One exact compiler-level mask retained by a tombstone."""
+
+    type: Literal["mask"]
+    config: GatewayRulePriorMaskConfig
+
+
+GatewayRulePriorInterceptor = Annotated[
+    GatewayRulePriorFilterInterceptor | GatewayRulePriorMaskInterceptor,
+    Field(discriminator="type"),
+]
 
 
 class GatewayRulePriorArtifact(BaseModel):
@@ -1262,7 +1265,7 @@ class StreamtProject(BaseModel):
     )
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
-    lifecycle: Optional[LifecycleConfig] = None
+    lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
     connections: dict[str, ConnectionConfig] = Field(default_factory=dict)
     sources: list[Source] = Field(default_factory=list)
     models: list[Model] = Field(default_factory=list)

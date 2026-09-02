@@ -470,11 +470,12 @@ strict parser tests must change together.
 
 ### Compiled manifest
 
-`gateway_rule_removals` is an additive artifact collection. It is included in
-the existing manifest checksum and ignored by older artifacts only where the
-consumer already treats artifact kinds generically. Every lifecycle consumer
-in the current release must be upgraded together; silent dropping in planner or
-selection code is forbidden.
+`gateway_rule_removals` is an additive artifact collection. It is emitted and
+included in the existing manifest checksum only when non-empty, preserving the
+checksum of projects that do not use removals. It is ignored by older artifacts
+only where the consumer already treats artifact kinds generically. Every
+lifecycle consumer in the current release must be upgraded together; silent
+dropping in planner or selection code is forbidden.
 
 ### Ownership state
 

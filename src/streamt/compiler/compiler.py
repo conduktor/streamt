@@ -236,9 +236,6 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
     def _compile_gateway_rule_removals(self) -> None:
         """Compile strict lifecycle tombstones without creating desired rules."""
-        if self.project.lifecycle is None:
-            return
-
         seen_owners: set[str] = set()
         seen_rule_names: set[str] = set()
         seen_alias_names: set[str] = set()
@@ -266,7 +263,6 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             raw_prior = declaration.prior_artifact.model_dump(
                 mode="json",
                 by_alias=True,
-                exclude_unset=True,
             )
             raw_prior["ownership"] = self._ownership(
                 "model",
@@ -662,6 +658,20 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
     def _create_manifest(self) -> Manifest:
         """Create the manifest."""
+        artifacts: dict[str, list[dict[str, object]]] = {
+            "schemas": [s.to_dict() for s in self.schemas],
+            "topics": [t.to_dict() for t in self.topics],
+            "flink_jobs": [f.to_dict() for f in self.flink_jobs],
+            "test_jobs": [j.to_dict() for j in self.test_jobs],
+            "connectors": [c.to_dict() for c in self.connectors],
+            "gateway_rules": [g.to_dict() for g in self.gateway_rules],
+        }
+        # Preserve checksums for projects that do not use the additive lifecycle
+        # feature. Consumers already treat a missing removal collection as empty.
+        if self.gateway_rule_removals:
+            artifacts["gateway_rule_removals"] = [
+                removal.to_dict() for removal in self.gateway_rule_removals
+            ]
         return Manifest(
             version=self.project.project.version or "0.0.0",
             project_name=self.project.project.name,
@@ -670,17 +680,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             tests=[t.model_dump() for t in self.project.tests],
             exposures=[e.model_dump() for e in self.project.exposures],
             dag=self.dag.to_dict(),
-            artifacts={
-                "schemas": [s.to_dict() for s in self.schemas],
-                "topics": [t.to_dict() for t in self.topics],
-                "flink_jobs": [f.to_dict() for f in self.flink_jobs],
-                "test_jobs": [j.to_dict() for j in self.test_jobs],
-                "connectors": [c.to_dict() for c in self.connectors],
-                "gateway_rules": [g.to_dict() for g in self.gateway_rules],
-                "gateway_rule_removals": [
-                    removal.to_dict() for removal in self.gateway_rule_removals
-                ],
-            },
+            artifacts=artifacts,
         )
 
     @staticmethod

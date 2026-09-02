@@ -1491,7 +1491,21 @@
         },
         "interceptors": {
           "items": {
-            "$ref": "#/$defs/GatewayRulePriorInterceptor"
+            "discriminator": {
+              "mapping": {
+                "filter": "#/$defs/GatewayRulePriorFilterInterceptor",
+                "mask": "#/$defs/GatewayRulePriorMaskInterceptor"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/GatewayRulePriorFilterInterceptor"
+              },
+              {
+                "$ref": "#/$defs/GatewayRulePriorMaskInterceptor"
+              }
+            ]
           },
           "title": "Interceptors",
           "type": "array"
@@ -1522,35 +1536,24 @@
       "title": "GatewayRulePriorFilterConfig",
       "type": "object"
     },
-    "GatewayRulePriorInterceptor": {
+    "GatewayRulePriorFilterInterceptor": {
       "additionalProperties": false,
-      "description": "One exact supported compiler-level Gateway interceptor.",
+      "description": "One exact compiler-level filter retained by a tombstone.",
       "properties": {
         "type": {
-          "enum": [
-            "filter",
-            "mask"
-          ],
+          "const": "filter",
           "title": "Type",
           "type": "string"
         },
         "config": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GatewayRulePriorFilterConfig"
-            },
-            {
-              "$ref": "#/$defs/GatewayRulePriorMaskConfig"
-            }
-          ],
-          "title": "Config"
+          "$ref": "#/$defs/GatewayRulePriorFilterConfig"
         }
       },
       "required": [
         "type",
         "config"
       ],
-      "title": "GatewayRulePriorInterceptor",
+      "title": "GatewayRulePriorFilterInterceptor",
       "type": "object"
     },
     "GatewayRulePriorMaskConfig": {
@@ -1573,7 +1576,8 @@
             "type": "string"
           },
           "title": "Forroles",
-          "type": "array"
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
@@ -1581,6 +1585,26 @@
         "method"
       ],
       "title": "GatewayRulePriorMaskConfig",
+      "type": "object"
+    },
+    "GatewayRulePriorMaskInterceptor": {
+      "additionalProperties": false,
+      "description": "One exact compiler-level mask retained by a tombstone.",
+      "properties": {
+        "type": {
+          "const": "mask",
+          "title": "Type",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/GatewayRulePriorMaskConfig"
+        }
+      },
+      "required": [
+        "type",
+        "config"
+      ],
+      "title": "GatewayRulePriorMaskInterceptor",
       "type": "object"
     },
     "GatewayRuleRemovalDeclaration": {
@@ -3551,15 +3575,7 @@
       "default": null
     },
     "lifecycle": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/LifecycleConfig"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
+      "$ref": "#/$defs/LifecycleConfig"
     },
     "connections": {
       "additionalProperties": {

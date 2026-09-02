@@ -315,6 +315,11 @@ project:
 runtime:
   kafka:
     bootstrap_servers: broker.example:9092
+  conduktor:
+    gateway:
+      admin_url: https://gateway.example:8888
+      username: ${GATEWAY_USER}
+      password: ${GATEWAY_PASSWORD}
 lifecycle:
   gateway_rule_removals:
     - logical_owner: orders_view
@@ -348,16 +353,19 @@ does not imply deletion.
 
 Gateway resource names accept letters, digits, `.`, `_`, and `-`. Filter
 configuration contains only `where`. Mask configuration contains `field`,
-`method`, and optional `forRoles`. All lifecycle objects are strict: unknown
-fields, null collections, singleton interceptor objects, provider endpoints,
-backend identities, credentials, and author-supplied `ownership` are rejected.
+`method`, and optional `forRoles`; an omitted `forRoles` is canonically compiled
+as `forRoles: []`, matching an ordinary desired Gateway artifact. All lifecycle
+objects are strict: unknown fields, null objects or collections, singleton
+interceptor objects, provider endpoints, backend identities, credentials, and
+author-supplied `ownership` are rejected.
 
 The compiler injects managed ownership from the current project and
 `logical_owner`, validates the reconstructed value with the compiled Gateway
 artifact parser, and emits it under the separate
-`artifacts.gateway_rule_removals` manifest collection. Tombstones are included
-in the manifest checksum but never appear in `gateway_rules`, the desired model
-list, or the DAG.
+`artifacts.gateway_rule_removals` manifest collection when at least one removal
+is declared. A non-empty tombstone collection is included in the manifest
+checksum; omitting the empty collection preserves existing-project checksums.
+Tombstones never appear in `gateway_rules`, the desired model list, or the DAG.
 
 ---
 
