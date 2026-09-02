@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +49,20 @@ CONNECTOR_CLASSES = {
     "elasticsearch-sink": "io.confluent.connect.elasticsearch.ElasticsearchSinkConnector",
     "bigquery-sink": "com.wepay.kafka.connect.bigquery.BigQuerySinkConnector",
 }
+
+
+def _mask_policy_values(config: object) -> tuple[str, str, list[str]]:
+    """Return one strictly validated compiler-facing mask policy."""
+    if not isinstance(config, Mapping):
+        raise CompileError("Mask policy config must be a mapping")
+    column = config.get("column")
+    method = config.get("method")
+    roles = config.get("for_roles", [])
+    if not isinstance(column, str) or not isinstance(method, str):
+        raise CompileError("Mask policy column and method must be strings")
+    if not isinstance(roles, list) or not all(isinstance(role, str) for role in roles):
+        raise CompileError("Mask policy for_roles must be a list of strings")
+    return column, method, roles
 
 
 class CompileError(Exception):
@@ -203,7 +218,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             )
 
     @staticmethod
-    def _flink_type_to_avro(flink_type: str) -> str | dict:
+    def _flink_type_to_avro(flink_type: str) -> str | dict[str, object]:
         """Map a Flink SQL type to its Avro equivalent."""
         base = flink_type.split("(")[0].upper()
         simple = {
@@ -236,12 +251,12 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             return {"type": "int", "logicalType": "time-millis"}
         return "string"
 
-    def _generate_schema_from_columns(self, source: Source) -> dict | None:
+    def _generate_schema_from_columns(self, source: Source) -> dict[str, object] | None:
         """Generate Avro schema from source columns."""
         if not source.columns:
             return None
 
-        fields = []
+        fields: list[dict[str, object]] = []
         for col in source.columns:
             avro_type = self._flink_type_to_avro(col.type) if col.type else "string"
             fields.append(
@@ -362,7 +377,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 f"Cannot determine source topic for virtual topic model '{model.name}'"
             )
 
-        interceptors = []
+        interceptors: list[dict[str, object]] = []
 
         if model.sql:
             where_clause = self._extract_where_clause(model.sql)
@@ -377,14 +392,14 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         if model.security and model.security.policies:
             for policy in model.security.policies:
                 if "mask" in policy:
-                    mask_config = policy["mask"]
+                    column, method, roles = _mask_policy_values(policy["mask"])
                     interceptors.append(
                         {
                             "type": "mask",
                             "config": {
-                                "field": mask_config["column"],
-                                "method": mask_config["method"],
-                                "forRoles": mask_config.get("for_roles", []),
+                                "field": column,
+                                "method": method,
+                                "forRoles": roles,
                             },
                         }
                     )
@@ -422,24 +437,19 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         )
 
         flink_sql = self._generate_flink_sql(model, topic_name)
+        flink_config = model.get_flink_config()
 
         self.flink_jobs.append(
             FlinkJobArtifact(
                 name=model.name,
                 sql=flink_sql,
                 cluster=model.get_flink_cluster(),
-                parallelism=model.get_flink_config().parallelism
-                if model.get_flink_config()
-                else None,
-                checkpoint_interval_ms=model.get_flink_config().checkpoint_interval_ms
-                if model.get_flink_config()
-                else None,
-                state_backend=model.get_flink_config().state_backend
-                if model.get_flink_config()
-                else None,
-                state_ttl_ms=model.get_flink_config().state_ttl_ms
-                if model.get_flink_config()
-                else None,
+                parallelism=flink_config.parallelism if flink_config else None,
+                checkpoint_interval_ms=(
+                    flink_config.checkpoint_interval_ms if flink_config else None
+                ),
+                state_backend=flink_config.state_backend if flink_config else None,
+                state_ttl_ms=flink_config.state_ttl_ms if flink_config else None,
                 ownership=self._ownership("model", model.name),
             )
         )
@@ -463,18 +473,18 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         config.update(sink_config.config)
 
         if model.security and model.security.policies:
-            transforms = []
-            transform_configs = {}
+            transforms: list[str] = []
+            transform_configs: dict[str, object] = {}
 
             for i, policy in enumerate(model.security.policies):
                 if "mask" in policy:
-                    mask_config = policy["mask"]
+                    column, _method, _roles = _mask_policy_values(policy["mask"])
                     transform_name = f"mask{i}"
                     transforms.append(transform_name)
                     transform_configs[f"transforms.{transform_name}.type"] = (
                         "org.apache.kafka.connect.transforms.MaskField$Value"
                     )
-                    transform_configs[f"transforms.{transform_name}.fields"] = mask_config["column"]
+                    transform_configs[f"transforms.{transform_name}.fields"] = column
 
             if transforms:
                 config["transforms"] = ",".join(transforms)
@@ -514,11 +524,8 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             topic_name = source.topic
             columns = [col.name for col in source.columns] if source.columns else []
         else:
-            topic_name = (
-                model.get_topic_config().name
-                if model.get_topic_config() and model.get_topic_config().name
-                else model.name
-            )
+            topic_config = model.get_topic_config()
+            topic_name = topic_config.name if topic_config and topic_config.name else model.name
             columns = self._extract_select_columns(model.sql or "")
 
         flink_sql = self._generate_test_flink_sql(test, topic_name, columns)
