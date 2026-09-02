@@ -8,6 +8,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
+from streamt.compiler.compiled_models import (
+    CompiledModels,
+    CompiledModelView,
+    empty_compiled_models,
+    freeze_compiled_models,
+)
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
@@ -75,6 +81,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         # Resolution intentionally happens at compile().  Before the first
         # successful compile there is no authoritative resolved DAG.
         self.resolved_models: ResolvedModels = empty_resolved_models()
+        self.compiled_models: CompiledModels = empty_compiled_models()
         self.dag = DAG()
 
         self._topic_defaults = self._get_topic_defaults()
@@ -138,11 +145,13 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.dag = dag
 
         try:
-            return self._compile_resolved(
+            manifest, compiled_models = self._compile_resolved(
                 resolved_models,
                 model_order=model_order,
                 dry_run=dry_run,
             )
+            self.compiled_models = compiled_models
+            return manifest
         except BaseException:
             # A public snapshot describes only a fully successful compile.  Do
             # not leave stale resolution or partially generated artifacts for
@@ -159,6 +168,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.connectors = []
         self.gateway_rules = []
         self.resolved_models = empty_resolved_models()
+        self.compiled_models = empty_compiled_models()
         self.dag = DAG()
 
     def _compile_resolved(
@@ -167,15 +177,17 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         *,
         model_order: list[str],
         dry_run: bool,
-    ) -> Manifest:
+    ) -> tuple[Manifest, CompiledModels]:
         """Compile artifacts from one validated per-invocation model view."""
         # Compile schemas from sources with schema definitions
         for source in self.project.sources:
             self._compile_source_schema(source)
 
         # Compile models in topological order
-        for model_name in model_order:
+        compiled_model_views = [
             self._compile_model(resolved_models[model_name])
+            for model_name in model_order
+        ]
 
         # Compile continuous tests as Flink jobs (DDL-style, backward compat)
         for test in self.project.tests:
@@ -199,6 +211,11 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         # KAFKA-2: Auto-create dead-letter topics from test on_failure DLQ actions
         self._compile_dlq_topics()
 
+        compiled_models = freeze_compiled_models(
+            compiled_model_views,
+            expected_model_names=resolved_models,
+        )
+
         # Create manifest
         manifest = self._create_manifest()
 
@@ -206,7 +223,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         if not dry_run:
             self._write_artifacts()
 
-        return manifest
+        return manifest, compiled_models
 
     def _compile_source_schema(self, source: Source) -> None:
         """Compile schema artifact from a source with schema definition."""
@@ -292,21 +309,22 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             "fields": fields,
         }
 
-    def _compile_model(self, resolved: ResolvedModel) -> None:
+    def _compile_model(self, resolved: ResolvedModel) -> CompiledModelView:
         """Compile a single model."""
         model = resolved.model
         materialized = resolved.materialized
 
         if materialized == MaterializedType.TOPIC:
-            self._compile_topic_model(model)
-        elif materialized == MaterializedType.VIRTUAL_TOPIC:
-            self._compile_virtual_topic_model(model)
-        elif materialized == MaterializedType.FLINK:
-            self._compile_flink_model(model)
-        elif materialized == MaterializedType.SINK:
-            self._compile_sink_model(model)
+            return self._compile_topic_model(model)
+        if materialized == MaterializedType.VIRTUAL_TOPIC:
+            return self._compile_virtual_topic_model(model)
+        if materialized == MaterializedType.FLINK:
+            return self._compile_flink_model(model)
+        if materialized == MaterializedType.SINK:
+            return self._compile_sink_model(model)
+        raise CompileError(f"Unsupported materialization for model '{model.name}'")
 
-    def _compile_topic_model(self, model: Model) -> None:
+    def _compile_topic_model(self, model: Model) -> CompiledModelView:
         """Compile a topic model (creates real Kafka topic)."""
         tc = model.get_topic_config()
         topic_name = tc.name if tc and tc.name else model.name
@@ -332,7 +350,17 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         if model.sql:
             self._compile_flink_job_for_topic(model, topic_name)
 
-    def _compile_virtual_topic_model(self, model: Model) -> None:
+        return CompiledModelView(
+            model_name=model.name,
+            materialized=MaterializedType.TOPIC,
+            process_kind="flink" if model.sql else None,
+            output_kind="kafka",
+            output_name=topic_name,
+            gateway_physical_input=None,
+            connector_inputs=(),
+        )
+
+    def _compile_virtual_topic_model(self, model: Model) -> CompiledModelView:
         """Compile a virtual topic model (Gateway rule)."""
         tc = model.get_topic_config()
         virtual_topic_name = tc.name if tc and tc.name else model.name
@@ -380,7 +408,17 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             )
         )
 
-    def _compile_flink_model(self, model: Model) -> None:
+        return CompiledModelView(
+            model_name=model.name,
+            materialized=MaterializedType.VIRTUAL_TOPIC,
+            process_kind="gateway",
+            output_kind="gateway",
+            output_name=virtual_topic_name,
+            gateway_physical_input=source_topic,
+            connector_inputs=(),
+        )
+
+    def _compile_flink_model(self, model: Model) -> CompiledModelView:
         """Compile a Flink model."""
         tc = model.get_topic_config()
         topic_name = tc.name if tc and tc.name else model.name
@@ -420,7 +458,17 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             )
         )
 
-    def _compile_sink_model(self, model: Model) -> None:
+        return CompiledModelView(
+            model_name=model.name,
+            materialized=MaterializedType.FLINK,
+            process_kind="flink",
+            output_kind="kafka",
+            output_name=topic_name,
+            gateway_physical_input=None,
+            connector_inputs=(),
+        )
+
+    def _compile_sink_model(self, model: Model) -> CompiledModelView:
         """Compile a sink model (Kafka Connect)."""
         sink_config = model.get_sink_config()
         if not sink_config:
@@ -465,6 +513,16 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 cluster=model.get_connect_cluster(),
                 ownership=self._ownership("model", model.name),
             )
+        )
+
+        return CompiledModelView(
+            model_name=model.name,
+            materialized=MaterializedType.SINK,
+            process_kind="connect",
+            output_kind=None,
+            output_name=None,
+            gateway_physical_input=None,
+            connector_inputs=tuple(source_topics),
         )
 
     def _compile_flink_job_for_topic(self, model: Model, output_topic: str) -> None:
