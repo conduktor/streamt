@@ -22,6 +22,7 @@ from streamt.cli import main
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
+    GatewayRuleArtifact,
     Manifest,
     TopicArtifact,
 )
@@ -30,6 +31,14 @@ from streamt.deployer.connect import (
     ManagedConnectorObservation,
     bind_connector_artifact,
 )
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayDeployer,
+    ManagedGatewayRuleObservation,
+    ManagedGatewaySnapshot,
+    build_desired_gateway_rule,
+)
+from streamt.deployer.gateway_adoption import gateway_alias_mapping_checksum
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.postgres_state import (
     PostgresStateInitializer,
@@ -43,7 +52,12 @@ from streamt.deployer.state import (
     local_state_path,
     resource_id,
 )
-from streamt.deployer.state_backend import DeploymentStateService, state_checksum
+from streamt.deployer.state_backend import (
+    DeploymentStateService,
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
+    state_checksum,
+)
 from tests.postgres.conftest import PostgresCase, WriterIdentity
 from tests.postgres.test_postgres_state_commands_real import (
     _ENVIRONMENT,
@@ -68,6 +82,14 @@ _CONNECT_ALIAS = "production"
 _CONNECT_ENDPOINT = "https://connect.example.test:8443/api"
 _CONNECTOR = "payments-sink"
 _LOGICAL_CONNECTOR = "payments_sink"
+_GATEWAY_ENDPOINT = "https://gateway.example.test:8443/admin"
+_GATEWAY_VCLUSTER = "payments-prod"
+_GATEWAY_RULE = "orders_view"
+_GATEWAY_ALIAS = "orders.public"
+_GATEWAY_DESIRED_TOPIC = "orders.desired.private"
+_GATEWAY_OBSERVED_TOPIC = "orders.observed.private"
+_GATEWAY_RUNTIME_USER = "gateway-runtime-user"
+_GATEWAY_RUNTIME_PASSWORD = "gateway-runtime-password"
 
 
 def _write_project(
@@ -174,6 +196,88 @@ def _connector_observation() -> ManagedConnectorObservation:
         exists=True,
         config=tuple(sorted(config.items())),
     )
+
+
+def _write_gateway_adoption_project(path: Path, case: PostgresCase) -> None:
+    """Write one real-compiler alias-only Gateway adoption project."""
+    (path / "stream_project.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "streamt.dev/v1alpha1",
+                "project": {"name": _PROJECT},
+                "runtime": {
+                    "kafka": {"bootstrap_servers": "broker.invalid:9092"},
+                    "conduktor": {
+                        "gateway": {
+                            "admin_url": _GATEWAY_ENDPOINT,
+                            "username": _GATEWAY_RUNTIME_USER,
+                            "password": _GATEWAY_RUNTIME_PASSWORD,
+                            "virtual_cluster": _GATEWAY_VCLUSTER,
+                        }
+                    },
+                },
+                "sources": [
+                    {
+                        "name": "orders_source",
+                        "topic": _GATEWAY_DESIRED_TOPIC,
+                    }
+                ],
+                "models": [
+                    {
+                        "name": _GATEWAY_RULE,
+                        "materialized": "virtual_topic",
+                        "gateway": {
+                            "virtual_topic": {"name": _GATEWAY_ALIAS}
+                        },
+                        "ownership": {"mode": "adopted"},
+                        "sql": 'SELECT * FROM {{ source("orders_source") }}',
+                    }
+                ],
+                "deployment_state": {
+                    "backend": "postgres",
+                    "namespace": _NAMESPACE,
+                    "lock_timeout_seconds": 10,
+                    "postgres": {
+                        "dsn_env": _ADMIN_DSN_ENV,
+                        "writer_dsn_env": _WRITER_DSN_ENV,
+                        "schema": case.schema,
+                    },
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _gateway_adoption_artifact() -> GatewayRuleArtifact:
+    return GatewayRuleArtifact(
+        name=_GATEWAY_RULE,
+        virtual_topic=_GATEWAY_ALIAS,
+        physical_topic=_GATEWAY_DESIRED_TOPIC,
+        interceptors=[],
+        ownership=ArtifactOwnership(
+            project=_PROJECT,
+            owner_type="model",
+            owner_name=_GATEWAY_RULE,
+            mode="adopted",
+        ),
+    )
+
+
+def _gateway_adoption_reader(
+    observation: ManagedGatewayRuleObservation,
+) -> tuple[MagicMock, list[MagicMock]]:
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = observation.binding
+    snapshots: list[MagicMock] = []
+    for _ in range(2):
+        snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+        snapshot.binding = observation.binding
+        snapshot.rule.return_value = observation
+        snapshots.append(snapshot)
+    gateway.observe_managed_gateway_snapshot.side_effect = snapshots
+    return gateway, snapshots
 
 
 def _initialize_v1(case: PostgresCase) -> str:
@@ -658,6 +762,168 @@ def test_connector_adopt_uses_production_v2_writer_and_secret_neutral_evidence(
         kind="adopt",
         reviewed_plan_checksum=None,
     )
+    _assert_no_local_state(tmp_path)
+
+
+def test_gateway_adopt_uses_real_compiler_and_production_v2_writer(
+    tmp_path: Path,
+    postgres_case: PostgresCase,
+    postgres_writer: WriterIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_gateway_adoption_project(tmp_path, postgres_case)
+    _initialize_v2(postgres_case, postgres_writer)
+    _bind_writer_only(monkeypatch, dsn=postgres_writer.dsn)
+    artifact = _gateway_adoption_artifact()
+    binding = GatewayBackendBinding.from_endpoint(
+        _GATEWAY_ENDPOINT,
+        virtual_cluster=_GATEWAY_VCLUSTER,
+    )
+    desired = build_desired_gateway_rule(artifact, binding)
+    observed = ManagedGatewayRuleObservation(
+        binding=binding,
+        logical_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        exists=True,
+        physical_name=_GATEWAY_OBSERVED_TOPIC,
+        physical_cluster="main",
+        interceptors=(),
+    )
+    gateway, snapshots = _gateway_adoption_reader(observed)
+    identity = resource_id(
+        _PROJECT,
+        _ENVIRONMENT,
+        "gateway_rule",
+        _GATEWAY_RULE,
+    )
+
+    with patch(
+        "streamt.cli.commands.adopt.make_gateway_deployer",
+        return_value=gateway,
+    ) as gateway_factory:
+        result = CliRunner().invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "adopt",
+                "-p",
+                str(tmp_path),
+                "-e",
+                _ENVIRONMENT,
+                "--kind",
+                "gateway_rule",
+                "--name",
+                _GATEWAY_RULE,
+                "--confirm-resource",
+                identity,
+                "--confirm-env",
+                _ENVIRONMENT,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    data = _data(result)
+    assert data["adopted"] is True
+    assert data["already_owned"] is False
+    assert data["committed"] is True
+    assert data["resource_id"] == identity
+    assert data["state_serial"] == 1
+    assert data["pending_change_categories"] == ["alias_mapping"]
+    assert data["observed_mapping_checksum"] == gateway_alias_mapping_checksum(
+        _GATEWAY_OBSERVED_TOPIC,
+        "main",
+    )
+    assert data["desired_mapping_checksum"] == gateway_alias_mapping_checksum(
+        _GATEWAY_DESIRED_TOPIC,
+        "main",
+    )
+    assert data["desired_artifact_checksum"] == artifact_checksum(
+        artifact.to_dict()
+    )
+    assert data["observation_fingerprint"] == observed.fingerprint
+    assert data["desired_aggregate_fingerprint"] == desired.fingerprint
+
+    gateway_factory.assert_called_once()
+    assert gateway.observe_managed_gateway_snapshot.call_count == 2
+    for snapshot in snapshots:
+        snapshot.rule.assert_called_once_with(_GATEWAY_RULE, _GATEWAY_ALIAS)
+    for method in (
+        "apply_managed_gateway_rule",
+        "delete_managed_gateway_rule",
+        "create_alias_topic",
+        "delete_alias_topic",
+        "create_interceptor",
+        "delete_interceptor",
+        "apply",
+        "delete",
+    ):
+        getattr(gateway, method).assert_not_called()
+    gateway.close.assert_called_once_with()
+
+    expected_evidence = GatewayActionEvidence(
+        version=1,
+        backend_identity=binding.backend_identity,
+        rule_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        current=GatewayActionSurfaceEvidence(
+            exists=True,
+            fingerprint=observed.fingerprint,
+            managed_interceptor_count=0,
+        ),
+        desired=GatewayActionSurfaceEvidence(
+            exists=True,
+            fingerprint=desired.fingerprint,
+            managed_interceptor_count=0,
+        ),
+    )
+    expected = LocalState(
+        project=_PROJECT,
+        environment=_ENVIRONMENT,
+        serial=1,
+        resources={
+            identity: ManagedResourceRecord(
+                physical_name=_GATEWAY_ALIAS,
+                ownership="adopted",
+                artifact_checksum=artifact_checksum(artifact.to_dict()),
+                backend=binding.backend_identity,
+            )
+        },
+    )
+    service = _verification_service(postgres_case, postgres_writer)
+    _assert_finalized(
+        postgres_case,
+        service,
+        expected,
+        kind="adopt",
+        reviewed_plan_checksum=None,
+    )
+    _control, events, _current_count = _operation_rows(postgres_case)
+    persisted_intent = json.loads(events[0][3])["intent"]
+    assert persisted_intent["actions"] == [
+        {
+            "index": 0,
+            "resource_id": identity,
+            "action": "adopt",
+            "gateway_evidence": expected_evidence.to_dict(),
+        }
+    ]
+    assert service.read().state == expected
+
+    serialized = json.dumps(_payload(result), sort_keys=True)
+    for forbidden in (
+        _GATEWAY_ENDPOINT,
+        _GATEWAY_RUNTIME_USER,
+        _GATEWAY_RUNTIME_PASSWORD,
+        _GATEWAY_OBSERVED_TOPIC,
+        _GATEWAY_DESIRED_TOPIC,
+        postgres_case.schema,
+        postgres_case.owner_role,
+        postgres_writer.role,
+        postgres_case.owner_dsn,
+        postgres_writer.dsn,
+    ):
+        assert forbidden not in serialized
     _assert_no_local_state(tmp_path)
 
 
