@@ -180,9 +180,11 @@ project/environment mismatch with that address.
 - It verifies catalog version, immutable store identity, address registration,
   ownership row, operation-control row, payload size, and canonical checksum
   before returning.
-- An absent ownership row is an explicit absent state revision paired with a
-  present clear control observation. Missing control or address rows are
-  invalid catalog state, not absence.
+- An absent ownership row is an explicit absent state revision. It pairs with
+  clear control before the first operation, but may pair with `in_progress` or
+  `recovery_required` after a first-operation interruption; that blocker must
+  remain readable. Missing control or address rows are invalid catalog state,
+  not absence.
 
 ### Lock ownership
 

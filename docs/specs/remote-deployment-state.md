@@ -123,7 +123,9 @@ can authorize mutation.
 
 Absent ownership at a registered address is represented by an explicit
 `ABSENT` state revision and an in-memory serial-zero state with the requested
-project and environment, paired with a present clear control observation. It is
+project and environment. Before the first operation it pairs with clear
+control; after a first-operation interruption it can pair with `in_progress` or
+`recovery_required`, which must remain readable as the durable blocker. It is
 not equivalent to a read error. An absent address or missing control row is an
 invalid/uninitialized remote store condition, not absent ownership.
 
