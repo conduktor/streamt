@@ -284,6 +284,67 @@ def test_postgres_apply_success_emits_exact_durable_openlineage_run(
     _assert_no_local_state(tmp_path)
 
 
+def test_postgres_apply_file_delivery_failure_cannot_change_durable_success(
+    tmp_path: Path,
+    postgres_case: PostgresCase,
+    postgres_writer: WriterIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project(tmp_path, postgres_case)
+    _initialize_v2(postgres_case, postgres_writer)
+    _bind_writer_only(monkeypatch, dsn=postgres_writer.dsn)
+    config_path, events_path = _configure_file_transport(tmp_path, monkeypatch)
+    # The validated File transport opens lazily. A directory at the exact target
+    # therefore exercises warning-only START and terminal delivery failures.
+    events_path.mkdir()
+    topic = _topic()
+    manifest = _manifest(topic)
+    kafka = _kafka(exists=False)
+
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=kafka,
+        ),
+    ):
+        applied = _invoke_apply(tmp_path)
+
+    assert applied.exit_code == 0, applied.output
+    payload = json.loads(applied.stdout)
+    assert payload["status"] == "ok"
+    assert payload["errors"] == []
+    assert payload["data"]["committed"] is True
+    assert [warning["location"] for warning in payload["warnings"]] == [
+        "openlineage.start",
+        "openlineage.terminal",
+    ]
+    assert all(
+        warning["code"] == "W112_OPENLINEAGE_EMIT_FAILED"
+        for warning in payload["warnings"]
+    )
+    _assert_finalized(
+        postgres_case,
+        _verification_service(postgres_case, postgres_writer),
+        _expected_state(topic),
+        kind="apply",
+        reviewed_plan_checksum=None,
+    )
+    assert events_path.is_dir()
+    kafka.apply_topic.assert_called_once()
+    for forbidden in (
+        str(config_path),
+        str(events_path),
+        postgres_case.schema,
+        postgres_case.owner_role,
+        postgres_writer.role,
+        postgres_case.owner_dsn,
+        postgres_writer.dsn,
+    ):
+        assert forbidden not in applied.output
+    _assert_no_local_state(tmp_path)
+
+
 def test_postgres_apply_runtime_failure_emits_fail_after_durable_recovery_marker(
     tmp_path: Path,
     postgres_case: PostgresCase,
