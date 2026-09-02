@@ -9,9 +9,17 @@ reviewable commit after its focused and repository-wide gates pass.
 
 ## Status — 2026-09-01
 
-Planning complete. No OpenLineage product code has been implemented by this
-plan. The shared roadmap is intentionally unchanged while concurrent ODCS work
-is being integrated.
+Slice 1 is complete in commits `5491f0d` and `665dd4d`. The repository now has
+the pinned OpenLineage schemas, pure typed event/identity helpers, fail-closed
+offline validation, and an installed-wheel resource smoke test. The normal CI
+unit matrix runs that coverage on Python 3.10 through 3.12; there is no
+OpenLineage command, transport, or runtime-emission job yet.
+
+Slice 2 is active. Its shared resolved-model SQL and dependency prerequisite
+landed in `c2cc695`, so static export can consume the compiler's canonical
+resolution rather than adding a separate parser. Static export itself is not
+implemented or supported yet, and the corresponding roadmap item remains
+open.
 
 The target is OpenLineage 1.53.0 at signed release commit
 `8ad5c14c63fbab63fedd8ff42f9a208d86ad07fe`. The core schema retains its
@@ -35,6 +43,11 @@ the explicit apply event hooks in slice 5. Unrelated user workspace changes are
 never included in an OpenLineage commit.
 
 ## Slice 1: pinned schemas, event model, and offline validation
+
+Progress: complete in `5491f0d`, with the clean installed-wheel build and
+validation gate made independent of `uv` in `665dd4d`. This is an internal
+construction and validation foundation only; it did not add a public export or
+runtime emission surface.
 
 ### Scope
 
@@ -77,6 +90,10 @@ validate representative DatasetEvent, JobEvent, and RunEvent records.
 - No CLI behavior changes.
 
 ## Slice 2: deterministic static export
+
+Progress: active. Commit `c2cc695` completed the shared compiler/DAG dependency
+resolution prerequisite. The command, project-to-event mapping, user-facing
+documentation, and acceptance tests below remain to be implemented.
 
 ### Scope
 
