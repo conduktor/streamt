@@ -239,6 +239,8 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_recovery_commands_real.py"
           cp tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             "${test_root}/tests/postgres/test_postgres_ordinary_factory_commands_real.py"
+          cp tests/postgres/test_postgres_openlineage_apply_real.py \
+            "${test_root}/tests/postgres/test_postgres_openlineage_apply_real.py"
 
           cd "${test_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
@@ -266,6 +268,7 @@ jobs:
             tests/postgres/test_postgres_state_command_failures_real.py \
             tests/postgres/test_postgres_recovery_commands_real.py \
             tests/postgres/test_postgres_ordinary_factory_commands_real.py \
+            tests/postgres/test_postgres_openlineage_apply_real.py \
             -m postgres --tb=short
 
   package:
@@ -293,6 +296,18 @@ jobs:
           /tmp/streamt-wheel-smoke/bin/streamt adopt --help | grep -F connector
           /tmp/streamt-wheel-smoke/bin/streamt adopt --help | grep -F gateway_rule
           /tmp/streamt-wheel-smoke/bin/python -c 'from streamt.docs.asyncapi import generate_asyncapi_document; from streamt.core.models import StreamtProject; project = StreamtProject.model_validate({"apiVersion": "streamt.dev/v1alpha1", "project": {"name": "wheel-smoke"}, "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}}, "sources": [{"name": "events", "topic": "events"}]}); assert generate_asyncapi_document(project)["asyncapi"] == "3.1.0"'
+
+      - name: Verify OpenLineage schemas in wheel and source distribution
+        shell: bash
+        env:
+          STREAMT_TEST_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          /tmp/streamt-wheel-smoke/bin/pip install pytest
+          cd /tmp
+          env -u PYTHONPATH /tmp/streamt-wheel-smoke/bin/python -I -m pytest \
+            "${GITHUB_WORKSPACE}/tests/unit/test_openlineage_validation.py::test_built_wheel_and_source_distribution_contain_openlineage_resources" \
+            --tb=short
 
       - name: Smoke-test installed ODCS export offline
         run: |
@@ -387,6 +402,18 @@ jobs:
           cd "${isolated_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
             /tmp/streamt-wheel-smoke/bin/python -I gateway_adoption_wheel_smoke.py
+
+      - name: Smoke-test installed durable OpenLineage apply telemetry
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-openlineage-apply-wheel-XXXXXX")"
+          cp tests/package/openlineage_apply_wheel_smoke.py "${isolated_root}/"
+          cd "${isolated_root}"
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            /tmp/streamt-wheel-smoke/bin/python -I openlineage_apply_wheel_smoke.py
 
       - name: Smoke-test installed PostgreSQL extra
         run: |

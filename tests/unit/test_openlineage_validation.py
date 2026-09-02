@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import importlib.util
 import os
 import socket
 import subprocess
 import sys
+import tarfile
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from importlib.resources import files
 from pathlib import Path
 from typing import cast
@@ -82,6 +84,27 @@ RESOURCE_EXPECTATIONS = {
         "b11b4ee8b0f99f6846264f87cad48390255c7ef142ce623216660c7097be0ea6",
     ),
 }
+
+
+def _assert_openlineage_schema_resources(
+    *,
+    member_names: set[str],
+    read_member: Callable[[str], bytes],
+    source_distribution: bool,
+) -> None:
+    for resource_name, (decoded_size, decoded_checksum) in RESOURCE_EXPECTATIONS.items():
+        suffix = f"/src/streamt/docs/schemas/{resource_name}"
+        if source_distribution:
+            matches = [name for name in member_names if name.endswith(suffix)]
+            assert len(matches) == 1, matches
+            member = matches[0]
+        else:
+            member = f"streamt/docs/schemas/{resource_name}"
+            assert member in member_names
+        encoded = read_member(member)
+        decoded = gzip.decompress(base64.b64decode(b"".join(encoded.split()), validate=True))
+        assert len(decoded) == decoded_size
+        assert hashlib.sha256(decoded).hexdigest() == decoded_checksum
 
 
 @pytest.fixture(autouse=True)
@@ -574,16 +597,11 @@ def test_installed_wheel_contains_resources_and_exports_openlineage_offline(
     wheel = next(tmp_path.glob("streamt-*.whl"))
 
     with zipfile.ZipFile(wheel) as archive:
-        names = set(archive.namelist())
-        for resource_name in RESOURCE_EXPECTATIONS:
-            member = f"streamt/docs/schemas/{resource_name}"
-            assert member in names
-            decoded = gzip.decompress(
-                base64.b64decode(b"".join(archive.read(member).split()), validate=True)
-            )
-            assert hashlib.sha256(decoded).hexdigest() == RESOURCE_EXPECTATIONS[
-                resource_name
-            ][1]
+        _assert_openlineage_schema_resources(
+            member_names=set(archive.namelist()),
+            read_member=archive.read,
+            source_distribution=False,
+        )
 
     virtualenv = tmp_path / "venv"
     subprocess.run(
@@ -703,6 +721,59 @@ assert events[0]["dataset"] == {{
     )
     assert smoke.returncode == 0, smoke.stderr
     assert smoke.stdout == ""
+
+
+def test_built_wheel_and_source_distribution_contain_openlineage_resources(
+    tmp_path: Path,
+) -> None:
+    configured_dist = os.environ.get("STREAMT_TEST_DISTRIBUTIONS_DIR")
+    if configured_dist is None:
+        if importlib.util.find_spec("build") is None:
+            pytest.skip("the build frontend is required for source-distribution inspection")
+        distribution_dir = tmp_path / "dist"
+        repository = Path(__file__).parents[2]
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--sdist",
+                "--outdir",
+                str(distribution_dir),
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        distribution_dir = Path(configured_dist)
+
+    wheels = list(distribution_dir.glob("streamt-*.whl"))
+    source_distributions = list(distribution_dir.glob("streamt-*.tar.gz"))
+    assert len(wheels) == 1, wheels
+    assert len(source_distributions) == 1, source_distributions
+
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        _assert_openlineage_schema_resources(
+            member_names=set(wheel.namelist()),
+            read_member=wheel.read,
+            source_distribution=False,
+        )
+
+    with tarfile.open(source_distributions[0], "r:gz") as source_distribution:
+
+        def read_source_member(name: str) -> bytes:
+            extracted = source_distribution.extractfile(name)
+            assert extracted is not None
+            return extracted.read()
+
+        _assert_openlineage_schema_resources(
+            member_names=set(source_distribution.getnames()),
+            read_member=read_source_member,
+            source_distribution=True,
+        )
 
 
 def test_openlineage_error_and_warning_identifiers_are_stable() -> None:
