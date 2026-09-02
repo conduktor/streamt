@@ -644,10 +644,11 @@ workflow release gate remains open:
    rolled-back update; completed and rolled-back delete; explicit-delete-only
    record removal; and proof that manifest absence alone leaves every ownership
    record untouched.
-5. **Durable workflow gates — pending:** pass local and PostgreSQL v2 interrupted-operation
-   recovery, old-control and old-recovery-plan compatibility, reviewed recovery
-   plan integrity, installed-wheel command coverage, focused real Gateway
-   observation, lint, typing, unit, and strict documentation checks.
+5. **Durable recovery gates — complete:** local and PostgreSQL v2
+   interrupted-operation recovery, old-control and old-recovery-plan
+   compatibility, reviewed recovery-plan integrity, installed-wheel command
+   coverage, focused real Gateway observation, lint, typing, unit, and strict
+   documentation checks pass together.
 
 Local and PostgreSQL v2 reviewed-recovery gates must pass for the alias-only
 surface before Gateway adoption is added to `_SUPPORTED_ACTIONS` or the CLI.
@@ -698,7 +699,7 @@ equivalence for every supported plugin.
 | Recovery | Exact current/desired create, update, and delete outcomes; rolled-back update/delete; provider recreation; explicit-delete-only state removal; legacy backend, endpoint/scope drift, malformed/extra evidence, and operation/control conflicts | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
 | Durable recovery evidence | Exact legacy/new action serialization; legacy checksum stability; strict v1 rule-name/backend/alias/surface evidence and action coherence; logical-owner/rule-name divergence; pre-mutation intent persistence; one bounded snapshot across desired/removed targets; exact target evidence binding; secret scan | `tests/unit/test_operation_control.py`, `tests/unit/test_recovery_models.py`, `tests/unit/test_recovery_plan.py`, `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_postgres_state_mutation.py` |
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
-| Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit Gateway readiness | `tests/integration/test_gateway_e2e.py`, `tests/integration/helpers/gateway.py`, `tests/integration/helpers/docker.py` |
+| Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit authenticated Gateway readiness | `tests/integration/test_gateway_strict_observer_real.py`, `.github/workflows/ci.yml` |
 | PostgreSQL v2 | Production factory and writer; finalized `adopt` history; no local state; exact Gateway backend; two observations; exact reviewed recovery | `tests/postgres/test_postgres_ordinary_factory_commands_real.py`, `tests/postgres/test_postgres_recovery_commands_real.py` |
 | Installed wheel | Gateway kind appears in isolated CLI; PostgreSQL command tests execute from the isolated wheel on supported PostgreSQL majors | `.github/workflows/ci.yml` |
 
@@ -731,13 +732,15 @@ an integration gate:
       one shared snapshot and rejects missing or mismatched action evidence.
 - [x] Only an explicit durable delete action can remove Gateway ownership state;
       manifest absence alone never does.
-- [ ] Define and implement the ordinary non-recovery delete-candidate source and
-      broad-discovery boundary; the current bounded delete path never infers a
-      deletion from manifest absence.
-- [ ] Local and PostgreSQL v2 recovery use the same aggregate and pass.
-- [ ] Installed-wheel reviewed recovery and focused real Gateway gates pass.
-- [ ] Unit, typing, lint, and strict documentation checks pass together with all
-      remaining release gates.
+- [ ] Complete the explicit ordinary non-recovery removal workflow. The strict
+      lifecycle DSL and separate compiled tombstone artifact have landed, but
+      pure state preflight, live planning, reviewed-plan v4, and ordinary apply
+      are not yet enabled. Manifest absence remains inert.
+- [x] Local and PostgreSQL v2 recovery use the same aggregate and pass.
+- [x] Installed-wheel reviewed recovery and the focused real Gateway 3.15
+      strict-observer gate pass.
+- [x] Unit, typing, lint, strict documentation, packaging, PostgreSQL, and real
+      Gateway observation checks pass together.
 
 Package 7 remains planned until Package 6 is complete. Gateway adoption remains
 unsupported until the additional alias-only command, installed-wheel, local

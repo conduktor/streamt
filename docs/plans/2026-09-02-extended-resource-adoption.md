@@ -285,11 +285,12 @@ secret-neutral current/desired surface evidence is now written on every Gateway
 mutation action before provider access. The bounded reviewed-recovery runtime
 validates the complete intent first, observes manifest-backed and explicitly
 removed targets through one two-list snapshot, and proves exact current or
-desired create, update, and delete outcomes. Package 6 and adoption remain
-incomplete pending local and PostgreSQL reviewed-command E2E,
-installed-wheel, focused real Gateway gates, and an explicit ordinary
-delete-source/broad-discovery contract. The staged contract and release gates
-are in the
+desired create, update, and delete outcomes. Local and PostgreSQL reviewed
+recovery, installed-wheel execution, and the focused real Gateway 3.15 strict
+observer now pass. The compile-only explicit lifecycle tombstone has landed;
+Package 6 and adoption remain incomplete until ordinary removal preflight,
+one-snapshot planning, reviewed-plan v4, apply, and exact deletion gates pass.
+The staged contract and release gates are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses

@@ -83,10 +83,12 @@ to deploy anything.
         recovery validates all action identities before provider access, derives
         desired and explicitly removed targets from one bounded two-list
         snapshot, and resolves exact create, update, and delete current/desired
-        outcomes. Package 6 and Gateway adoption remain incomplete pending local
-        and PostgreSQL reviewed-command E2E, installed-wheel and real Gateway
-        gates, and the planned
-        [explicit Gateway removal contract](docs/plans/2026-09-02-gateway-explicit-removal.md).
+        outcomes. Local and PostgreSQL reviewed-command E2E, installed-wheel
+        recovery, and the focused real Gateway 3.15 observer gate now pass. The
+        compile-only lifecycle tombstone contract has landed; Package 6 and
+        Gateway adoption remain incomplete until its pure preflight, live
+        planning, reviewed-plan v4, and exact ordinary delete workflow pass the
+        [explicit Gateway removal gates](docs/plans/2026-09-02-gateway-explicit-removal.md).
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
