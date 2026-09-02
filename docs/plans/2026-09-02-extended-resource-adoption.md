@@ -275,10 +275,15 @@ versioned endpoint/vCluster binding, pure desired aggregate, reusable strict
 two-list snapshot, immutable observations and fingerprints, normalized change
 model, desired/prior collision gates, online/offline planner integration,
 canonical state projection, and secret-neutral reviewed-plan/CLI presentation
-are complete. Status still needs shared-snapshot integration. The exact managed
-mutation core is in progress, while planner apply/delete/rollback routing and
-reviewed recovery remain pending. The frozen staged contract and release gates
-are in the
+are complete. Normalized shared-snapshot status and health, the exact mutation
+core, the legitimate normalized delete change model, and planner
+apply/delete/rollback routing are also complete; rollback routing is limited to
+the exact creates recorded by the reviewed plan. Reviewed recovery now proves
+converged creates and updates plus an absent rolled-back create. It remains fail
+closed for a rolled-back update because prior state does not retain the prior
+provider-surface fingerprint, and normalized delete recovery is not yet
+representable. Package 6 and adoption therefore remain incomplete. The frozen
+staged contract and release gates are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
@@ -339,8 +344,9 @@ fillers for absent scope axes; that principal scope remains distinct from the
 vCluster-only managed scope.
 
 Live Gateway 3.15 provider probes additionally established the following
-mutation contract; this is evidence for the in-progress mutation stage, not a
-claim that planner mutation routing or rollback is complete:
+mutation contract. It is provider evidence behind the shipped exact mutation
+core, not a claim that broad delete discovery, all recovery outcomes, or
+adoption are complete:
 
 - `PUT` returns HTTP 200 with the exact object shape `{resource, upsertResult}`,
   where `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
@@ -353,10 +359,17 @@ claim that planner mutation routing or rollback is complete:
 - Both provider collections were empty after cleanup; the probes left no
   residue.
 
-The strict mutation implementation must match the planned operation to the
-provider result. A sent write cannot treat `NotChanged`, or another unexpected
+The strict mutation implementation matches the planned operation to the
+provider result. A sent write does not treat `NotChanged`, or another unexpected
 `upsertResult`, as success. A 404 while deleting a target that the reviewed
 snapshot proved present is concurrency drift, not an idempotent success.
+
+The normalized delete change model is deliberately narrower than delete
+discovery: it accepts one complete, present, bound observation and carries the
+exact alias and owned interceptor identities with fingerprint-only change
+evidence. It does not infer deletion from an absent manifest entry or rediscover
+targets from a logical name, prefix, or legacy state record. Reviewed recovery
+also does not pretend that this delete surface is reconstructable yet.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that

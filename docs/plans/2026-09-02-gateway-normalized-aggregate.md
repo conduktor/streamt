@@ -6,10 +6,14 @@ Status: Package 6 remains in progress. The strict compiled-artifact parser,
 versioned Gateway binding, pure desired aggregate, reusable strict two-list
 snapshot, immutable observations and fingerprints, normalized change model,
 desired/prior collision gates, online/offline planner integration, canonical
-state projection, and secret-neutral reviewed-plan/CLI presentation are shipped.
-Shared-snapshot status integration and Stage 9 reviewed recovery remain pending.
-The Stage 8 exact managed mutation core is in progress, but planner
-apply/delete/rollback routing is not complete. Gateway adoption remains
+state projection, secret-neutral reviewed-plan/CLI presentation, and normalized
+shared-snapshot status/health are shipped. The exact Stage 8 mutation core,
+legitimate normalized delete change model, and planner
+apply/delete/rollback routing are also complete, with rollback routing limited
+to exact creates from the reviewed plan. Stage 9 recovery proves converged
+creates and updates and an absent rolled-back create, but deliberately fails
+closed for rolled-back updates and normalized deletes that current state cannot
+prove. Package 6 is therefore not complete, and Gateway adoption remains
 unsupported.
 
 This specification freezes the implementation contract for Package 6 of the
@@ -30,9 +34,9 @@ working happy-path command is not enough to cross that boundary.
 | Pure desired aggregate | Complete foundation | Initial managed transformation is restricted to zero interceptors or one compiler-emitted filter. |
 | Normalized change model and collision gates | Complete | Fingerprint-only evidence plus desired and prior-state collision rejection are shipped. |
 | Planner, state, and reviewed-plan presentation | Complete | Online/offline planning, one reusable online snapshot, canonical state projection, and secret-neutral CLI rendering are shipped. |
-| Status shared-snapshot integration | Pending | Status has not yet been migrated to the reusable strict snapshot. |
-| Exact apply, delete, and rollback | In progress | The managed mutation core is being implemented; planner routing and complete rollback integration remain pending. |
-| Reviewed recovery | Pending, fail closed | Normalized Gateway recovery is not implemented and explicitly refuses to infer success from legacy or partial evidence. |
+| Status and health | Complete | All selected rules derive normalized status and health from one reusable strict snapshot with secret-neutral drift evidence. |
+| Exact apply, delete, and rollback | Complete bounded slice | The managed mutation core and planner routing require canonical aggregate evidence; rollback is limited to exact reviewed creates, and normalized deletion is representable only from a complete present surface, not broad discovery. |
+| Reviewed recovery | Partial, fail closed | Converged create/update and absent rolled-back create are provable; rolled-back update lacks a persisted prior-surface fingerprint, and normalized delete recovery is unrepresentable. |
 | Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
@@ -104,8 +108,9 @@ are otherwise supported.
 
 ## Stage 2: versioned Gateway binding
 
-Component status: complete as a shipped foundation. State and lifecycle
-consumers have not yet completed migration to the binding.
+Component status: complete as a shipped foundation and consumed by normalized
+planning, state, status, mutation, and the supported recovery slice. Adoption
+and the remaining recovery cases stay gated.
 
 Introduce an immutable version-1 Gateway binding derived from:
 
@@ -189,8 +194,9 @@ identity collide even if they would otherwise name different physical clusters.
 
 ## Stage 3: pure desired aggregate
 
-Component status: complete as a shipped foundation. Its planner, state, status,
-mutation, and recovery consumers remain integration exit gates.
+Component status: complete as a shipped foundation and consumed by planning,
+state, status, exact mutation, and the supported recovery slice. Adoption and
+the remaining recovery cases stay gated.
 
 Add one side-effect-free function that accepts a strict artifact plus the exact
 Gateway binding and returns a complete immutable desired aggregate. It must not
@@ -283,12 +289,13 @@ Duplicate `(scope, name)` identities within either kind are always ambiguous and
 fail the snapshot. The same name in another scope is validated but remains a
 different object.
 
-Planning and status should fetch one two-list snapshot and derive all requested
-rule aggregates from it. A single-target helper used by recovery and later
-adoption derives one rule from the same snapshot type. Alias absence is accepted
-only after both complete lists were parsed. An absent alias with an exact
-generated interceptor belonging to the rule is inconsistent orphan evidence,
-not a clean absence.
+Online planning and status fetch one two-list snapshot and derive all requested
+rule aggregates from it. Status health uses those same normalized rule outcomes;
+it does not make a fresh Gateway request per rule. Recovery consumes the fresh
+plan derived from the same snapshot type. A later adoption helper will derive
+one rule from that snapshot. Alias absence is accepted only after both complete
+lists were parsed. An absent alias with an exact generated interceptor belonging
+to the rule is inconsistent orphan evidence, not a clean absence.
 
 ## Stage 5: immutable managed observation and fingerprint
 
@@ -346,9 +353,9 @@ target.
 
 ## Stage 7: planner, status, and state projection
 
-Component status: planner integration, canonical state projection, normalized
-change evidence, and reviewed-plan/CLI presentation are complete. Status still
-requires migration to the shared strict snapshot.
+Component status: complete for planner integration, canonical state projection,
+normalized change evidence, reviewed-plan/CLI presentation, and shared-snapshot
+status/health.
 
 Online planning obtains one reusable strict snapshot for the complete Gateway
 rule set, derives the exact current aggregate for each rule, and compares it
@@ -385,9 +392,11 @@ automatically.
 
 ## Stage 8: exact apply, delete, and rollback
 
-Component status: in progress. The exact managed mutation core is the active
-work item. Planner apply/delete/rollback routing and complete rollback behavior
-remain pending, so this stage is not complete.
+Component status: complete for the exact mutation core and planner
+apply/delete/rollback routing, with rollback limited to exact creates from the
+reviewed plan. The normalized delete change model is complete only for an
+already established exact present aggregate. Broad delete discovery and delete
+recovery are outside this shipped slice, so Package 6 is not complete.
 
 Mutation APIs accept the exact desired/current aggregate or an equally strict
 locator object. A bare logical rule name is not enough to mutate Gateway.
@@ -411,8 +420,8 @@ documented absence are distinguished correctly.
 ### Gateway 3.15 provider evidence
 
 Live mutation probes established the following exact provider behavior. This is
-frozen evidence for Stage 8, not a claim that exact mutation, planner routing,
-or rollback is complete:
+frozen evidence behind the shipped bounded Stage 8 implementation, not a claim
+that broad delete discovery, every recovery outcome, or adoption is complete:
 
 - `PUT` returns HTTP 200 and the exact object `{resource, upsertResult}`;
   `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
@@ -429,8 +438,15 @@ or rollback is complete:
 Sent writes require an exact result match: `NotChanged`, or any other
 `upsertResult` inconsistent with the planned operation, is not success. A 404
 while deleting a target that the reviewed snapshot proved present is
-concurrency drift, not silent idempotent success. Mutation must not blindly
+concurrency drift, not silent idempotent success. Mutation does not blindly
 retry either case.
+
+A legitimate normalized delete is constructed only from one complete, present,
+bound observation. Its change evidence is fingerprint-only, and planner action,
+apply, and state routing retain the exact backend, alias, and complete owned
+interceptor identities. This model does not discover deletion candidates merely
+because a rule is missing from the manifest, nor does it reconstruct a target
+from a logical name, broad prefix, or legacy unbound ownership record.
 
 Rollback records exact resources successfully created by the current apply and
 reverses only those resources. It cannot rediscover rollback candidates through
@@ -439,9 +455,13 @@ provider configuration or credentials.
 
 ## Stage 9: reviewed recovery
 
-Component status: pending and explicitly fail closed. Until this stage consumes
-the normalized snapshot and aggregate, Gateway recovery refuses to finalize an
-operation from legacy, status-only, or partial evidence.
+Component status: partially complete and explicitly fail closed. A fresh
+normalized plan can prove a converged create or update as the candidate surface,
+and complete absence can prove a rolled-back create. Rolled-back update cannot
+be proven because current ownership state stores the compiled artifact checksum
+but not the prior provider-surface fingerprint. Normalized delete recovery is
+currently unrepresentable. Those cases fail closed instead of inferring an
+outcome from legacy, status-only, or partial evidence.
 
 Reviewed recovery replans through the strict snapshot and uses the immutable
 aggregate. It can finalize a started create or update only when the fresh
@@ -459,6 +479,14 @@ Recovery fails closed for:
 - an orphan interceptor with an absent alias;
 - content that cannot reconstruct the exact prior or candidate checksum; and
 - operation, state, or control conflicts.
+
+For the currently shipped recovery slice, exact desired aggregate equality and
+its fingerprint establish a converged create or update. Exact complete absence
+establishes that a create was not applied or was rolled back. A rolled-back
+update requires a separately persisted prior provider-surface fingerprint before
+it can be distinguished from drift, and a normalized delete change does not yet
+carry the desired aggregate shape used by the recovery mapper. Neither outcome
+is accepted today.
 
 Local and PostgreSQL v2 reviewed-recovery gates must pass for the alias-only
 surface before Gateway adoption is added to `_SUPPORTED_ACTIONS` or the CLI.
@@ -505,8 +533,8 @@ equivalence for every supported plugin.
 | Desired aggregate | Deterministic alias/interceptor output including `physicalCluster: main`; exact types and case; anchored generated-name parsing; only zero interceptors or one compiler-emitted filter accepted; every mask plus legacy encrypt/readonly rejected; input immutability | `tests/unit/test_gateway_runtime_foundation.py` |
 | Strict live snapshot | Exactly two GETs; no redirect/retry/mutation; bounded duplicate-safe JSON; exact scope/name; username-only Gateway 3.15 scope normalization with null fillers; missing/exact-`main` equivalence; non-`main`, duplicate, malformed, orphan, and wrong-scope failures; stable order-independent fingerprint | `tests/unit/test_gateway_runtime_foundation.py` |
 | Collision and planning | Duplicate owner, alias, interceptor, and generated namespace rejection before provider access; physical cluster cannot split alias identity; exact create/update/no-op; secret-neutral reviewed plans | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_planner_ownership.py`, `tests/unit/test_deployment_state.py` |
-| Status and mutation | Status uses one strict snapshot; observed mapping is reported; no-op writes nothing; logical name differs from alias; overlapping names cannot cross-delete; scoped delete uses an exact request body; exact rollback | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_gaps.py`, `tests/unit/test_planner_gaps.py` |
-| Recovery | Exact prior, exact candidate, allowed absence, legacy backend, endpoint/scope drift, physical-cluster drift/rejection, malformed/extra evidence, and operation/control conflicts | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
+| Status and bounded mutation | Status and health use one strict snapshot; observed mapping is reported; no-op writes nothing; exact create/update/delete results; canonical present-surface delete; logical name differs from alias; overlapping names cannot cross-delete; scoped delete uses an exact request body; rollback routes only exact reviewed creates | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_managed_mutation.py`, `tests/unit/test_planner_gateway_mutation.py` |
+| Recovery | Converged create/update candidate; absent unapplied or rolled-back create; legacy backend, endpoint/scope drift, malformed/extra evidence, and operation/control conflicts; explicit fail-closed rolled-back update without prior-surface fingerprint and unrepresentable normalized delete | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
 | Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit Gateway readiness | `tests/integration/test_gateway_e2e.py`, `tests/integration/helpers/gateway.py`, `tests/integration/helpers/docker.py` |
 | PostgreSQL v2 | Production factory and writer; finalized `adopt` history; no local state; exact Gateway backend; two observations; exact reviewed recovery | `tests/postgres/test_postgres_ordinary_factory_commands_real.py`, `tests/postgres/test_postgres_recovery_commands_real.py` |

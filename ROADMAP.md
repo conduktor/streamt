@@ -76,9 +76,11 @@ to deploy anything.
         then enable only exact alias-only rules with zero interceptors. The
         strict parser, binding, desired aggregate, immutable two-list snapshot,
         normalized planning/change model, collision gates, state projection,
-        and secret-neutral reviewed-plan presentation are complete. Exact
-        managed mutation is in progress; shared-snapshot status, planner
-        mutation routing, reviewed recovery, and adoption remain unsupported.
+        secret-neutral reviewed-plan presentation, shared-snapshot status, and
+        exact managed mutation routing are complete. Recovery proves converged
+        creates/updates and rolled-back creates, but rolled-back updates and
+        normalized deletes still fail closed; Gateway adoption remains
+        unsupported.
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
