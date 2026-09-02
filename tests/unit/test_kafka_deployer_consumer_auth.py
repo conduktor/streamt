@@ -65,7 +65,9 @@ class TestConsumerInheritsAuth:
 
         # Mock topic metadata
         mock_partition = MagicMock()
+        mock_partition.error = None
         mock_topic_meta = MagicMock()
+        mock_topic_meta.error = None
         mock_topic_meta.partitions = {0: mock_partition}
         mock_metadata = MagicMock()
         mock_metadata.topics = {"test-topic": mock_topic_meta}
@@ -103,7 +105,9 @@ class TestConsumerInheritsAuth:
 
         # Mock topic metadata
         mock_partition = MagicMock()
+        mock_partition.error = None
         mock_topic_meta = MagicMock()
+        mock_topic_meta.error = None
         mock_topic_meta.partitions = {0: mock_partition}
         mock_metadata = MagicMock()
         mock_metadata.topics = {"my-topic": mock_topic_meta}
@@ -119,7 +123,7 @@ class TestConsumerInheritsAuth:
         mock_cgtp_result.topic_partitions = [mock_tp]
         mock_future = MagicMock()
         mock_future.result.return_value = mock_cgtp_result
-        deployer.admin.list_consumer_group_offsets.return_value = {"group": mock_future}
+        deployer.admin.list_consumer_group_offsets.return_value = {"my-group": mock_future}
 
         # Mock consumer watermark offsets
         mock_consumer = MagicMock()
@@ -129,18 +133,11 @@ class TestConsumerInheritsAuth:
         with patch("streamt.deployer.kafka.ConsumerGroupTopicPartitions", mock_cgtp_cls, create=True):
             deployer.get_consumer_group_lag("my-group", "my-topic")
 
-        # If ConsumerGroupTopicPartitions import fails, the method returns None
-        # but Consumer should still have been created with auth if it got that far
-        if MockConsumer.called:
-            consumer_config = MockConsumer.call_args[0][0]
-            assert consumer_config["security.protocol"] == "SASL_SSL"
-            assert consumer_config["sasl.mechanism"] == "SCRAM-SHA-256"
-            assert consumer_config["sasl.username"] == "user"
-            assert consumer_config["sasl.password"] == "pass"
-        else:
-            # If the lag method can't import ConsumerGroupTopicPartitions,
-            # at least verify _config is stored correctly
-            assert deployer._config["security.protocol"] == "SASL_SSL"
+        consumer_config = MockConsumer.call_args[0][0]
+        assert consumer_config["security.protocol"] == "SASL_SSL"
+        assert consumer_config["sasl.mechanism"] == "SCRAM-SHA-256"
+        assert consumer_config["sasl.username"] == "user"
+        assert consumer_config["sasl.password"] == "pass"
 
     @patch("streamt.deployer.kafka.Consumer")
     @patch("streamt.deployer.kafka.AdminClient")

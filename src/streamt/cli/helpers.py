@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Optional, TypeVar
 import click
 from pydantic import SecretStr
 
+from streamt.core.redaction import redact_sensitive_text as _redact_sensitive_text
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
 
 if TYPE_CHECKING:
@@ -21,22 +21,11 @@ if TYPE_CHECKING:
     from streamt.deployer.kafka import KafkaDeployer
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
-_CREDENTIAL_URL = re.compile(r"://([^:@/\s]+):([^@/\s]+)@")
-_SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)(?:password|passwd|secret|token|api[._-]?key|authorization|credentials?"
-    r"|basic[._-]auth[._-]user[._-]info|sasl[._-]jaas[._-]config"
-    r"|ssl[._-]key[._-]password)\s*[:=]\s*"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\r\n,;]+)"
-)
-
 _DeployerT = TypeVar("_DeployerT")
 
-
-def redact_sensitive_text(value: object) -> str:
-    """Redact credential URLs and assignment-shaped secrets from error text."""
-    text = str(value)
-    text = _CREDENTIAL_URL.sub(r"://<redacted>:<redacted>@", text)
-    return _SENSITIVE_ASSIGNMENT.sub("<redacted>", text)
+# Preserve the existing helper import surface while keeping the implementation
+# in a lower-level module that deployers and observers can use safely.
+redact_sensitive_text = _redact_sensitive_text
 
 
 def get_project_path(project_dir: Optional[str]) -> Path:

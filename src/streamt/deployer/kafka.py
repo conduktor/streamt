@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from confluent_kafka import Consumer, TopicPartition
+from confluent_kafka import Consumer, ConsumerGroupTopicPartitions, TopicPartition
 from confluent_kafka.admin import (
     AdminClient,
     AlterConfigOpType,
@@ -20,6 +20,7 @@ from confluent_kafka.admin import (
 
 from streamt.compiler.manifest import TopicArtifact
 from streamt.core import errors
+from streamt.core.redaction import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,27 @@ class ConsumerGroupLag:
     total_lag: int
     partitions: list[PartitionLag] = field(default_factory=list)
     state: Optional[str] = None  # e.g., "Stable", "Empty", "Dead"
+
+
+class ConsumerGroupObservationError(RuntimeError):
+    """A consumer-group query failed, so absence cannot be inferred safely."""
+
+    def __init__(
+        self,
+        operation: str,
+        *,
+        group_id: str,
+        topic: str,
+        detail: object,
+    ) -> None:
+        self.operation = operation
+        self.group_id = redact_sensitive_text(group_id)
+        self.topic = redact_sensitive_text(topic)
+        self.detail = redact_sensitive_text(detail)
+        super().__init__(
+            f"Kafka {operation} failed for consumer group {self.group_id!r} "
+            f"on topic {self.topic!r}: {self.detail}"
+        )
 
 
 @dataclass
@@ -400,59 +422,90 @@ class KafkaDeployer:
     def get_consumer_group_lag(self, group_id: str, topic: str) -> Optional[ConsumerGroupLag]:
         """Get consumer group lag for a specific topic.
 
-        Returns None if the group doesn't exist or has no committed offsets.
+        Return ``None`` only when the topic has no partitions or the group has no
+        committed offsets for it. Backend, authorization, and malformed-response
+        failures raise :class:`ConsumerGroupObservationError`; callers must not
+        interpret those failures as proof that no consumer exists.
         """
-        # Get topic partitions
-        metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
-        if topic not in metadata.topics:
-            return None
-
-        topic_metadata = metadata.topics[topic]
-        partition_count = len(topic_metadata.partitions)
-
-        if partition_count == 0:
-            return None
-
-        consumer_config = dict(self._config)
-        consumer_config["group.id"] = group_id
-        consumer_config["enable.auto.commit"] = False
-
+        self._check_closed()
+        operation = "topic metadata query"
         try:
-            # Use AdminClient to list consumer group offsets (Kafka 2.4+)
-            from confluent_kafka.admin import ConsumerGroupTopicPartitions
+            metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
+            if topic not in metadata.topics:
+                return None
 
+            topic_metadata = metadata.topics[topic]
+            if getattr(topic_metadata, "error", None) is not None:
+                raise RuntimeError("Kafka returned invalid topic metadata")
+            for partition in topic_metadata.partitions.values():
+                if getattr(partition, "error", None) is not None:
+                    raise RuntimeError("Kafka returned invalid partition metadata")
+            partition_count = len(topic_metadata.partitions)
+            if partition_count == 0:
+                return None
+
+            # Use AdminClient to list consumer group offsets (Kafka 2.4+)
+            operation = "committed-offset query"
             topic_partitions = [TopicPartition(topic, p) for p in range(partition_count)]
             cgtp = ConsumerGroupTopicPartitions(group_id, topic_partitions)
 
             # Get committed offsets
             futures = self.admin.list_consumer_group_offsets([cgtp])
-            result = list(futures.values())[0].result(timeout=DEFAULT_TIMEOUT)
+            future = futures.get(group_id)
+            if future is None:
+                raise ValueError("Kafka returned no committed-offset future for the group")
+            result = future.result(timeout=DEFAULT_TIMEOUT)
+
+            result_partitions = getattr(result, "topic_partitions", None)
+            if not isinstance(result_partitions, list):
+                raise TypeError("Kafka returned an invalid committed-offset response")
+
+            committed_offsets: dict[int, int] = {}
+            for partition in result_partitions:
+                if getattr(partition, "topic", None) != topic:
+                    continue
+                partition_id = getattr(partition, "partition", None)
+                offset = getattr(partition, "offset", None)
+                if not isinstance(partition_id, int) or not isinstance(offset, int):
+                    raise TypeError("Kafka returned an invalid committed partition offset")
+                # OFFSET_INVALID and other negative offsets mean the group has
+                # never committed this partition. That is legitimate absence,
+                # not a lag equal to the topic's full high watermark.
+                if offset < 0:
+                    continue
+                committed_offsets[partition_id] = offset
+
+            if not committed_offsets:
+                return None
+
+            consumer_config = dict(self._config)
+            consumer_config["group.id"] = group_id
+            consumer_config["enable.auto.commit"] = False
 
             # Get end offsets (high watermarks)
+            operation = "watermark query"
             consumer = Consumer(consumer_config)
             try:
-                end_offsets = {}
-                for tp in topic_partitions:
+                end_offsets: dict[int, int] = {}
+                for partition_id in sorted(committed_offsets):
+                    tp = TopicPartition(topic, partition_id)
                     _low, high = consumer.get_watermark_offsets(tp, timeout=DEFAULT_TIMEOUT)
                     end_offsets[tp.partition] = high
             finally:
                 consumer.close()
 
             # Calculate lag per partition
-            partition_lags = []
+            partition_lags: list[PartitionLag] = []
             total_lag = 0
 
-            for tp in result.topic_partitions:
-                if tp.topic != topic:
-                    continue
-                current_offset = tp.offset if tp.offset >= 0 else 0
-                end_offset = end_offsets.get(tp.partition, 0)
+            for partition_id, current_offset in sorted(committed_offsets.items()):
+                end_offset = end_offsets[partition_id]
                 lag = max(0, end_offset - current_offset)
                 total_lag += lag
 
                 partition_lags.append(
                     PartitionLag(
-                        partition=tp.partition,
+                        partition=partition_id,
                         current_offset=current_offset,
                         end_offset=end_offset,
                         lag=lag,
@@ -466,9 +519,17 @@ class KafkaDeployer:
                 partitions=partition_lags,
             )
 
-        except Exception as e:
-            logger.warning(f"Failed to get consumer group lag for {group_id}: {e}")
-            return None
+        except ConsumerGroupObservationError:
+            raise
+        except Exception as error:
+            failure = ConsumerGroupObservationError(
+                operation,
+                group_id=group_id,
+                topic=topic,
+                detail=error,
+            )
+            logger.debug("%s", failure)
+            raise failure from None
 
     def get_topic_message_count(self, topic: str) -> int:
         """Get approximate message count for a topic (sum of end offsets)."""

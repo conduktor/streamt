@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
+
+from streamt.core.redaction import redact_sensitive_text
 
 if TYPE_CHECKING:
     from streamt.compiler.manifest import Manifest
@@ -21,6 +23,23 @@ class ConsumerStatus:
     state: Optional[str] = None  # "Stable", "Empty", "Dead" (if available)
 
 
+@dataclass(frozen=True)
+class ConsumerObservationFailure:
+    scope: str
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ConsumerObservationEvidence:
+    """Completeness of the consumer-group evidence for one topic."""
+
+    status: Literal["verified", "partial", "unavailable"]
+    source: str = "kafka_consumer_groups"
+    reason: Optional[str] = None
+    failures: list[ConsumerObservationFailure] = field(default_factory=list)
+
+
 @dataclass
 class FlinkMetrics:
     job_id: str
@@ -34,6 +53,7 @@ class ModelObservation:
     model_name: str
     topic: Optional[str]
     consumers: list[ConsumerStatus] = field(default_factory=list)
+    consumer_evidence: Optional[ConsumerObservationEvidence] = None
     flink: Optional[FlinkMetrics] = None
 
     @property
@@ -47,6 +67,12 @@ class ModelObservation:
             return "degraded"
         if self.flink and self.flink.is_backpressured:
             return "warning"
+        if (
+            self.topic is not None
+            and self.consumer_evidence is not None
+            and self.consumer_evidence.status != "verified"
+        ):
+            return "unknown"
         if self.consumers and self.total_lag > 100_000:
             return "warning"
         if self.flink is None and self.topic is None:
@@ -76,18 +102,18 @@ class Observer:
         all_models = set(topic_by_model) | set(flink_jobs_by_model)
 
         # Pre-fetch consumer groups once (expensive to enumerate per-topic otherwise)
-        all_groups: list[str] = []
-        if self._kafka:
-            try:
-                all_groups = self._kafka.get_consumer_groups()
-            except Exception as e:
-                logger.warning("Could not list consumer groups: %s", e)
+        all_groups, listing_evidence = self._consumer_groups()
 
         for model_name in sorted(all_models):
             topic = topic_by_model.get(model_name)
             flink_metrics = None
 
-            consumers = self._fetch_consumers(topic, all_groups) if topic else []
+            consumers: list[ConsumerStatus] = []
+            consumer_evidence = None
+            if topic:
+                consumers, consumer_evidence = self._fetch_consumers(
+                    topic, all_groups, listing_evidence
+                )
             if model_name in flink_jobs_by_model:
                 flink_metrics = self._fetch_flink_metrics(flink_jobs_by_model[model_name])
 
@@ -96,6 +122,7 @@ class Observer:
                     model_name=model_name,
                     topic=topic,
                     consumers=consumers,
+                    consumer_evidence=consumer_evidence,
                     flink=flink_metrics,
                 )
             )
@@ -162,12 +189,86 @@ class Observer:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _fetch_consumers(self, topic: str, all_groups: list[str]) -> list[ConsumerStatus]:
-        """Return consumer groups that have committed offsets on the given topic."""
-        if not self._kafka or not all_groups:
-            return []
+    def _consumer_groups(
+        self,
+    ) -> tuple[list[str], Optional[ConsumerObservationEvidence]]:
+        """List group identities and preserve failures as explicit evidence."""
+        if not self._kafka:
+            return [], ConsumerObservationEvidence(
+                status="unavailable",
+                reason="kafka_not_configured",
+            )
+
+        try:
+            raw_groups = self._kafka.get_consumer_groups()
+        except Exception as error:
+            safe_error = redact_sensitive_text(error)
+            logger.debug("Could not list consumer groups: %s", safe_error)
+            return [], ConsumerObservationEvidence(
+                status="unavailable",
+                reason="consumer_group_listing_failed",
+                failures=[
+                    ConsumerObservationFailure(
+                        scope="consumer_group_list",
+                        code="consumer_group_listing_failed",
+                        message=safe_error,
+                    )
+                ],
+            )
+
+        if not isinstance(raw_groups, list):
+            return [], ConsumerObservationEvidence(
+                status="unavailable",
+                reason="invalid_consumer_group_response",
+                failures=[
+                    ConsumerObservationFailure(
+                        scope="consumer_group_list",
+                        code="invalid_consumer_group_response",
+                        message="Kafka returned a non-list consumer group response.",
+                    )
+                ],
+            )
+
+        groups: set[str] = set()
+        failures: list[ConsumerObservationFailure] = []
+        for group_id in raw_groups:
+            if isinstance(group_id, str) and group_id:
+                groups.add(group_id)
+            else:
+                failures.append(
+                    ConsumerObservationFailure(
+                        scope="consumer_group_list",
+                        code="invalid_consumer_group_identity",
+                        message="Kafka returned a non-string consumer group identity.",
+                    )
+                )
+
+        if failures:
+            return sorted(groups), ConsumerObservationEvidence(
+                status="partial",
+                reason="invalid_consumer_group_identity",
+                failures=failures,
+            )
+        return sorted(groups), None
+
+    def _fetch_consumers(
+        self,
+        topic: str,
+        all_groups: list[str],
+        listing_evidence: Optional[ConsumerObservationEvidence],
+    ) -> tuple[list[ConsumerStatus], ConsumerObservationEvidence]:
+        """Return consumers and explicit evidence completeness for a topic."""
+        if not self._kafka:
+            return [], listing_evidence or ConsumerObservationEvidence(
+                status="unavailable",
+                reason="kafka_not_configured",
+            )
+        if listing_evidence and listing_evidence.status == "unavailable":
+            return [], listing_evidence
 
         result: list[ConsumerStatus] = []
+        failures = list(listing_evidence.failures) if listing_evidence else []
+        lag_query_failed = False
         for group_id in all_groups:
             try:
                 lag_info: Optional[ConsumerGroupLag] = self._kafka.get_consumer_group_lag(
@@ -181,10 +282,35 @@ class Observer:
                             state=lag_info.state,
                         )
                     )
-            except Exception as e:
-                logger.debug("Skipping group %s for topic %s: %s", group_id, topic, e)
+            except Exception as error:
+                lag_query_failed = True
+                safe_group = redact_sensitive_text(group_id)
+                safe_error = redact_sensitive_text(error)
+                logger.debug(
+                    "Could not query group %s for topic %s: %s",
+                    safe_group,
+                    redact_sensitive_text(topic),
+                    safe_error,
+                )
+                failures.append(
+                    ConsumerObservationFailure(
+                        scope=f"consumer_group/{safe_group}",
+                        code="consumer_group_lag_failed",
+                        message=safe_error,
+                    )
+                )
 
-        return result
+        if failures:
+            return result, ConsumerObservationEvidence(
+                status="partial",
+                reason=(
+                    "consumer_group_lag_failed"
+                    if lag_query_failed
+                    else listing_evidence.reason if listing_evidence else None
+                ),
+                failures=failures,
+            )
+        return result, ConsumerObservationEvidence(status="verified")
 
     def _fetch_flink_metrics(self, job_name: str) -> Optional[FlinkMetrics]:
         """Fetch job state and optional throughput metrics from the Flink REST API."""

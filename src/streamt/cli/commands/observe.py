@@ -111,6 +111,23 @@ def observe(
                                 {"group_id": c.group_id, "lag": c.lag, "state": c.state}
                                 for c in o.consumers
                             ],
+                            "consumer_evidence": (
+                                {
+                                    "status": o.consumer_evidence.status,
+                                    "source": o.consumer_evidence.source,
+                                    "reason": o.consumer_evidence.reason,
+                                    "failures": [
+                                        {
+                                            "scope": failure.scope,
+                                            "code": failure.code,
+                                            "message": failure.message,
+                                        }
+                                        for failure in o.consumer_evidence.failures
+                                    ],
+                                }
+                                if o.consumer_evidence
+                                else None
+                            ),
                             "flink": (
                                 {
                                     "job_id": o.flink.job_id,
@@ -171,7 +188,26 @@ def _render_text(fmt: OutputFormatter, observations: list) -> None:
             )
             for c in sorted(obs.consumers, key=lambda x: x.lag, reverse=True):
                 fmt.print(f"        [dim]·[/dim] {c.group_id}  {_lag_str(c.lag)}")
-        elif obs.topic:
+        elif (
+            obs.topic
+            and obs.consumer_evidence
+            and obs.consumer_evidence.status == "verified"
+        ):
             fmt.print("      [dim]consumers:[/dim] [dim]none[/dim]")
+
+        if (
+            obs.topic
+            and obs.consumer_evidence
+            and obs.consumer_evidence.status != "verified"
+        ):
+            reason = (
+                f" ({obs.consumer_evidence.reason})"
+                if obs.consumer_evidence.reason
+                else ""
+            )
+            fmt.print(
+                "      [dim]consumer evidence:[/dim] "
+                f"[yellow]{obs.consumer_evidence.status}{reason}[/yellow]"
+            )
 
         fmt.print("")

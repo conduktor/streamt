@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from streamt.cli import main
 from streamt.deployer.flink import FlinkJobState
-from streamt.deployer.kafka import ConsumerGroupLag
+from streamt.deployer.kafka import ConsumerGroupLag, ConsumerGroupObservationError
 
 
 def _write_project(path: Path) -> None:
@@ -92,6 +92,12 @@ def test_observe_json_has_structured_model_data(tmp_path: Path) -> None:
             "health": "ok",
             "total_lag": 12,
             "consumers": [{"group_id": "billing", "lag": 12, "state": None}],
+            "consumer_evidence": {
+                "status": "verified",
+                "source": "kafka_consumer_groups",
+                "reason": None,
+                "failures": [],
+            },
             "flink": {
                 "job_id": "job-1",
                 "state": "RUNNING",
@@ -108,3 +114,41 @@ def test_observe_missing_project_fails_without_traceback(tmp_path: Path) -> None
     assert result.exit_code == 1
     assert "stream_project.yml" in result.output
     assert not isinstance(result.exception, TypeError)
+
+
+def test_observe_reports_partial_redacted_consumer_evidence(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    kafka, flink = _runtime_mocks()
+    kafka.get_consumer_group_lag.side_effect = ConsumerGroupObservationError(
+        "committed-offset query",
+        group_id="billing",
+        topic="clean.events.v1",
+        detail="authorization failed, password=supersecret",
+    )
+
+    with (
+        patch("streamt.cli.commands.observe.make_kafka_deployer", return_value=kafka),
+        patch("streamt.cli.commands.observe.make_flink_deployer", return_value=flink),
+    ):
+        result = CliRunner().invoke(main, ["-o", "json", "observe", "-p", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "supersecret" not in result.output
+    model = json.loads(result.output)["data"]["models"][0]
+    assert model["health"] == "unknown"
+    assert model["consumers"] == []
+    assert model["consumer_evidence"] == {
+        "status": "partial",
+        "source": "kafka_consumer_groups",
+        "reason": "consumer_group_lag_failed",
+        "failures": [
+            {
+                "scope": "consumer_group/billing",
+                "code": "consumer_group_lag_failed",
+                "message": (
+                    "Kafka committed-offset query failed for consumer group 'billing' "
+                    "on topic 'clean.events.v1': authorization failed, <redacted>"
+                ),
+            }
+        ],
+    }

@@ -13,7 +13,12 @@ from streamt.cli import main
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.flink import FlinkJobState
 from streamt.deployer.gateway import GatewayDeployer
-from streamt.deployer.kafka import ConsumerGroupLag, PartitionLag, TopicState
+from streamt.deployer.kafka import (
+    ConsumerGroupLag,
+    ConsumerGroupObservationError,
+    PartitionLag,
+    TopicState,
+)
 
 
 def _project() -> MagicMock:
@@ -226,6 +231,34 @@ def test_consumer_group_partition_lag_is_json_serializable(tmp_path: Path) -> No
     assert partitions == [
         {"partition": 0, "current_offset": 3, "end_offset": 10, "lag": 7}
     ]
+
+
+def test_health_fails_closed_on_redacted_consumer_lag_error(tmp_path: Path) -> None:
+    kafka = MagicMock()
+    kafka.get_topic_state.return_value = TopicState(
+        name="orders", exists=True, partitions=1, replication_factor=1
+    )
+    kafka.get_consumer_groups.return_value = ["analytics"]
+    kafka.get_consumer_group_lag.side_effect = ConsumerGroupObservationError(
+        "committed-offset query",
+        group_id="analytics",
+        topic="orders",
+        detail="SASL denied, password=supersecret",
+    )
+
+    result = _invoke_status(
+        tmp_path,
+        {"topics": [{"name": "orders", "partitions": 1, "replication_factor": 1}]},
+        status_args=["--consumer-groups", "--health"],
+        kafka=kafka,
+    )
+
+    assert result.exit_code == 1
+    assert "supersecret" not in result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["errors"][0]["code"] == "E406_CONNECTION_REFUSED"
+    assert "<redacted>" in payload["errors"][0]["message"]
 
 
 def test_summary_does_not_count_drift_as_ok_or_missing_job_as_running(
