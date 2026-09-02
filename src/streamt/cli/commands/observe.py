@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import click
 
@@ -18,6 +18,9 @@ from streamt.cli.helpers import (
 from streamt.compiler.compiler import Compiler
 from streamt.core.errors import ErrorCode
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
+
+if TYPE_CHECKING:
+    from streamt.deployer.observer import ModelObservation
 
 
 def _health_color(health: str) -> str:
@@ -88,7 +91,7 @@ def observe(
             if not observations:
                 fmt.add_error(
                     StructuredError(
-                        code=ErrorCode.NOT_FOUND,
+                        code=ErrorCode.MODEL_NOT_FOUND,
                         message=f"Model '{model_filter}' not found in manifest",
                     )
                 )
@@ -151,9 +154,7 @@ def observe(
     fmt.flush()
 
 
-def _render_text(fmt: OutputFormatter, observations: list) -> None:
-    from streamt.deployer.observer import ModelObservation
-
+def _render_text(fmt: OutputFormatter, observations: list[ModelObservation]) -> None:
     if not observations:
         fmt.print("[dim]No deployed models found in manifest.[/dim]")
         return
@@ -161,7 +162,6 @@ def _render_text(fmt: OutputFormatter, observations: list) -> None:
     fmt.print(f"\n[bold]Runtime Health[/bold] ({len(observations)} models)\n")
 
     for obs in observations:
-        obs: ModelObservation
         color = _health_color(obs.health)
         bullet = {"ok": "●", "warning": "◐", "degraded": "✗"}.get(obs.health, "○")
 

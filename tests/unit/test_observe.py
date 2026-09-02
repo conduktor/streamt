@@ -83,7 +83,7 @@ def test_observe_json_has_structured_model_data(tmp_path: Path) -> None:
         )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["command"] == "observe"
     assert payload["data"]["models"] == [
         {
@@ -104,6 +104,32 @@ def test_observe_json_has_structured_model_data(tmp_path: Path) -> None:
                 "records_in_per_second": 42.5,
                 "is_backpressured": False,
             },
+        }
+    ]
+
+
+def test_observe_unknown_model_returns_structured_model_not_found(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    kafka, flink = _runtime_mocks()
+
+    with (
+        patch("streamt.cli.commands.observe.make_kafka_deployer", return_value=kafka),
+        patch("streamt.cli.commands.observe.make_flink_deployer", return_value=flink),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "observe", "-p", str(tmp_path), "--model", "missing"],
+        )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["errors"] == [
+        {
+            "code": "E102_MODEL_NOT_FOUND",
+            "message": "Model 'missing' not found in manifest",
         }
     ]
 
