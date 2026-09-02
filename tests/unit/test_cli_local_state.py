@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,28 +18,62 @@ from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import ReviewedPlanFile
 from streamt.deployer.state import (
     LocalState,
-    LocalStateOperationLock,
     ManagedResourceRecord,
     artifact_checksum,
-    load_local_state,
-    local_state_operation_lock,
     local_state_path,
     resource_id,
 )
+from streamt.deployer.state_backend import (
+    DeploymentStateOperation,
+    DeploymentStateService,
+    StateAddress,
+    StateObservation,
+    StateRevision,
+    StateStoreIdentity,
+    make_deployment_state_service,
+)
 
 
-class _RecordingOperationLock:
+class _RecordingStateOperation:
     def __init__(
         self,
-        delegate: LocalStateOperationLock,
+        delegate: DeploymentStateOperation,
         events: list[str],
     ) -> None:
         self._delegate = delegate
         self._events = events
 
-    def save_if_serial(self, state: LocalState, *, expected_serial: int) -> None:
+    def read(self) -> StateObservation:
+        self._events.append("state-read")
+        return self._delegate.read()
+
+    def compare_and_swap(
+        self,
+        observation: StateObservation,
+        state: LocalState,
+    ) -> StateObservation:
         self._events.append("state-save")
-        self._delegate.save_if_serial(state, expected_serial=expected_serial)
+        return self._delegate.compare_and_swap(observation, state)
+
+
+class _FakeReadBackend:
+    """Minimal provider fake proving commands depend on the typed boundary."""
+
+    def __init__(self, observation: StateObservation) -> None:
+        self.observation = observation
+
+    def describe(self) -> StateStoreIdentity:
+        return self.observation.store
+
+    def read(self, address: StateAddress) -> StateObservation:
+        assert address == self.observation.address
+        return self.observation
+
+    def operation(
+        self,
+        address: StateAddress,
+    ) -> AbstractContextManager[DeploymentStateOperation]:
+        raise AssertionError(f"read-only plan must not acquire {address.uri}")
 
 
 def _write_project(path: Path) -> None:
@@ -196,27 +230,22 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
         events.append("runtime-mutation")
         return "created"
 
-    def read_state(
-        project_path: Path,
-        *,
-        project: str,
-        environment: str,
-    ) -> LocalState:
-        events.append("state-read")
-        return load_local_state(
-            project_path,
-            project=project,
-            environment=environment,
-        )
-
     @contextmanager
-    def operation_lock(path: Path) -> Iterator[_RecordingOperationLock]:
+    def operation() -> Iterator[_RecordingStateOperation]:
         events.append("lock-enter")
-        with local_state_operation_lock(path) as delegate:
+        service = make_deployment_state_service(
+            tmp_path,
+            project="plan-test",
+            environment="default",
+        )
+        with service.operation() as delegate:
             try:
-                yield _RecordingOperationLock(delegate, events)
+                yield _RecordingStateOperation(delegate, events)
             finally:
                 events.append("lock-exit")
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
 
     kafka.plan_topic.side_effect = plan_topic
     kafka.apply_topic.side_effect = apply_topic
@@ -227,12 +256,8 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
             return_value=kafka,
         ),
         patch(
-            "streamt.cli.commands.apply.local_state_operation_lock",
-            side_effect=operation_lock,
-        ),
-        patch(
-            "streamt.cli.commands.apply.load_local_state",
-            side_effect=read_state,
+            "streamt.cli.commands.apply.make_deployment_state_service",
+            return_value=state_service,
         ),
     ):
         result = CliRunner().invoke(
@@ -433,14 +458,65 @@ def test_offline_plan_does_not_read_or_create_local_state(tmp_path: Path) -> Non
     state_path.write_text("{malformed-but-irrelevant")
     before = state_path.read_bytes()
 
-    result = CliRunner().invoke(
-        main,
-        ["-o", "json", "plan", "-p", str(tmp_path), "--offline"],
-    )
+    with patch(
+        "streamt.cli.commands.plan.make_deployment_state_service",
+        side_effect=AssertionError("offline plan constructed state backend"),
+    ) as state_factory:
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "plan", "-p", str(tmp_path), "--offline"],
+        )
 
     assert result.exit_code == 0, result.output
+    state_factory.assert_not_called()
     assert state_path.read_bytes() == before
     assert _json(result)["warnings"] == []
+
+
+def test_online_plan_reads_injected_backend_without_touching_local_state(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    state_path = local_state_path(tmp_path, environment="default")
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{malformed-but-not-selected")
+    address = StateAddress(
+        namespace="test",
+        project="plan-test",
+        environment="default",
+    )
+    observation = StateObservation(
+        store=StateStoreIdentity(backend="fake", store_id="test-store"),
+        address=address,
+        state=LocalState(project="plan-test", environment="default", serial=7),
+        revision=StateRevision("fake:7"),
+    )
+    service = DeploymentStateService(
+        backend=_FakeReadBackend(observation),
+        address=address,
+    )
+    reviewed_path = tmp_path / "reviewed.plan.json"
+    manifest = _manifest(_topic("payments.clean.v1", owner="payments_clean"))
+
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.plan.make_kafka_deployer",
+            return_value=_kafka(exists=False),
+        ),
+        patch(
+            "streamt.cli.commands.plan.make_deployment_state_service",
+            return_value=service,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["plan", "-p", str(tmp_path), "--out", str(reviewed_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert ReviewedPlanFile.load(reviewed_path).state_serial == 7
+    assert state_path.read_text() == "{malformed-but-not-selected"
 
 
 def test_dev_and_prod_states_coexist_without_mismatch_or_overwrite(

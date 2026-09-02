@@ -30,11 +30,10 @@ from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     StateError,
     StateFormatError,
-    load_local_state,
-    local_state_operation_lock,
     local_state_path,
     updated_local_state,
 )
+from streamt.deployer.state_backend import make_deployment_state_service
 from streamt.output import StructuredError
 
 _SELECTABLE_ARTIFACT_KINDS = (
@@ -295,16 +294,18 @@ def apply(
             project_path,
             environment=effective_environment,
         )
-        state_operation_lock = operation_stack.enter_context(
-            local_state_operation_lock(state_path)
-        )
-        # This is the authoritative state read.  The operation lock remains
-        # held through live re-planning, runtime mutation, and state commit.
-        prior_state = load_local_state(
+        state_service = make_deployment_state_service(
             project_path,
             project=project.project.name,
             environment=effective_environment,
         )
+        state_operation = operation_stack.enter_context(
+            state_service.operation()
+        )
+        # This is the authoritative state read.  The operation lock remains
+        # held through live re-planning, runtime mutation, and state commit.
+        prior_observation = state_operation.read()
+        prior_state = prior_observation.state
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -559,9 +560,9 @@ def apply(
 
             if next_state is not None:
                 try:
-                    state_operation_lock.save_if_serial(
+                    state_operation.compare_and_swap(
+                        prior_observation,
                         next_state,
-                        expected_serial=prior_state.serial,
                     )
                 except OSError as error:
                     raise StateFormatError(

@@ -37,11 +37,10 @@ from streamt.deployer.state import (
     StateConflictError,
     StateError,
     artifact_checksum,
-    load_local_state,
-    local_state_operation_lock,
     local_state_path,
     resource_id,
 )
+from streamt.deployer.state_backend import make_deployment_state_service
 from streamt.output import StructuredError
 
 _SENSITIVE_KEY = re.compile(
@@ -666,16 +665,18 @@ def adopt(
             project_path,
             environment=effective_environment,
         )
-        state_operation_lock = operation_stack.enter_context(
-            local_state_operation_lock(state_path)
-        )
-        # Adoption intentionally keeps the local lock across observation and
-        # confirmation so the approved evidence remains authoritative.
-        prior_state = load_local_state(
+        state_service = make_deployment_state_service(
             project_path,
             project=project.project.name,
             environment=effective_environment,
         )
+        state_operation = operation_stack.enter_context(
+            state_service.operation()
+        )
+        # Adoption intentionally keeps the local lock across observation and
+        # confirmation so the approved evidence remains authoritative.
+        prior_observation = state_operation.read()
+        prior_state = prior_observation.state
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -805,9 +806,9 @@ def adopt(
             resources=resources,
         )
         try:
-            state_operation_lock.save_if_serial(
+            state_operation.compare_and_swap(
+                prior_observation,
                 next_state,
-                expected_serial=prior_state.serial,
             )
         except StateConflictError as exc:
             raise AdoptionError(

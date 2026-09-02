@@ -62,6 +62,16 @@ until the full protocol is present.
 
 ### Slice 1: characterize and extract the backend boundary
 
+Progress: implemented. `plan`, `apply`, and `adopt` now access ownership state
+through a provider-neutral service using strict `StateAddress`,
+`StateStoreIdentity`, `StateObservation`, and opaque `StateRevision` values.
+The local provider retains the version 1 JSON bytes, paths, file mode, warning,
+serial rules, and operation-wide lock lifetime. Offline plan bypasses backend
+construction, and no remote provider is selectable. The operation-intent
+methods in the normative full protocol remain intentionally deferred to Slice
+3; the current extracted mutation surface is an exclusive operation with a
+revision-and-serial CAS.
+
 1. Add characterization tests for every local load/save/CAS/error behavior,
    file mode, duplicate-key rejection, atomic-replace cleanup, environment
    isolation, and warning.

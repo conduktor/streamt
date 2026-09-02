@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed safety contract. Remote state is not supported until an implementation
-satisfies this specification and its conformance tests. The existing local JSON
-backend remains the default for single-user development.
+Proposed safety contract. The provider-neutral state boundary and its local
+version 1 JSON provider are implemented, but remote state is not supported
+until an implementation satisfies this specification and its conformance
+tests. The existing local JSON backend remains the only selectable provider
+and remains the default for single-user development.
 
 ## Scope
 
@@ -128,6 +130,14 @@ The public application layer must not branch on provider-specific ETags,
 database transaction IDs, paths, or lock handles. Provider exceptions are
 translated into stable errors such as unavailable, invalid state, conflict,
 lock timeout, lock lost, recovery required, and unknown commit outcome.
+
+The current extraction implements `describe`, consistent `read`, and an
+exclusive operation surface containing `read` plus revision-and-serial CAS.
+This is the local Slice 1 compatibility boundary: `apply` and `adopt` retain
+the pre-existing adjacent-file lock for the operation's complete lifetime, and
+`plan` performs a lock-free read. The richer intent/progress/recovery methods
+above remain the required target contract and are not claimed by the current
+local provider.
 
 `begin_operation`, `record_progress`, `commit_operation`, and `fail_operation`
 are atomic CAS operations over the observation revision and lock ownership. A

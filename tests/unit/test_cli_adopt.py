@@ -22,6 +22,7 @@ from streamt.deployer.state import (
     local_state_path,
     resource_id,
 )
+from streamt.deployer.state_backend import StateObservation, make_deployment_state_service
 
 
 def _write_project(path: Path) -> None:
@@ -234,20 +235,34 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
         events.append("confirmation")
 
     @contextmanager
-    def operation_lock(path: Path) -> Iterator[MagicMock]:
+    def operation() -> Iterator[MagicMock]:
         events.append("lock-enter")
-        lock = MagicMock()
+        service = make_deployment_state_service(
+            tmp_path,
+            project="adoption-test",
+            environment="default",
+        )
+        with service.operation() as delegate:
+            operation = MagicMock()
+            operation.read.side_effect = delegate.read
 
-        def save(state: LocalState, *, expected_serial: int) -> None:
-            assert expected_serial == 0
-            events.append("state-save")
-            state.save(path)
+            def save(
+                observation: StateObservation,
+                state: LocalState,
+            ) -> StateObservation:
+                assert state.serial == 1
+                assert observation == delegate.read()
+                events.append("state-save")
+                return delegate.compare_and_swap(observation, state)
 
-        lock.save_if_serial.side_effect = save
-        try:
-            yield lock
-        finally:
-            events.append("lock-exit")
+            operation.compare_and_swap.side_effect = save
+            try:
+                yield operation
+            finally:
+                events.append("lock-exit")
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
 
     kafka.get_topic_state.side_effect = observe
     compiler_patch, kafka_patch = _patch_adoption(_manifest(artifact), kafka)
@@ -255,8 +270,8 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
         compiler_patch,
         kafka_patch,
         patch(
-            "streamt.cli.commands.adopt.local_state_operation_lock",
-            side_effect=operation_lock,
+            "streamt.cli.commands.adopt.make_deployment_state_service",
+            return_value=state_service,
         ),
         patch(
             "streamt.cli.commands.adopt._require_confirmation",

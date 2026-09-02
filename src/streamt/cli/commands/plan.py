@@ -26,9 +26,9 @@ from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     LocalState,
     StateError,
-    load_local_state,
     local_state_path,
 )
+from streamt.deployer.state_backend import make_deployment_state_service
 from streamt.output import StructuredError
 
 
@@ -99,11 +99,12 @@ def plan(
 
             fmt.print("[yellow]Offline plan — assumes no existing resources[/yellow]\n")
         else:
-            prior_state = load_local_state(
+            state_service = make_deployment_state_service(
                 project_path,
                 project=project.project.name,
                 environment=effective_environment,
             )
+            prior_state = state_service.read().state
             fmt.print_warning(
                 f"{LOCAL_STATE_CI_WARNING} State file: "
                 f"{local_state_path(project_path, environment=effective_environment)}",
