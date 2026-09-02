@@ -19,6 +19,7 @@ from streamt.cli.helpers import (
 )
 from streamt.core.errors import ErrorCode
 from streamt.deployer.postgres_state import (
+    POSTGRES_ORDINARY_AUTHORITY_SUPPORTED,
     POSTGRES_SCHEMA_V2_VERSION,
     make_postgres_state_administration,
     make_postgres_state_initializer,
@@ -339,7 +340,10 @@ def state_init(
         fmt.print(f"  Address: {address.uri}")
         fmt.print("  Ownership: absent")
         fmt.print("  Operation: clear")
-        fmt.print("  Ordinary state authority: disabled")
+        fmt.print(
+            "  Ordinary state authority: "
+            f"{data['ordinary_state_authority']}"
+        )
         fmt.flush()
     except (EnvVarError, ParseError, EnvironmentError) as error:
         handle_parse_error(fmt, error, ErrorCode.PARSE_ERROR)
@@ -454,7 +458,10 @@ def state_migrate_postgres_v2(
         fmt.print(f"  Store ID: {result.store_id}")
         fmt.print(f"  Schema version: {POSTGRES_SCHEMA_V2_VERSION}")
         fmt.print("  Catalog mutation readiness: catalog_ready")
-        fmt.print("  Ordinary state authority: disabled")
+        fmt.print(
+            "  Ordinary state authority: "
+            f"{data['ordinary_state_authority']}"
+        )
         fmt.flush()
     except (EnvVarError, ParseError, EnvironmentError) as error:
         handle_parse_error(fmt, error, ErrorCode.PARSE_ERROR)
@@ -463,7 +470,7 @@ def state_migrate_postgres_v2(
         fmt.set_data(
             {
                 "committed": error.committed,
-                "ordinary_state_authority": "disabled",
+                "ordinary_state_authority": POSTGRES_ORDINARY_AUTHORITY_SUPPORTED,
             }
         )
         fmt.add_error(
@@ -673,7 +680,10 @@ def state_status(
                 else "disabled"
             )
             fmt.print(f"  Catalog mutation readiness: {catalog_readiness}")
-            fmt.print("  Ordinary state authority: disabled")
+            fmt.print(
+                "  Ordinary state authority: "
+                f"{postgres_data['ordinary_state_authority']}"
+            )
             fmt.flush()
             return
 

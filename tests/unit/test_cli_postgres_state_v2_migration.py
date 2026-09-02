@@ -168,7 +168,7 @@ def test_migration_uses_only_explicit_admin_factory_and_safe_output(
         "outcome": "migrated",
         "store_id": _STORE_ID,
         "schema_version": 2,
-        "ordinary_state_authority": "disabled",
+        "ordinary_state_authority": "supported_for_v2_writer",
         "mutation_status": "catalog_ready",
     }
     serialized = json.dumps(payload)
@@ -212,7 +212,7 @@ def test_migration_human_output_excludes_connection_role_and_schema(
     assert "Outcome: already_migrated" in result.output
     assert "Schema version: 2" in result.output
     assert "Catalog mutation readiness: catalog_ready" in result.output
-    assert "Ordinary state authority: disabled" in result.output
+    assert "Ordinary state authority: supported_for_v2_writer" in result.output
     assert "owner-secret" not in result.output
     assert "db.internal" not in result.output
     assert _WRITER_ROLE not in result.output
@@ -373,7 +373,7 @@ def test_migration_preserves_stable_provider_error_codes(
     if isinstance(error, StateBackendReleaseAfterCommitError):
         assert payload["data"] == {
             "committed": True,
-            "ordinary_state_authority": "disabled",
+            "ordinary_state_authority": "supported_for_v2_writer",
         }
 
 
@@ -518,5 +518,5 @@ def test_postgres_v2_human_status_separates_catalog_from_ordinary_authority(
     assert result.exit_code == 0, result.output
     assert "Schema version: 2" in result.output
     assert "Catalog mutation readiness: catalog_ready" in result.output
-    assert "Ordinary state authority: disabled" in result.output
+    assert "Ordinary state authority: supported_for_v2_writer" in result.output
     assert _WRITER_ROLE not in result.output

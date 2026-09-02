@@ -202,7 +202,8 @@ streamt -o json state status -p . -e prod
 Require clear operation control, the expected serial/checksum, and the same
 store/address. Retain the reviewed plan, command result, status output, and
 backup according to the incident-retention policy. Only then unfreeze normal
-work for a backend whose ordinary command authority is supported.
+work. For PostgreSQL, separately confirm that an ordinary writer preflight
+succeeds; administrative status does not probe that credential.
 
 ## Recovery credentials
 
@@ -221,26 +222,25 @@ deployment_state:
     schema: streamt
 ```
 
-`postgres.writer_dsn_env` names the environment variable containing the
-recovery writer DSN. Inject its value through the normal secret manager; never
+`postgres.writer_dsn_env` names the environment variable containing the exact
+v2 writer DSN used by ordinary plan/apply/adopt and recovery. Inject its value
+through the normal secret manager; never
 put a DSN in project YAML, a plan, shell history, command output, or an incident
 ticket.
 
 Recovery resolves only `writer_dsn_env`. The administrative `dsn_env` is not
 used and is never a fallback for recovery. `dsn_env` remains required in the
-PostgreSQL configuration shape and is used by separate owner-only commands such
-as initialization, status, migration, or backup procedures. The writer and
-admin variable names must be different.
+PostgreSQL configuration shape and is used by separate administration/status
+commands such as initialization, status, lock diagnostics, and migration. The
+writer and admin variable names must be different.
 
 The writer connection must prove that it is the exact role stored by the v2
-catalog, that the catalog and ACL are exact, and that the endpoint is a direct,
-session-affine primary. Transaction- or statement-pooling endpoints and
-replicas are unsupported.
-
-The recovery-only writer path does **not** enable PostgreSQL for ordinary
-`plan`, `apply`, or `adopt`. Those commands remain disabled until the final
-factory-enablement and release gates are complete; no command falls back to
-local or empty state.
+catalog, that the catalog and ACL are exact, and that the endpoint is a direct
+standalone primary. Every pooler/proxy and every HA or failover topology is
+unsupported. streamt cannot reliably detect that a DSN bypasses all poolers,
+so direct endpoint control is an operator prerequisite. Ordinary and recovery
+commands share this writer boundary; neither can fall back to the owner/admin
+credential, local state, or empty state.
 
 ## Supported observation boundaries
 
@@ -306,16 +306,16 @@ changing any of the three confirmations requires a new review.
 ## Topology and HA boundary
 
 PostgreSQL advisory locks belong to one physical session, so recovery must use
-a direct or session-affine primary connection for the entire operation. The
+a direct connection to one standalone primary for the entire operation. The
 primary must durably commit state, control, and history before acknowledgement.
+All poolers, replicas, promotion, failover, multi-primary, and other HA
+topologies are unsupported, including synchronous replication. Recovery is
+not a failover mechanism.
 
-A production HA claim additionally requires synchronous replication of the
-entire state schema to every node eligible for promotion. With asynchronous
-promotion, the old lock session can disappear while durable intent, ownership,
-or recovery history is lost; that topology is outside the supported safety
-boundary. Verify failover, fencing, writer-role identity, catalog/ACL
-conformance, and restore behavior in the actual deployment before relying on
-HA recovery.
+Keep backup and restore monitoring active throughout the incident, and alert
+on blocked operation status and `E419`, `E423`, `E425`, or `E426`. The recovery
+runbook complements tested restore-based disaster recovery; it does not
+replace it or provide an in-place database rollback.
 
 Local state remains single-host authority. Its file lock and sidecars do not
 provide cross-host exclusion, shared-runner fencing, or HA durability.

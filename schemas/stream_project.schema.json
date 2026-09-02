@@ -2187,7 +2187,7 @@
     },
     "PostgresDeploymentStateConfig": {
       "additionalProperties": false,
-      "description": "Configuration boundary for the not-yet-available PostgreSQL provider.",
+      "description": "Configuration boundary for the version-two-writer PostgreSQL provider.",
       "properties": {
         "backend": {
           "const": "postgres",

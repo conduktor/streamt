@@ -1,8 +1,4 @@
-"""Real-server conformance tests for private PostgreSQL state mutation.
-
-These tests deliberately construct the backend directly.  Ordinary factory and
-CLI selection must remain disabled until the production enablement gates land.
-"""
+"""Real-server conformance tests for PostgreSQL state mutation."""
 
 from __future__ import annotations
 
@@ -29,6 +25,7 @@ from streamt.deployer.state_backend import (
     RecoveryRecord,
     StateAddress,
     StateBackendConflictError,
+    StateBackendInvalidStateError,
     StateBackendLockLostError,
     StateBackendRecoveryRequiredError,
     StateBackendUnavailableError,
@@ -612,7 +609,7 @@ def test_clear_and_recovery_transitions_update_control_and_history_atomically(
     assert rows["state_history"] == []
 
 
-def test_non_owner_mutation_is_denied_and_factory_remains_disabled(
+def test_non_owner_mutation_is_denied_and_factory_rejects_v1_owner(
     postgres_case: object,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -637,27 +634,27 @@ def test_non_owner_mutation_is_denied_and_factory_remains_disabled(
     assert rows["operation_history"] == []
     assert rows["operation_control"][0][0:2] == (0, "clear")
 
-    monkeypatch.setenv("PRIVATE_POSTGRES_STATE_DSN", postgres_case.owner_dsn)
+    monkeypatch.setenv("PRIVATE_POSTGRES_STATE_ADMIN_DSN", postgres_case.owner_dsn)
+    monkeypatch.setenv("PRIVATE_POSTGRES_STATE_WRITER_DSN", postgres_case.owner_dsn)
     config = validate_deployment_state_config(
         {
             "backend": "postgres",
             "namespace": "platform",
             "postgres": {
-                "dsn_env": "PRIVATE_POSTGRES_STATE_DSN",
+                "dsn_env": "PRIVATE_POSTGRES_STATE_ADMIN_DSN",
+                "writer_dsn_env": "PRIVATE_POSTGRES_STATE_WRITER_DSN",
                 "schema": postgres_case.schema,
             },
         }
     )
-    with pytest.raises(
-        StateBackendUnavailableError,
-        match=r"^PostgreSQL deployment state is unavailable in this release$",
-    ):
-        make_deployment_state_service(
-            tmp_path,
-            project="payments",
-            environment="prod",
-            config=config,
-        )
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+    with pytest.raises(StateBackendInvalidStateError):
+        service.read()
 
 
 def test_waiter_observes_fresh_post_release_snapshot(postgres_case: object) -> None:

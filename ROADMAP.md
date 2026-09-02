@@ -129,16 +129,15 @@ Target: close the loop between declared intent and runtime evidence.
       ordered progress, recovery blocking, and read-only plan status.
 - [x] Add strict local/PostgreSQL deployment-state configuration, whole-block
       environment selection, sanitized no-fallback preflight, and an opt-in
-      remote-state safety policy. PostgreSQL remains unavailable as the
-      authority for plan/apply/adopt.
+      remote-state safety policy.
 - [x] Add optional, bounded, read-only PostgreSQL `state status` inspection
       with strict version-1/version-2 catalog verification and secret-neutral
       failures.
 - [x] Add explicit, confirmation-gated PostgreSQL `state init` with atomic
       version-1 catalog creation, restrictive ACL validation, idempotent address
       registration, fresh read-back verification, and PostgreSQL 14/18
-      process-concurrency gates. PostgreSQL remains unavailable as the authority
-      for plan/apply/adopt.
+      process-concurrency gates. New stores remain version 1 until explicitly
+      migrated.
 - [x] Add non-reserving PostgreSQL `state lock-status` diagnostics with exact
       catalog validation, primary-only endpoint checks, and explicit proof that
       every successful probe releases its transaction-scoped lock before
@@ -151,22 +150,22 @@ Target: close the loop between declared intent and runtime evidence.
       actions, final state/control rereads, post-confirm adoption observation,
       and release-before-success before implementing private PostgreSQL
       operations.
-- [x] Implement and privately test PostgreSQL ordinary reads, session-affine
-      locking, and mutation transitions without enabling normal provider
-      selection; version-1 owner credentials are test scaffolding only.
+- [x] Implement PostgreSQL ordinary reads, session-affine locking, and atomic
+      mutation transitions; version-1 owner credentials remain isolated test
+      scaffolding only.
 - [x] Ship an explicit, confirmation-gated PostgreSQL schema-version-2
       administrative migration and validate the exact least-privilege writer
-      role. Status and diagnostics understand exact v2, while normal provider
-      selection remains disabled.
-- [ ] Pass ordinary PostgreSQL apply/adopt command E2E, failure-injection, and
-      synchronous-HA durability gates, then ship minimum explicit recovery.
-- [ ] Enable the ordinary PostgreSQL factory only in the final implementation
+      role. Status and diagnostics understand exact v2.
+- [x] Pass ordinary PostgreSQL plan/apply/adopt command E2E, failure-injection,
+      process-concurrency, recovery, and installed-wheel gates on PostgreSQL 14
+      and 18 for the supported direct standalone-primary topology.
+- [x] Enable the ordinary PostgreSQL factory only in the final implementation
       commit after every backend, command, recovery, role, and release gate
-      passes; no partial backend may be selectable.
-- [ ] Complete remote-state activation, monitoring, backup/restore, and
-      recovery documentation for installations that retain direct apply. The
-      v2 administrative-migration runbook is published, but ordinary authority
-      and recovery remain gated.
+      passes; require the exact v2 writer and never fall back to owner, local,
+      or empty state.
+- [x] Complete remote-state activation, monitoring, backup/restore, recovery,
+      rollback, and topology documentation for installations that retain
+      direct apply. Poolers and every HA/failover topology remain unsupported.
 - [ ] Add curated, validated connector profiles after the connector contract is
       stable.
 

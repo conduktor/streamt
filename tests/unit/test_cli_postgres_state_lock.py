@@ -65,7 +65,7 @@ class _ProbeResult:
             "address": self.address.uri,
             "lock_status": self.lock_status,
             "reservation": "none",
-            "ordinary_state_authority": "disabled",
+            "ordinary_state_authority": "not_verified",
         }
 
 
@@ -133,7 +133,7 @@ def test_lock_status_returns_structured_success_for_every_probe_outcome(
         "address": address.uri,
         "lock_status": lock_status,
         "reservation": "none",
-        "ordinary_state_authority": "disabled",
+        "ordinary_state_authority": "not_verified",
     }
     serialized = json.dumps(payload)
     assert "alice" not in serialized

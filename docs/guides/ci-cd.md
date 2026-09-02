@@ -155,6 +155,46 @@ runtime:
 
 streamt resolves `${VAR}` from environment variables, `.env` files, and `.env.{env}` files (in that priority order). Never commit `.env` files — add them to `.gitignore`.
 
+## PostgreSQL deployment state in CI
+
+Shared runners can use PostgreSQL schema version 2 for online plan, direct or
+reviewed apply, adoption, and reviewed recovery. Install the PostgreSQL extra
+at the same immutable streamt revision in every job:
+
+```bash
+python -m pip install "streamt[postgres] @ git+https://github.com/conduktor/streamt.git@<commit-sha>"
+```
+
+Configure separate variable names:
+
+```yaml
+# stream_project.yml
+deployment_state:
+  backend: postgres
+  namespace: platform
+  postgres:
+    dsn_env: STREAMT_STATE_ADMIN_DSN
+    writer_role_env: STREAMT_STATE_WRITER_ROLE
+    writer_dsn_env: STREAMT_STATE_WRITER_DSN
+    schema: streamt
+```
+
+Inject only `STREAMT_STATE_WRITER_DSN` into ordinary plan/apply/adopt and
+recovery jobs. Its login must be the exact least-privilege role stored in the
+v2 catalog. Never inject the schema-owner/admin credential as a fallback;
+streamt does not use `dsn_env` for those commands. Keep initialization,
+migration, backup, and administrative status credentials in separately
+approved jobs.
+
+Use a direct endpoint for one standalone primary. All poolers/proxies and all
+HA or failover topologies are unsupported, and streamt cannot reliably detect
+that an endpoint bypasses a pooler. Before enabling the deployment job,
+activate tested backups/restores, restore-based rollback, the reviewed recovery
+runbook, and alerts for blocked operations plus `E419`, `E423`, `E425`, and
+`E426`. A v2 `state status` value of `supported_for_v2_writer` is a catalog
+capability label, not a probe of the CI writer secret. `state lock-status`
+reports ordinary authority as `not_verified` and reserves no future lock.
+
 ## JSON Output for Scripting
 
 Parse structured output in CI scripts:

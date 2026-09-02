@@ -1,8 +1,8 @@
 """Real PostgreSQL composition failures through the apply command boundary.
 
-The ordinary provider factory remains disabled.  These tests inject the private
-least-privilege writer backend at the command-local factory import and exercise
-only failure composition that unit/backend tests cannot prove independently.
+These tests inject the least-privilege writer backend at the command-local
+factory import and isolate failure composition that unit/backend and unpatched
+production-factory tests cannot prove independently.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Recovery-only deployment-state factory boundaries."""
+"""Ordinary and recovery deployment-state factory boundaries."""
 
 from __future__ import annotations
 
@@ -96,6 +96,7 @@ def test_postgres_recovery_factory_uses_only_the_writer_binding_and_exact_config
             "dsn": writer_dsn,
             "schema": "state_catalog",
             "lock_timeout_seconds": 47,
+            "require_v2_writer": True,
         }
     ]
     assert isinstance(service.backend, Backend)
@@ -221,20 +222,86 @@ def test_postgres_recovery_factory_keeps_driver_lazy_and_secrets_unserialized(
     assert "writer-secret" not in rendered
 
 
-@pytest.mark.parametrize("dsn", [None, "", "   ", "postgresql://u:p@db/state"])
-def test_ordinary_postgres_factory_remains_disabled(
+def test_ordinary_postgres_factory_uses_only_the_writer_binding_and_exact_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    dsn: str | None,
 ) -> None:
-    if dsn is None:
-        monkeypatch.delenv("STREAMT_ADMIN_DSN", raising=False)
-    else:
-        monkeypatch.setenv("STREAMT_ADMIN_DSN", dsn)
+    writer_dsn = "postgresql://writer:writer-secret@writer.internal/state"
+    monkeypatch.setenv("STREAMT_RECOVERY_WRITER_DSN", writer_dsn)
     monkeypatch.setenv(
-        "STREAMT_RECOVERY_WRITER_DSN",
-        "postgresql://writer:writer-secret@writer.internal/state",
+        "STREAMT_ADMIN_DSN",
+        "postgresql://owner:owner-secret@admin.internal/state",
     )
+    monkeypatch.setenv("STREAMT_RECOVERY_WRITER_ROLE", "configured-role-is-not-read")
+    constructed: list[dict[str, object]] = []
+
+    class Backend:
+        def __init__(self, **kwargs: object) -> None:
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(postgres_backend, "PrivatePostgresStateReadBackend", Backend)
+
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod-us",
+        config=_postgres_config(),
+    )
+
+    assert constructed == [
+        {
+            "dsn": writer_dsn,
+            "schema": "state_catalog",
+            "lock_timeout_seconds": 47,
+            "require_v2_writer": True,
+        }
+    ]
+    assert isinstance(service.backend, Backend)
+    assert service.address == StateAddress(
+        namespace="production-platform",
+        project="payments",
+        environment="prod-us",
+    )
+
+
+def test_ordinary_postgres_factory_requires_a_writer_credential_binding_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_dsn = "postgresql://owner:owner-secret@admin.internal/state"
+    monkeypatch.setenv("STREAMT_ADMIN_DSN", admin_dsn)
+    monkeypatch.setenv("STREAMT_RECOVERY_WRITER_ROLE", "state_writer")
+
+    with pytest.raises(StateBackendUnavailableError) as raised:
+        make_deployment_state_service(
+            tmp_path,
+            project="payments",
+            environment="prod",
+            config=_postgres_config(writer_dsn_env=None),
+        )
+
+    rendered = f"{raised.value!s} {raised.value!r}"
+    assert rendered == (
+        "PostgreSQL deployment state credentials are not configured "
+        "StateBackendUnavailableError('PostgreSQL deployment state credentials are "
+        "not configured')"
+    )
+    assert "STREAMT_ADMIN_DSN" not in rendered
+    assert admin_dsn not in rendered
+
+
+@pytest.mark.parametrize("writer_dsn", [None, "", "   "])
+def test_ordinary_postgres_factory_rejects_unavailable_writer_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer_dsn: str | None,
+) -> None:
+    admin_dsn = "postgresql://owner:owner-secret@admin.internal/state"
+    monkeypatch.setenv("STREAMT_ADMIN_DSN", admin_dsn)
+    if writer_dsn is None:
+        monkeypatch.delenv("STREAMT_RECOVERY_WRITER_DSN", raising=False)
+    else:
+        monkeypatch.setenv("STREAMT_RECOVERY_WRITER_DSN", writer_dsn)
 
     with pytest.raises(StateBackendUnavailableError) as raised:
         make_deployment_state_service(
@@ -244,9 +311,43 @@ def test_ordinary_postgres_factory_remains_disabled(
             config=_postgres_config(),
         )
 
-    expected = (
-        "PostgreSQL deployment state credentials are unavailable"
-        if dsn is None or not dsn.strip()
-        else "PostgreSQL deployment state is unavailable in this release"
+    rendered = f"{raised.value!s} {raised.value!r}"
+    assert rendered == (
+        "PostgreSQL deployment state credentials are unavailable "
+        "StateBackendUnavailableError('PostgreSQL deployment state credentials are "
+        "unavailable')"
     )
-    assert str(raised.value) == expected
+    assert "STREAMT_RECOVERY_WRITER_DSN" not in rendered
+    assert "STREAMT_ADMIN_DSN" not in rendered
+    assert admin_dsn not in rendered
+    assert "postgresql://" not in rendered
+
+
+def test_ordinary_postgres_factory_keeps_driver_lazy_and_secrets_unserialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer_dsn = "postgresql://writer:writer-secret@writer.internal/state"
+    monkeypatch.setenv("STREAMT_RECOVERY_WRITER_DSN", writer_dsn)
+    calls = 0
+
+    def fail_if_loaded() -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("factory construction must not load psycopg")
+
+    monkeypatch.setattr(postgres_backend, "_load_psycopg", fail_if_loaded)
+    config = _postgres_config()
+
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+
+    assert isinstance(service.backend, postgres_backend.PrivatePostgresStateReadBackend)
+    assert calls == 0
+    rendered = f"{service!r} {json.dumps(config.model_dump(mode='json'))}"
+    assert writer_dsn not in rendered
+    assert "writer-secret" not in rendered

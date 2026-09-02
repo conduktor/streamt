@@ -16,6 +16,7 @@ from streamt.core.deployment_state import (
     validate_deployment_state_config,
 )
 from streamt.deployer.postgres_state import (
+    POSTGRES_SCHEMA_V2_VERSION,
     POSTGRES_SCHEMA_VERSION,
     PostgresStateAdministration,
     PostgresStateInitialization,
@@ -784,3 +785,18 @@ def test_result_contains_only_safe_identity_and_disabled_authority() -> None:
         assert secret not in serialized
     assert result.to_dict()["ordinary_state_authority"] == "disabled"
     assert "PGHOST" not in os.environ
+
+
+def test_v2_address_registration_reports_released_catalog_capability() -> None:
+    result = PostgresStateInitialization(
+        store_id="00000000-0000-4000-8000-000000000001",
+        address=_address(),
+        created_store=False,
+        registered_address=True,
+        schema_version=POSTGRES_SCHEMA_V2_VERSION,
+    )
+
+    assert (
+        result.to_dict()["ordinary_state_authority"]
+        == "supported_for_v2_writer"
+    )

@@ -9,21 +9,18 @@ from the same prior snapshot. The normative boundary is
 
 ## Status — 2026-09-02
 
-Slices 1 through 5 are complete. The delivered PostgreSQL boundary includes
+Slices 1 through 8 are complete. The delivered PostgreSQL boundary includes
 explicit v1 store/address initialization, strict v1/v2 status, non-reserving
-lock diagnostics, the private atomic mutation backend, and the explicit
-confirmation-gated v1-to-v2 migration with an exact least-privilege writer.
-PostgreSQL 14/18 real-server, ACL, commit-ambiguity, lifecycle, and
-process-concurrency gates pass. Normal PostgreSQL state reads and mutations for
-`plan`, `apply`, and `adopt` remain deliberately disabled until Slices 6 through
-8 pass.
+lock diagnostics, explicit reviewed recovery, the atomic mutation backend, and
+the confirmation-gated v1-to-v2 migration with an exact least-privilege writer.
+PostgreSQL 14/18 real-server, ACL, commit-ambiguity, lifecycle,
+process-concurrency, production-factory command, and installed-wheel gates
+pass. Ordinary `plan`, `apply`, and `adopt` use only the exact v2 writer.
 
-The implementation-ready prerequisite and final enablement checklist for the
-remaining PostgreSQL work is
-`docs/plans/2026-09-02-postgres-slice5-foundation.md`. In particular, ordinary
-factory selection remains disabled through Slice 6 command E2E/failure gates
-and the minimum Slice 7 recovery workflow. Factory enablement is the last
-implementation commit, not a private-backend or administrative-migration
+The completed prerequisite and final enablement checklist is
+`docs/plans/2026-09-02-postgres-slice5-foundation.md`. Factory enablement was
+the last implementation boundary, after command E2E/failure gates and the
+minimum recovery workflow, rather than a private-backend or migration
 milestone.
 
 ## Current implementation audit
@@ -373,10 +370,11 @@ and remaining enablement checklist are in
    least-privilege ordinary writer role. Version 1 remains the frozen
    administrative contract and is never considered production mutation-ready;
    do not silently weaken its catalog validator.
-8. Document and test the topology boundary: a direct primary is required for
-   ordinary operation, transaction/statement poolers are unsupported, and HA
-   promotion is supported only where every operation and ownership transition
-   is synchronously durable on every eligible promoted node.
+8. Document and test the topology boundary: one direct standalone primary is
+   required for ordinary operation. Every pooler, proxy, replica, promotion,
+   failover, and synchronous or asynchronous HA topology is unsupported;
+   pooler absence is an operator-verified prerequisite because same-session
+   multiplexing is not reliably detectable.
 9. Keep `make_deployment_state_service()` and all normal PostgreSQL
    `plan`/`apply`/`adopt` selection on the current sanitized unavailable result.
 
@@ -471,8 +469,8 @@ the separate database schema-v2 administrative migration is already delivered.
 6. Add append-only history queries to `state status` without exposing resource
    content by default.
 7. Document backup, schema-version-2 migration, exact role grants, direct
-   primary/session-affinity, synchronous-HA durability, monitoring, incident
-   response, version rollback, and disaster recovery.
+   standalone-primary/session-affinity, the unsupported pooler/HA boundary,
+   monitoring, incident response, version rollback, and disaster recovery.
 
 Acceptance:
 
@@ -486,12 +484,13 @@ Acceptance:
   a deleted source.
 - A retained local backup is never selected after configuration points remote.
 
-### Slice 8: release gate and compatibility rollout
+### Slice 8: release gate and compatibility rollout — complete
 
 1. Run the final checklist in
    `docs/plans/2026-09-02-postgres-slice5-foundation.md`, including schema v2,
    least-privilege writer, command E2E/failure injection, minimum recovery,
-   direct-primary/session-affinity, and synchronous-HA durability evidence.
+   direct standalone-primary/session-affinity evidence and the explicit
+   unsupported boundary for every pooler and HA/failover topology.
 2. Run the full unit, scenario, packaging, strict documentation, Ruff, and mypy
    gates with both local-only and PostgreSQL-extra installations.
 3. Add or retain process/concurrency and supported-major PostgreSQL service jobs
@@ -524,7 +523,7 @@ Acceptance:
 | Migration | Empty destination, identical retry, divergent destination, interruption, read-back mismatch |
 | Recovery | Each explicit resolution, wrong operation ID, stale evidence, append-only history |
 | Schema/roles | Private owner-only v1 tests, explicit v2 migration, exact writer ACL, missing/extra/grantable/`PUBLIC` privilege rejection |
-| Topology/HA | Direct primary, pooler rejection, standby rejection, synchronous eligible promotion, asynchronous failover unsupported |
+| Topology/HA | Direct standalone primary; observable standby/session switching rejection; all poolers and all synchronous/asynchronous HA/failover topologies are explicit operator-enforced unsupported preconditions |
 | Security | DSN/provider-error redaction in text, JSON, plans, logs, exceptions, and metrics |
 | Compatibility | Existing local files, local CLI outputs/warnings, offline no-read behavior, old plan rejection |
 

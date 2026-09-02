@@ -121,6 +121,7 @@ nav:
     - CLI Commands: reference/cli.md
     - Configuration: reference/configuration.md
     - Integration Support: reference/support-matrix.md
+    - Release Notes: reference/release-notes.md
     - AsyncAPI Export: reference/asyncapi.md
     - ODCS Export: reference/odcs.md
     - OpenLineage Export: reference/openlineage.md

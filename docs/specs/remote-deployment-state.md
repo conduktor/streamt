@@ -2,23 +2,14 @@
 
 ## Status
 
-Partially implemented safety contract. The provider-neutral snapshot/operation
-boundary, local version 1 provider, canonical action identities, and hardened
-local apply/adopt flows are implemented. PostgreSQL has optional administrative
-commands for strict v1/v2 status, confirmed version-1 initialization,
-non-reserving lock diagnostics, and explicit confirmed version-1-to-version-2
-migration. The v2 catalog binds an exact externally created least-privilege
-writer, and the backend protocol is exercised privately through that role on
-PostgreSQL 14 and 18. Explicit reviewed recovery is implemented for local state
-and through a recovery-only PostgreSQL v2 writer. PostgreSQL is still not
-selectable as ordinary state authority. Local JSON remains the only ordinary
-provider and compatibility default for single-user development.
-
-The remaining implementation must follow
-`docs/plans/2026-09-02-postgres-slice5-foundation.md`. Nothing in the future
-contract sections below enables ordinary PostgreSQL selection: the factory
-stays disabled until the remaining topology/HA evidence where claimed and final
-release gates pass in the enablement commit.
+Implemented safety contract for the local version-1 provider and PostgreSQL
+schema-version-2 ordinary authority. PostgreSQL includes strict v1/v2 status,
+confirmed version-1 initialization, non-reserving lock diagnostics, confirmed
+v1-to-v2 migration, ordinary plan/apply/adopt through the exact v2 writer, and
+explicit reviewed recovery. PostgreSQL 14 and 18 run real-server command, ACL,
+mutation, recovery, and concurrency gates. Local JSON remains the compatibility
+default for single-user development; version 1 remains administrative only in
+PostgreSQL. Local-to-remote import/export is not implemented.
 
 ## Scope
 
@@ -73,10 +64,10 @@ without an operation lock and durable recovery marker is also insufficient.
     transactional authority.
 12. Durable action/progress/history identity is the canonical logical resource
     URI; a provider-facing runtime or display name is separate metadata.
-13. PostgreSQL ordinary operations require a direct, session-affine primary.
-    Production failover support additionally requires synchronous durability
-    on every node eligible for promotion for all ownership and operation
-    transitions.
+13. PostgreSQL ordinary operations require a direct endpoint to one standalone
+    primary. Every pooler/proxy and every HA, promotion, or failover topology is
+    unsupported. Pooler absence is an operator-controlled prerequisite because
+    it cannot be verified reliably from the database session.
 
 ## State identity
 
@@ -434,11 +425,10 @@ lowers a serial, or runs automatically, and it preserves append-only intent and
 resolution audit events. A provider may compact history, but not until the
 configured retention period has passed.
 
-The three-outcome workflow remains a minimum PostgreSQL factory-enablement
-gate, not optional later operations work. Its local/PostgreSQL command-level
-E2E and failure-injection coverage has shipped. Local-to-remote migration and
-export may ship afterward, while ordinary PostgreSQL mutation remains
-unreachable until its remaining topology/HA and final release gates pass.
+The three-outcome workflow was a minimum PostgreSQL factory-enablement gate,
+not optional later operations work. Its local/PostgreSQL command-level E2E and
+failure-injection coverage ships with ordinary v2 authority. Local-to-remote
+migration and export remain future work.
 
 ## First remote backend: PostgreSQL
 
@@ -479,15 +469,13 @@ version-1 validation.
 
 ### Mutation schema and role gate
 
-Version 1 remains the frozen administrative catalog above. Private Slice 5
-backend tests may directly construct the backend with an isolated schema-owner
-credential so the transaction protocol can be developed without exposing it
-through normal provider selection. That exception is test scaffolding only: an
-owner credential is not an ordinary deployment identity, and a version-1 store
-must never be reported as production mutation-ready.
+Version 1 remains the frozen administrative catalog above. Direct backend tests
+may construct its isolated schema-owner scaffold, but that exception is test
+only: an owner credential is not an ordinary deployment identity, and a
+version-1 store is never production mutation-ready.
 
-streamt ships an explicit `state migrate-postgres-v2` administrative migration
-before enabling the ordinary factory. It uses bounded locks, exact store/role
+streamt ships an explicit `state migrate-postgres-v2` administrative migration.
+It uses bounded locks, exact store/role
 confirmation, validate-before-commit, fresh read-back, and unknown-outcome
 classification. Version 2 records the configured writer-role name in immutable
 catalog metadata and validates its exact non-grantable ACL. It does not create
@@ -536,8 +524,10 @@ durable rows byte-for-byte. DDL, metadata, ledger, and ACL changes commit
 atomically and are freshly verified through a new direct-primary connection.
 Post-v2 status, lock diagnostics, and owner-only address registration validate
 exact v2 without requiring the writer environment variable. Status reports
-`mutation_status: catalog_ready` separately from ordinary factory authority,
-which remains disabled until the final gate.
+`mutation_status: catalog_ready` and `ordinary_state_authority:
+supported_for_v2_writer` as catalog capabilities; neither is a writer
+credential or endpoint probe. Lock diagnostics report ordinary authority as
+`not_verified`.
 
 The version-2 implementation extends the strict PostgreSQL shape with optional
 `writer_role_env`, the name of an environment variable containing the writer
@@ -562,19 +552,18 @@ afterward. A precommit failure rolls back DDL and rows together. An ambiguous
 commit is not retried; the operator resolves it with status or the identical
 confirmed init request.
 
-Lock diagnostics require a direct, session-affine primary endpoint. PostgreSQL
-advisory locks are physical-session, reentrant state, and the future operation
-lock must remain on one connection for its complete lifetime. Transaction- and
-statement-pooling endpoints are therefore unsupported for this integration.
+Lock diagnostics require a direct endpoint to one standalone primary.
+PostgreSQL advisory locks are physical-session state, and the operation lock
+must remain on one connection for its complete lifetime. Every pooler and proxy
+is unsupported, including session pooling. streamt cannot reliably detect the
+absence of an intermediary, so endpoint control belongs to the operator.
 
 Ordinary PostgreSQL operations have the same endpoint requirement. The owning
 connection checks primary status and its advisory lock before every external
-action and transition. For a standalone deployment, a transition must be
-durable on that direct primary before acknowledgement. A production HA claim
-requires synchronous replication of every intent, progress, ownership,
-finalization, and recovery transition to every node eligible for promotion.
-Asynchronous promotion can release the old session lock while losing its
-durable marker, so it is outside the supported HA safety boundary.
+action and transition. Each transition must be durable on that direct
+standalone primary before acknowledgement. Replication, promotion, automatic
+failover, cluster-writer endpoints, multi-primary, and every other HA topology
+are unsupported, including synchronous replication.
 
 State size has a configured hard limit checked before mutation. The provider
 must set statement and lock timeouts, require TLS for non-loopback endpoints by
@@ -589,8 +578,7 @@ plus a best-effort lock file does not meet this contract.
 Use `deployment_state` to avoid confusion with Flink application state:
 
 ```yaml
-# Administrative commands and recovery-only v2 authority are available.
-# Ordinary PostgreSQL state authority is not.
+# Administration uses dsn_env; ordinary and recovery authority use writer_dsn_env.
 deployment_state:
   backend: postgres
   namespace: platform
@@ -607,7 +595,8 @@ existing `.streamt/state/<environment>.json` path; it accepts no remote fields.
 The PostgreSQL configuration names environment variables rather than embedding
 DSNs or role values in parsed configuration. `dsn_env` names the owner/admin
 DSN, `writer_role_env` names the role value bound during v2 migration, and the
-optional `writer_dsn_env` names the exact v2 writer DSN used only for recovery.
+`writer_dsn_env` names the exact v2 writer DSN required by online
+plan/apply/adopt and recovery.
 Every configured name must be a valid environment-variable name;
 `writer_dsn_env` must differ from `dsn_env`. Unknown fields and provider-shape
 mismatches fail strict validation.
@@ -633,16 +622,13 @@ applied, and only when a command needs that exact authority. Validation,
 compilation, and offline planning neither require nor read a DSN. PostgreSQL
 administration requires the optional package extra and an explicit owner
 endpoint, enforces TLS for non-loopback connections, and returns only
-secret-neutral failures. Recovery resolves only `writer_dsn_env`, proves the
-stored v2 writer identity and exact ACL, and never falls back to `dsn_env`.
-Ordinary plan/apply/adopt still fail with a sanitized backend-unavailable error
-and never fall back to local state.
-
-The final enablement commit may change that ordinary-factory result only for an
-exactly compatible version-2 store reached through its validated ordinary
-writer role. It remains disabled for version 1, owner-as-runtime credentials,
-partial migrations, ACL drift, unsupported endpoints, or any failed command,
-topology, or release gate. No ordinary command migrates the schema.
+secret-neutral failures. Online plan/apply/adopt and recovery resolve only
+`writer_dsn_env`, prove the stored v2 writer identity and exact ACL, and never
+fall back to `dsn_env`, local state, or empty state. They fail closed for
+version 1, owner/status-reader credentials, partial migrations, ACL drift, and
+observable replica, session-switch, or connection-policy failures. A pooler
+that preserves the observed PID may not be detected, so the no-pooler boundary
+remains operator-enforced. No ordinary command migrates the schema.
 
 State backend selection belongs to effective environment configuration and
 cannot be overridden by `plan`, `apply`, or `adopt` flags. This prevents an
@@ -677,14 +663,16 @@ the parsed project, effective environment, and canonical address. Confirmation
 failure occurs before initializer construction or a database connection. A
 successful structured result reports one of `initialized`,
 `address_registered`, or `already_initialized`, plus only the safe store ID,
-schema version, address, absent ownership, clear operation status, and disabled
-ordinary-authority boundary.
+schema version, address, absent ownership, clear operation status, and the
+schema-derived ordinary-authority capability (`disabled` for v1 or
+`supported_for_v2_writer` for v2). Init does not probe the writer credential.
 
 For PostgreSQL, `status` uses a separate administrative adapter and one bounded,
 repeatable-read, read-only snapshot. It verifies the exact version-1 or
 version-2 catalog and reports backend kind, store ID, address, serial, checksum,
 and safe operation status without credentials, endpoint details, SQL, raw
-exceptions, or ownership payload.
+exceptions, or ownership payload. Its v2 `supported_for_v2_writer` label is a
+catalog capability and does not resolve or test `writer_dsn_env`.
 
 `lock-status` is a separate diagnostic command. It validates the complete
 version-1 or version-2 catalog and requires `pg_is_in_recovery()` to report a
@@ -698,7 +686,7 @@ a successful acquisition.
 
 The result contains only `backend`, safe `store_id`, canonical `address`,
 `lock_status`, `reservation: none`, and
-`ordinary_state_authority: disabled`. It is an instantaneous, racy observation,
+`ordinary_state_authority: not_verified`. It is an instantaneous, racy observation,
 not a lock for later work and not evidence that mutation is safe. Full catalog
 validation reads the operation-control rows, but the command does not report,
 clear, or interpret durable operation control as mutation safety; use `state
@@ -706,7 +694,8 @@ status` to view it. `migrate-postgres-v2` requires canonical store-ID and exact
 writer-role confirmations, uses only the owner administrative factory, and
 returns `migrated` or idempotent `already_migrated` plus schema version `2`,
 `mutation_status: catalog_ready`, and
-`ordinary_state_authority: disabled`.
+`ordinary_state_authority: supported_for_v2_writer`. Migration also does not
+resolve or test the writer DSN.
 
 The two recovery commands work for local state and for an exact PostgreSQL v2
 catalog through the separately configured writer DSN. Planning creates strict,
@@ -719,9 +708,9 @@ clears control. Present Flink targets, nonempty or unreconstructible Gateway
 targets, and any partial or ambiguous evidence fail closed. See the
 [deployment-state recovery runbook](../guides/state-recovery.md).
 
-Ordinary state authority, local-to-remote migration/export, and
-ordinary-command wiring remain deferred. Normal commands never initialize or
-migrate a remote store implicitly.
+Ordinary v2 state authority is wired for online plan/apply/adopt and recovery.
+Local-to-remote migration/export remains deferred. Normal commands never
+initialize or migrate a remote store implicitly.
 
 The environment-only `safety.require_remote_state` policy defaults to `false`.
 When enabled, it fails `apply` and `adopt` before confirmation, compilation,
@@ -734,9 +723,10 @@ documented config migration and release notice.
 ## Credentials and redaction
 
 - Read each DSN only from the environment variable named for that command's
-  authority. Recovery reads only `writer_dsn_env`; administration reads
-  `dsn_env`. Do not place either value in a Pydantic model dump or environment
-  fingerprint.
+  authority. Ordinary plan/apply/adopt and recovery read only
+  `writer_dsn_env`; administration/status reads `dsn_env`. Neither authority
+  falls back to the other. Do not place either value in a Pydantic model dump
+  or environment fingerprint.
 - Never expose usernames, passwords, hosts, query parameters, lock tokens,
   database exception detail, SQL text, or provider response bodies by default.
 - Use a dedicated initializer identity that owns the configured schema. Keep it
@@ -748,13 +738,12 @@ documented config migration and release notice.
   separately identified schema-version-2 writer externally, and conformance
   runs through its exact column/table grants. Do not put the owner credential
   in ordinary CI or deployment jobs.
-- Point lock diagnostics and recovery directly at a session-affine primary. Do
-  not use a transaction- or statement-pooling endpoint. The probe creates no
-  role or grant, and recovery-only authority does not enable ordinary state
-  authority.
-- Future ordinary PostgreSQL operations must use the same direct-primary
-  boundary. Treat asynchronous promotion as unsupported; HA support requires
-  the synchronous durability boundary specified above.
+- Point ordinary commands, lock diagnostics, migration, and recovery directly
+  at one standalone primary. Do not use any pooler/proxy. The probe creates no
+  role or grant and reports writer authority as `not_verified`; streamt cannot
+  reliably prove pooler absence.
+- Treat every HA, replication, promotion, and failover topology as unsupported,
+  including synchronous replication.
 - Map provider failures to stable sanitized errors. Detailed diagnostics, when
   explicitly enabled, still pass through central key, URL, authorization, and
   inline-value redaction.
@@ -768,7 +757,8 @@ documented config migration and release notice.
 
 ## Migration and rollback
 
-Local-to-remote migration is copy-and-verify, never move-and-delete:
+Local-to-remote migration is not implemented. A future workflow must be
+copy-and-verify, never move-and-delete:
 
 1. Strictly load local state and configured remote identity.
 2. Acquire source and destination locks in deterministic address order.
@@ -781,15 +771,24 @@ Local-to-remote migration is copy-and-verify, never move-and-delete:
 7. Retain the local file as a read-only backup and instruct the user to produce
    a fresh reviewed plan against the remote store.
 
-There is no dual-write period and no automatic local fallback. Rollback to
-local is a separate confirmed export/recovery operation. If a populated remote
-address already differs, migration stops; it does not merge ownership maps.
+There is no dual-write period, automatic local fallback, or implemented
+rollback-to-local export. If a future migration finds a differing populated
+remote address, it must stop rather than merge ownership maps.
 
 Database schema migration follows expand/validate/contract releases. A new
 binary reads only explicitly supported schema versions. Destructive database
 migrations require an export, backup verification, and a separate admin
 command. Ownership-state recovery writes a new higher revision rather than
 restoring an old row in place.
+
+PostgreSQL activation requires a tested schema/data backup and restore path,
+restore-based rollback documentation, rehearsed reviewed recovery, and active
+monitoring for blocked operation control plus backend errors. There is no
+in-place v2 downgrade or automatic database rollback. A v2 status capability
+label and a transient lock probe do not satisfy these operational gates.
+Neither streamt nor the catalog may be downgraded/restored while any address has
+an active `in_progress` or `recovery_required` marker; resolve and verify the
+marker first.
 
 ## Failure behavior
 

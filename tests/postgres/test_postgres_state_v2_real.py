@@ -1,9 +1,4 @@
-"""Real-server schema-v2 and least-privilege writer conformance.
-
-The migration surface is intentionally private.  These tests prove the
-administrative migration and the SQL authority it installs, but do not make
-the ordinary PostgreSQL backend reachable through the production factory.
-"""
+"""Real-server schema-v2 and least-privilege writer conformance."""
 
 from __future__ import annotations
 
@@ -507,7 +502,7 @@ def test_clean_v1_to_v2_migration_is_exact_and_idempotent(
     assert second.migrated is False
     assert second.outcome == "already_migrated"
     assert first.to_dict()["schema_version"] == POSTGRES_SCHEMA_V2_VERSION
-    assert "writer" not in json.dumps(first.to_dict()).lower()
+    assert postgres_writer.role not in json.dumps(first.to_dict())
 
     metadata, migrations = _metadata_and_migrations(postgres_case)
     assert metadata == (
@@ -1600,7 +1595,7 @@ def test_owner_role_every_elevated_attribute_and_membership_direction_are_reject
             )
 
 
-def test_factory_remains_disabled_after_exact_v2_migration(
+def test_factory_selects_only_the_exact_v2_writer_after_migration(
     postgres_case: object,
     postgres_writer: WriterIdentity,
     monkeypatch: pytest.MonkeyPatch,
@@ -1608,27 +1603,68 @@ def test_factory_remains_disabled_after_exact_v2_migration(
 ) -> None:
     _initializer(postgres_case).initialize(_address())
     _migrate(postgres_case, postgres_writer)
-    env_name = "PRIVATE_POSTGRES_V2_WRITER_DSN"
-    monkeypatch.setenv(env_name, postgres_writer.dsn)
+    admin_env = "PRIVATE_POSTGRES_V2_ADMIN_DSN"
+    writer_env = "PRIVATE_POSTGRES_V2_WRITER_DSN"
+    monkeypatch.setenv(admin_env, postgres_case.owner_dsn)
+    monkeypatch.setenv(writer_env, postgres_writer.dsn)
     config = validate_deployment_state_config(
         {
             "backend": "postgres",
             "namespace": "platform",
             "postgres": {
-                "dsn_env": env_name,
+                "dsn_env": admin_env,
+                "writer_dsn_env": writer_env,
                 "schema": postgres_case.schema,
             },
         }
     )
 
-    with pytest.raises(
-        StateBackendUnavailableError,
-        match=r"^PostgreSQL deployment state is unavailable in this release$",
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+
+    assert service.store.store_id == _store_id(postgres_case)
+    assert service.read().revision.is_absent
+    with service.operation() as operation:
+        assert operation.observe().control.control.status == "clear"
+
+    before_rejections = _durable_row_bytes(postgres_case)
+    _grant_reader(postgres_case)
+    monkeypatch.setenv(writer_env, postgres_case.owner_dsn)
+    rejected_owner = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+    with pytest.raises(StateBackendInvalidStateError):
+        _ = rejected_owner.store
+
+    monkeypatch.setenv(writer_env, postgres_case.reader_dsn)
+    rejected_reader = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+    with pytest.raises(StateBackendInvalidStateError):
+        rejected_reader.read()
+
+    monkeypatch.setenv(writer_env, postgres_case.owner_dsn)
+    rejected_operation = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="prod",
+        config=config,
+    )
+    with (
+        pytest.raises(StateBackendInvalidStateError),
+        rejected_operation.operation(),
     ):
-        make_deployment_state_service(
-            tmp_path,
-            project="payments",
-            environment="prod",
-            config=config,
-        )
-    assert os.environ[env_name] not in repr(config)
+        pytest.fail("non-writer authority acquired an operation lock")
+
+    assert _durable_row_bytes(postgres_case) == before_rejections
+    assert os.environ[writer_env] not in repr(config)

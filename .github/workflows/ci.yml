@@ -136,11 +136,13 @@ jobs:
           isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-postgres-wheel-XXXXXX")"
           wheel_dir="${isolated_root}/dist"
           venv_dir="${isolated_root}/venv"
+          base_venv_dir="${isolated_root}/base-venv"
           test_root="${isolated_root}/tests-root"
 
           python -m pip install build
           python -m build --wheel --outdir "${wheel_dir}"
           python -m venv "${venv_dir}"
+          python -m venv "${base_venv_dir}"
 
           wheels=("${wheel_dir}"/*.whl)
           if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
@@ -148,6 +150,7 @@ jobs:
             exit 1
           fi
           "${venv_dir}/bin/python" -m pip install "${wheels[0]}[postgres]" pytest
+          "${base_venv_dir}/bin/python" -m pip install "${wheels[0]}" pytest
 
           mkdir -p "${test_root}/tests/postgres"
           cp tests/__init__.py "${test_root}/tests/__init__.py"
@@ -161,6 +164,8 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_state_command_failures_real.py"
           cp tests/postgres/test_postgres_recovery_commands_real.py \
             "${test_root}/tests/postgres/test_postgres_recovery_commands_real.py"
+          cp tests/postgres/test_postgres_ordinary_factory_commands_real.py \
+            "${test_root}/tests/postgres/test_postgres_ordinary_factory_commands_real.py"
 
           cd "${test_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
@@ -178,11 +183,16 @@ jobs:
           assert checkout_source not in import_roots, import_roots
           assert checkout not in installed_module.parents, installed_module
           PY
+          env -u PYTHONPATH STREAMT_EXPECT_POSTGRES_EXTRA_MISSING=1 \
+            "${base_venv_dir}/bin/python" -I -m pytest \
+            tests/postgres/test_postgres_ordinary_factory_commands_real.py \
+            -k base_wheel_without_postgres_extra -m postgres --tb=short
           env -u PYTHONPATH "${venv_dir}/bin/python" -I -m pytest \
             tests/postgres/test_postgres_state_commands_real.py \
             tests/postgres/test_postgres_state_command_concurrency_real.py \
             tests/postgres/test_postgres_state_command_failures_real.py \
             tests/postgres/test_postgres_recovery_commands_real.py \
+            tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             -m postgres --tb=short
 
   package:

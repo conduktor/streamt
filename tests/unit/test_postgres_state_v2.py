@@ -187,7 +187,7 @@ def test_migration_result_is_secret_neutral() -> None:
         "outcome": "migrated",
         "store_id": "00000000-0000-4000-8000-000000000001",
         "schema_version": 2,
-        "ordinary_state_authority": "disabled",
+        "ordinary_state_authority": "supported_for_v2_writer",
     }
 
 

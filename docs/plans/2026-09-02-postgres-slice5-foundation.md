@@ -7,15 +7,14 @@ backend selectable. This plan is the implementation-ready prerequisite for
 Slices 5 and 6 of `2026-09-01-remote-state-and-locking.md`. It records both the
 foundation already delivered and the remaining production gates.
 
-The ordinary PostgreSQL factory remains disabled until the final enablement
-commit. Before that commit, the backend is reachable only from focused tests
-and explicit administrative commands. The final commit is allowed only after
-the protocol, command integration, failure injection, minimum recovery
-workflow, schema/role contract, and full release gates below pass together.
+The ordinary PostgreSQL factory remained disabled until the final enablement
+boundary. It is now selectable only for an exact version-2 catalog through its
+stored least-privilege writer, after the protocol, command integration, failure
+injection, recovery, schema/role, topology, and release gates passed together.
 
 ## Delivery status (2026-09-02)
 
-Packages 1 through 8 are implemented and pass the current test gates, including
+Packages 1 through 9 are implemented and pass the current test gates, including
 PostgreSQL 14 and 18 conformance. The delivered foundation includes canonical
 planned-action identity, snapshot-bound local apply/adopt, stable failure taxonomy and
 operation-ID recovery evidence, and a direct-construction-only PostgreSQL v1
@@ -38,8 +37,12 @@ gates on PostgreSQL 14 and 18. Public configuration, CLI, support, migration,
 backup, recovery, and topology documentation now describes this recovery-only
 boundary and its fail-closed target limitations.
 
-Package 9 remains prohibited until the remaining topology/HA evidence and final
-release gates pass. Ordinary PostgreSQL factory selection remains disabled.
+Package 9 enables the ordinary factory through only `writer_dsn_env`, adds
+unpatched production-factory plan/apply/adopt and isolated-wheel gates, and
+rejects version 1, owner, and status-reader identities before runtime mutation.
+Support is limited to a direct standalone primary. Pooler absence is an
+operator-verified prerequisite because same-session multiplexing is not
+reliably detectable; all HA and failover topologies are unsupported.
 
 ## Dependencies and preserved boundaries
 
@@ -87,11 +90,10 @@ release gates pass. Ordinary PostgreSQL factory selection remains disabled.
    the explicit schema-version-2 migration and exact least-privilege writer
    contract; production enablement additionally requires Packages 7 through 9.
 10. Ordinary operations use one direct, session-affine primary connection for
-    the whole lock lifetime. Transaction- and statement-pooling endpoints are
-    unsupported. A failover-capable production claim additionally requires
-    synchronous durability for every intent, progress, finalization, and
-    recovery transition; asynchronous promotion is outside the support
-    boundary.
+    the whole lock lifetime on one standalone server. Every pooler and proxy is
+    unsupported, and pooler absence is an operator-verified prerequisite.
+    Every replication, promotion, failover, and synchronous or asynchronous HA
+    topology is outside the support boundary.
 
 ## Required protocol
 
@@ -429,7 +431,7 @@ they merge in this order.
    CAS, append-only audit, local crash safety, and atomic PostgreSQL
    finalization. Unrepresentable live states remain blocked rather than being
    guessed. Migration/export may follow independently.
-9. **Final factory enablement.** In the last implementation commit only, allow
+9. **Final factory enablement — complete.** In the last implementation commit, allow
    the ordinary factory to select a verified version-2 PostgreSQL store with the
    exact writer role. Update public support/configuration/release documentation
    in the same release boundary. No earlier commit may make a partial backend
@@ -457,13 +459,13 @@ a time.
 | Adoption | Target changes before prompt, during prompt, and after confirmation; exact fingerprint; state conflict; no runtime writes |
 | Recovery | All three outcomes, wrong operation ID, stale live evidence, illegal abandoned outcome after start, monotonic serial/history |
 | ACL | Owner-only private tests; v1 rejected as mutation-ready; exact v2 writer succeeds; every missing/extra/grantable/`PUBLIC` privilege fails |
-| Topology | Direct primary succeeds; standby, transaction pooler, and statement pooler fail; lock-session loss blocks successor |
-| HA durability | Synchronous eligible promotion retains marker/state; asynchronous failover is rejected or documented unsupported |
+| Topology | Direct standalone primary succeeds; observable standby/session switching fails; lock-session loss blocks successor; all poolers are an explicit operator-enforced unsupported precondition because same-PID multiplexing is not reliably detectable |
+| HA durability | All replication, promotion, and failover topologies are documented unsupported; no synchronous or asynchronous HA claim is made |
 | Output | Release precedes success; committed release failure is distinct; all text/JSON/log/exception paths are secret-neutral |
 | Compatibility | Local JSON/sidecar, warnings, offline no-read, reviewed format 3, admin v1 init/status/lock-status, base package without Psycopg |
 
-Concurrency, termination, commit ambiguity, and failover tests use separate
-processes and real PostgreSQL, not only threads or mocks. Failure injection
+Concurrency, termination, and commit-ambiguity tests use separate processes
+and real PostgreSQL, not only threads or mocks. Failure injection
 covers acquire, initial read, runtime observation, live plan, final reread,
 begin, every action, every progress transition, rollback, fail transition,
 commit before/during/after acknowledgement, verification read, and release.
@@ -486,17 +488,18 @@ reviewed operator test record:
       recovery-required have distinct sanitized errors.
 - [x] Schema version 2 migration and exact least-privilege writer-role
       validation pass; no ordinary job uses the owner identity.
-- [ ] Direct/session-affine primary checks pass, and the documented standalone
-      versus synchronous-HA durability boundary matches tested deployment.
+- [x] Direct/session-affine standalone-primary checks pass; poolers and every
+      synchronous/asynchronous HA or failover topology are explicitly
+      unsupported, with no automatic pooler-detection claim.
 - [x] Slice 6 command E2E and the complete failure-injection matrix pass on the
       supported PostgreSQL major versions.
 - [x] Minimum explicit recovery ships and passes all three resolution paths.
 - [x] Local-only/base and PostgreSQL-extra unit, scenario, packaging, strict
       docs, Ruff, and zero-error mypy gates pass.
-- [ ] Public support, configuration, operations, migration, backup, recovery,
+- [x] Public support, configuration, operations, migration, backup, recovery,
       rollback, monitoring, and release notes describe only the enabled
       version-2 boundary.
-- [ ] The enablement commit contains no fallback to local/empty state and no
+- [x] The enablement commit contains no fallback to local/empty state and no
       automatic schema migration, operation retry, force unlock, or recovery.
 
 If any item fails, keep ordinary PostgreSQL selection disabled. A usable

@@ -8,6 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+import streamt.deployer.postgres_state_backend as postgres_backend
 from streamt.core.deployment_state import (
     LocalDeploymentStateConfig,
     PostgresDeploymentStateConfig,
@@ -16,10 +17,7 @@ from streamt.core.deployment_state import (
 from streamt.core.environment import EnvironmentError, EnvironmentManager
 from streamt.core.models import StreamtProject
 from streamt.core.parser import ParseError, ProjectParser
-from streamt.deployer.state_backend import (
-    StateBackendUnavailableError,
-    make_deployment_state_service,
-)
+from streamt.deployer.state_backend import make_deployment_state_service
 
 
 def _runtime() -> dict[str, object]:
@@ -489,60 +487,118 @@ def test_dsn_value_uses_dotenv_precedence_only_when_factory_is_constructed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("STREAMT_STATE_DSN", raising=False)
-    _write_project(tmp_path, deployment_state=_postgres(), include_state=True)
+    monkeypatch.delenv("STREAMT_STATE_WRITER_DSN", raising=False)
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "STREAMT_STATE_DSN",
+                "writer_dsn_env": "STREAMT_STATE_WRITER_DSN",
+            }
+        ),
+        include_state=True,
+    )
     environments = tmp_path / "environments"
     environments.mkdir()
     (environments / "dev.yml").write_text(
         yaml.safe_dump({"environment": {"name": "dev"}, "runtime": _runtime()}),
         encoding="utf-8",
     )
-    (tmp_path / ".env").write_text("STREAMT_STATE_DSN=base-secret\n")
-    (tmp_path / ".env.dev").write_text("STREAMT_STATE_DSN=environment-secret\n")
+    (tmp_path / ".env").write_text(
+        "STREAMT_STATE_DSN=base-admin-secret\n"
+        "STREAMT_STATE_WRITER_DSN=base-writer-secret\n"
+    )
+    (tmp_path / ".env.dev").write_text(
+        "STREAMT_STATE_DSN=environment-admin-secret\n"
+        "STREAMT_STATE_WRITER_DSN=environment-writer-secret\n"
+    )
 
     project = ProjectParser(tmp_path, environment="dev").parse()
 
     assert isinstance(project.deployment_state, PostgresDeploymentStateConfig)
     assert project.deployment_state.postgres.dsn_env == "STREAMT_STATE_DSN"
-    assert "environment-secret" not in project.deployment_state.model_dump_json()
-    assert "base-secret" not in project.deployment_state.model_dump_json()
-    with pytest.raises(
-        StateBackendUnavailableError,
-        match="unavailable in this release",
-    ):
-        make_deployment_state_service(
-            tmp_path,
-            project=project.project.name,
-            environment="dev",
-            config=project.deployment_state,
-        )
+    assert project.deployment_state.postgres.writer_dsn_env == (
+        "STREAMT_STATE_WRITER_DSN"
+    )
+    serialized = project.deployment_state.model_dump_json()
+    assert "environment-admin-secret" not in serialized
+    assert "base-admin-secret" not in serialized
+    assert "environment-writer-secret" not in serialized
+    assert "base-writer-secret" not in serialized
+    constructed: list[dict[str, object]] = []
+
+    class Backend:
+        def __init__(self, **kwargs: object) -> None:
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(
+        postgres_backend,
+        "PrivatePostgresStateReadBackend",
+        Backend,
+    )
+
+    make_deployment_state_service(
+        tmp_path,
+        project=project.project.name,
+        environment="dev",
+        config=project.deployment_state,
+    )
+
+    assert constructed[0]["dsn"] == "environment-writer-secret"
 
 
 def test_real_environment_dsn_has_precedence_over_dotenv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("STREAMT_STATE_DSN", "real-environment-secret")
-    _write_project(tmp_path, deployment_state=_postgres(), include_state=True)
+    monkeypatch.setenv("STREAMT_STATE_DSN", "real-admin-secret")
+    monkeypatch.setenv("STREAMT_STATE_WRITER_DSN", "real-writer-secret")
+    _write_project(
+        tmp_path,
+        deployment_state=_postgres(
+            postgres={
+                "dsn_env": "STREAMT_STATE_DSN",
+                "writer_dsn_env": "STREAMT_STATE_WRITER_DSN",
+            }
+        ),
+        include_state=True,
+    )
     environments = tmp_path / "environments"
     environments.mkdir()
     (environments / "dev.yml").write_text(
         yaml.safe_dump({"environment": {"name": "dev"}, "runtime": _runtime()}),
         encoding="utf-8",
     )
-    (tmp_path / ".env").write_text("STREAMT_STATE_DSN=base-secret\n")
-    (tmp_path / ".env.dev").write_text("STREAMT_STATE_DSN=environment-secret\n")
+    (tmp_path / ".env").write_text(
+        "STREAMT_STATE_DSN=base-admin-secret\n"
+        "STREAMT_STATE_WRITER_DSN=base-writer-secret\n"
+    )
+    (tmp_path / ".env.dev").write_text(
+        "STREAMT_STATE_DSN=environment-admin-secret\n"
+        "STREAMT_STATE_WRITER_DSN=environment-writer-secret\n"
+    )
 
     project = ProjectParser(tmp_path, environment="dev").parse()
 
     assert isinstance(project.deployment_state, PostgresDeploymentStateConfig)
     assert project.deployment_state.postgres.dsn_env == "STREAMT_STATE_DSN"
-    with pytest.raises(
-        StateBackendUnavailableError,
-        match="unavailable in this release",
-    ):
-        make_deployment_state_service(
-            tmp_path,
-            project=project.project.name,
-            environment="dev",
-            config=project.deployment_state,
-        )
+    constructed: list[dict[str, object]] = []
+
+    class Backend:
+        def __init__(self, **kwargs: object) -> None:
+            constructed.append(kwargs)
+
+    monkeypatch.setattr(
+        postgres_backend,
+        "PrivatePostgresStateReadBackend",
+        Backend,
+    )
+
+    make_deployment_state_service(
+        tmp_path,
+        project=project.project.name,
+        environment="dev",
+        config=project.deployment_state,
+    )
+
+    assert constructed[0]["dsn"] == "real-writer-secret"

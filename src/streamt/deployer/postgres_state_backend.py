@@ -1,11 +1,8 @@
-"""Private PostgreSQL ownership and session-affine mutation scaffolding.
+"""PostgreSQL ownership state and session-affine mutation implementation.
 
-This module is deliberately unreachable from deployment-state configuration,
-the ordinary backend factory, and every CLI command.  It exists so the frozen
-version-one catalog can exercise the future remote backend with isolated
-schema-owner credentials in focused tests.  Its mutation surface is exposed
-only by an explicitly constructed operation; the ordinary backend factory and
-CLI remain unable to select it.
+Direct construction preserves the isolated version-one owner scaffold used by
+focused compatibility tests.  Production factories opt into the stricter
+version-two writer authority contract explicitly.
 
 Psycopg remains optional: construction imports nothing from the driver, and a
 connection loads it lazily through the existing PostgreSQL administration
@@ -447,7 +444,7 @@ def _prove_mutation_authority(
 
 
 class _PostgresStateReadOperation:
-    """One test-only physical session holding the registered advisory lock."""
+    """One physical session holding the registered advisory lock."""
 
     __slots__ = (
         "_active_operation_id",
@@ -463,6 +460,7 @@ class _PostgresStateReadOperation:
         "_lock_key",
         "_lock_timeout_seconds",
         "_lost",
+        "_require_v2_writer",
         "_schema",
     )
 
@@ -478,6 +476,7 @@ class _PostgresStateReadOperation:
         address: StateAddress,
         lock_key: int,
         backend_pid: int,
+        require_v2_writer: bool = False,
     ) -> None:
         self._connection = connection
         self._cursor = cursor
@@ -491,6 +490,7 @@ class _PostgresStateReadOperation:
         self._backend_pid = backend_pid
         self._last_attempted_operation_id: str | None = None
         self._lost = False
+        self._require_v2_writer = require_v2_writer
         self._finalized = False
         self._finalized_operation_id: str | None = None
 
@@ -560,6 +560,14 @@ class _PostgresStateReadOperation:
         try:
             _begin_snapshot(self._cursor, self._lock_timeout_seconds)
             transaction_started = True
+            if self._require_v2_writer:
+                _prove_private_postgres_v2_writer(
+                    self._cursor,
+                    self._bundle.sql,
+                    schema=self._schema,
+                    address=self._address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
             snapshot = _read_snapshot_transaction(
                 cursor=self._cursor,
                 bundle=self._bundle,
@@ -886,7 +894,7 @@ class _PostgresStateReadOperation:
             _begin_mutation(self._cursor, self._lock_timeout_seconds)
             transaction_started = True
             self.check_lock()
-            if recovery_resolution is not None:
+            if recovery_resolution is not None or self._require_v2_writer:
                 _prove_private_postgres_v2_writer(
                     self._cursor,
                     self._bundle.sql,
@@ -1293,6 +1301,14 @@ class _PostgresStateReadOperation:
             _primary_pid(cursor)
             _begin_snapshot(cursor, self._lock_timeout_seconds)
             transaction_started = True
+            if self._require_v2_writer or recovery_resolution is not None:
+                _prove_private_postgres_v2_writer(
+                    cursor,
+                    bundle.sql,
+                    schema=self._schema,
+                    address=self._address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
             current = _read_snapshot_transaction(
                 cursor=cursor,
                 bundle=bundle,
@@ -1565,6 +1581,14 @@ class _PostgresStateReadOperation:
                 time.sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
             _begin_snapshot(cursor, self._lock_timeout_seconds)
             transaction_started = True
+            if self._require_v2_writer or recovery_resolution is not None:
+                _prove_private_postgres_v2_writer(
+                    cursor,
+                    bundle.sql,
+                    schema=self._schema,
+                    address=self._address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
             current = _read_snapshot_transaction(
                 cursor=cursor,
                 bundle=bundle,
@@ -2007,6 +2031,7 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
         "_lock_key",
         "_lock_timeout_seconds",
         "_operation",
+        "_require_v2_writer",
         "_schema",
     )
 
@@ -2017,11 +2042,13 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
         schema: str,
         lock_timeout_seconds: int,
         address: StateAddress,
+        require_v2_writer: bool = False,
     ) -> None:
         self._dsn = dsn
         self._schema = schema
         self._lock_timeout_seconds = lock_timeout_seconds
         self._address = address
+        self._require_v2_writer = require_v2_writer
         self._bundle: _PsycopgBundle | None = None
         self._connection: _Connection | None = None
         self._cursor: _Cursor | None = None
@@ -2051,11 +2078,24 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
             backend_pid = _primary_pid(self._cursor)
 
             _begin_snapshot(self._cursor, self._lock_timeout_seconds)
-            status = PostgresStateAdministration(
-                dsn=self._dsn,
-                schema=self._schema,
-                lock_timeout_seconds=self._lock_timeout_seconds,
-            )._read_status(self._cursor, self._bundle.sql, self._address)
+            if self._require_v2_writer:
+                # Catalog validation does not require the probe address to be
+                # registered. The canonical proof returns store identity only
+                # after validating schema v2, its exact ACL, and this session's
+                # exact stored writer principal.
+                status = _prove_private_postgres_v2_writer(
+                    self._cursor,
+                    self._bundle.sql,
+                    schema=self._schema,
+                    address=self._address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
+            else:
+                status = PostgresStateAdministration(
+                    dsn=self._dsn,
+                    schema=self._schema,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )._read_status(self._cursor, self._bundle.sql, self._address)
             if status.store_status != "ready" or status.address_status != "registered":
                 raise StateBackendInvalidStateError(
                     "PostgreSQL deployment state address is not registered"
@@ -2110,6 +2150,7 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
                 address=self._address,
                 lock_key=lock_key,
                 backend_pid=backend_pid,
+                require_v2_writer=self._require_v2_writer,
             )
             self._operation.check_lock()
             return self._operation
@@ -2205,9 +2246,9 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
 
 
 class PrivatePostgresStateReadBackend:
-    """Direct-only v1-owner/v2-writer read, lock, and mutation scaffold."""
+    """Direct PostgreSQL state backend with an explicit production authority mode."""
 
-    __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema")
+    __slots__ = ("_dsn", "_lock_timeout_seconds", "_require_v2_writer", "_schema")
 
     def __init__(
         self,
@@ -2215,15 +2256,19 @@ class PrivatePostgresStateReadBackend:
         dsn: str,
         schema: str,
         lock_timeout_seconds: int,
+        require_v2_writer: bool = False,
     ) -> None:
         if type(lock_timeout_seconds) is not int or lock_timeout_seconds < 0:
             raise ValueError("lock_timeout_seconds must be a non-negative integer")
+        if type(require_v2_writer) is not bool:
+            raise ValueError("require_v2_writer must be a boolean")
         self._dsn = dsn
         self._schema = schema
         self._lock_timeout_seconds = lock_timeout_seconds
+        self._require_v2_writer = require_v2_writer
 
     def describe(self) -> StateStoreIdentity:
-        """Read the private store identity without selecting it in the factory."""
+        """Read the store identity after applying the configured authority mode."""
         options = _dsn_tls_options(self._dsn)
         bundle = _load_psycopg()
         connection: _Connection | None = None
@@ -2240,29 +2285,50 @@ class PrivatePostgresStateReadBackend:
             cursor = connection.cursor()
             _begin_snapshot(cursor, self._lock_timeout_seconds)
             _primary_pid(cursor)
-            rows = _rows(
-                cursor,
-                _query(
+            if self._require_v2_writer:
+                status = _prove_private_postgres_v2_writer(
+                    cursor,
                     bundle.sql,
-                    (
-                        "SELECT store_id::text, schema_version FROM {} "
-                        "WHERE singleton IS TRUE LIMIT 2"
+                    schema=self._schema,
+                    address=StateAddress(
+                        namespace="streamt-internal",
+                        project="catalog-authority",
+                        environment="v2",
                     ),
-                    self._schema,
-                    "store_metadata",
-                ),
-            )
-            if (
-                len(rows) != 1
-                or len(rows[0]) != 2
-                or not isinstance(rows[0][0], str)
-                or rows[0][1]
-                not in (POSTGRES_SCHEMA_VERSION, POSTGRES_SCHEMA_V2_VERSION)
-            ):
-                raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment state metadata is invalid"
+                    lock_timeout_seconds=self._lock_timeout_seconds,
                 )
-            identity = StateStoreIdentity(backend="postgres", store_id=rows[0][0])
+                if status.store_id is None:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment state metadata is invalid"
+                    )
+                identity = StateStoreIdentity(
+                    backend="postgres",
+                    store_id=status.store_id,
+                )
+            else:
+                rows = _rows(
+                    cursor,
+                    _query(
+                        bundle.sql,
+                        (
+                            "SELECT store_id::text, schema_version FROM {} "
+                            "WHERE singleton IS TRUE LIMIT 2"
+                        ),
+                        self._schema,
+                        "store_metadata",
+                    ),
+                )
+                if (
+                    len(rows) != 1
+                    or len(rows[0]) != 2
+                    or not isinstance(rows[0][0], str)
+                    or rows[0][1]
+                    not in (POSTGRES_SCHEMA_VERSION, POSTGRES_SCHEMA_V2_VERSION)
+                ):
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment state metadata is invalid"
+                    )
+                identity = StateStoreIdentity(backend="postgres", store_id=rows[0][0])
         except (StateBackendInvalidStateError, StateError):
             invalid = True
         except (KeyboardInterrupt, SystemExit):
@@ -2312,6 +2378,14 @@ class PrivatePostgresStateReadBackend:
             cursor = connection.cursor()
             _begin_snapshot(cursor, self._lock_timeout_seconds)
             _primary_pid(cursor)
+            if self._require_v2_writer:
+                _prove_private_postgres_v2_writer(
+                    cursor,
+                    bundle.sql,
+                    schema=self._schema,
+                    address=address,
+                    lock_timeout_seconds=self._lock_timeout_seconds,
+                )
             snapshot = _read_snapshot_transaction(
                 cursor=cursor,
                 bundle=bundle,
@@ -2359,10 +2433,11 @@ class PrivatePostgresStateReadBackend:
         self,
         address: StateAddress,
     ) -> AbstractContextManager[_PostgresStateReadOperation]:
-        """Acquire the private test-only session lock for one address."""
+        """Acquire the session-affine operation lock for one address."""
         return _PostgresStateOperationContext(
             dsn=self._dsn,
             schema=self._schema,
             lock_timeout_seconds=self._lock_timeout_seconds,
             address=address,
+            require_v2_writer=self._require_v2_writer,
         )

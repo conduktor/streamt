@@ -117,6 +117,7 @@ def test_postgres_status_uses_only_separate_admin_factory_and_safe_output(
             "last_completed_action_index": None,
         },
         "mutation_status": "disabled",
+        "ordinary_state_authority": "disabled",
     }
     serialized = json.dumps(payload)
     assert "alice" not in serialized
@@ -174,6 +175,7 @@ def test_postgres_status_factory_runs_after_base_dotenv_is_applied(
     payload = json.loads(result.stdout)
     assert payload["data"]["store_status"] == "uninitialized"
     assert payload["data"]["mutation_status"] == "disabled"
+    assert payload["data"]["ordinary_state_authority"] == "disabled"
     assert "dotenv-user" not in result.output
     assert "dotenv-secret" not in result.output
     assert "dotenv.internal" not in result.output

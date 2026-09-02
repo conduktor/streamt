@@ -1,9 +1,9 @@
 """Narrow PostgreSQL deployment-state administration.
 
-This module is deliberately not a ``DeploymentStateBackend``.  It can inspect,
-transiently probe, or explicitly initialize a store for administrative state
-commands, but it cannot authorize an ordinary plan, apply, adopt, state
-mutation, or durable operation lock.
+This module is deliberately not a ``DeploymentStateBackend``. It implements
+administrative inspection, probing, initialization, and migration plus the
+canonical version-two catalog/writer proof consumed by the separate ordinary
+backend.
 
 Psycopg is an optional dependency and is imported only when an administrative
 operation opens a connection.  Provider exceptions are translated to fixed,
@@ -51,6 +51,9 @@ from streamt.deployer.state_backend import (
 
 POSTGRES_SCHEMA_VERSION = 1
 POSTGRES_SCHEMA_V2_VERSION = 2
+POSTGRES_ORDINARY_AUTHORITY_SUPPORTED = "supported_for_v2_writer"
+POSTGRES_ORDINARY_AUTHORITY_DISABLED = "disabled"
+POSTGRES_ORDINARY_AUTHORITY_NOT_VERIFIED = "not_verified"
 POSTGRES_STATE_MAX_BYTES = 10 * 1024 * 1024
 _CONNECT_TIMEOUT_SECONDS = 10
 _STATEMENT_TIMEOUT_MILLISECONDS = 30_000
@@ -61,6 +64,13 @@ _LIBPQ_ENDPOINT_ENVIRONMENT_VARIABLES = (
     "PGSERVICE",
     "PGSERVICEFILE",
 )
+
+
+def postgres_ordinary_authority(schema_version: int | None) -> str:
+    """Describe the released catalog capability without probing a credential."""
+    if schema_version == POSTGRES_SCHEMA_V2_VERSION:
+        return POSTGRES_ORDINARY_AUTHORITY_SUPPORTED
+    return POSTGRES_ORDINARY_AUTHORITY_DISABLED
 
 
 class _Composable(Protocol):
@@ -1035,6 +1045,9 @@ class PostgresStateStatus:
                 if self.schema_version == POSTGRES_SCHEMA_V2_VERSION
                 else "disabled"
             ),
+            "ordinary_state_authority": postgres_ordinary_authority(
+                self.schema_version
+            ),
         }
 
 
@@ -1066,7 +1079,9 @@ class PostgresStateInitialization:
             "address_status": "registered",
             "state_status": "absent",
             "operation_status": "clear",
-            "ordinary_state_authority": "disabled",
+            "ordinary_state_authority": postgres_ordinary_authority(
+                self.schema_version
+            ),
         }
 
 
@@ -1087,7 +1102,7 @@ class PostgresStateV2Migration:
             "outcome": self.outcome,
             "store_id": self.store_id,
             "schema_version": POSTGRES_SCHEMA_V2_VERSION,
-            "ordinary_state_authority": "disabled",
+            "ordinary_state_authority": POSTGRES_ORDINARY_AUTHORITY_SUPPORTED,
         }
 
 
@@ -1106,7 +1121,7 @@ class PostgresStateLockProbeResult:
             "address": self.address.uri,
             "lock_status": self.lock_status,
             "reservation": "none",
-            "ordinary_state_authority": "disabled",
+            "ordinary_state_authority": POSTGRES_ORDINARY_AUTHORITY_NOT_VERIFIED,
         }
 
 

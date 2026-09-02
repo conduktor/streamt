@@ -1,7 +1,6 @@
 """Provider-neutral access to deployment ownership state.
 
-Only the local version 1 JSON provider is selectable today.  This module
-defines the application boundary needed by future remote providers without
+This module keeps provider selection behind one application boundary without
 changing the local persistence format or exposing provider handles to CLI
 commands.
 """
@@ -22,7 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload, runtime_checkable
 
-from streamt.core.deployment_state import DeploymentStateConfig
+from streamt.core.deployment_state import (
+    DeploymentStateConfig,
+    PostgresDeploymentStateConfig,
+)
 from streamt.deployer.state import (
     LocalState,
     LocalStateOperationLock,
@@ -2193,13 +2195,11 @@ def make_deployment_state_service(
 ) -> DeploymentStateService:
     """Construct the configured provider without fallback between authorities."""
     if config.backend == "postgres":
-        dsn = os.environ.get(config.postgres.dsn_env)
-        if dsn is None or not dsn.strip():
-            raise StateBackendUnavailableError(
-                "PostgreSQL deployment state credentials are unavailable"
-            )
-        raise StateBackendUnavailableError(
-            "PostgreSQL deployment state is unavailable in this release"
+        return _make_postgres_state_service(
+            project=project,
+            environment=environment,
+            config=config,
+            credential_scope="deployment",
         )
 
     address = StateAddress(
@@ -2209,6 +2209,49 @@ def make_deployment_state_service(
     )
     return DeploymentStateService(
         backend=LocalDeploymentStateBackend(project_path),
+        address=address,
+    )
+
+
+def _make_postgres_state_service(
+    *,
+    project: str,
+    environment: str,
+    config: PostgresDeploymentStateConfig,
+    credential_scope: Literal["deployment", "recovery"],
+) -> DeploymentStateService:
+    """Construct PostgreSQL state access from the dedicated writer binding."""
+    writer_dsn_env = config.postgres.writer_dsn_env
+    if writer_dsn_env is None:
+        raise StateBackendUnavailableError(
+            f"PostgreSQL {credential_scope} state credentials are not configured"
+        )
+    writer_dsn = os.environ.get(writer_dsn_env)
+    if writer_dsn is None or not writer_dsn.strip():
+        raise StateBackendUnavailableError(
+            f"PostgreSQL {credential_scope} state credentials are unavailable"
+        )
+
+    # Keep the optional PostgreSQL dependency outside the local state path.
+    from streamt.deployer.postgres_state_backend import (
+        PrivatePostgresStateReadBackend,
+    )
+
+    address = StateAddress(
+        namespace=config.namespace,
+        project=project,
+        environment=environment,
+    )
+    return DeploymentStateService(
+        backend=cast(
+            DeploymentStateBackend,
+            PrivatePostgresStateReadBackend(
+                dsn=writer_dsn,
+                schema=config.postgres.schema_name,
+                lock_timeout_seconds=config.lock_timeout_seconds,
+                require_v2_writer=True,
+            ),
+        ),
         address=address,
     )
 
@@ -2229,35 +2272,9 @@ def make_recovery_state_service(
             config=config,
         )
 
-    writer_dsn_env = config.postgres.writer_dsn_env
-    if writer_dsn_env is None:
-        raise StateBackendUnavailableError(
-            "PostgreSQL recovery state credentials are not configured"
-        )
-    writer_dsn = os.environ.get(writer_dsn_env)
-    if writer_dsn is None or not writer_dsn.strip():
-        raise StateBackendUnavailableError(
-            "PostgreSQL recovery state credentials are unavailable"
-        )
-
-    # Keep the optional PostgreSQL dependency outside the local recovery path.
-    from streamt.deployer.postgres_state_backend import (
-        PrivatePostgresStateReadBackend,
-    )
-
-    address = StateAddress(
-        namespace=config.namespace,
+    return _make_postgres_state_service(
         project=project,
         environment=environment,
-    )
-    return DeploymentStateService(
-        backend=cast(
-            DeploymentStateBackend,
-            PrivatePostgresStateReadBackend(
-                dsn=writer_dsn,
-                schema=config.postgres.schema_name,
-                lock_timeout_seconds=config.lock_timeout_seconds,
-            ),
-        ),
-        address=address,
+        config=config,
+        credential_scope="recovery",
     )

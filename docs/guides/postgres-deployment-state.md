@@ -1,23 +1,25 @@
-# PostgreSQL deployment-state migration
+# PostgreSQL deployment state
 
 This runbook upgrades an exact streamt PostgreSQL deployment-state store from
-schema version 1 to version 2. Version 2 binds an externally created,
-least-privilege writer role and makes the catalog privately mutation-ready. It
-does **not** enable PostgreSQL for ordinary `plan`, `apply`, or `adopt`; the
-ordinary factory remains disabled pending its final topology/HA and release
-gates. Version 2 does enable the separate, explicit recovery-only writer path.
+schema version 1 to version 2 and activates the supported ordinary command
+boundary. Version 2 binds an externally created, least-privilege writer role.
+Online `plan`, `apply`, `adopt`, and reviewed recovery can use that exact role
+on a direct standalone primary. Version 1 remains administrative only.
 
 ## Before you begin
 
-Install the optional driver and use a direct, session-affine primary endpoint:
+Install the optional driver and use a direct endpoint for one standalone
+primary:
 
 ```bash
 pip install 'streamt[postgres]'
 ```
 
-Do not use a transaction- or statement-pooling endpoint. The migration holds
-session advisory locks, and their ownership cannot survive a physical-session
-switch.
+Do not use any pooler or proxy, including a session pooler. The migration and
+ordinary operations hold session advisory locks, and streamt cannot reliably
+detect that an endpoint bypasses every pooler. Do not use a cluster endpoint,
+replica, promoted standby, automatic failover, multi-primary, or any other HA
+topology.
 
 Use separate administrative and runtime identities:
 
@@ -25,8 +27,8 @@ Use separate administrative and runtime identities:
   administrative migration.
 - `postgres.writer_role_env` resolves to the PostgreSQL role name to bind. It
   is a role identifier, not a DSN or password.
-- `postgres.writer_dsn_env`, configured for later recovery, resolves to a DSN
-  whose login is that exact bound role. It is not used by migration.
+- `postgres.writer_dsn_env` resolves to a DSN whose login is that exact bound
+  role. It is used by online plan/apply/adopt and recovery, but not migration.
 
 The writer must already exist. streamt never creates, alters, drops, infers, or
 silently rebinds it. A representative DBA command is:
@@ -47,7 +49,7 @@ no membership edge in either direction. Do not pre-grant state-schema access:
 the source must still match the exact v1 catalog. The migration transaction
 revokes the target role's state-schema ACL and installs the exact v2 ACL.
 
-## Back up and preflight
+## Activate backup, rollback, recovery, and monitoring
 
 Take a schema-and-data backup with the owner credential, retain the server
 version and topology information, and test restoration to a separate database.
@@ -63,6 +65,20 @@ pg_dump "$STREAMT_STATE_POSTGRES_DSN" \
 Back up the writer's role definition through the normal cluster-level DBA
 process as well. `pg_dump` does not include cluster roles. Version 2 stores the
 portable role name, never its cluster-local OID.
+
+Before the first ordinary command, make all four operational controls active:
+
+1. Schedule complete schema-and-data backups and alert on backup age/failure.
+2. Test restore into a separate database and document restore-based rollback;
+   streamt has no in-place v2 downgrade or automatic database rollback.
+3. Rehearse the [reviewed recovery workflow](state-recovery.md) and its
+   independent-review channel.
+4. Monitor `state status`, database availability/durability, and command errors,
+   with immediate alerts for `E419`, `E423`, `E425`, and `E426`.
+
+Do not treat `state status` label `supported_for_v2_writer` or a successful
+`state lock-status` call as writer-credential health. Status does not resolve
+`writer_dsn_env`; the lock probe reports `not_verified` and reserves nothing.
 
 Then inspect the source and capture its immutable store ID:
 
@@ -113,7 +129,9 @@ Version-1 init and version-1/version-2 status and lock diagnostics do not
 require or resolve `writer_role_env`. On an existing exact v2 store, owner-only
 `state init` may register another empty address. Initializing a new store still
 creates version 1. Migration resolves the owner `dsn_env` and
-`writer_role_env`, but does not resolve `writer_dsn_env`.
+`writer_role_env`, but does not resolve `writer_dsn_env`. Online
+plan/apply/adopt and both recovery commands do the reverse: they resolve only
+`writer_dsn_env` and never use the owner/admin credential as a fallback.
 
 ## Run the migration
 
@@ -158,14 +176,14 @@ The structured result data is limited to:
   "outcome": "migrated",
   "store_id": "8d04f3f7-0000-4000-8000-000000000000",
   "schema_version": 2,
-  "ordinary_state_authority": "disabled",
+  "ordinary_state_authority": "supported_for_v2_writer",
   "mutation_status": "catalog_ready"
 }
 ```
 
-`outcome` is `migrated` or `already_migrated`. `catalog_ready` means only that
-the schema and private writer contract validate; it is not authority for a
-normal command.
+`outcome` is `migrated` or `already_migrated`. `catalog_ready` and
+`supported_for_v2_writer` describe catalog capability. Migration does not
+resolve the writer DSN, so neither value is a credential or endpoint probe.
 
 ## Exact writer ACL
 
@@ -198,9 +216,12 @@ streamt -o json state status -p . -e prod
 streamt state lock-status -p . -e prod
 ```
 
-Exact v2 structured status reports schema version `2` and `mutation_status:
-catalog_ready`; human status also reports `Ordinary state authority: disabled`.
-The writer name is intentionally absent from both forms.
+Exact v2 structured status reports schema version `2`, `mutation_status:
+catalog_ready`, and `ordinary_state_authority: supported_for_v2_writer`.
+The label is derived from catalog version and does not resolve or authenticate
+`writer_dsn_env`; the writer name is intentionally absent from both forms.
+`state lock-status` reports `ordinary_state_authority: not_verified` because it
+uses the administrative/status credential and makes no writer-authority claim.
 
 | Code | Meaning and operator action |
 | --- | --- |
@@ -217,20 +238,32 @@ is also no automatic repair or rebind command. Restore the tested pre-migration
 backup into a controlled target if rollback is required, or recreate the exact
 stored role/ACL under a reviewed DBA procedure.
 
-## Use the recovery-only writer
+Never downgrade streamt or restore/downgrade the catalog while any registered
+address has an `in_progress` or `recovery_required` marker. Preserve the active
+catalog and marker, finish the reviewed incident/recovery procedure, verify
+clear control, and only then execute the separately reviewed restore-based
+rollback.
 
-After migration, `state recovery-plan` and `state recover` can resolve one
-exact `in_progress` or `recovery_required` operation. They resolve only the DSN
-named by `postgres.writer_dsn_env`; the owner/admin `postgres.dsn_env` is not
-used and is never a fallback. The two DSN environment-variable names must be
-different, and the writer connection must authenticate as the exact role bound
-by migration.
+## Use the v2 writer
+
+After migration, online `plan`, direct or reviewed `apply`, `adopt`,
+`state recovery-plan`, and `state recover` resolve only the DSN named by
+`postgres.writer_dsn_env`. The owner/admin `postgres.dsn_env` is not used and
+is never a fallback. The two DSN environment-variable names must be different,
+and the writer connection must authenticate as the exact role bound by
+migration. Keep the owner credential out of ordinary deployment jobs.
+
+Every ordinary operation revalidates schema version 2, the complete catalog
+and ACL, exact `session_user`/`current_user`, direct-primary status, and lock
+ownership at its safety boundaries. A v1 store, status-reader DSN, owner DSN,
+ACL drift, replica, or missing writer value fails before runtime mutation and
+never falls back to local or empty state.
 
 Recovery revalidates the complete v2 catalog, writer identity and ACL, direct
 primary topology, state/control preimage, and reviewed target evidence under
 one address lock. It atomically appends recovery history, writes the reviewed
 ownership revision when needed, and clears operation control. It never repeats
-runtime mutations or enables ordinary PostgreSQL plan/apply/adopt.
+runtime mutations.
 
 Follow the [deployment-state recovery runbook](state-recovery.md) for the
 two-command workflow, exact confirmations, supported observation boundaries,
@@ -240,10 +273,12 @@ exactly and fail closed.
 
 ## Topology and HA boundary
 
-Standalone support requires the migration and every later state transition to
-be durable on the direct primary before acknowledgement. A production HA claim
-requires synchronous replication of the entire state schema to every node
-eligible for promotion. Asynchronous promotion can release the old session
-locks while losing durable intent or history; it is outside the supported
-safety boundary. The current package does not claim a completed HA failover or
-ordinary PostgreSQL command path.
+Support is limited to one direct endpoint for one standalone primary. Every
+state transition must be durable on that primary before acknowledgement. All
+poolers and proxies are unsupported in every mode, and pooler absence is an
+operator-verified prerequisite because it cannot be detected reliably from a
+PostgreSQL session. All replication, promotion, failover, cluster-writer,
+multi-primary, and other HA topologies are unsupported, including synchronous
+replication. A topology change requires freezing commands and moving through a
+tested backup/restore and fresh-preflight procedure; it is not transparent
+failover.

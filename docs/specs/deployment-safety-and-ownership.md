@@ -87,6 +87,21 @@ progress, and conservative recovery-required state, so an interrupted mutation
 blocks later local apply/adopt. The file lock is still not distributed, and the
 explicit recovery workflow does not make local state safe for shared runners.
 
+PostgreSQL schema version 2 is the supported remote authority for ordinary
+plan/apply/adopt and recovery. The production factory resolves only
+`writer_dsn_env`, requires the exact stored least-privilege login and ACL, and
+reproves catalog conformance plus a direct standalone primary at operation
+boundaries. It never falls back to `dsn_env`, local state, or empty state.
+Version 1 remains administrative only. Every pooler/proxy and every HA or
+failover topology is unsupported; pooler absence is an operator prerequisite
+because it cannot be detected reliably from a session.
+
+Operational use additionally requires active, tested schema/data backup and
+restore, documented restore-based rollback, rehearsed reviewed recovery, and
+monitoring for blocked operation control and state-authority errors. A status
+label is not a substitute for those controls or for an ordinary writer
+preflight.
+
 ## Explicit recovery
 
 `streamt state recovery-plan` and `streamt state recover` resolve one exact
@@ -106,10 +121,9 @@ no action started. Recovery never retries runtime mutations, lowers a state
 serial, force-unlocks, expires a marker by age, or runs automatically.
 
 Local finalization uses a crash-safe, checksum-chained recovery history under
-the same-host lock. PostgreSQL finalization is available only through an exact
-schema-v2 writer credential and atomically commits history, optional ownership
-state, and control clearing. This recovery-only PostgreSQL authority does not
-enable ordinary plan/apply/adopt. Present Flink jobs and nonempty or
+the same-host lock. PostgreSQL finalization uses the same exact schema-v2 writer
+authority as ordinary commands and atomically commits history, optional
+ownership state, and control clearing. Present Flink jobs and nonempty or
 unreconstructible Gateway rules fail closed; other partial or ambiguous target
 observations do as well. The complete operator contract is in the
 [deployment-state recovery runbook](../guides/state-recovery.md).
@@ -234,11 +248,11 @@ redacted.
 Interactive confirmation uses an exact token containing the canonical resource
 ID and environment. Non-interactive confirmation requires both
 `--confirm-resource streamt://...` and `--confirm-env ENV` to match. On success,
-only the adopted record is added to environment-scoped local state, all other
-records are retained, and the serial advances once. An identical existing claim
-is idempotent. Conflicting state fails closed. Users must produce and review a
-fresh plan before later mutation; normal apply also replans against the new
-state.
+only the adopted record is added to the configured environment-scoped state,
+all other records are retained, and the serial advances once. An identical
+existing claim is idempotent. Conflicting state fails closed. Users must produce
+and review a fresh plan before later mutation; normal apply also replans against
+the new state.
 
 Schema Registry subject adoption uses the same protocol:
 

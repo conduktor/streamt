@@ -44,7 +44,7 @@ class PostgresConnectionConfig(StreamtBaseModel):
 
 
 class PostgresDeploymentStateConfig(StreamtBaseModel):
-    """Configuration boundary for the not-yet-available PostgreSQL provider."""
+    """Configuration boundary for the version-two-writer PostgreSQL provider."""
 
     backend: Literal["postgres"]
     namespace: Annotated[

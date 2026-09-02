@@ -232,11 +232,16 @@ def _install(
     return driver, connection, cursor
 
 
-def _backend(*, timeout: int = 1) -> PrivatePostgresStateReadBackend:
+def _backend(
+    *,
+    timeout: int = 1,
+    require_v2_writer: bool = False,
+) -> PrivatePostgresStateReadBackend:
     return PrivatePostgresStateReadBackend(
         dsn="host=/var/run/postgresql dbname=state",
         schema="streamt",
         lock_timeout_seconds=timeout,
+        require_v2_writer=require_v2_writer,
     )
 
 
@@ -516,7 +521,7 @@ def test_private_backend_structurally_conforms_without_factory_selection(
     assert backend.read_control(_address()).control.status == "clear"
 
 
-def test_private_scaffold_is_not_factory_selectable_or_cli_authority(
+def test_factory_does_not_fallback_to_the_private_admin_binding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -531,7 +536,7 @@ def test_private_scaffold_is_not_factory_selectable_or_cli_authority(
 
     with pytest.raises(
         StateBackendUnavailableError,
-        match=r"^PostgreSQL deployment state is unavailable in this release$",
+        match=r"^PostgreSQL deployment state credentials are not configured$",
     ):
         make_deployment_state_service(
             tmp_path,
@@ -543,6 +548,102 @@ def test_private_scaffold_is_not_factory_selectable_or_cli_authority(
     for command_module in (plan, apply, adopt, state_cmd):
         assert "postgres_state_backend" not in inspect.getsource(command_module)
         assert not hasattr(command_module, "PrivatePostgresStateReadBackend")
+
+
+def test_production_mode_proves_v2_writer_before_every_read_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _driver, _connection, _cursor = _install(monkeypatch)
+    proved: list[StateAddress] = []
+
+    def prove_writer(
+        _cursor: object,
+        _sql: object,
+        *,
+        schema: str,
+        address: StateAddress,
+        lock_timeout_seconds: int,
+    ) -> PostgresStateStatus:
+        assert schema == "streamt"
+        assert lock_timeout_seconds == 1
+        proved.append(address)
+        registered = address.namespace != "streamt-internal"
+        return PostgresStateStatus(
+            store_status="ready",
+            store_id="00000000-0000-4000-8000-000000000001",
+            schema_version=2,
+            address=address,
+            address_status="registered" if registered else "unregistered",
+            state_status="absent" if registered else "unregistered",
+            state_serial=0 if registered else None,
+            state_checksum=None,
+            operation_status=None,
+        )
+
+    monkeypatch.setattr(
+        postgres_backend,
+        "_prove_private_postgres_v2_writer",
+        prove_writer,
+    )
+    backend = _backend(require_v2_writer=True)
+
+    assert backend.describe().store_id == "00000000-0000-4000-8000-000000000001"
+    assert backend.read_snapshot(_address()).state.revision.is_absent
+    with backend.operation(_address()):
+        pass
+
+    assert proved == [
+        StateAddress(
+            namespace="streamt-internal",
+            project="catalog-authority",
+            environment="v2",
+        ),
+        _address(),
+        _address(),
+    ]
+
+
+@pytest.mark.parametrize("boundary", ["describe", "read", "operation"])
+def test_production_mode_rejects_non_writer_authority_before_use(
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    _driver, connection, cursor = _install(monkeypatch)
+
+    def reject(*_args: object, **_kwargs: object) -> PostgresStateStatus:
+        raise StateBackendInvalidStateError("not the stored version-two writer")
+
+    monkeypatch.setattr(
+        postgres_backend,
+        "_prove_private_postgres_v2_writer",
+        reject,
+    )
+    backend = _backend(require_v2_writer=True)
+
+    if boundary == "describe":
+        with pytest.raises(
+            StateBackendInvalidStateError,
+            match=r"^PostgreSQL deployment state metadata is invalid$",
+        ):
+            backend.describe()
+    elif boundary == "read":
+        with pytest.raises(
+            StateBackendInvalidStateError,
+            match=r"^PostgreSQL deployment state is invalid$",
+        ):
+            backend.read(_address())
+    else:
+        with (
+            pytest.raises(
+                StateBackendInvalidStateError,
+                match="not the stored version-two writer",
+            ),
+            backend.operation(_address()),
+        ):
+            pytest.fail("invalid authority must not reach operation use")
+        assert not any("pg_try_advisory_lock" in query for query, _ in cursor.calls)
+
+    assert connection.closed is True
 
 
 def test_construction_does_not_load_optional_psycopg(

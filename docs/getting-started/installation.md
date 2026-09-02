@@ -41,9 +41,9 @@ python -m pip install "streamt[postgres] @ git+https://github.com/conduktor/stre
 The base package continues to support local deployment state without Psycopg.
 The PostgreSQL extra enables the bounded `streamt state status` reader, the
 separately gated `state init` and `state migrate-postgres-v2` administrative
-commands, the non-reserving `state lock-status` diagnostic, and explicit
-reviewed recovery through an exact schema-v2 writer. It does not enable
-PostgreSQL plan/apply/adopt or ordinary ownership-state authority.
+commands, the non-reserving `state lock-status` diagnostic, and ordinary
+plan/apply/adopt plus reviewed recovery through an exact schema-v2 writer.
+Version 1 remains administrative only.
 
 Initialization requires an explicit DSN endpoint and a database identity that
 can create the configured schema, or that already owns the configured empty
@@ -54,13 +54,18 @@ non-grantable `USAGE` on the schema and non-grantable `SELECT` on its state
 tables or columns. `PUBLIC` access, mutating or grantable reader privileges, and
 mixed schema/table ownership fail catalog verification.
 
-Point `state lock-status` and the recovery writer at a direct, session-affine
-primary endpoint.
-Transaction- and statement-pooling endpoints are unsupported because advisory
-locks are physical-session and reentrant state, and recovery retains one
-connection for the complete operation. The diagnostic needs no
+Point ordinary commands, `state lock-status`, migration, and recovery directly
+at one standalone primary server. Every pooler and proxy is unsupported,
+including session-pooling endpoints, because advisory locks are
+physical-session state and streamt cannot reliably detect that a DSN bypasses
+a pooler. Every HA and failover topology is unsupported. The diagnostic needs no
 role or grant beyond the permitted status-reader access and releases its
 transaction-scoped probe before returning.
+
+Do not activate PostgreSQL deployment state merely because installation
+succeeds. First provision and test backups/restores, the reviewed recovery
+workflow, restore-based rollback, and monitoring described in the
+[PostgreSQL deployment-state guide](../guides/postgres-deployment-state.md).
 
 ## Development Installation
 

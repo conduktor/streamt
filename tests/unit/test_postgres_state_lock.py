@@ -244,7 +244,7 @@ def test_registered_probe_uses_one_parameterized_xact_try_and_rollback_release(
         "address": address.uri,
         "lock_status": expected,
         "reservation": "none",
-        "ordinary_state_authority": "disabled",
+        "ordinary_state_authority": "not_verified",
     }
     assert driver.calls == [
         (

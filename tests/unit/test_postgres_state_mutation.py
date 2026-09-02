@@ -338,6 +338,7 @@ def _operation(
     monkeypatch: pytest.MonkeyPatch,
     *,
     timeout: int = 3,
+    require_v2_writer: bool = False,
 ) -> tuple[
     postgres_backend._PostgresStateReadOperation,
     _Database,
@@ -367,6 +368,7 @@ def _operation(
         address=_address(),
         lock_key=_advisory_lock_key(_address()),
         backend_pid=701,
+        require_v2_writer=require_v2_writer,
     )
     return operation, database, owner, driver
 
@@ -588,6 +590,50 @@ def test_private_mutation_requires_exact_v1_schema_and_table_owner(
         operation.begin_operation(initial, _intent(initial, actions=False))
 
     assert owner.dml_attempts == []
+
+
+def test_production_mutation_reproves_v2_writer_and_never_routes_to_v1_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proved: list[StateAddress] = []
+
+    def prove_writer(
+        _cursor: object,
+        _sql: object,
+        *,
+        schema: str,
+        address: StateAddress,
+        lock_timeout_seconds: int,
+    ) -> object:
+        assert schema == "streamt"
+        assert lock_timeout_seconds == 3
+        proved.append(address)
+        return object()
+
+    monkeypatch.setattr(
+        postgres_backend,
+        "_prove_private_postgres_v2_writer",
+        prove_writer,
+    )
+    monkeypatch.setattr(
+        postgres_backend,
+        "_prove_mutation_authority",
+        lambda *_args, **_kwargs: pytest.fail(
+            "production mutation must not route to version-one owner authority"
+        ),
+    )
+    operation, _database, _owner, _driver = _operation(
+        monkeypatch,
+        require_v2_writer=True,
+    )
+
+    initial = operation.observe()
+    operation.begin_operation(initial, _intent(initial, actions=False))
+
+    # Initial observation, readiness recheck, the transition itself, and
+    # committed-postimage verification use independent transactions and each
+    # re-proves writer authority.
+    assert proved == [_address(), _address(), _address(), _address()]
 
 
 def test_finalization_dml_failure_rolls_back_and_recovery_can_be_persisted(

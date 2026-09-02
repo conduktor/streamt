@@ -383,6 +383,7 @@ def test_absent_schema_is_uninitialized_and_transaction_is_read_only(
         "state_checksum": None,
         "operation_status": None,
         "mutation_status": "disabled",
+        "ordinary_state_authority": "disabled",
     }
     assert driver.calls == [
         (

@@ -537,13 +537,13 @@ Offline output reports this status as `unavailable` without constructing a
 state backend.
 
 After a successful non-dry-run apply, streamt atomically records resources it
-manages or has adopted in `.streamt/state/<environment>.json`. External,
-unowned, and ownership-blocked resources are never recorded. Local state is
-appropriate for a single-user development checkout only. Strict PostgreSQL
-configuration is recognized, but ordinary provider selection remains
-unavailable; online plan/apply/adopt return `E420_STATE_BACKEND_UNAVAILABLE`
-without reading local state. The separate recovery-only PostgreSQL path does
-not change that authority boundary.
+manages or has adopted in the configured deployment-state provider. External,
+unowned, and ownership-blocked resources are never recorded. Local state uses
+`.streamt/state/<environment>.json` and is appropriate for a single-user
+development checkout only. PostgreSQL online plan/apply/adopt require
+`writer_dsn_env`, an exact v2 writer/catalog/ACL, and a direct standalone
+primary. They never fall back to the owner/admin credential, local state, or
+empty state. Version 1 remains administrative only.
 Failed and rolled-back planner results do not advance ownership state before
 final commit.
 
@@ -554,7 +554,8 @@ confirmation, compilation, state access, or runtime deployer construction.
 `--force` cannot bypass it. Read-only plan and state status are not blocked.
 
 For local apply/adopt, `.streamt/state/<environment>.control.json` records a
-versioned durable intent before mutation and safe ordered action progress. Both
+versioned durable intent before mutation and safe ordered action progress.
+PostgreSQL records the same protocol atomically in its v2 catalog. Both
 `in_progress` and `recovery_required` block later apply/adopt commands
 indefinitely with `E419_STATE_RECOVERY_REQUIRED`; elapsed time is not proof that
 a runtime call failed. Do not delete or edit the sidecar, and do not roll back
@@ -631,8 +632,8 @@ Summary: 2 created, 1 updated, 0 unchanged
 ### adopt
 
 Explicitly claim one existing Kafka topic or Schema Registry subject for
-lifecycle management. Adoption changes only local ownership state; it never
-mutates Kafka or Schema Registry.
+lifecycle management. Adoption changes only the configured ownership state; it
+never mutates Kafka or Schema Registry.
 
 ```bash
 streamt adopt \
@@ -668,16 +669,16 @@ Credential-shaped values are redacted.
 Interactive use requires typing an exact token containing both the full
 resource ID and environment. Non-interactive use requires both exact
 `--confirm-resource` and `--confirm-env` values; there is no generic yes/force
-flag. A successful adoption atomically advances only the environment-scoped
-local ownership state. Repeating an identical adoption is a no-op and does not
-advance its serial.
+flag. A successful adoption atomically advances only the configured
+environment-scoped ownership state. Repeating an identical adoption is a no-op
+and does not advance its serial.
 
-!!! warning "Local state only"
-    Adoption state is stored at `.streamt/state/<environment>.json`. It is safe
-    for a single-user development checkout, not shared CI: ordinary remote
-    state selection and distributed operation locking remain disabled. Run
-    `streamt plan --out ...` after adoption and review that plan before applying
-    any pending differences.
+!!! warning "Adoption uses configured state"
+    Local adoption state is safe only for a single-user checkout. PostgreSQL v2
+    adoption uses the same exact writer and distributed address lock as apply,
+    and requires `writer_dsn_env`; owner/admin and local fallback are forbidden.
+    Run `streamt plan --out ...` after adoption and review that plan before
+    applying any pending differences.
 
 ---
 
@@ -854,9 +855,11 @@ address is a no-op. Init never changes an existing store's schema version.
 The structured `outcome` is `initialized`, `address_registered`, or
 `already_initialized`. Every successful result reports the safe store ID,
 schema version, canonical address, absent ownership state, clear operation
-status, and `ordinary_state_authority: disabled`. Init never imports local
-state, repairs a partial catalog, migrates a populated store, or enables
-PostgreSQL plan/apply/adopt.
+status, and an `ordinary_state_authority` capability label. A newly initialized
+v1 store reports `disabled`; address registration in an exact v2 store reports
+`supported_for_v2_writer`. Init does not resolve or probe the writer credential.
+It never imports local state, repairs a partial catalog, or migrates a populated
+store.
 
 Initialization is serialized by a bounded schema-scoped session advisory lock.
 After acquiring it, streamt begins a fresh serializable transaction, sets the
@@ -886,7 +889,8 @@ credentials and connection failures use the secret-neutral
 Explicitly migrate one exact PostgreSQL deployment-state catalog from schema
 version 1 to schema version 2 and bind its separately provisioned,
 least-privilege writer role. This is an owner-only administrative operation; it
-does not enable PostgreSQL for ordinary plan, apply, or adopt.
+prepares the v2 catalog used by ordinary plan/apply/adopt and recovery, but does
+not itself resolve or test the writer DSN.
 
 ```bash
 streamt state migrate-postgres-v2 [OPTIONS]
@@ -910,7 +914,7 @@ no failure echoes a role, DSN, login, endpoint, or schema name.
 The owner connection is resolved through `postgres.dsn_env`; the external role
 name is resolved separately through `postgres.writer_role_env`. Both named
 environment values are required, with no implicit credential or role fallback.
-The command requires a direct, session-affine primary, takes the schema lock and
+The command requires a direct standalone primary, takes the schema lock and
 all registered-address locks under one bounded deadline, validates the complete
 v1 catalog and histories, migrates metadata and ACLs atomically, and verifies
 the postimage through a fresh connection. It never creates or alters a role.
@@ -923,7 +927,7 @@ streamt state migrate-postgres-v2 -p . -e prod \
 
 A successful human result reports the outcome, safe store ID, schema version
 `2`, `Catalog mutation readiness: catalog_ready`, and `Ordinary state
-authority: disabled`. Structured result data contains only:
+authority: supported_for_v2_writer`. Structured result data contains only:
 
 ```json
 {
@@ -931,13 +935,15 @@ authority: disabled`. Structured result data contains only:
   "outcome": "migrated",
   "store_id": "8d04f3f7-0000-4000-8000-000000000000",
   "schema_version": 2,
-  "ordinary_state_authority": "disabled",
+  "ordinary_state_authority": "supported_for_v2_writer",
   "mutation_status": "catalog_ready"
 }
 ```
 
 `outcome` is `migrated` or, for an exact same-store/same-role retry,
-`already_migrated`. The result never authorizes an ordinary state command.
+`already_migrated`. `supported_for_v2_writer` is catalog capability, not proof
+that `writer_dsn_env` is present, authenticates as the stored role, or reaches a
+supported endpoint. Each ordinary command reproves those conditions.
 
 Migration-specific failures are:
 
@@ -960,7 +966,7 @@ the supported topology boundary.
 
 Probe the instantaneous availability of the configured PostgreSQL address lock.
 This separate diagnostic command does not acquire a reservation for later work
-or enable ordinary PostgreSQL state authority.
+or verify ordinary PostgreSQL writer authority.
 
 ```bash
 streamt state lock-status [OPTIONS]
@@ -972,7 +978,7 @@ streamt state lock-status [OPTIONS]
 | `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
 
 The command validates the complete version-1 or version-2 catalog and requires
-a direct, session-affine primary endpoint. It runs in an explicit
+a direct standalone primary endpoint. It runs in an explicit
 repeatable-read, read-only transaction. For an unregistered address it returns
 `unregistered` without invoking an advisory-lock function. For a registered
 address it calls
@@ -997,14 +1003,14 @@ Structured output contains only:
   "address": "streamt-state://platform/payments/prod",
   "lock_status": "available",
   "reservation": "none",
-  "ordinary_state_authority": "disabled"
+  "ordinary_state_authority": "not_verified"
 }
 ```
 
-PostgreSQL advisory locks are physical-session and reentrant state. Use a direct
-or session-affine primary connection; transaction- and statement-pooling
-endpoints are unsupported. The private operation lock has the same requirement
-and retains one connection for its complete lifetime. The probe creates no
+PostgreSQL advisory locks are physical-session state. Use a direct connection
+to one standalone primary. Every pooler/proxy and every HA or failover topology
+is unsupported; streamt cannot reliably detect that a DSN bypasses all poolers.
+The operation lock retains one connection for its complete lifetime. The probe creates no
 roles, grants, address rows, or operation markers.
 
 An invalid catalog uses `E411_STATE_INVALID`. A replica, missing dependency or
@@ -1055,12 +1061,11 @@ present address. Missing dependencies or credentials, incompatible stores, and
 connection failures use sanitized state errors and never fall back to local.
 Catalog verification also requires common schema/table ownership and the exact
 version-specific ACL contract. For v2, status reports `mutation_status:
-catalog_ready`; human output separately reports catalog readiness and
-`Ordinary state authority: disabled`. The read-only transaction sets
+catalog_ready` and `ordinary_state_authority: supported_for_v2_writer`; v1
+reports `disabled`. This is a catalog capability label only: status uses
+`dsn_env` and does not resolve, authenticate, or test `writer_dsn_env`. The
+read-only transaction sets
 `search_path` to `pg_catalog` and uses schema-qualified state objects.
-PostgreSQL remains unavailable to ordinary plan/apply/adopt. The explicit v2
-catalog migration and recovery-only writer path do not enable ordinary command
-integration.
 
 ```bash
 streamt state status -p . -e prod
@@ -1188,9 +1193,9 @@ Local recovery uses the local state authority and a crash-safe history
 sequence. PostgreSQL recovery requires an exact v2 catalog and resolves only
 the separately configured `postgres.writer_dsn_env`; it never falls back to
 the administrative `postgres.dsn_env`. It proves the stored writer identity,
-exact catalog/ACL, and a direct session-affine primary, then commits state,
-history, and control atomically. This recovery-only path does not enable
-ordinary PostgreSQL plan/apply/adopt.
+exact catalog/ACL, and a direct standalone primary, then commits state,
+history, and control atomically. Ordinary plan/apply/adopt use the same writer
+authority. All poolers and HA/failover topologies are unsupported.
 
 Recovery failures use these stable codes:
 

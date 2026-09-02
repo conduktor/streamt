@@ -1,8 +1,8 @@
-"""Real PostgreSQL command E2E through explicitly injected private state.
+"""Real PostgreSQL command-protocol E2E through explicitly injected state.
 
-The production deployment-state factory intentionally remains disabled. These
-tests patch each command-local factory only long enough to exercise the
-provider-neutral command protocol against an exact schema-v2 writer.
+These tests patch each command-local factory to isolate the provider-neutral
+protocol against an exact schema-v2 writer. The production-factory path has a
+separate unpatched real-server suite.
 """
 
 from __future__ import annotations
