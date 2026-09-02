@@ -291,6 +291,7 @@ jobs:
           /tmp/streamt-wheel-smoke/bin/pip install dist/*.whl
           /tmp/streamt-wheel-smoke/bin/streamt --help
           /tmp/streamt-wheel-smoke/bin/streamt adopt --help | grep -F connector
+          /tmp/streamt-wheel-smoke/bin/streamt adopt --help | grep -F gateway_rule
           /tmp/streamt-wheel-smoke/bin/python -c 'from streamt.docs.asyncapi import generate_asyncapi_document; from streamt.core.models import StreamtProject; project = StreamtProject.model_validate({"apiVersion": "streamt.dev/v1alpha1", "project": {"name": "wheel-smoke"}, "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}}, "sources": [{"name": "events", "topic": "events"}]}); assert generate_asyncapi_document(project)["asyncapi"] == "3.1.0"'
 
       - name: Smoke-test installed ODCS export offline
@@ -374,6 +375,18 @@ jobs:
           cd "${isolated_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
             /tmp/streamt-wheel-smoke/bin/python -I gateway_removal_wheel_smoke.py
+
+      - name: Smoke-test installed Gateway adoption workflow
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-gateway-adopt-wheel-XXXXXX")"
+          cp tests/package/gateway_adoption_wheel_smoke.py "${isolated_root}/"
+          cd "${isolated_root}"
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            /tmp/streamt-wheel-smoke/bin/python -I gateway_adoption_wheel_smoke.py
 
       - name: Smoke-test installed PostgreSQL extra
         run: |
