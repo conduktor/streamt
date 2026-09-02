@@ -113,9 +113,14 @@ Most models only need `name` and `sql`. Infrastructure fields like `topic:` and 
 
 ### Installation
 
+The first PyPI alpha has not been published yet. Install the current preview
+from the repository:
+
 ```bash
-pip install streamt
+python -m pip install "git+https://github.com/conduktor/streamt.git@main"
 ```
+
+Pin `main` to an immutable commit SHA for CI or other reproducible installs.
 
 ### Create a Project
 

@@ -234,15 +234,15 @@ Materializations are **automatically inferred** from your SQL:
 
 ## Installation
 
-```bash
-pip install streamt
-```
-
-Or with all optional dependencies:
+Until the first PyPI alpha is published, install the preview from the
+repository:
 
 ```bash
-pip install "streamt[all]"
+python -m pip install "git+https://github.com/conduktor/streamt.git@main"
 ```
+
+The package currently includes the dependencies for every supported runtime
+integration. Pin `main` to an immutable commit SHA for reproducible installs.
 
 [Full installation guide →](getting-started/installation.md)
 

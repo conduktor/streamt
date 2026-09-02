@@ -11,50 +11,36 @@ This guide covers installing streamt and setting up your local development envir
 
 - **Python 3.10+** — streamt uses modern Python features
 - **pip** or **uv** — for package management
+- **Git** — required while the alpha is installed directly from the repository
 - **Docker** (optional) — for local Kafka, Flink, and Connect
 
-## Quick Install
+## Preview Install
 
-Install streamt using pip:
-
-```bash
-pip install streamt
-```
-
-This installs the core package with minimal dependencies.
-
-## Full Installation
-
-For all features including Kafka administration, Flink deployment, and Schema Registry integration:
+The first PyPI alpha has not been published yet. Install the current preview
+directly from the repository:
 
 ```bash
-pip install "streamt[all]"
+python -m pip install "git+https://github.com/conduktor/streamt.git@main"
 ```
 
-Or install specific extras:
+Replace `main` with an immutable commit SHA for CI or other reproducible
+environments. Once the first public release exists, the supported command will
+be `python -m pip install streamt`.
 
-```bash
-# Kafka topic management
-pip install "streamt[kafka]"
+## Runtime Integrations
 
-# Flink job deployment
-pip install "streamt[flink]"
-
-# Schema Registry integration
-pip install "streamt[schema-registry]"
-
-# All extras
-pip install "streamt[kafka,flink,schema-registry]"
-```
+The base package currently includes the client dependencies used for Kafka,
+Flink, Schema Registry, Kafka Connect, and Conduktor Gateway. Integration-
+specific package extras are not defined in this alpha.
 
 ## Development Installation
 
 If you're contributing to streamt or want the latest development version:
 
 ```bash
-git clone https://github.com/streamt/streamt.git
+git clone https://github.com/conduktor/streamt.git
 cd streamt
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 ## Verify Installation
@@ -77,7 +63,7 @@ For local development and testing, we provide a Docker Compose stack with all de
 
 ```bash
 # Clone the repository
-git clone https://github.com/streamt/streamt.git
+git clone https://github.com/conduktor/streamt.git
 cd streamt
 
 # Start the local stack
@@ -146,10 +132,12 @@ export PATH="$PATH:$(python -m site --user-base)/bin"
 
 ### `ModuleNotFoundError: No module named 'confluent_kafka'`
 
-Install the Kafka extras:
+Reinstall the package in the same Python environment used to invoke streamt;
+`confluent-kafka` is a base runtime dependency:
 
 ```bash
-pip install "streamt[kafka]"
+python -m pip install --force-reinstall \
+  "git+https://github.com/conduktor/streamt.git@main"
 ```
 
 ### Connection refused to Kafka/Flink

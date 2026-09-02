@@ -56,7 +56,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install streamt
+      # Replace <commit-sha> with the same reviewed streamt revision everywhere.
+      - run: python -m pip install "git+https://github.com/conduktor/streamt.git@<commit-sha>"
 
       - name: Validate
         run: streamt validate --strict
@@ -78,7 +79,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install streamt
+      - run: python -m pip install "git+https://github.com/conduktor/streamt.git@<commit-sha>"
 
       - name: Plan
         run: streamt -o json plan --env staging --out staging.plan.json
@@ -98,7 +99,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install streamt
+      - run: python -m pip install "git+https://github.com/conduktor/streamt.git@<commit-sha>"
 
       - name: Plan
         run: streamt -o json plan --env prod --out prod.plan.json
