@@ -13,8 +13,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Optional
-from urllib.parse import urlsplit
+from typing import Literal, Optional
+from urllib.parse import quote, urlsplit
 
 import requests
 import sqlglot
@@ -74,6 +74,10 @@ class GatewayManagedObservationError(GatewayError):
 
 class GatewayDesiredAggregateError(ValueError):
     """A compiled Gateway rule cannot become exact supported provider state."""
+
+
+class GatewayManagedMutationError(GatewayError):
+    """An exact managed Gateway mutation could not be proven successful."""
 
 
 class GatewayChangeEvidenceError(ValueError):
@@ -940,6 +944,206 @@ def _copy_strict_managed_gateway_observation(
     )
 
 
+@dataclass(frozen=True)
+class GatewayAliasLocator:
+    """Secret-free exact identity of one managed AliasTopic."""
+
+    binding: GatewayBackendBinding
+    name: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.binding) is not GatewayBackendBinding
+            or not isinstance(self.name, str)
+            or _GATEWAY_RESOURCE_NAME.fullmatch(self.name) is None
+        ):
+            raise GatewayManagedMutationError("Gateway alias locator is invalid")
+
+
+@dataclass(frozen=True)
+class GatewayInterceptorLocator:
+    """Secret-free exact scoped identity of one managed Interceptor."""
+
+    binding: GatewayBackendBinding
+    name: str
+    scope: GatewayScope
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.binding) is not GatewayBackendBinding
+            or not isinstance(self.name, str)
+            or not self.name
+            or _has_control_character(self.name)
+            or not isinstance(self.scope, tuple)
+            or self.scope != _canonical_vcluster_scope(self.binding.virtual_cluster)
+        ):
+            raise GatewayManagedMutationError("Gateway interceptor locator is invalid")
+
+
+def _gateway_interceptor_locator_sort_key(
+    locator: GatewayInterceptorLocator,
+) -> tuple[tuple[tuple[str, bool, str], ...], str]:
+    return (_gateway_scope_sort_key(locator.scope), locator.name)
+
+
+@dataclass(frozen=True)
+class GatewayRuleLocator:
+    """Secret-free exact managed provider identities for one complete rule."""
+
+    binding: GatewayBackendBinding
+    logical_name: str
+    alias_name: str
+    interceptors: tuple[GatewayInterceptorLocator, ...] = dataclass_field(
+        default_factory=tuple,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        try:
+            logical_name, alias_name = _validate_managed_gateway_rule_identity(
+                self.logical_name,
+                self.alias_name,
+            )
+        except GatewayManagedObservationError:
+            raise GatewayManagedMutationError("Gateway rule locator is invalid") from None
+        if (
+            type(self.binding) is not GatewayBackendBinding
+            or logical_name != self.logical_name
+            or alias_name != self.alias_name
+            or not isinstance(self.interceptors, tuple)
+            or any(
+                type(locator) is not GatewayInterceptorLocator or locator.binding != self.binding
+                for locator in self.interceptors
+            )
+            or tuple(sorted(self.interceptors, key=_gateway_interceptor_locator_sort_key))
+            != self.interceptors
+            or len({(locator.scope, locator.name) for locator in self.interceptors})
+            != len(self.interceptors)
+        ):
+            raise GatewayManagedMutationError("Gateway rule locator is invalid")
+
+        for locator in self.interceptors:
+            try:
+                generated = classify_gateway_interceptor_name(
+                    self.logical_name,
+                    locator.name,
+                )
+            except _GeneratedGatewayInterceptorNameError:
+                raise GatewayManagedMutationError(
+                    "Gateway rule locator has ambiguous interceptor ownership"
+                ) from None
+            if generated is None:
+                raise GatewayManagedMutationError(
+                    "Gateway rule locator contains an unrelated interceptor"
+                )
+
+    @classmethod
+    def from_observation(
+        cls,
+        observation: ManagedGatewayRuleObservation,
+    ) -> GatewayRuleLocator:
+        """Build a locator only from one complete present observation."""
+        if not isinstance(observation, ManagedGatewayRuleObservation) or not observation.exists:
+            raise GatewayManagedMutationError(
+                "Gateway rule locator requires a complete present observation"
+            )
+        try:
+            detached = _copy_strict_managed_gateway_observation(observation)
+        except (AttributeError, GatewayManagedObservationError, TypeError, ValueError):
+            raise GatewayManagedMutationError(
+                "Gateway rule locator requires a complete present observation"
+            ) from None
+        return cls(
+            binding=detached.binding,
+            logical_name=detached.logical_name,
+            alias_name=detached.alias_name,
+            interceptors=tuple(
+                GatewayInterceptorLocator(
+                    binding=detached.binding,
+                    name=interceptor.name,
+                    scope=interceptor.scope,
+                )
+                for interceptor in detached.interceptors
+            ),
+        )
+
+    @property
+    def alias(self) -> GatewayAliasLocator:
+        """Return the exact AliasTopic identity in this rule."""
+        return GatewayAliasLocator(binding=self.binding, name=self.alias_name)
+
+
+@dataclass(frozen=True)
+class GatewayRuleMutation:
+    """One validated exact create, update, delete, or no-op transition."""
+
+    expected_action: Literal["create", "update", "delete", "no-op"]
+    current: ManagedGatewayRuleObservation = dataclass_field(repr=False)
+    desired: ManagedGatewayRuleObservation | None = dataclass_field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.current, ManagedGatewayRuleObservation) or (
+            self.desired is not None and not isinstance(self.desired, ManagedGatewayRuleObservation)
+        ):
+            raise GatewayManagedMutationError("Gateway rule mutation is invalid")
+        try:
+            current = _copy_strict_managed_gateway_observation(self.current)
+            desired = (
+                _copy_strict_managed_gateway_observation(self.desired)
+                if self.desired is not None
+                else None
+            )
+        except (AttributeError, GatewayManagedObservationError, TypeError, ValueError):
+            raise GatewayManagedMutationError("Gateway rule mutation is invalid") from None
+
+        if desired is None:
+            coherent_identity = current.exists
+            actual_action = "delete"
+        else:
+            coherent_identity = (
+                current.binding == desired.binding
+                and current.logical_name == desired.logical_name
+                and current.alias_name == desired.alias_name
+                and desired.exists
+            )
+            if not current.exists:
+                actual_action = "create"
+            elif current == desired:
+                actual_action = "no-op"
+            else:
+                actual_action = "update"
+
+        if not coherent_identity or self.expected_action != actual_action:
+            raise GatewayManagedMutationError(
+                "Gateway rule mutation does not describe one coherent transition"
+            )
+        if current.exists:
+            GatewayRuleLocator.from_observation(current)
+        if desired is not None:
+            GatewayRuleLocator.from_observation(desired)
+        object.__setattr__(self, "current", current)
+        object.__setattr__(self, "desired", desired)
+
+
+@dataclass(frozen=True)
+class _ManagedGatewayOperation:
+    method: str
+    endpoint: str = dataclass_field(repr=False)
+    payload: dict[str, object] = dataclass_field(repr=False)
+    identity: str
+    expected_resource: _ParsedAliasTopic | _ParsedInterceptor | None = dataclass_field(
+        default=None,
+        repr=False,
+    )
+    expected_upsert_result: str | None = None
+
+
+@dataclass(frozen=True)
+class _ManagedGatewayJournalEntry:
+    inverse: _ManagedGatewayOperation = dataclass_field(repr=False)
+    identity: str
+
+
 @dataclass
 class GatewayRuleChange:
     """A change to apply to a gateway rule."""
@@ -1649,6 +1853,485 @@ class GatewayDeployer:
             alias_name,
         )
         return self.observe_managed_gateway_snapshot().rule(logical_name, alias_name)
+
+    @staticmethod
+    def _managed_scope_payload(scope: GatewayScope) -> dict[str, object]:
+        if (
+            not isinstance(scope, tuple)
+            or tuple(key for key, _value in scope) != _CANONICAL_INTERCEPTOR_SCOPE_KEYS
+        ):
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains an invalid interceptor scope"
+            )
+        payload = dict(scope)
+        if set(payload) != _KNOWN_INTERCEPTOR_SCOPE_KEYS:
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains an invalid interceptor scope"
+            )
+        return payload
+
+    @staticmethod
+    def _managed_alias_identity(
+        binding: GatewayBackendBinding,
+        name: str,
+    ) -> str:
+        return f"AliasTopic scope={binding.virtual_cluster!r} name={name!r}"
+
+    @staticmethod
+    def _managed_interceptor_identity(
+        binding: GatewayBackendBinding,
+        name: str,
+    ) -> str:
+        return f"Interceptor scope={binding.virtual_cluster!r} name={name!r}"
+
+    @staticmethod
+    def _managed_alias_payload(
+        observation: ManagedGatewayRuleObservation,
+    ) -> tuple[dict[str, object], _ParsedAliasTopic]:
+        if (
+            not observation.exists
+            or observation.physical_name is None
+            or observation.physical_cluster != "main"
+        ):
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation requires complete alias content"
+            )
+        payload: dict[str, object] = {
+            "kind": "AliasTopic",
+            "apiVersion": "gateway/v2",
+            "metadata": {
+                "name": observation.alias_name,
+                "vCluster": observation.binding.virtual_cluster,
+            },
+            "spec": {
+                "physicalName": observation.physical_name,
+                "physicalCluster": "main",
+            },
+        }
+        try:
+            expected = GatewayDeployer._parse_alias_topic(payload)
+        except GatewayManagedObservationError:
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains invalid alias content"
+            ) from None
+        return payload, expected
+
+    @staticmethod
+    def _managed_interceptor_payload(
+        binding: GatewayBackendBinding,
+        interceptor: ManagedGatewayInterceptor,
+    ) -> tuple[dict[str, object], _ParsedInterceptor]:
+        if interceptor.scope != _canonical_vcluster_scope(binding.virtual_cluster):
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains a mismatched interceptor scope"
+            )
+        try:
+            config = json.loads(
+                interceptor.config_json,
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_nonfinite_json_constant,
+            )
+        except (
+            TypeError,
+            json.JSONDecodeError,
+            RecursionError,
+            _InvalidManagedGatewayJSONError,
+        ):
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains invalid interceptor content"
+            ) from None
+        if not isinstance(config, dict):
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains invalid interceptor content"
+            )
+        payload: dict[str, object] = {
+            "kind": "Interceptor",
+            "apiVersion": "gateway/v2",
+            "metadata": {
+                "name": interceptor.name,
+                "scope": GatewayDeployer._managed_scope_payload(interceptor.scope),
+            },
+            "spec": {
+                "pluginClass": interceptor.plugin_class,
+                "priority": interceptor.priority,
+                "config": config,
+            },
+        }
+        try:
+            expected = GatewayDeployer._parse_interceptor(payload)
+        except GatewayManagedObservationError:
+            raise GatewayManagedMutationError(
+                "Gateway managed mutation contains invalid interceptor content"
+            ) from None
+        return payload, expected
+
+    @staticmethod
+    def _managed_alias_put_operation(
+        observation: ManagedGatewayRuleObservation,
+        *,
+        expected_result: str,
+    ) -> _ManagedGatewayOperation:
+        payload, expected = GatewayDeployer._managed_alias_payload(observation)
+        return _ManagedGatewayOperation(
+            method="PUT",
+            endpoint="/alias-topic",
+            payload=payload,
+            identity=GatewayDeployer._managed_alias_identity(
+                observation.binding,
+                observation.alias_name,
+            ),
+            expected_resource=expected,
+            expected_upsert_result=expected_result,
+        )
+
+    @staticmethod
+    def _managed_alias_delete_operation(
+        observation: ManagedGatewayRuleObservation,
+    ) -> _ManagedGatewayOperation:
+        # Constructing the full resource here validates rollback content before
+        # any request even though DELETE itself carries only the exact locator.
+        GatewayDeployer._managed_alias_payload(observation)
+        return _ManagedGatewayOperation(
+            method="DELETE",
+            endpoint="/alias-topic",
+            payload={
+                "name": observation.alias_name,
+                "vCluster": observation.binding.virtual_cluster,
+            },
+            identity=GatewayDeployer._managed_alias_identity(
+                observation.binding,
+                observation.alias_name,
+            ),
+        )
+
+    @staticmethod
+    def _managed_interceptor_put_operation(
+        binding: GatewayBackendBinding,
+        interceptor: ManagedGatewayInterceptor,
+        *,
+        expected_result: str,
+    ) -> _ManagedGatewayOperation:
+        payload, expected = GatewayDeployer._managed_interceptor_payload(
+            binding,
+            interceptor,
+        )
+        return _ManagedGatewayOperation(
+            method="PUT",
+            endpoint="/interceptor",
+            payload=payload,
+            identity=GatewayDeployer._managed_interceptor_identity(
+                binding,
+                interceptor.name,
+            ),
+            expected_resource=expected,
+            expected_upsert_result=expected_result,
+        )
+
+    @staticmethod
+    def _managed_interceptor_delete_operation(
+        binding: GatewayBackendBinding,
+        interceptor: ManagedGatewayInterceptor,
+    ) -> _ManagedGatewayOperation:
+        # Validate complete prior content now so a rollback PUT can never be
+        # discovered to be malformed after a forward DELETE has succeeded.
+        GatewayDeployer._managed_interceptor_payload(binding, interceptor)
+        return _ManagedGatewayOperation(
+            method="DELETE",
+            endpoint=f"/interceptor/{quote(interceptor.name, safe='')}",
+            payload=GatewayDeployer._managed_scope_payload(interceptor.scope),
+            identity=GatewayDeployer._managed_interceptor_identity(
+                binding,
+                interceptor.name,
+            ),
+        )
+
+    def _perform_managed_gateway_operation(
+        self,
+        operation: _ManagedGatewayOperation,
+    ) -> None:
+        """Perform one exact non-retried, non-redirected managed write."""
+        if self._closed:
+            raise GatewayManagedMutationError("Gateway managed mutation is closed")
+        try:
+            response = self._session.request(
+                method=operation.method,
+                url=f"{self.admin_url}{self._api_base}{operation.endpoint}",
+                json=deepcopy(operation.payload),
+                timeout=DEFAULT_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
+            )
+        except Exception:
+            raise GatewayManagedMutationError("Gateway managed mutation request failed") from None
+
+        try:
+            status_code = getattr(response, "status_code", None)
+            if operation.method == "DELETE":
+                if status_code in {401, 403}:
+                    raise GatewayManagedMutationError(
+                        "Gateway managed mutation authorization failed"
+                    )
+                if status_code == 404:
+                    raise GatewayManagedMutationError(
+                        "Gateway managed mutation conflicted with concurrent absence"
+                    )
+                if type(status_code) is not int or status_code != 204:
+                    raise GatewayManagedMutationError(
+                        "Gateway managed mutation returned an invalid delete status"
+                    )
+                return
+
+            if operation.method != "PUT" or operation.expected_resource is None:
+                raise GatewayManagedMutationError("Gateway managed mutation operation is invalid")
+            if status_code in {401, 403}:
+                raise GatewayManagedMutationError("Gateway managed mutation authorization failed")
+            if type(status_code) is not int or status_code != 200:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation returned an invalid upsert status"
+                )
+            try:
+                body = self._read_managed_observation_body(response)
+                decoded = self._decode_managed_observation(body)
+            except GatewayManagedObservationError:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation returned an invalid bounded response"
+                ) from None
+            if not isinstance(decoded, dict) or set(decoded) != {
+                "resource",
+                "upsertResult",
+            }:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation returned a malformed upsert result"
+                )
+            upsert_result = decoded["upsertResult"]
+            if upsert_result not in {"Created", "Updated", "NotChanged"}:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation returned a malformed upsert result"
+                )
+            try:
+                if isinstance(operation.expected_resource, _ParsedAliasTopic):
+                    observed_resource: _ParsedAliasTopic | _ParsedInterceptor = (
+                        self._parse_alias_topic(decoded["resource"])
+                    )
+                else:
+                    raw_resource = decoded["resource"]
+                    if not isinstance(raw_resource, dict):
+                        raise GatewayManagedObservationError
+                    raw_metadata = raw_resource.get("metadata")
+                    raw_spec = raw_resource.get("spec")
+                    expected_payload_scope = dict(operation.expected_resource.scope)
+                    if (
+                        not isinstance(raw_metadata, dict)
+                        or raw_metadata.get("scope") != expected_payload_scope
+                        or not isinstance(raw_spec, dict)
+                        or (
+                            "comment" in raw_spec
+                            and raw_spec.get("comment") != ""
+                        )
+                    ):
+                        raise GatewayManagedObservationError
+                    observed_resource = self._parse_interceptor(decoded["resource"])
+            except GatewayManagedObservationError:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation returned a malformed managed resource"
+                ) from None
+            if observed_resource != operation.expected_resource:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation response does not match the requested resource"
+                )
+            if upsert_result != operation.expected_upsert_result:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation conflicted with provider ownership"
+                )
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def _execute_managed_gateway_operations(
+        self,
+        operations: list[tuple[_ManagedGatewayOperation, _ManagedGatewayOperation]],
+    ) -> None:
+        journal: list[_ManagedGatewayJournalEntry] = []
+        unresolved_forward: str | None = None
+        try:
+            for forward, inverse in operations:
+                try:
+                    self._perform_managed_gateway_operation(forward)
+                except GatewayManagedMutationError:
+                    unresolved_forward = forward.identity
+                    raise
+                except Exception:
+                    unresolved_forward = forward.identity
+                    raise GatewayManagedMutationError(
+                        "Gateway managed mutation response handling failed"
+                    ) from None
+                journal.append(
+                    _ManagedGatewayJournalEntry(
+                        inverse=inverse,
+                        identity=forward.identity,
+                    )
+                )
+        except GatewayManagedMutationError:
+            unresolved: list[str] = (
+                [unresolved_forward] if unresolved_forward is not None else []
+            )
+            for entry in reversed(journal):
+                try:
+                    self._perform_managed_gateway_operation(entry.inverse)
+                except GatewayManagedMutationError:
+                    unresolved.append(entry.identity)
+            if unresolved:
+                raise GatewayManagedMutationError(
+                    "Gateway managed mutation failed with unresolved mutation identities: "
+                    + "; ".join(unresolved)
+                ) from None
+            raise
+
+    def apply_managed_gateway_rule(
+        self,
+        current: ManagedGatewayRuleObservation,
+        desired: ManagedGatewayRuleObservation,
+    ) -> str:
+        """Apply one exact complete managed Gateway transition."""
+        if not isinstance(current, ManagedGatewayRuleObservation) or not isinstance(
+            desired,
+            ManagedGatewayRuleObservation,
+        ):
+            raise GatewayManagedMutationError(
+                "Gateway managed apply requires complete observations"
+            )
+        action = "create" if not current.exists else "no-op" if current == desired else "update"
+        mutation = GatewayRuleMutation(
+            expected_action=action,
+            current=current,
+            desired=desired,
+        )
+        current = mutation.current
+        desired = mutation.desired
+        if desired is None or desired.binding != self.cluster_binding:
+            raise GatewayManagedMutationError(
+                "Gateway managed apply binding does not match the deployer"
+            )
+        if action == "no-op":
+            return "unchanged"
+
+        operations: list[tuple[_ManagedGatewayOperation, _ManagedGatewayOperation]] = []
+        alias_changed = (
+            not current.exists
+            or current.physical_name != desired.physical_name
+            or current.physical_cluster != desired.physical_cluster
+        )
+        if alias_changed:
+            forward_alias = self._managed_alias_put_operation(
+                desired,
+                expected_result="Created" if not current.exists else "Updated",
+            )
+            inverse_alias = (
+                self._managed_alias_delete_operation(desired)
+                if not current.exists
+                else self._managed_alias_put_operation(current, expected_result="Updated")
+            )
+            operations.append((forward_alias, inverse_alias))
+
+        current_interceptors = {
+            (interceptor.scope, interceptor.name): interceptor
+            for interceptor in current.interceptors
+        }
+        desired_interceptors = {
+            (interceptor.scope, interceptor.name): interceptor
+            for interceptor in desired.interceptors
+        }
+        for identity in sorted(
+            desired_interceptors,
+            key=lambda value: (_gateway_scope_sort_key(value[0]), value[1]),
+        ):
+            desired_interceptor = desired_interceptors[identity]
+            current_interceptor = current_interceptors.get(identity)
+            if current_interceptor == desired_interceptor:
+                continue
+            forward_interceptor = self._managed_interceptor_put_operation(
+                desired.binding,
+                desired_interceptor,
+                expected_result="Created" if current_interceptor is None else "Updated",
+            )
+            inverse_interceptor = (
+                self._managed_interceptor_delete_operation(
+                    desired.binding,
+                    desired_interceptor,
+                )
+                if current_interceptor is None
+                else self._managed_interceptor_put_operation(
+                    current.binding,
+                    current_interceptor,
+                    expected_result="Updated",
+                )
+            )
+            operations.append((forward_interceptor, inverse_interceptor))
+
+        stale_identities = current_interceptors.keys() - desired_interceptors.keys()
+        for identity in sorted(
+            stale_identities,
+            key=lambda value: (_gateway_scope_sort_key(value[0]), value[1]),
+        ):
+            stale = current_interceptors[identity]
+            operations.append(
+                (
+                    self._managed_interceptor_delete_operation(current.binding, stale),
+                    self._managed_interceptor_put_operation(
+                        current.binding,
+                        stale,
+                        expected_result="Created",
+                    ),
+                )
+            )
+
+        self._execute_managed_gateway_operations(operations)
+        return "created" if action == "create" else "updated"
+
+    def delete_managed_gateway_rule(
+        self,
+        current: ManagedGatewayRuleObservation,
+    ) -> str:
+        """Delete exactly one complete present managed Gateway aggregate."""
+        mutation = GatewayRuleMutation(
+            expected_action="delete",
+            current=current,
+            desired=None,
+        )
+        current = mutation.current
+        if current.binding != self.cluster_binding:
+            raise GatewayManagedMutationError(
+                "Gateway managed delete binding does not match the deployer"
+            )
+
+        operations: list[tuple[_ManagedGatewayOperation, _ManagedGatewayOperation]] = []
+        for interceptor in sorted(
+            current.interceptors,
+            key=lambda item: (_gateway_scope_sort_key(item.scope), item.name),
+        ):
+            operations.append(
+                (
+                    self._managed_interceptor_delete_operation(
+                        current.binding,
+                        interceptor,
+                    ),
+                    self._managed_interceptor_put_operation(
+                        current.binding,
+                        interceptor,
+                        expected_result="Created",
+                    ),
+                )
+            )
+        operations.append(
+            (
+                self._managed_alias_delete_operation(current),
+                self._managed_alias_put_operation(current, expected_result="Created"),
+            )
+        )
+        self._execute_managed_gateway_operations(operations)
+        return "deleted"
 
     def _request(
         self,
