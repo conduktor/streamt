@@ -9,14 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
-from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifactFormatError
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    ConnectorArtifactFormatError,
+    GatewayRuleArtifact,
+)
 from streamt.deployer.connect import (
     ManagedConnectorObservation,
     is_connect_backend_identity,
+)
+from streamt.deployer.gateway import (
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    is_gateway_backend_identity,
+    plan_managed_gateway_rule,
 )
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
 from streamt.deployer.recovery import (
@@ -61,11 +71,12 @@ _DELETE_ACTIONS = frozenset({"delete", "cancel"})
 @dataclass(frozen=True)
 class _MappedChange:
     kind: _Kind
-    change: object
-    current: object | None
-    desired: object | None
+    change: object = field(repr=False)
+    current: object | None = field(repr=False)
+    desired: object | None = field(repr=False)
     physical_name: str
     backend_identity: str | None
+    normalized_gateway: bool = False
 
 
 def _target_error(action: OperationAction, reason: str) -> RecoveryObservationError:
@@ -112,6 +123,77 @@ def _physical_name(kind: _Kind, change: object) -> str | None:
             or getattr(change, "name", None)
         )
     return value if isinstance(value, str) and value else None
+
+
+def _normalized_gateway_change(
+    change: object,
+) -> tuple[
+    ManagedGatewayRuleObservation,
+    ManagedGatewayRuleObservation,
+    str,
+] | None:
+    """Return one complete normalized Gateway surface, or identify legacy state."""
+    current = getattr(change, "current", None)
+    desired_managed = getattr(change, "desired_managed", None)
+    backend_identity = getattr(change, "backend_identity", None)
+    if current is None and desired_managed is None and backend_identity is None:
+        return None
+    if (
+        getattr(change, "current_alias", None) is not None
+        or getattr(change, "current_interceptors", None) is not None
+    ):
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation contains legacy evidence"
+        )
+    desired = getattr(change, "desired", None)
+    if (
+        not isinstance(current, ManagedGatewayRuleObservation)
+        or not isinstance(desired_managed, ManagedGatewayRuleObservation)
+        or not isinstance(desired, GatewayRuleArtifact)
+        or not isinstance(backend_identity, str)
+        or not is_gateway_backend_identity(backend_identity)
+    ):
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation is partial"
+        )
+    if (
+        current.binding != desired_managed.binding
+        or backend_identity != desired_managed.binding.backend_identity
+        or getattr(change, "name", None) != desired.name
+        or current.logical_name != desired.name
+        or desired_managed.logical_name != desired.name
+        or current.alias_name != desired.virtual_topic
+        or desired_managed.alias_name != desired.virtual_topic
+        or not desired_managed.exists
+    ):
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation has mismatched identity"
+        )
+    try:
+        reconstructed = build_desired_gateway_rule(desired, desired_managed.binding)
+    except ValueError:
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation is incoherent"
+        ) from None
+    if reconstructed != desired_managed:
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation has mismatched desired state"
+        )
+    try:
+        expected = plan_managed_gateway_rule(desired, desired_managed, current)
+    except ValueError:
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation is incoherent"
+        ) from None
+    if (
+        getattr(change, "action", None) != expected.action
+        or getattr(change, "changes", None) != expected.changes
+        or expected.backend_identity != backend_identity
+    ):
+        raise RecoveryObservationError(
+            "Fresh normalized Gateway recovery observation is incoherent"
+        )
+    return current, desired_managed, backend_identity
 
 
 def _current(kind: _Kind, change: object) -> object | None:
@@ -169,7 +251,10 @@ def _identity_for_change(
         if (
             identity.kind == kind
             and record.physical_name == physical_name
-            and (kind != "connector" or record.backend == backend_identity)
+            and (
+                kind not in ("connector", "gateway_rule")
+                or record.backend == backend_identity
+            )
         ):
             matches.append(prior_id)
     if len(matches) > 1:
@@ -185,20 +270,28 @@ def _mapped_changes(
 ) -> dict[str, _MappedChange]:
     result: dict[str, _MappedChange] = {}
     for kind, change in _iter_changes(plan):
-        if kind == "gateway_rule" and any(
-            getattr(change, field, None) is not None
-            for field in ("current", "desired_managed", "backend_identity")
-        ):
-            raise RecoveryObservationError(
-                "Normalized Gateway recovery is not yet supported"
+        current: object | None
+        backend_identity: str | None
+        physical_name: str | None
+        normalized_gateway = (
+            _normalized_gateway_change(change)
+            if kind == "gateway_rule"
+            else None
+        )
+        if normalized_gateway is not None:
+            current, desired_managed, backend_identity = normalized_gateway
+            physical_name = desired_managed.alias_name
+        else:
+            current = _current(kind, change)
+            backend_identity = (
+                getattr(change, "backend_identity", None)
+                if kind == "connector"
+                else _BACKENDS[kind]
             )
-        physical_name = _physical_name(kind, change)
+            physical_name = _physical_name(kind, change)
         if physical_name is None:
             continue
         desired = getattr(change, "desired", None)
-        backend_identity = (
-            getattr(change, "backend_identity", None) if kind == "connector" else _BACKENDS[kind]
-        )
         if kind == "connector" and not is_connect_backend_identity(backend_identity):
             backend_identity = None
         identity = _identity_for_change(
@@ -218,10 +311,11 @@ def _mapped_changes(
         result[identity] = _MappedChange(
             kind=kind,
             change=change,
-            current=_current(kind, change),
+            current=current,
             desired=desired,
             physical_name=physical_name,
             backend_identity=backend_identity,
+            normalized_gateway=normalized_gateway is not None,
         )
     return result
 
@@ -230,6 +324,13 @@ def _expected_backend(mapped: _MappedChange) -> str:
     backend = mapped.backend_identity
     if not isinstance(backend, str) or (
         mapped.kind == "connector" and not is_connect_backend_identity(backend)
+    ) or (
+        mapped.kind == "gateway_rule"
+        and (
+            not is_gateway_backend_identity(backend)
+            if mapped.normalized_gateway
+            else backend != _BACKENDS["gateway_rule"]
+        )
     ):
         raise RecoveryObservationError(
             "Fresh recovery observation has no canonical backend identity"
@@ -387,6 +488,35 @@ def _normalize_connector(mapped: _MappedChange) -> tuple[str, dict[str, object]]
 
 
 def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
+    if mapped.normalized_gateway:
+        current = mapped.current
+        desired_managed = getattr(mapped.change, "desired_managed", None)
+        if not isinstance(current, ManagedGatewayRuleObservation) or not isinstance(
+            desired_managed,
+            ManagedGatewayRuleObservation,
+        ):
+            raise RecoveryObservationError("Fresh recovery observation is partial")
+        backend_identity = _expected_backend(mapped)
+        if (
+            current.binding.backend_identity != backend_identity
+            or desired_managed.binding.backend_identity != backend_identity
+            or current.alias_name != mapped.physical_name
+            or desired_managed.alias_name != mapped.physical_name
+            or current.logical_name != desired_managed.logical_name
+        ):
+            raise RecoveryObservationError(
+                "Fresh recovery observation has mismatched identity"
+            )
+        normalized: dict[str, object] = {
+            "kind": "gateway_rule",
+            "presence": "present" if current.exists else "absent",
+            "backend_identity": backend_identity,
+            "alias_name": current.alias_name,
+            "aggregate_fingerprint": current.fingerprint,
+            "managed_interceptor_count": len(current.interceptors),
+        }
+        return ("present" if current.exists else "absent"), normalized
+
     interceptors = getattr(mapped.change, "current_interceptors", None)
     alias = mapped.current
     if alias is None:
@@ -404,7 +534,7 @@ def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
     physical_topic = getattr(alias, "physical_topic", None)
     if not isinstance(physical_topic, str) or not isinstance(interceptors, list):
         raise RecoveryObservationError("Fresh recovery observation is partial")
-    normalized: list[dict[str, object]] = []
+    normalized_interceptors: list[dict[str, object]] = []
     seen_names: set[str] = set()
     for interceptor in interceptors:
         interceptor_name = getattr(interceptor, "name", None)
@@ -422,7 +552,7 @@ def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
         ):
             raise RecoveryObservationError("Fresh recovery observation is partial")
         seen_names.add(interceptor_name)
-        normalized.append(
+        normalized_interceptors.append(
             {
                 "name": interceptor_name,
                 "plugin_class": plugin_class,
@@ -430,13 +560,13 @@ def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
                 "scope": scope,
             }
         )
-    normalized.sort(key=lambda item: str(item["name"]))
+    normalized_interceptors.sort(key=lambda item: str(item["name"]))
     return "present", {
         "kind": "gateway_rule",
         "presence": "present",
         "name": name,
         "physical_topic": physical_topic,
-        "interceptors": normalized,
+        "interceptors": normalized_interceptors,
     }
 
 
@@ -571,8 +701,9 @@ def _prior_artifact_checksum(
             "ownership": ownership_dict,
         }
     else:
-        # Flink does not expose content, while Gateway transforms interceptor
-        # declarations into provider-specific configs that cannot be inverted safely.
+        # Flink does not expose content. Gateway ownership state contains the
+        # compiler artifact checksum, but no prior provider-surface fingerprint;
+        # a current aggregate therefore cannot prove a rolled-back update.
         return None
     try:
         if mapped.kind == "connector":
@@ -614,6 +745,15 @@ def _live_matches_desired(
             and normalized.get("cluster") == getattr(mapped.desired, "cluster", None)
             and isinstance(raw, dict)
             and normalized.get("config") == raw.get("config")
+        )
+    if mapped.normalized_gateway:
+        desired_managed = getattr(mapped.change, "desired_managed", None)
+        return (
+            isinstance(mapped.current, ManagedGatewayRuleObservation)
+            and isinstance(desired_managed, ManagedGatewayRuleObservation)
+            and mapped.current == desired_managed
+            and normalized.get("aggregate_fingerprint")
+            == desired_managed.fingerprint
         )
     desired_interceptors = getattr(mapped.desired, "interceptors", None)
     return (
@@ -721,13 +861,22 @@ class DeploymentPlanRecoveryObserver:
             prior_record = prior_state.resources.get(action.resource_id)
             expected_backend = _expected_backend(mapped)
             if (
-                kind == "connector"
+                kind in ("connector", "gateway_rule")
                 and prior_record is not None
                 and prior_record.backend != expected_backend
             ):
                 raise _target_error(
                     action,
                     "has legacy or mismatched prior backend evidence",
+                )
+            if (
+                kind == "gateway_rule"
+                and prior_record is not None
+                and prior_record.physical_name != mapped.physical_name
+            ):
+                raise _target_error(
+                    action,
+                    "has mismatched prior alias evidence",
                 )
             prior_matches = (
                 presence == "absent"

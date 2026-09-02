@@ -32,6 +32,7 @@ from streamt.deployer.gateway import (
     ManagedGatewayRuleObservation,
     build_desired_gateway_rule,
     plan_managed_gateway_rule,
+    plan_managed_gateway_rule_deletion,
 )
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.planner import (
@@ -80,6 +81,8 @@ GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
     "https://gateway.example.test",
     virtual_cluster="payments-prod",
 )
+GATEWAY_ENDPOINT = "https://gateway.example.test"
+GATEWAY_SECRET = "gateway-recovery-secret-7219"
 
 
 class _Artifact(Protocol):
@@ -129,7 +132,35 @@ def _connector_observation(
         binding=binding,
         name=artifact.name,
         exists=exists,
-        config=tuple(sorted(raw_config.items())) if exists else (),  # type: ignore[arg-type]
+        config=tuple(sorted(raw_config.items())) if exists else (),
+    )
+
+
+def _gateway_artifact(
+    *,
+    physical_topic: str = "orders.v1",
+    where: str | None = None,
+) -> GatewayRuleArtifact:
+    interceptors: list[dict[str, object]] = []
+    if where is not None:
+        interceptors.append({"type": "filter", "config": {"where": where}})
+    return GatewayRuleArtifact(
+        name="orders_rule",
+        virtual_topic="orders.public",
+        physical_topic=physical_topic,
+        interceptors=interceptors,
+        ownership=_ownership("orders_owner"),
+    )
+
+
+def _gateway_absent(
+    desired: ManagedGatewayRuleObservation,
+) -> ManagedGatewayRuleObservation:
+    return ManagedGatewayRuleObservation(
+        binding=desired.binding,
+        logical_name=desired.logical_name,
+        alias_name=desired.alias_name,
+        exists=False,
     )
 
 
@@ -319,32 +350,324 @@ def test_observed_candidate_supported_kinds(
     assert result.candidate_state.resources[action.resource_id].backend == backend
 
 
-def test_normalized_gateway_recovery_fails_closed_until_aggregate_integration() -> None:
-    artifact = GatewayRuleArtifact(
-        name="orders_alias",
-        virtual_topic="orders.public",
-        physical_topic="orders.v1",
-        ownership=_ownership("orders_alias"),
+def test_normalized_gateway_applied_create_is_accepted_as_candidate() -> None:
+    artifact = _gateway_artifact(
+        where=f"customer_token = '{GATEWAY_SECRET}'",
     )
     desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
-    current = ManagedGatewayRuleObservation(
-        binding=GATEWAY_BINDING,
-        logical_name=artifact.name,
-        alias_name=artifact.virtual_topic,
-        exists=False,
+    target = _action("gateway_rule", "orders_owner", "create")
+    plan = DeploymentPlan(
+        gateway_changes=[plan_managed_gateway_rule(artifact, desired, desired)]
+    )
+    state = _state()
+
+    result = _observe(state, plan, (target,))
+
+    assert result.targets[0].presence == "present"
+    assert result.targets[0].accepted_as == "candidate"
+    assert result.targets[0].fingerprint.startswith("sha256:")
+    assert result.candidate_state is not None
+    assert result.candidate_state.serial == state.serial + 1
+    record = result.candidate_state.resources[target.resource_id]
+    assert record.physical_name == artifact.virtual_topic
+    assert record.backend == GATEWAY_BINDING.backend_identity
+    rendered = repr(plan) + repr(result) + str(result.targets[0].to_dict())
+    assert GATEWAY_SECRET not in rendered
+    assert GATEWAY_ENDPOINT not in rendered
+    assert "config_json" not in rendered
+
+
+def test_normalized_gateway_applied_update_is_accepted_as_candidate() -> None:
+    prior = _gateway_artifact(physical_topic="orders.v1")
+    desired_artifact = _gateway_artifact(
+        physical_topic="orders.v2",
+        where="region = 'US'",
+    )
+    desired = build_desired_gateway_rule(desired_artifact, GATEWAY_BINDING)
+    target = _action("gateway_rule", "orders_owner", "update")
+    state = _state(
+        {
+            target.resource_id: _record(
+                prior,
+                physical_name=prior.virtual_topic,
+                backend=GATEWAY_BINDING.backend_identity,
+            )
+        }
     )
     plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(desired_artifact, desired, desired)
+        ]
+    )
+
+    result = _observe(state, plan, (target,))
+
+    assert result.targets[0].accepted_as == "candidate"
+    assert result.candidate_state is not None
+    assert result.candidate_state.serial == state.serial + 1
+    record = result.candidate_state.resources[target.resource_id]
+    assert record.physical_name == desired_artifact.virtual_topic
+    assert record.backend == GATEWAY_BINDING.backend_identity
+    assert record.artifact_checksum == artifact_checksum(desired_artifact.to_dict())
+
+
+def test_normalized_gateway_unchanged_create_absence_is_prior() -> None:
+    artifact = _gateway_artifact()
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    current = _gateway_absent(desired)
+    plan = DeploymentPlan(
         gateway_changes=[plan_managed_gateway_rule(artifact, desired, current)]
+    )
+    target = _action("gateway_rule", "orders_owner", "create")
+    state = _state()
+
+    result = _observe(state, plan, (target,))
+
+    assert result.targets[0].presence == "absent"
+    assert result.targets[0].accepted_as == "prior"
+    assert result.candidate_state == state
+
+
+def test_normalized_gateway_rolled_back_create_absence_is_prior() -> None:
+    artifact = _gateway_artifact()
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(artifact, desired, _gateway_absent(desired))
+        ]
+    )
+    target = _action("gateway_rule", "orders_owner", "create")
+
+    result = _observe(_state(), plan, (target,), resolution="rolled_back")
+
+    assert result.targets[0].presence == "absent"
+    assert result.targets[0].accepted_as == "prior"
+    assert result.candidate_state is None
+
+
+def test_normalized_gateway_rolled_back_update_fails_without_prior_surface() -> None:
+    prior = _gateway_artifact(physical_topic="orders.v1")
+    desired_artifact = _gateway_artifact(physical_topic="orders.v2")
+    current = build_desired_gateway_rule(prior, GATEWAY_BINDING)
+    desired = build_desired_gateway_rule(desired_artifact, GATEWAY_BINDING)
+    target = _action("gateway_rule", "orders_owner", "update")
+    state = _state(
+        {
+            target.resource_id: _record(
+                prior,
+                physical_name=prior.virtual_topic,
+                backend=GATEWAY_BINDING.backend_identity,
+            )
+        }
+    )
+    plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(desired_artifact, desired, current)
+        ]
     )
 
     with pytest.raises(
         RecoveryObservationError,
-        match="Normalized Gateway recovery is not yet supported",
-    ):
+        match="does not exactly match prior state",
+    ) as error:
+        _observe(state, plan, (target,), resolution="rolled_back")
+
+    assert GATEWAY_SECRET not in str(error.value)
+    assert GATEWAY_ENDPOINT not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    [
+        ("partial", "partial"),
+        ("backend", "mismatched identity"),
+        ("alias", "mismatched identity"),
+        ("desired", "mismatched desired state"),
+        ("current_type", "partial"),
+    ],
+)
+def test_normalized_gateway_partial_or_mismatched_surface_fails_closed(
+    corruption: str,
+    message: str,
+) -> None:
+    artifact = _gateway_artifact(where="region = 'US'")
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    change = plan_managed_gateway_rule(artifact, desired, desired)
+    if corruption == "partial":
+        object.__setattr__(change, "current", None)
+    elif corruption == "backend":
+        other_binding = GatewayBackendBinding.from_endpoint(
+            "https://other-gateway.example.test",
+            virtual_cluster=GATEWAY_BINDING.virtual_cluster,
+        )
+        object.__setattr__(change, "backend_identity", other_binding.backend_identity)
+    elif corruption == "alias":
+        other_alias = ManagedGatewayRuleObservation(
+            binding=GATEWAY_BINDING,
+            logical_name=artifact.name,
+            alias_name="orders.other",
+            exists=True,
+            physical_name=artifact.physical_topic,
+            physical_cluster="main",
+            interceptors=desired.interceptors,
+        )
+        object.__setattr__(change, "current", other_alias)
+    elif corruption == "desired":
+        other_artifact = _gateway_artifact(physical_topic="orders.v2")
+        object.__setattr__(
+            change,
+            "desired_managed",
+            build_desired_gateway_rule(other_artifact, GATEWAY_BINDING),
+        )
+    else:
+        object.__setattr__(
+            change,
+            "current",
+            AliasTopicState(
+                name=artifact.virtual_topic,
+                exists=True,
+                physical_topic=artifact.physical_topic,
+            ),
+        )
+    plan = DeploymentPlan(gateway_changes=[change])
+
+    with pytest.raises(RecoveryObservationError, match=message):
         _observe(
             _state(),
             plan,
-            (_action("gateway_rule", "orders_alias", "create"),),
+            (_action("gateway_rule", "orders_owner", "create"),),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (
+            "current_alias",
+            AliasTopicState(
+                name="orders.public",
+                exists=True,
+                physical_topic="orders.v1",
+            ),
+        ),
+        ("current_interceptors", []),
+    ],
+)
+def test_normalized_gateway_rejects_injected_legacy_evidence(
+    field: str,
+    value: object,
+) -> None:
+    artifact = _gateway_artifact(
+        where=f"customer_token = '{GATEWAY_SECRET}'",
+    )
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    change = plan_managed_gateway_rule(artifact, desired, desired)
+    object.__setattr__(change, field, value)
+    plan = DeploymentPlan(gateway_changes=[change])
+
+    with pytest.raises(
+        RecoveryObservationError,
+        match="contains legacy evidence",
+    ) as error:
+        _observe(
+            _state(),
+            plan,
+            (_action("gateway_rule", "orders_owner", "create"),),
+        )
+
+    assert GATEWAY_SECRET not in str(error.value)
+    assert GATEWAY_ENDPOINT not in str(error.value)
+
+
+def test_normalized_gateway_drifted_fingerprint_matches_neither_state() -> None:
+    desired_artifact = _gateway_artifact(
+        where=f"customer_token = '{GATEWAY_SECRET}'",
+    )
+    observed_artifact = _gateway_artifact(where="region = 'EU'")
+    desired = build_desired_gateway_rule(desired_artifact, GATEWAY_BINDING)
+    observed = build_desired_gateway_rule(observed_artifact, GATEWAY_BINDING)
+    plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(desired_artifact, desired, observed)
+        ]
+    )
+
+    with pytest.raises(
+        RecoveryObservationError,
+        match="matches neither prior nor candidate state",
+    ) as error:
+        _observe(
+            _state(),
+            plan,
+            (_action("gateway_rule", "orders_owner", "create"),),
+        )
+
+    assert GATEWAY_SECRET not in str(error.value)
+    assert GATEWAY_ENDPOINT not in str(error.value)
+
+
+def test_normalized_gateway_rejects_legacy_prior_backend() -> None:
+    prior = _gateway_artifact(physical_topic="orders.v1")
+    desired_artifact = _gateway_artifact(physical_topic="orders.v2")
+    desired = build_desired_gateway_rule(desired_artifact, GATEWAY_BINDING)
+    target = _action("gateway_rule", "orders_owner", "update")
+    state = _state(
+        {
+            target.resource_id: _record(
+                prior,
+                physical_name=prior.virtual_topic,
+                backend="conduktor-gateway",
+            )
+        }
+    )
+    plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(desired_artifact, desired, desired)
+        ]
+    )
+
+    with pytest.raises(RecoveryObservationError, match="legacy or mismatched"):
+        _observe(state, plan, (target,))
+
+
+def test_normalized_gateway_prior_lookup_never_falls_back_to_logical_name() -> None:
+    artifact = _gateway_artifact()
+    desired = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    target = _action("gateway_rule", "orders_owner", "create")
+    state = _state(
+        {
+            target.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=GATEWAY_BINDING.backend_identity,
+            )
+        }
+    )
+    plan = DeploymentPlan(
+        gateway_changes=[
+            plan_managed_gateway_rule(artifact, desired, _gateway_absent(desired))
+        ]
+    )
+
+    with pytest.raises(
+        RecoveryObservationError,
+        match="mismatched prior alias evidence",
+    ):
+        _observe(state, plan, (target,), resolution="rolled_back")
+
+
+def test_normalized_gateway_does_not_invent_delete_recovery() -> None:
+    artifact = _gateway_artifact()
+    current = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    plan = DeploymentPlan(
+        gateway_changes=[plan_managed_gateway_rule_deletion(current)]
+    )
+
+    with pytest.raises(RecoveryObservationError, match="partial"):
+        _observe(
+            _state(),
+            plan,
+            (_action("gateway_rule", "orders_owner", "delete"),),
         )
 
 
@@ -1310,7 +1633,7 @@ def test_connector_fingerprint_is_deterministic_secret_neutral_and_ignores_volat
     target = _action("connector", "orders", "create")
 
     def plan(
-        config: dict[str, str],
+        config: dict[str, object],
         *,
         status: str,
         tasks: list[dict[str, object]],
