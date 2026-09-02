@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional, cast
@@ -33,7 +34,17 @@ from streamt.deployer.state import (
     local_state_path,
     updated_local_state,
 )
-from streamt.deployer.state_backend import make_deployment_state_service
+from streamt.deployer.state_backend import (
+    ControlObservation,
+    OperationAction,
+    OperationIntent,
+    OperationProgress,
+    RecoveryRecord,
+    StateBackendRecoveryRequiredError,
+    make_deployment_state_service,
+    operation_timestamp,
+    state_checksum,
+)
 from streamt.output import StructuredError
 
 _SELECTABLE_ARTIFACT_KINDS = (
@@ -306,6 +317,8 @@ def apply(
         # held through live re-planning, runtime mutation, and state commit.
         prior_observation = state_operation.read()
         prior_state = prior_observation.state
+        control_observation = state_operation.read_control()
+        state_operation.ensure_ready(control_observation)
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -520,69 +533,222 @@ def apply(
                 return
 
             next_state = updated_local_state(prior_state, deployment_plan)
-            results = planner.apply(deployment_plan)
-            if reviewed_plan and reviewed_plan_path:
-                results["plan_checksum"] = reviewed_plan.checksum
-                results["plan_file"] = str(reviewed_plan_path.resolve())
-            fmt.set_data(results)
-
-            created = cast(list[str], results["created"])
-            updated = cast(list[str], results["updated"])
-            unchanged = cast(list[str], results["unchanged"])
-            errors = cast(list[str], results["errors"])
-            rollback_candidates = cast(list[str], results.get("rollback_candidates", []))
-
-            if created:
-                fmt.print("\n[green]Created:[/green]")
-                for item in created:
-                    fmt.print(f"  + {item}")
-            if updated:
-                fmt.print("\n[yellow]Updated:[/yellow]")
-                for item in updated:
-                    fmt.print(f"  ~ {item}")
-            if unchanged:
-                fmt.print("\n[dim]Unchanged:[/dim]")
-                for item in unchanged:
-                    fmt.print(f"  = {item}")
-            if errors and rollback_candidates:
-                fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
-                rolled_back, rb_errors = planner.rollback(rollback_candidates)
-                if rolled_back:
-                    results["rolled_back"] = rolled_back
-                    fmt.print(f"  Rolled back {len(rolled_back)} resource(s)")
-                    for item in rolled_back:
-                        fmt.print(f"  ↩ {item}")
-                if rb_errors:
-                    results["rollback_errors"] = rb_errors
-                    fmt.print("\n[red]Rollback failures (manual cleanup needed):[/red]")
-                    for item in rb_errors:
-                        fmt.print_error(item)
-            if errors:
-                fmt.set_status("error")
-                fmt.print("\n[red]Errors:[/red]")
-                for item in errors:
-                    fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
-                    fmt.print_error(item)
-                fmt.flush()
-                sys.exit(1)
-
-            if next_state is not None:
-                try:
-                    state_operation.compare_and_swap(
-                        commit_observation,
-                        next_state,
+            ordered_actions = planner.operation_actions(deployment_plan)
+            operation_id = str(uuid.uuid4())
+            intent = OperationIntent(
+                operation_id=operation_id,
+                kind="apply",
+                started_at=operation_timestamp(),
+                actor="local-cli",
+                prior_state_serial=prior_state.serial,
+                prior_state_checksum=state_checksum(prior_state),
+                reviewed_plan_checksum=(
+                    reviewed_plan.checksum if reviewed_plan is not None else None
+                ),
+                actions=tuple(
+                    OperationAction(
+                        index=index,
+                        resource_id=label,
+                        action=action,
                     )
-                except OSError as error:
-                    raise StateFormatError(
-                        f"deployment succeeded but local ownership state could not be saved: {error}"
-                    ) from error
-                results["state_serial"] = next_state.serial
-                results["state_file"] = str(state_path)
-            else:
-                results["state_serial"] = prior_state.serial
+                    for index, (label, action) in enumerate(ordered_actions)
+                ),
+            )
+            active_control: list[ControlObservation] = [
+                state_operation.begin_operation(control_observation, intent)
+            ]
+            mutation_started = False
+            state_commit_attempted = False
+            operation_finalized = False
 
-            fmt.print("\n[green]Apply complete[/green]")
-            fmt.flush()
+            def before_action(label: str, index: int) -> None:
+                nonlocal mutation_started
+                state_operation.check_lock()
+                action = intent.actions[index]
+                if action.resource_id != label:
+                    raise StateFormatError(
+                        "runtime action order does not match the durable operation intent"
+                    )
+                active_control[0] = state_operation.record_progress(
+                    active_control[0],
+                    OperationProgress(
+                        operation_id=operation_id,
+                        action_index=index,
+                        resource_id=label,
+                        action=action.action,
+                        status="started",
+                        succeeded=None,
+                        recorded_at=operation_timestamp(),
+                    ),
+                )
+                # No runtime call can begin until the started boundary is durable.
+                mutation_started = True
+
+            def after_action(label: str, index: int, succeeded: bool) -> None:
+                state_operation.check_lock()
+                action = intent.actions[index]
+                if action.resource_id != label:
+                    raise StateFormatError(
+                        "runtime action order does not match the durable operation intent"
+                    )
+                active_control[0] = state_operation.record_progress(
+                    active_control[0],
+                    OperationProgress(
+                        operation_id=operation_id,
+                        action_index=index,
+                        resource_id=label,
+                        action=action.action,
+                        status="completed",
+                        succeeded=succeeded,
+                        recorded_at=operation_timestamp(),
+                    ),
+                )
+
+            def mark_recovery(failure_code: str) -> None:
+                nonlocal operation_finalized
+                completed = [
+                    progress.action_index
+                    for progress in active_control[0].control.progress
+                    if progress.status == "completed"
+                    and progress.succeeded is True
+                ]
+                active_control[0] = state_operation.mark_recovery_required(
+                    active_control[0],
+                    RecoveryRecord(
+                        operation_id=operation_id,
+                        failure_code=failure_code,
+                        failed_at=operation_timestamp(),
+                        last_completed_action_index=(
+                            max(completed) if completed else None
+                        ),
+                    ),
+                )
+                operation_finalized = True
+
+            def clear_operation() -> None:
+                nonlocal operation_finalized
+                active_control[0] = state_operation.clear_operation(
+                    active_control[0]
+                )
+                operation_finalized = True
+
+            try:
+                results = planner.apply(
+                    deployment_plan,
+                    before_action=before_action,
+                    after_action=after_action,
+                    stop_on_error=True,
+                )
+                if reviewed_plan and reviewed_plan_path:
+                    results["plan_checksum"] = reviewed_plan.checksum
+                    results["plan_file"] = str(reviewed_plan_path.resolve())
+                fmt.set_data(results)
+
+                created = cast(list[str], results["created"])
+                updated = cast(list[str], results["updated"])
+                unchanged = cast(list[str], results["unchanged"])
+                errors = cast(list[str], results["errors"])
+                rollback_candidates = cast(
+                    list[str],
+                    results.get("rollback_candidates", []),
+                )
+
+                if created:
+                    fmt.print("\n[green]Created:[/green]")
+                    for item in created:
+                        fmt.print(f"  + {item}")
+                if updated:
+                    fmt.print("\n[yellow]Updated:[/yellow]")
+                    for item in updated:
+                        fmt.print(f"  ~ {item}")
+                if unchanged:
+                    fmt.print("\n[dim]Unchanged:[/dim]")
+                    for item in unchanged:
+                        fmt.print(f"  = {item}")
+                rollback_failed = False
+                if errors and rollback_candidates:
+                    fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
+                    rolled_back, rb_errors = planner.rollback(
+                        rollback_candidates,
+                        before_action=lambda _label, _index: (
+                            state_operation.check_lock()
+                        ),
+                        after_action=lambda _label, _index, _succeeded: (
+                            state_operation.check_lock()
+                        ),
+                        stop_on_error=True,
+                    )
+                    if rolled_back:
+                        results["rolled_back"] = rolled_back
+                        fmt.print(f"  Rolled back {len(rolled_back)} resource(s)")
+                        for item in rolled_back:
+                            fmt.print(f"  ↩ {item}")
+                    if rb_errors:
+                        rollback_failed = True
+                        results["rollback_errors"] = rb_errors
+                        fmt.print("\n[red]Rollback failures (manual cleanup needed):[/red]")
+                        for item in rb_errors:
+                            fmt.print_error(item)
+                if errors:
+                    if mutation_started:
+                        mark_recovery(
+                            "rollback_incomplete"
+                            if rollback_failed
+                            else "runtime_action_failed"
+                        )
+                    else:
+                        clear_operation()
+                    fmt.set_status("error")
+                    fmt.print("\n[red]Errors:[/red]")
+                    for item in errors:
+                        fmt.add_error(
+                            StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item)
+                        )
+                        fmt.print_error(item)
+                    fmt.flush()
+                    sys.exit(1)
+
+                state_operation.check_lock()
+                if next_state is not None:
+                    state_commit_attempted = True
+                    try:
+                        state_operation.compare_and_swap(
+                            commit_observation,
+                            next_state,
+                        )
+                    except OSError as error:
+                        raise StateFormatError(
+                            "deployment succeeded but ownership state commit "
+                            "could not be confirmed"
+                        ) from error
+                    results["state_serial"] = next_state.serial
+                    results["state_file"] = str(state_path)
+                else:
+                    results["state_serial"] = prior_state.serial
+
+                # Ownership is authoritative before the durable intent is cleared.
+                clear_operation()
+                fmt.print("\n[green]Apply complete[/green]")
+                fmt.flush()
+            except BaseException:
+                if not operation_finalized:
+                    if mutation_started or state_commit_attempted:
+                        try:
+                            mark_recovery(
+                                "state_commit_uncertain"
+                                if state_commit_attempted
+                                else "operation_interrupted"
+                            )
+                        except BaseException:
+                            # The existing in_progress sidecar remains blocking.
+                            pass
+                    else:
+                        try:
+                            clear_operation()
+                        except BaseException:
+                            # A failed clear preserves the conservative marker.
+                            pass
+                raise
         finally:
             close_deployers(sr, kafka, flink, connect, gateway)
 
@@ -595,6 +761,16 @@ def apply(
         sys.exit(1)
     except PlanFileError as e:
         fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
+        fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendRecoveryRequiredError as e:
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_RECOVERY_REQUIRED,
+                message=str(e),
+            )
+        )
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)

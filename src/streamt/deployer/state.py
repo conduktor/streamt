@@ -105,6 +105,11 @@ class LocalStateOperationLock:
             expected_serial=expected_serial,
         )
 
+    @property
+    def is_held(self) -> bool:
+        """Return whether this process still owns the local lock handle."""
+        return self._fd is not None
+
 
 @contextmanager
 def local_state_operation_lock(

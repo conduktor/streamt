@@ -131,13 +131,12 @@ database transaction IDs, paths, or lock handles. Provider exceptions are
 translated into stable errors such as unavailable, invalid state, conflict,
 lock timeout, lock lost, recovery required, and unknown commit outcome.
 
-The current extraction implements `describe`, consistent `read`, and an
-exclusive operation surface containing `read` plus revision-and-serial CAS.
-This is the local Slice 1 compatibility boundary: `apply` and `adopt` retain
-the pre-existing adjacent-file lock for the operation's complete lifetime, and
-`plan` performs a lock-free read. The richer intent/progress/recovery methods
-above remain the required target contract and are not claimed by the current
-local provider.
+The local provider implements `describe`, consistent state/control reads,
+revision-and-serial CAS, and the exclusive intent/progress/recovery operation
+surface. `apply` and `adopt` retain the pre-existing adjacent-file lock for the
+operation's complete lifetime, while `plan` performs lock-free read-only state
+and safe operation-status reads. Ownership remains version 1 JSON; version 1
+control metadata lives in a separate atomically replaced sidecar.
 
 `begin_operation`, `record_progress`, `commit_operation`, and `fail_operation`
 are atomic CAS operations over the observation revision and lock ownership. A
@@ -245,15 +244,15 @@ and the exact live resource, repeats confirmation-context checks, then writes
 only the ownership record. A stale confirmation or changed resource fails
 closed. Topic or subject APIs are never mutated.
 
-The current local-only compatibility path takes a stricter, simpler approach:
+The current local-only path takes a stricter, simpler approach:
 it acquires the same-host operation lock before its authoritative observation
 and keeps that lock while an interactive confirmation prompt is open. A second
 local mutator therefore waits instead of observing the same prior serial. This
-behavior is intentional until the durable operation protocol can safely
-support confirmation before lock acquisition followed by under-lock
-re-observation. Operators should prefer the non-interactive exact-resource and
-environment confirmation flags in automation. This local path still has no
-durable operation marker or cross-host exclusion.
+behavior is intentional. Adoption writes a durable state-only intent before
+its ownership CAS and clears it only after the ownership write succeeds.
+Operators should prefer the non-interactive exact-resource and environment
+confirmation flags in automation. The local path has durable interruption
+detection, but still has no cross-host exclusion or automated recovery command.
 
 ## Operation and recovery records
 
@@ -271,6 +270,14 @@ JSON payload. It contains only:
 `in_progress` and `recovery_required` both block mutation. There is no automatic
 "stale after N minutes" clearing rule. Time is diagnostic evidence, not proof
 that an external mutation did not happen.
+
+The implemented local sidecar is
+`.streamt/state/<environment>.control.json`. Online plan exposes only its safe
+status fields and never modifies it. The recovery command described below is
+not implemented yet: operators must not delete or edit an active sidecar, or
+roll back streamt versions while one exists. Retain the evidence and reconcile
+live infrastructure with ownership state. The local file lock and sidecar do
+not provide cross-host or distributed safety.
 
 Recovery begins with read-only status and a fresh live plan. An operator must
 choose one explicit resolution:

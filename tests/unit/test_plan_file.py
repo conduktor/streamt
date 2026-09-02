@@ -1093,4 +1093,11 @@ def test_cli_external_ownership_visibility_does_not_block_other_apply(tmp_path: 
         result = CliRunner().invoke(main, ["apply", "-p", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    apply_plan.assert_called_once_with(visible_plan)
+    apply_plan.assert_called_once()
+    assert apply_plan.call_args.args == (visible_plan,)
+    assert set(apply_plan.call_args.kwargs) == {
+        "before_action",
+        "after_action",
+        "stop_on_error",
+    }
+    assert apply_plan.call_args.kwargs["stop_on_error"] is True

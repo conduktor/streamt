@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +41,16 @@ from streamt.deployer.state import (
     local_state_path,
     resource_id,
 )
-from streamt.deployer.state_backend import make_deployment_state_service
+from streamt.deployer.state_backend import (
+    OperationAction,
+    OperationIntent,
+    OperationProgress,
+    RecoveryRecord,
+    StateBackendRecoveryRequiredError,
+    make_deployment_state_service,
+    operation_timestamp,
+    state_checksum,
+)
 from streamt.output import StructuredError
 
 _SENSITIVE_KEY = re.compile(
@@ -677,6 +687,8 @@ def adopt(
         # confirmation so the approved evidence remains authoritative.
         prior_observation = state_operation.read()
         prior_state = prior_observation.state
+        control_observation = state_operation.read_control()
+        state_operation.ensure_ready(control_observation)
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -805,12 +817,70 @@ def adopt(
             serial=prior_state.serial + 1,
             resources=resources,
         )
+        operation_id = str(uuid.uuid4())
+        intent = OperationIntent(
+            operation_id=operation_id,
+            kind="adopt",
+            started_at=operation_timestamp(),
+            actor="local-cli",
+            prior_state_serial=prior_state.serial,
+            prior_state_checksum=state_checksum(prior_state),
+            reviewed_plan_checksum=None,
+            actions=(
+                OperationAction(
+                    index=0,
+                    resource_id=resource_uri,
+                    action="adopt",
+                ),
+            ),
+        )
+        active_control = state_operation.begin_operation(
+            control_observation,
+            intent,
+        )
+        state_commit_attempted = False
+        operation_finalized = False
         try:
+            state_operation.check_lock()
+            active_control = state_operation.record_progress(
+                active_control,
+                OperationProgress(
+                    operation_id=operation_id,
+                    action_index=0,
+                    resource_id=resource_uri,
+                    action="adopt",
+                    status="started",
+                    succeeded=None,
+                    recorded_at=operation_timestamp(),
+                ),
+            )
+            state_commit_attempted = True
             state_operation.compare_and_swap(
                 prior_observation,
                 next_state,
             )
+            active_control = state_operation.record_progress(
+                active_control,
+                OperationProgress(
+                    operation_id=operation_id,
+                    action_index=0,
+                    resource_id=resource_uri,
+                    action="adopt",
+                    status="completed",
+                    succeeded=True,
+                    recorded_at=operation_timestamp(),
+                ),
+            )
+            active_control = state_operation.clear_operation(active_control)
+            operation_finalized = True
         except StateConflictError as exc:
+            # Local CAS detects a conflict before it writes ownership state.
+            try:
+                state_operation.clear_operation(active_control)
+                operation_finalized = True
+            except BaseException:
+                # The existing in_progress marker remains conservative.
+                pass
             raise AdoptionError(
                 ErrorCode.ADOPTION_STATE_CONFLICT,
                 str(exc),
@@ -818,8 +888,37 @@ def adopt(
         except OSError as exc:
             raise AdoptionError(
                 ErrorCode.ADOPTION_FAILED,
-                f"Could not atomically save adoption state: {_redact(str(exc))}",
+                "Could not confirm the atomic adoption state commit",
             ) from exc
+        finally:
+            if not operation_finalized:
+                if state_commit_attempted:
+                    try:
+                        completed = [
+                            progress.action_index
+                            for progress in active_control.control.progress
+                            if progress.status == "completed"
+                            and progress.succeeded is True
+                        ]
+                        state_operation.mark_recovery_required(
+                            active_control,
+                            RecoveryRecord(
+                                operation_id=operation_id,
+                                failure_code="adoption_state_commit_uncertain",
+                                failed_at=operation_timestamp(),
+                                last_completed_action_index=(
+                                    max(completed) if completed else None
+                                ),
+                            ),
+                        )
+                    except BaseException:
+                        # The existing in_progress marker remains blocking.
+                        pass
+                else:
+                    try:
+                        state_operation.clear_operation(active_control)
+                    except BaseException:
+                        pass
 
         data["adopted"] = True
         data["already_owned"] = False
@@ -850,6 +949,17 @@ def adopt(
             fmt.set_data(data)
         safe_message = redact_sensitive_text(exc.message)
         fmt.add_error(StructuredError(code=exc.code, message=safe_message))
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendRecoveryRequiredError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_RECOVERY_REQUIRED,
+                message=safe_message,
+            )
+        )
         fmt.print_error(safe_message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc

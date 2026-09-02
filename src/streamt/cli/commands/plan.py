@@ -93,6 +93,13 @@ def plan(
         manifest = compiler.compile(dry_run=True)
         prior_state: LocalState | None = None
         state_reference: StateReference | None = None
+        operation_status: dict[str, object] = {
+            "status": "unavailable",
+            "operation_id": None,
+            "kind": None,
+            "failure_code": None,
+            "last_completed_action_index": None,
+        }
 
         if offline:
             planner = DeploymentPlanner(
@@ -111,6 +118,7 @@ def plan(
                 environment=effective_environment,
             )
             state_observation = state_service.read()
+            operation_status = state_service.read_control().safe_status()
             prior_state = state_observation.state
             state_reference = StateReference.from_observation(state_observation)
             fmt.print_warning(
@@ -179,6 +187,7 @@ def plan(
                 risk.to_dict() for risk in deployment_plan.ordered_change_risks
             ],
             "state_serial": prior_state.serial if prior_state is not None else None,
+            "operation_status": operation_status,
             "changes": changes,
             "ownership_requirements": [
                 requirement.to_dict()

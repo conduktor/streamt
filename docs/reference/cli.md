@@ -513,12 +513,28 @@ ownership state, resource actions, or ownership decisions. Offline plans record
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
 
+Online JSON plan output also includes `operation_status`, containing only safe
+status, operation ID/kind, stable failure code, and last safely successful
+action index. Planning is read-only and does not clear an unfinished operation.
+Offline output reports this status as `unavailable` without constructing a
+state backend.
+
 After a successful non-dry-run apply, streamt atomically records resources it
 manages or has adopted in `.streamt/state/<environment>.json`. External,
 unowned, and ownership-blocked resources are never recorded. Local state is
 appropriate for a single-user development checkout only: shared CI needs a
 remote state backend with locking, which is not yet supported. Failed and
-rolled-back applies do not advance state.
+rolled-back planner results do not advance ownership state before final commit.
+
+For local apply/adopt, `.streamt/state/<environment>.control.json` records a
+versioned durable intent before mutation and safe ordered action progress. Both
+`in_progress` and `recovery_required` block later apply/adopt commands
+indefinitely with `E419_STATE_RECOVERY_REQUIRED`; elapsed time is not proof that
+a runtime call failed. There is no recovery command yet. Do not delete or edit
+the sidecar, and do not roll back streamt versions while a marker exists;
+retain the evidence and reconcile live infrastructure with ownership state.
+This sidecar complements a same-host file lock and does not provide cross-host
+or distributed exclusion.
 
 !!! warning "Protected Environments"
     Protected environments reject direct apply with
@@ -567,7 +583,12 @@ Summary: 2 created, 1 updated, 0 unchanged
     - **Partitions decreased** → plan records `kafka_partition_reduction`; apply
       is refused before mutation (Kafka does not support partition reduction)
 
-    On partial failure, successfully applied resources remain. Re-run `apply` to retry failed resources — already-applied resources will be detected as `unchanged`. The results include `rollback_candidates` (newly created resources) that can be cleaned up if needed.
+    A controlled apply stops before starting any later action after one runtime
+    call fails. It may attempt rollback of earlier created resources while the
+    lock remains healthy, but it preserves a recovery marker because the failed
+    call's result can be unknown. Do not automatically rerun apply; inspect the
+    online plan's `operation_status` and retain the sidecar evidence until the
+    explicit recovery workflow is available.
 
 !!! warning "Flink Job Lifecycle"
     Existing Flink job updates are currently blocked because the available
@@ -1253,6 +1274,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E416_ADOPTION_FAILED` | Live observation or atomic adoption-state persistence failed |
 | `E417_SAFETY_BLOCKED` | Apply refused an unsupported partition, schema, or Flink migration before mutation |
 | `E418_REVIEWED_PLAN_REQUIRED` | Direct apply is disabled by protected/shared environment policy; create and apply a reviewed plan file |
+| `E419_STATE_RECOVERY_REQUIRED` | An unfinished local operation marker blocks apply/adopt pending explicit recovery |
 
 **Parse Errors (E5xx):**
 

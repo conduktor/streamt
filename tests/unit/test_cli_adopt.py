@@ -22,7 +22,15 @@ from streamt.deployer.state import (
     local_state_path,
     resource_id,
 )
-from streamt.deployer.state_backend import StateObservation, make_deployment_state_service
+from streamt.deployer.state_backend import (
+    OperationAction,
+    OperationIntent,
+    RecoveryRecord,
+    StateObservation,
+    make_deployment_state_service,
+    operation_timestamp,
+    state_checksum,
+)
 
 
 def _write_project(path: Path) -> None:
@@ -216,6 +224,64 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
     ):
         getattr(kafka, method).assert_not_called()
     kafka.close.assert_called_once_with()
+    assert (
+        make_deployment_state_service(
+            tmp_path,
+            project="adoption-test",
+            environment="default",
+        ).read_control().control.status
+        == "clear"
+    )
+
+
+def test_existing_recovery_marker_blocks_adoption_before_runtime_setup(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    service = make_deployment_state_service(
+        tmp_path,
+        project="adoption-test",
+        environment="default",
+    )
+    with service.operation() as operation:
+        state = operation.read().state
+        intent = OperationIntent(
+            operation_id="00000000-0000-4000-8000-000000000021",
+            kind="apply",
+            started_at=operation_timestamp(),
+            actor="prior-runner",
+            prior_state_serial=state.serial,
+            prior_state_checksum=state_checksum(state),
+            reviewed_plan_checksum=None,
+            actions=(OperationAction(0, "topic:orders", "create"),),
+        )
+        active = operation.begin_operation(operation.read_control(), intent)
+        operation.mark_recovery_required(
+            active,
+            RecoveryRecord(
+                operation_id=intent.operation_id,
+                failure_code="operation_interrupted",
+                failed_at=operation_timestamp(),
+                last_completed_action_index=None,
+            ),
+        )
+
+    deployer_factory = MagicMock()
+    with (
+        patch(
+            "streamt.compiler.Compiler.compile",
+            return_value=_manifest(_topic()),
+        ),
+        patch(
+            "streamt.cli.commands.adopt.make_kafka_deployer",
+            deployer_factory,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    assert _payload(result)["errors"][0]["code"] == "E419_STATE_RECOVERY_REQUIRED"
+    deployer_factory.assert_not_called()
 
 
 def test_adoption_holds_operation_lock_during_observation_and_confirmation(
@@ -590,6 +656,14 @@ def test_atomic_save_failure_reports_error_and_leaves_no_state(tmp_path: Path) -
     assert payload["errors"][0]["code"] == "E416_ADOPTION_FAILED"
     assert "state-secret" not in json.dumps(payload)
     assert not local_state_path(tmp_path, environment="default").exists()
+    control = make_deployment_state_service(
+        tmp_path,
+        project="adoption-test",
+        environment="default",
+    ).read_control().control
+    assert control.status == "recovery_required"
+    assert control.recovery is not None
+    assert control.recovery.failure_code == "adoption_state_commit_uncertain"
 
 
 def test_unexpected_compiler_failure_is_structured_and_redacted(tmp_path: Path) -> None:

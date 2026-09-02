@@ -117,6 +117,8 @@ Target: close the loop between declared intent and runtime evidence.
 - [ ] Support generic Alertmanager/webhook failure actions.
 - [x] Extract a typed provider-neutral state boundary while preserving the
       local version 1 JSON format and operation-wide same-host locking.
+- [x] Add a strict local operation-control sidecar with intent-before-mutation,
+      ordered progress, recovery blocking, and read-only plan status.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is

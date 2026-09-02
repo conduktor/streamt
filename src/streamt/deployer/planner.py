@@ -1706,26 +1706,128 @@ class DeploymentPlanner:
         create_verb: str,
         delete_action: str = "delete",
         delete_fn: Optional[Callable[[object], None]] = None,
+        before_action: Callable[[str, int], None] | None = None,
+        after_action: Callable[[str, int, bool], None] | None = None,
+        action_index: list[int] | None = None,
+        stop_on_error: bool = False,
+        stop_requested: list[bool] | None = None,
     ) -> None:
         """Apply a homogeneous list of resource changes, recording outcomes into results."""
         if not deployer:
             return
+        if action_index is None:
+            action_index = [0]
+        if stop_requested is None:
+            stop_requested = [False]
         for change in changes:
+            if stop_requested[0]:
+                break
             label = label_fn(change)
             if change.action in upsert_actions and getattr(change, "desired", None):
+                current_index = action_index[0]
+                if before_action is not None:
+                    before_action(label, current_index)
                 try:
                     result = apply_fn(change.desired)
                     results[self._bucket_for(result, create_verb)].append(label)
                 except Exception as e:
                     results["errors"].append(f"{label}: {_sanitize_error(e)}")
+                    if after_action is not None:
+                        after_action(label, current_index, False)
+                    if stop_on_error:
+                        stop_requested[0] = True
+                else:
+                    if after_action is not None:
+                        after_action(label, current_index, True)
+                action_index[0] += 1
             elif change.action == delete_action and delete_fn is not None:
+                current_index = action_index[0]
+                if before_action is not None:
+                    before_action(label, current_index)
                 try:
                     delete_fn(change)
                     results["deleted"].append(label)
                 except Exception as e:
                     results["errors"].append(f"{label}: {_sanitize_error(e)}")
+                    if after_action is not None:
+                        after_action(label, current_index, False)
+                    if stop_on_error:
+                        stop_requested[0] = True
+                else:
+                    if after_action is not None:
+                        after_action(label, current_index, True)
+                action_index[0] += 1
 
-    def apply(self, plan: Optional[DeploymentPlan] = None) -> dict[str, object]:
+    def operation_actions(self, plan: DeploymentPlan) -> list[tuple[str, str]]:
+        """Return the exact ordered runtime actions apply will attempt."""
+        actions: list[tuple[str, str]] = []
+
+        def add_changes(
+            deployer: object | None,
+            changes: list[object],
+            *,
+            label_fn: Callable[[object], str],
+            upsert_actions: tuple[str, ...],
+            delete_action: str = "delete",
+            delete_ready: Callable[[object], bool] | None = None,
+        ) -> None:
+            if deployer is None:
+                return
+            for change in changes:
+                action = str(change.action)
+                if (
+                    action in upsert_actions
+                    and getattr(change, "desired", None)
+                ) or (
+                    action == delete_action
+                    and (delete_ready is None or delete_ready(change))
+                ):
+                    actions.append((label_fn(change), action))
+
+        add_changes(
+            self.schema_registry_deployer,
+            list(getattr(plan, "schema_changes", [])),
+            label_fn=lambda change: f"schema:{change.subject}",
+            upsert_actions=("register", "update"),
+        )
+        add_changes(
+            self.kafka_deployer,
+            list(getattr(plan, "topic_changes", [])),
+            label_fn=lambda change: f"topic:{change.topic}",
+            upsert_actions=("create", "update"),
+        )
+        add_changes(
+            self.flink_deployer,
+            list(getattr(plan, "flink_changes", [])),
+            label_fn=lambda change: f"flink_job:{change.job_name}",
+            upsert_actions=("submit", "update"),
+            delete_action="cancel",
+            delete_ready=lambda change: bool(
+                change.current and change.current.job_id
+            ),
+        )
+        add_changes(
+            self.connect_deployer,
+            list(getattr(plan, "connector_changes", [])),
+            label_fn=lambda change: f"connector:{change.connector_name}",
+            upsert_actions=("create", "update"),
+        )
+        add_changes(
+            self.gateway_deployer,
+            list(getattr(plan, "gateway_changes", [])),
+            label_fn=lambda change: f"gateway_rule:{change.name}",
+            upsert_actions=("create", "update"),
+        )
+        return actions
+
+    def apply(
+        self,
+        plan: Optional[DeploymentPlan] = None,
+        *,
+        before_action: Callable[[str, int], None] | None = None,
+        after_action: Callable[[str, int, bool], None] | None = None,
+        stop_on_error: bool = False,
+    ) -> dict[str, object]:
         """Apply a deployment plan."""
         if plan is None:
             plan = self.plan()
@@ -1737,6 +1839,8 @@ class DeploymentPlanner:
             "unchanged": [],
             "errors": [],
         }
+        action_index = [0]
+        stop_requested = [False]
 
         # Apply schemas first (before topics that may use them)
         sr = self.schema_registry_deployer
@@ -1749,6 +1853,11 @@ class DeploymentPlanner:
             apply_fn=lambda desired: sr.apply_schema(desired),  # type: ignore[union-attr]
             create_verb="registered",
             delete_fn=lambda c: sr.delete_subject(c.subject),  # type: ignore[union-attr]
+            before_action=before_action,
+            after_action=after_action,
+            action_index=action_index,
+            stop_on_error=stop_on_error,
+            stop_requested=stop_requested,
         )
 
         kd = self.kafka_deployer
@@ -1761,13 +1870,23 @@ class DeploymentPlanner:
             apply_fn=lambda desired: kd.apply_topic(desired),  # type: ignore[union-attr]
             create_verb="created",
             delete_fn=lambda c: kd.delete_topic(c.topic),  # type: ignore[union-attr]
+            before_action=before_action,
+            after_action=after_action,
+            action_index=action_index,
+            stop_on_error=stop_on_error,
+            stop_requested=stop_requested,
         )
 
         # Flink: "submitted" maps to created/updated based on action; delete is "cancel"
         if self.flink_deployer:
             for change in plan.flink_changes:
+                if stop_requested[0]:
+                    break
                 label = f"flink_job:{change.job_name}"
                 if change.action in ("submit", "update") and change.desired:
+                    current_index = action_index[0]
+                    if before_action is not None:
+                        before_action(label, current_index)
                     try:
                         result = self.flink_deployer.apply_job(change.desired)
                         if result == "submitted":
@@ -1778,12 +1897,31 @@ class DeploymentPlanner:
                             results["unchanged"].append(label)
                     except Exception as e:
                         results["errors"].append(f"{label}: {_sanitize_error(e)}")
+                        if after_action is not None:
+                            after_action(label, current_index, False)
+                        if stop_on_error:
+                            stop_requested[0] = True
+                    else:
+                        if after_action is not None:
+                            after_action(label, current_index, True)
+                    action_index[0] += 1
                 elif change.action == "cancel" and change.current and change.current.job_id:
+                    current_index = action_index[0]
+                    if before_action is not None:
+                        before_action(label, current_index)
                     try:
                         self.flink_deployer.cancel_job(change.current.job_id)
                         results["deleted"].append(label)
                     except Exception as e:
                         results["errors"].append(f"{label}: {_sanitize_error(e)}")
+                        if after_action is not None:
+                            after_action(label, current_index, False)
+                        if stop_on_error:
+                            stop_requested[0] = True
+                    else:
+                        if after_action is not None:
+                            after_action(label, current_index, True)
+                    action_index[0] += 1
 
         cd = self.connect_deployer
         self._apply_resource_changes(
@@ -1795,6 +1933,11 @@ class DeploymentPlanner:
             apply_fn=lambda desired: cd.apply_connector(desired),  # type: ignore[union-attr]
             create_verb="created",
             delete_fn=lambda c: cd.delete_connector(c.connector_name),  # type: ignore[union-attr]
+            before_action=before_action,
+            after_action=after_action,
+            action_index=action_index,
+            stop_on_error=stop_on_error,
+            stop_requested=stop_requested,
         )
 
         gd = self.gateway_deployer
@@ -1807,6 +1950,11 @@ class DeploymentPlanner:
             apply_fn=lambda desired: gd.apply(desired),  # type: ignore[union-attr]
             create_verb="created",
             delete_fn=lambda c: gd.delete(c.name),  # type: ignore[union-attr]
+            before_action=before_action,
+            after_action=after_action,
+            action_index=action_index,
+            stop_on_error=stop_on_error,
+            stop_requested=stop_requested,
         )
 
         # Track rollback candidates (newly created resources that could be undone)
@@ -1822,19 +1970,35 @@ class DeploymentPlanner:
 
         return results
 
-    def rollback(self, labels: list[str]) -> tuple[list[str], list[str]]:
+    def rollback(
+        self,
+        labels: list[str],
+        *,
+        before_action: Callable[[str, int], None] | None = None,
+        after_action: Callable[[str, int, bool], None] | None = None,
+        stop_on_error: bool = False,
+    ) -> tuple[list[str], list[str]]:
         """Attempt to delete previously created resources.
 
         Returns (rolled_back, rollback_errors) lists.
         """
         rolled_back: list[str] = []
         errors: list[str] = []
-        for label in labels:
+        for index, label in enumerate(labels):
+            if before_action is not None:
+                before_action(label, index)
             try:
                 self._rollback_resource(label)
                 rolled_back.append(label)
             except Exception as e:
                 errors.append(f"{label}: {_sanitize_error(e)}")
+                if after_action is not None:
+                    after_action(label, index, False)
+                if stop_on_error:
+                    break
+            else:
+                if after_action is not None:
+                    after_action(label, index, True)
         return rolled_back, errors
 
     def _rollback_resource(self, label: str) -> None:

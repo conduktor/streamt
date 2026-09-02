@@ -124,11 +124,15 @@ Acceptance:
 
 This slice closes the existing same-host race before adding remote state.
 
-Progress: the operation-wide local lock in step 1 is implemented for apply and
-adoption, including process-contention, exception-release, lock-ordering, and
-non-reentrant-CAS tests. The version 1 ownership JSON is unchanged. Steps 2-6
-remain open, so interrupted operations are not durably discoverable and this
-must not be described as crash recovery or distributed locking.
+Progress: steps 1-6 are implemented for the local backend. Apply and adoption
+write a strict, atomically replaced control sidecar under the existing
+operation-wide lock; apply records ordered started/completed boundaries for all
+five resource families and checks lock health around apply and rollback calls.
+The version 1 ownership JSON is unchanged. Crash/failure tests prove that a
+post-mutation exit and an uncertain ownership commit leave a blocking marker.
+This is durable local operation detection, not distributed locking or a
+completed recovery workflow: remote configuration, PostgreSQL, and the
+operator recovery command remain later slices.
 
 1. Hold the local address lock from the final state read through live replan,
    runtime apply/adoption commit, and state persistence.
