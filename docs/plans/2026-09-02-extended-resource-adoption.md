@@ -269,7 +269,9 @@ writer and operation history.
 
 ## Package 6: normalized scoped Gateway aggregate
 
-Status: planned; follows the Connector adoption slice.
+Status: foundation in progress; adoption remains unsupported. The frozen staged
+contract and release gates are in the
+[Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
 `ownership.owner_name`, while its compound provider identity contains:
@@ -280,10 +282,12 @@ A Gateway rule is not one provider object. Its logical identity still uses
 - the exact deterministic set of scoped Interceptor keys belonging to the
   rule.
 
-The alias's `physicalTopic` and each interceptor's plugin class, priority,
-scope, and provider-transformed configuration are managed content. Logical rule
-name and virtual topic are distinct and must never be substituted for one
-another.
+The alias's `physicalTopic` and `spec.physicalCluster`, and each interceptor's
+plugin class, priority, scope, and provider-transformed configuration are
+managed content. For the initial single-cluster slice, omitted and exact `main`
+physical clusters normalize to canonical `main`; every other value fails closed
+until physical-cluster selection exists. Logical rule name and virtual topic are
+distinct and must never be substituted for one another.
 
 Required changes:
 
@@ -293,28 +297,32 @@ Required changes:
 2. Strictly parse alias and interceptor list responses. Reject non-list
    responses, malformed metadata/spec objects, duplicate scoped identities,
    ambiguous same-name aliases, missing priority/configuration, and unexpected
-   scope.
+   scope. Normalize only omitted or exact `main` AliasTopic physical clusters to
+   canonical `main`; reject every other physical-cluster value.
 3. Bind state authority to the Gateway backend and exact vCluster. A legacy
    `backend: conduktor-gateway` record containing only a virtual-topic physical
    name is unbound and requires explicit migration or re-adoption.
 4. Build canonical desired provider state with one pure function shared by
    planning and apply. It generates exact interceptor names, plugin classes,
-   priority, scope, and transformed configuration from the compiled artifact.
+   priority, scope, transformed configuration, and AliasTopic
+   `physicalCluster: main` from the compiled artifact.
 5. Replace positional comparison and broad `startswith` ownership with exact
    deterministic interceptor identities. Reject namespace collisions across
    compiled rules.
 6. Make apply, delete, and rollback carry both logical rule name and alias key.
    They must not delete an alias under the logical name or capture another
    rule's interceptors by prefix.
-7. Reject unknown interceptor types. Correct or explicitly reject declaration
-   fields, including role-scoped masking, that the provider transformation
-   cannot preserve exactly.
+7. Allow only compiler-emitted declarations with proven exact provider
+   transformations. Reject unknown types, unsafe legacy `encrypt` and `readonly`
+   transforms, and nonempty masking `forRoles` until exact Gateway scope and
+   round-trip semantics exist.
 8. Populate complete current alias and interceptor evidence in normal plans;
    synthetic test-only state is not sufficient.
 
 The canonical live fingerprint includes provider binding, vCluster, alias key,
-physical topic, and the sorted complete interceptor managed surface. It rejects
-extra as well as missing interceptors.
+physical topic, canonical physical cluster, and the sorted complete interceptor
+managed surface. It rejects unsupported physical clusters and extra as well as
+missing interceptors.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that
@@ -330,6 +338,7 @@ rules whose desired interceptor list is empty. The command must prove:
 
 - one exact compiled adopted rule;
 - one exact alias in the bound backend and vCluster;
+- canonical AliasTopic physical cluster `main`;
 - a complete observation showing zero rule-owned interceptors; and
 - an unchanged aggregate fingerprint after confirmation.
 

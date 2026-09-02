@@ -70,8 +70,11 @@ to deploy anything.
         an exact Connect cluster locator, and add a strict one-request observer.
   - [x] Use that Connector observer for reviewed recovery and enable
         single-Connector state-only adoption.
-  - [ ] Normalize the complete scoped Gateway alias/interceptor aggregate, then
-        enable only exact alias-only rules with zero interceptors.
+  - [ ] Normalize the complete scoped Gateway alias/interceptor aggregate under
+        the frozen
+        [Gateway implementation specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md),
+        then enable only exact alias-only rules with zero interceptors. The
+        foundation is in progress; Gateway adoption remains unsupported.
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
