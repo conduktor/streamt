@@ -23,6 +23,7 @@ from streamt.deployer.postgres_state_backend import PrivatePostgresStateReadBack
 from streamt.deployer.state import LocalState
 from streamt.deployer.state_backend import (
     ControlObservation,
+    DeploymentStateBackend,
     OperationControlState,
     OperationIntent,
     StateAddress,
@@ -79,6 +80,8 @@ class _FakeCursor:
         self.closed = False
         self.lock_owned = False
         self.fail_health = False
+        self.acquisition_pid = 701
+        self.release_pid = 701
         self.release_result = True
 
     def execute(
@@ -90,7 +93,17 @@ class _FakeCursor:
         self.calls.append((rendered, params))
         if self.fail_health and "pg_locks" in rendered:
             raise RuntimeError("postgresql://alice:secret@db.internal/state")
-        if "pg_is_in_recovery" in rendered and "pg_locks" not in rendered:
+        if "pg_try_advisory_lock" in rendered:
+            acquired = next(self.try_lock, False)
+            gated = acquired and self.acquisition_pid == 701 and self.primary
+            self.lock_owned = gated
+            self.current = ((self.acquisition_pid, not self.primary, gated),)
+        elif "pg_advisory_unlock" in rendered:
+            gated = self.release_result and self.release_pid == 701 and self.primary
+            self.current = ((self.release_pid, not self.primary, gated),)
+            if gated:
+                self.lock_owned = False
+        elif "pg_is_in_recovery" in rendered and "pg_locks" not in rendered:
             self.current = ((not self.primary, 701),)
         elif "pg_locks" in rendered:
             self.current = ((701, not self.primary, self.lock_owned),)
@@ -98,9 +111,11 @@ class _FakeCursor:
             self.current = (
                 (
                     self.address.uri,
-                    postgres_backend._advisory_lock_key(self.address),
+                    postgres_state._advisory_lock_key(self.address),
                 ),
             )
+        elif '"streamt"."store_metadata"' in rendered:
+            self.current = ((self.store_id, 1),)
         elif '"streamt"."operation_control"' in rendered:
             raw_control = json.dumps(
                 OperationControlState.clear(self.address).to_dict(),
@@ -126,14 +141,6 @@ class _FakeCursor:
                         len(raw_state.encode()),
                     ),
                 )
-        elif "pg_try_advisory_lock" in rendered:
-            acquired = next(self.try_lock, False)
-            self.lock_owned = acquired
-            self.current = ((acquired,),)
-        elif "pg_advisory_unlock" in rendered:
-            self.current = ((self.release_result,),)
-            if self.release_result:
-                self.lock_owned = False
         elif rendered.startswith("BEGIN") or "set_config(" in rendered:
             self.current = ()
         else:
@@ -212,7 +219,7 @@ def _install(
     )
     connection = _FakeConnection(cursor)
     driver = _FakeDriver(connection)
-    bundle = postgres_backend._PsycopgBundle(
+    bundle = postgres_state._PsycopgBundle(
         driver=cast(postgres_state._DriverModule, driver),
         sql=cast(postgres_state._SqlModule, _FakeSql()),
     )
@@ -358,6 +365,29 @@ def test_lock_contention_times_out_and_closes_session(
     assert not any("pg_advisory_unlock" in query for query, _params in cursor.calls)
 
 
+def test_pooler_backend_switch_is_gated_before_lock_acquisition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _driver, connection, cursor = _install(monkeypatch)
+    cursor.acquisition_pid = 702
+
+    def acquire() -> None:
+        with _backend().operation(_address()):
+            pytest.fail("a switched backend must not yield operation authority")
+
+    with pytest.raises(
+        StateBackendUnavailableError,
+        match=r"^PostgreSQL deployment state operation lock is unavailable$",
+    ):
+        acquire()
+
+    acquire_call = next(call for call in cursor.calls if "pg_try_advisory_lock" in call[0])
+    assert "CASE WHEN" in acquire_call[0]
+    assert acquire_call[1] == (701, postgres_state._advisory_lock_key(_address()))
+    assert cursor.lock_owned is False
+    assert connection.closed is True
+
+
 def test_standby_is_rejected_before_lock_acquisition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -383,13 +413,17 @@ def test_session_failure_is_secret_neutral_lock_loss_and_close_releases_server_l
 ) -> None:
     _driver, connection, cursor = _install(monkeypatch)
 
-    with _backend().operation(_address()) as operation:
-        cursor.fail_health = True
-        with pytest.raises(StateBackendLockLostError) as raised:
+    def lose_lock() -> None:
+        with _backend().operation(_address()) as operation:
+            cursor.fail_health = True
             operation.check_lock()
-        assert str(raised.value) == "PostgreSQL deployment state operation lock was lost"
-        assert "alice" not in str(raised.value)
-        assert "secret" not in str(raised.value)
+
+    with pytest.raises(StateBackendLockLostError) as raised:
+        lose_lock()
+
+    assert str(raised.value) == "PostgreSQL deployment state operation lock was lost"
+    assert "alice" not in str(raised.value)
+    assert "secret" not in str(raised.value)
 
     assert cursor.closed is True
     assert connection.closed is True
@@ -413,26 +447,47 @@ def test_unverified_unlock_fails_closed_after_clean_body(
     assert connection.closed is True
 
 
+def test_pooler_backend_switch_is_gated_before_unlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _driver, connection, cursor = _install(monkeypatch)
+
+    def release() -> None:
+        with _backend().operation(_address()):
+            cursor.release_pid = 702
+
+    with pytest.raises(StateBackendLockLostError, match="release was not verified"):
+        release()
+
+    release_call = next(call for call in cursor.calls if "pg_advisory_unlock" in call[0])
+    assert "CASE WHEN" in release_call[0]
+    assert release_call[1] == (701, postgres_state._advisory_lock_key(_address()))
+    assert cursor.lock_owned is True
+    assert connection.closed is True
+
+
 def test_catalog_invalid_precedes_rollback_lock_loss_and_is_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _driver, connection, _cursor = _install(monkeypatch)
 
-    with _backend().operation(_address()) as operation:
-        monkeypatch.setattr(
-            postgres_backend,
-            "_read_snapshot_transaction",
-            lambda **_kwargs: (_ for _ in ()).throw(
-                StateBackendInvalidStateError("provider-secret schema=private")
-            ),
-        )
-        connection.rollback_failure = RuntimeError("postgresql://alice:secret@db.internal")
-
-        with pytest.raises(StateBackendInvalidStateError) as raised:
+    def read_invalid_catalog() -> None:
+        with _backend().operation(_address()) as operation:
+            monkeypatch.setattr(
+                postgres_backend,
+                "_read_snapshot_transaction",
+                lambda **_kwargs: (_ for _ in ()).throw(
+                    StateBackendInvalidStateError("provider-secret schema=private")
+                ),
+            )
+            connection.rollback_failure = RuntimeError("postgresql://alice:secret@db.internal")
             operation.observe()
 
-        assert str(raised.value) == "PostgreSQL deployment state is invalid"
-        assert "secret" not in str(raised.value)
+    with pytest.raises(StateBackendInvalidStateError) as raised:
+        read_invalid_catalog()
+
+    assert str(raised.value) == "PostgreSQL deployment state is invalid"
+    assert "secret" not in str(raised.value)
 
     assert connection.closed is True
 
@@ -444,6 +499,21 @@ def test_private_scaffold_exposes_no_mutation_methods() -> None:
     assert not hasattr(backend, "begin_operation")
     assert not hasattr(backend, "commit_operation")
     assert not hasattr(backend, "clear_before_mutation")
+
+
+def test_private_backend_structurally_conforms_without_factory_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _driver, _connection, _cursor = _install(monkeypatch)
+    backend = _backend()
+
+    assert isinstance(backend, DeploymentStateBackend)
+    assert backend.describe() == StateStoreIdentity(
+        backend="postgres",
+        store_id="00000000-0000-4000-8000-000000000001",
+    )
+    assert backend.read(_address()).revision.is_absent
+    assert backend.read_control(_address()).control.status == "clear"
 
 
 def test_private_scaffold_is_not_factory_selectable_or_cli_authority(
