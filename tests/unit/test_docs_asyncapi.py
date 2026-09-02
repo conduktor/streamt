@@ -118,6 +118,29 @@ def test_generates_officially_valid_v3_document_with_v3_reference_shape() -> Non
         ],
     }
     assert operations["send.model.payments_clean"]["action"] == "send"
+
+
+def test_virtual_topic_channel_uses_documented_gateway_alias() -> None:
+    project = _project(
+        runtime={
+            "kafka": {"bootstrap_servers": "broker.example:9092"},
+            "conduktor": {
+                "gateway": {"admin_url": "https://gateway.example.test"}
+            },
+        },
+        models=[
+            {
+                "name": "payments_public",
+                "materialized": "virtual_topic",
+                "gateway": {"virtual_topic": {"name": "payments.public"}},
+                "sql": 'SELECT * FROM {{ source("payments_raw") }}',
+            }
+        ],
+    )
+
+    document = generate_asyncapi_document(project)
+
+    assert document["channels"]["model.payments_public"]["address"] == "payments.public"
     validate_asyncapi_document(document)
 
 

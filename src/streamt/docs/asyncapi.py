@@ -162,8 +162,11 @@ def generate_asyncapi_document(project: StreamtProject) -> dict[str, object]:
         if materialized == MaterializedType.SINK:
             continue
 
-        topic_config = model.get_topic_config()
-        topic = topic_config.name if topic_config and topic_config.name else model.name
+        topic = (
+            model.get_virtual_topic_name()
+            if materialized == MaterializedType.VIRTUAL_TOPIC
+            else _model_topic_name(model)
+        )
         base_id = _resource_id("model", model.name)
         channel_id = base_id
         message_id = f"{base_id}.message"
@@ -298,6 +301,11 @@ def _effective_materialization(project: StreamtProject, model: Model) -> Materia
     if not has_gateway and not explicit_virtual_topic:
         return MaterializedType.FLINK
     return materialized
+
+
+def _model_topic_name(model: Model) -> str:
+    topic_config = model.get_topic_config()
+    return topic_config.name if topic_config and topic_config.name else model.name
 
 
 def _resource_id(kind: str, name: str) -> str:

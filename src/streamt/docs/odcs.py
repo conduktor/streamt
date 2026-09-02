@@ -311,10 +311,7 @@ def _model_object(
         "logicalType": "object",
     }
     if not _is_sink_model(model):
-        topic_config = model.get_topic_config()
-        schema_object["physicalName"] = (
-            topic_config.name if topic_config and topic_config.name else model.name
-        )
+        schema_object["physicalName"] = _model_output_name(model)
         schema_object["physicalType"] = "topic"
     if model.description is not None:
         schema_object["description"] = model.description
@@ -470,6 +467,19 @@ def _is_sink_model(model: Model) -> bool:
     return bool(model.from_) and not model.sql
 
 
+def _model_output_name(model: Model) -> str:
+    """Resolve a model's declared output without classifying its SQL."""
+    is_virtual_topic = model.materialized == MaterializedType.VIRTUAL_TOPIC or (
+        model.materialized is None
+        and model.gateway is not None
+        and model.gateway.virtual_topic is not None
+    )
+    if is_virtual_topic:
+        return model.get_virtual_topic_name()
+    topic_config = model.get_topic_config()
+    return topic_config.name if topic_config and topic_config.name else model.name
+
+
 def _generated_id(
     contract_id: str,
     resource_kind: str,
@@ -509,8 +519,7 @@ def _assert_project_collisions(project: StreamtProject) -> None:
         _register_collision(seen_names, model.name, f"model '{model.name}'", "logical name")
         if _is_sink_model(model):
             continue
-        topic_config = model.get_topic_config()
-        topic = topic_config.name if topic_config and topic_config.name else model.name
+        topic = _model_output_name(model)
         if topic:
             _register_collision(
                 physical_topics,

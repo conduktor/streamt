@@ -330,6 +330,27 @@ def test_model_contract_precedes_columns_and_preserves_contract_semantics() -> N
     assert "logicalType" not in properties["opaque_payload"]
 
 
+def test_virtual_topic_schema_uses_documented_gateway_alias() -> None:
+    project = _project(
+        models=[
+            {
+                "name": "payments_public",
+                "materialized": "virtual_topic",
+                "gateway": {"virtual_topic": {"name": "payments.public"}},
+                "sql": 'SELECT * FROM {{ source("zeta_raw") }}',
+            }
+        ]
+    )
+
+    document = generate_odcs_document(
+        project,
+        contract_id=CONTRACT_ID,
+        status="active",
+    ).document
+
+    assert _schema_by_name(document, "payments_public")["physicalName"] == "payments.public"
+
+
 def test_explicit_model_columns_are_used_and_sink_physical_destination_is_omitted() -> None:
     document = generate_odcs_document(
         _project(), contract_id=CONTRACT_ID, status="active"
