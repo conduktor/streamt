@@ -1180,6 +1180,58 @@ class GatewayRuleChange:
             # Temporary compatibility for legacy planner and direct construction.
             # Secret-bearing legacy state and diffs stay out of repr.
             return
+        if self.action == "delete":
+            if (
+                self.current_alias is not None
+                or self.current_interceptors is not None
+                or self.desired is not None
+                or self.desired_managed is not None
+                or not isinstance(self.current, ManagedGatewayRuleObservation)
+                or not isinstance(self.backend_identity, str)
+                or not is_gateway_backend_identity(self.backend_identity)
+            ):
+                raise GatewayDesiredAggregateError(
+                    "Normalized Gateway deletion requires only one complete current surface"
+                )
+            try:
+                current = _copy_strict_managed_gateway_observation(self.current)
+                GatewayRuleLocator.from_observation(current)
+            except (
+                AttributeError,
+                GatewayManagedMutationError,
+                GatewayManagedObservationError,
+                TypeError,
+                ValueError,
+            ):
+                raise GatewayDesiredAggregateError(
+                    "Normalized Gateway deletion requires one complete present surface"
+                ) from None
+            if (
+                not current.exists
+                or self.name != current.logical_name
+                or self.backend_identity != current.binding.backend_identity
+            ):
+                raise GatewayDesiredAggregateError(
+                    "Normalized Gateway deletion has mismatched managed identity"
+                )
+            absent = ManagedGatewayRuleObservation(
+                binding=current.binding,
+                logical_name=current.logical_name,
+                alias_name=current.alias_name,
+                exists=False,
+            )
+            expected_changes = _managed_gateway_change_evidence(current, absent)
+            if self.changes is None:
+                normalized_changes = expected_changes
+            else:
+                normalized_changes = secret_neutral_gateway_changes(self.changes)
+                if normalized_changes != expected_changes:
+                    raise GatewayChangeEvidenceError(
+                        "Gateway deletion evidence does not match its managed surfaces"
+                    )
+            self.current = current
+            self.changes = normalized_changes
+            return
         if (
             not isinstance(self.desired, GatewayRuleArtifact)
             or not isinstance(self.current, ManagedGatewayRuleObservation)
@@ -1370,7 +1422,7 @@ def secret_neutral_gateway_changes(changes: object) -> dict[str, object]:
     current = _normalize_gateway_surface_evidence(changes.get("current"))
     desired = _normalize_gateway_surface_evidence(changes.get("desired"))
     if (
-        desired["exists"] is not True
+        not (current["exists"] or desired["exists"])
         or ("presence" in categories) != (current["exists"] != desired["exists"])
         or (
             current["managed_interceptor_count"] != desired["managed_interceptor_count"]
@@ -1425,6 +1477,22 @@ def plan_managed_gateway_rule(
         current=current,
         desired_managed=desired_managed,
         backend_identity=desired_managed.binding.backend_identity,
+    )
+
+
+def plan_managed_gateway_rule_deletion(
+    current: ManagedGatewayRuleObservation,
+) -> GatewayRuleChange:
+    """Purely plan deletion from one complete exact present observation."""
+    if not isinstance(current, ManagedGatewayRuleObservation):
+        raise GatewayDesiredAggregateError(
+            "Gateway managed deletion requires one complete current surface"
+        )
+    return GatewayRuleChange(
+        name=current.logical_name,
+        action="delete",
+        current=current,
+        backend_identity=current.binding.backend_identity,
     )
 
 

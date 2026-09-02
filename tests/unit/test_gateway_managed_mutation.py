@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from typing import Any
 from unittest.mock import MagicMock
@@ -16,11 +17,13 @@ from streamt.deployer.gateway import (
     GatewayDeployer,
     GatewayInterceptorLocator,
     GatewayManagedMutationError,
+    GatewayRuleChange,
     GatewayRuleLocator,
     GatewayRuleMutation,
     ManagedGatewayInterceptor,
     ManagedGatewayRuleObservation,
     build_desired_gateway_rule,
+    plan_managed_gateway_rule_deletion,
 )
 
 
@@ -664,3 +667,139 @@ def test_managed_transport_does_not_use_or_change_legacy_request_path() -> None:
 
     assert deployer.apply_managed_gateway_rule(_absent(deployer), desired) == "created"
     deployer._request.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_normalized_deletion_helper_builds_exact_secret_neutral_evidence() -> None:
+    deployer = _deployer()
+    current = _desired(deployer, with_filter=True)
+
+    change = plan_managed_gateway_rule_deletion(current)
+
+    assert isinstance(change, GatewayRuleChange)
+    assert change.name == "orders"
+    assert change.action == "delete"
+    assert change.current == current
+    assert change.current is not current
+    assert change.desired is None
+    assert change.desired_managed is None
+    assert change.current_alias is None
+    assert change.current_interceptors is None
+    assert change.backend_identity == current.binding.backend_identity
+    assert change.changes is not None
+    assert change.changes["categories"] == ["presence"]
+    assert change.changes["current"] == {
+        "exists": True,
+        "fingerprint": current.fingerprint,
+        "managed_interceptor_count": 1,
+    }
+    assert change.changes["desired"]["exists"] is False
+    assert change.changes["desired"]["managed_interceptor_count"] == 0
+    rendered = repr(change)
+    assert "SELECT" not in rendered
+    assert "credential-secret" not in rendered
+    assert "gateway.example.test" not in rendered
+    assert "current=" not in rendered
+    assert "changes=" not in rendered
+
+
+def test_direct_normalized_deletion_computes_and_detaches_evidence() -> None:
+    deployer = _deployer()
+    current = _desired(deployer)
+
+    change = GatewayRuleChange(
+        name="orders",
+        action="delete",
+        current=current,
+        backend_identity=current.binding.backend_identity,
+    )
+    object.__setattr__(current, "physical_name", "mutated.after.plan")
+
+    assert change.current is not None
+    assert change.current.physical_name == "orders.v1"
+    assert change.changes is not None
+    assert change.changes["categories"] == ["presence"]
+
+
+def test_normalized_deletion_accepts_only_exact_independent_evidence() -> None:
+    deployer = _deployer()
+    current = _desired(deployer)
+    planned = plan_managed_gateway_rule_deletion(current)
+    evidence = deepcopy(planned.changes)
+    assert isinstance(evidence, dict)
+
+    change = GatewayRuleChange(
+        name="orders",
+        action="delete",
+        current=current,
+        backend_identity=current.binding.backend_identity,
+        changes=evidence,
+    )
+    evidence["categories"].append("configuration")
+
+    assert change.changes == planned.changes
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"name": "another"},
+        {"backend_identity": None},
+        {"backend_identity": ("conduktor-gateway:v1:p:sha256:" + "0" * 64)},
+        {"desired": _artifact()},
+        {"desired_managed": "CURRENT"},
+        {"current_alias": MagicMock()},
+        {"current_interceptors": []},
+        {"changes": {}},
+        {"changes": {"raw": "credential-secret"}},
+    ],
+    ids=[
+        "name",
+        "missing-backend",
+        "wrong-backend",
+        "desired-artifact",
+        "desired-aggregate",
+        "legacy-alias",
+        "legacy-interceptors",
+        "empty-evidence",
+        "raw-evidence",
+    ],
+)
+def test_normalized_deletion_rejects_mismatched_or_legacy_fields(
+    overrides: dict[str, object],
+) -> None:
+    deployer = _deployer()
+    current = _desired(deployer)
+    values: dict[str, object] = {
+        "name": current.logical_name,
+        "action": "delete",
+        "current": current,
+        "backend_identity": current.binding.backend_identity,
+    }
+    normalized_overrides = dict(overrides)
+    if normalized_overrides.get("desired_managed") == "CURRENT":
+        normalized_overrides["desired_managed"] = current
+    values.update(normalized_overrides)
+
+    with pytest.raises((GatewayManagedMutationError, ValueError)) as caught:
+        GatewayRuleChange(**values)  # type: ignore[arg-type]
+
+    assert "credential-secret" not in str(caught.value)
+    assert "gateway.example.test" not in str(caught.value)
+
+
+def test_normalized_deletion_rejects_absent_or_unowned_current_surface() -> None:
+    deployer = _deployer()
+    absent = _absent(deployer)
+    with pytest.raises(ValueError):
+        plan_managed_gateway_rule_deletion(absent)
+
+    unrelated = ManagedGatewayInterceptor(
+        name="orders_archive_filter_0",
+        scope=(("group", None), ("username", None), ("vCluster", "production")),
+        plugin_class="example.Plugin",
+        priority=100,
+        config_json="{}",
+    )
+    current = _present(deployer, interceptors=(unrelated,))
+    with pytest.raises(ValueError):
+        plan_managed_gateway_rule_deletion(current)
