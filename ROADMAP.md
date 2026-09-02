@@ -24,8 +24,8 @@ No release may be called production-ready until all of the following hold:
 - A saved plan identifies exactly what `apply` will change.
 - Stateful Flink changes are either savepoint-safe or explicitly blocked.
 - Every advertised CLI command has an end-to-end smoke test.
-- Unit, scenario, packaging, documentation, lint, and the enforced type-check
-  baseline pass in CI.
+- Unit, scenario, packaging, documentation, lint, and a clean zero-error mypy
+  check pass in CI.
 - Installation instructions point to a distribution that actually exists.
 
 ## Phase 0: restore trust
@@ -47,8 +47,8 @@ development cluster.
 - [x] Make all documentation examples parse through the same strict parser as
       real projects.
 - [x] Fix or temporarily remove non-working CLI paths and unsupported claims.
-- [x] Add CLI smoke tests, packaging checks, scenario tests, and a type-check
-      baseline to CI.
+- [x] Add CLI smoke tests, packaging checks, scenario tests, and a zero-error
+      mypy gate to CI.
 - [ ] Publish an installable alpha release.
 
 Exit criterion: on a cluster with 40 unrelated topics, a project managing two
@@ -113,6 +113,8 @@ Target: close the loop between declared intent and runtime evidence.
 - [ ] Integrate Prometheus/OpenTelemetry signals and expose policy evaluation
       over those signals.
 - [ ] Support generic Alertmanager/webhook failure actions.
+- [x] Extract a typed provider-neutral state boundary while preserving the
+      local version 1 JSON format and operation-wide same-host locking.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is
