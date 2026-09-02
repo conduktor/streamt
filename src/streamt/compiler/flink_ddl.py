@@ -109,6 +109,8 @@ def _kafka_auth_properties(kafka: KafkaConfig) -> list[tuple[str, str]]:
         props.append(("properties.ssl.key.location", kafka.ssl_key_location))
 
     if kafka.ssl_key_password:
-        props.append(("properties.ssl.key.password", _secret(kafka.ssl_key_password)))
+        ssl_key_password = _secret(kafka.ssl_key_password)
+        if ssl_key_password is not None:
+            props.append(("properties.ssl.key.password", ssl_key_password))
 
     return props
