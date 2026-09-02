@@ -58,7 +58,7 @@ from streamt.deployer.state_backend import (
     operation_timestamp,
     state_checksum,
 )
-from streamt.output import StructuredError
+from streamt.output import OutputFormatter, StructuredError
 
 _SELECTABLE_ARTIFACT_KINDS = (
     "schemas",
@@ -130,6 +130,57 @@ def _reviewed_plan_commands(
         f"streamt plan --project-dir {project_arg} --env {environment_arg} --out {plan_arg}",
         f"streamt apply --project-dir {project_arg} --env {environment_arg} --plan {plan_arg}",
     )
+
+
+def _enforce_gateway_removal_apply_authorization(
+    *,
+    manifest: Manifest,
+    target: str | None,
+    select: str | None,
+    reviewed_plan_path: Path | None,
+    environment: str,
+    project_path: Path,
+    fmt: OutputFormatter,
+) -> None:
+    """Require one complete online reviewed workflow for explicit removals."""
+    removals = manifest.artifacts.get("gateway_rule_removals", [])
+    if not removals or (reviewed_plan_path is not None and not (target or select)):
+        return
+
+    plan_command, apply_command = _reviewed_plan_commands(environment, project_path)
+    if target or select:
+        message = (
+            "Gateway rule removals cannot be combined with --target or --select; "
+            "a complete online reviewed plan is required"
+        )
+    else:
+        message = (
+            "Gateway rule removals cannot be applied directly; "
+            "an online reviewed plan is required"
+        )
+    fmt.set_data(
+        {
+            "environment": environment,
+            "policy": "gateway_rule_removal",
+            "gateway_rule_removals": len(removals),
+            "required_workflow": "reviewed_plan",
+            "next_steps": [plan_command, apply_command],
+        }
+    )
+    fmt.add_error(
+        StructuredError(
+            code=ErrorCode.REVIEWED_PLAN_REQUIRED,
+            message=message,
+            suggestion=(
+                f"Run '{plan_command}', review the complete saved plan, then run "
+                f"'{apply_command}'."
+            ),
+            docs_url="https://streamt.dev/docs/reference/cli#apply",
+        )
+    )
+    fmt.print_error(f"{message}. Run: {plan_command}")
+    fmt.flush()
+    sys.exit(1)
 
 
 @click.command()
@@ -309,8 +360,6 @@ def apply(
             fmt.flush()
             sys.exit(1)
 
-        compiler = Compiler(project)
-        manifest = compiler.compile()
         parsed_environment = (
             parser.env_config.environment.name if parser.env_config else None
         )
@@ -318,6 +367,17 @@ def apply(
             parsed_environment
             if isinstance(parsed_environment, str) and parsed_environment
             else "default"
+        )
+        compiler = Compiler(project)
+        manifest = compiler.compile()
+        _enforce_gateway_removal_apply_authorization(
+            manifest=manifest,
+            target=target,
+            select=select,
+            reviewed_plan_path=reviewed_plan_path,
+            environment=effective_environment,
+            project_path=project_path,
+            fmt=fmt,
         )
         state_path = local_state_path(
             project_path,
