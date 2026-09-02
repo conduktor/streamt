@@ -63,6 +63,9 @@ def _manifest(mode: str = "managed") -> Manifest:
             "connectors": [
                 {
                     "name": "sink",
+                    "connector_class": "example.Sink",
+                    "topics": ["payments.events.v1"],
+                    "cluster": None,
                     "config": {
                         "name": "sink",
                         "connector.class": "example.Sink",

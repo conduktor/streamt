@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import math
+import re
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -16,6 +22,315 @@ logger = logging.getLogger(__name__)
 # Default timeouts (in seconds)
 DEFAULT_TIMEOUT = 30
 HEALTH_CHECK_TIMEOUT = 10
+_FINGERPRINT_PREFIX = "sha256:"
+_CONNECT_BINDING_VERSION = 1
+_CLUSTER_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+class ConnectClusterBindingError(ValueError):
+    """A Kafka Connect runtime cannot be bound to a canonical cluster identity."""
+
+
+class ConnectManagedObservationError(RuntimeError):
+    """A strict managed-connector observation could not be proven complete."""
+
+
+def _sha256(value: str) -> str:
+    return f"{_FINGERPRINT_PREFIX}{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _normalize_rest_endpoint(rest_url: str) -> str:
+    """Normalize a REST endpoint without ever echoing it in validation errors."""
+    if not isinstance(rest_url, str) or not rest_url or rest_url != rest_url.strip():
+        raise ConnectClusterBindingError("Invalid Connect REST URL: endpoint is malformed")
+    if any(character.isspace() for character in rest_url):
+        raise ConnectClusterBindingError("Invalid Connect REST URL: endpoint is malformed")
+    if "?" in rest_url or "#" in rest_url:
+        raise ConnectClusterBindingError(
+            "Invalid Connect REST URL: query strings and fragments are not allowed"
+        )
+    try:
+        parsed = urlsplit(rest_url)
+        port = parsed.port
+    except ValueError:
+        raise ConnectClusterBindingError(
+            "Invalid Connect REST URL: endpoint is malformed"
+        ) from None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConnectClusterBindingError(
+            "Invalid Connect REST URL: endpoint must use http or https"
+        )
+    if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise ConnectClusterBindingError(
+            "Invalid Connect REST URL: endpoint user information is not allowed"
+        )
+    try:
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        raise ConnectClusterBindingError(
+            "Invalid Connect REST URL: endpoint hostname is malformed"
+        ) from None
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    default_port = 80 if scheme == "http" else 443
+    authority = hostname if port in (None, default_port) else f"{hostname}:{port}"
+    path = parsed.path.rstrip("/")
+    return f"{scheme}://{authority}{path}"
+
+
+@dataclass(frozen=True)
+class ConnectClusterBinding:
+    """Versioned non-secret identity for one effective Kafka Connect cluster."""
+
+    cluster_alias: str
+    endpoint_fingerprint: str
+    version: int = _CONNECT_BINDING_VERSION
+
+    def __post_init__(self) -> None:
+        if self.version != _CONNECT_BINDING_VERSION:
+            raise ConnectClusterBindingError("Unsupported Connect cluster binding version")
+        if not isinstance(self.cluster_alias, str) or not _CLUSTER_ALIAS.fullmatch(
+            self.cluster_alias
+        ):
+            raise ConnectClusterBindingError("Invalid Connect cluster alias")
+        if not _is_fingerprint(self.endpoint_fingerprint):
+            raise ConnectClusterBindingError("Invalid Connect endpoint fingerprint")
+
+    @classmethod
+    def from_endpoint(cls, cluster_alias: str, rest_url: str) -> ConnectClusterBinding:
+        """Bind an alias to the canonical fingerprint of a normalized endpoint."""
+        normalized_endpoint = _normalize_rest_endpoint(rest_url)
+        return cls(
+            cluster_alias=cluster_alias,
+            endpoint_fingerprint=_sha256(normalized_endpoint),
+        )
+
+    @property
+    def backend_identity(self) -> str:
+        """Return the canonical, endpoint-free backend identity string."""
+        return (
+            f"kafka-connect:v{self.version}:{self.cluster_alias}:"
+            f"{self.endpoint_fingerprint}"
+        )
+
+
+ConnectorConfigScalar = str | bool | int | float
+
+
+@dataclass(frozen=True, eq=False)
+class ManagedConnectorObservation:
+    """Immutable strict observation used as future managed-resource evidence."""
+
+    binding: ConnectClusterBinding
+    name: str
+    exists: bool
+    config: tuple[tuple[str, ConnectorConfigScalar], ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, ConnectClusterBinding):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation has an invalid cluster binding"
+            )
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation has an invalid connector identity"
+            )
+        if not isinstance(self.exists, bool) or not isinstance(self.config, tuple):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation has an invalid shape"
+            )
+        if not self.exists:
+            if self.config:
+                raise ConnectManagedObservationError(
+                    "Absent Kafka Connect managed observation cannot contain config"
+                )
+            return
+        if not self.config:
+            raise ConnectManagedObservationError(
+                "Present Kafka Connect managed observation requires complete config"
+            )
+
+        prior_key: str | None = None
+        config_name: object = None
+        for entry in self.config:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation config has an invalid shape"
+                )
+            key, value = entry
+            if not isinstance(key, str) or not key.strip():
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation config has an invalid key"
+                )
+            if prior_key is not None and key <= prior_key:
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation config is not canonical"
+                )
+            prior_key = key
+            if type(value) not in (str, bool, int) and not (
+                isinstance(value, float) and math.isfinite(value)
+            ):
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation config has a non-finite or non-scalar value"
+                )
+            if key == "name":
+                config_name = value
+        if not isinstance(config_name, str) or config_name != self.name:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation config identity is mismatched"
+            )
+
+    def _canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "binding": self.binding.backend_identity,
+                "config": self.config,
+                "exists": self.exists,
+                "name": self.name,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ManagedConnectorObservation):
+            return NotImplemented
+        return self._canonical_json() == other._canonical_json()
+
+    def __hash__(self) -> int:
+        return hash(self._canonical_json())
+
+    @property
+    def fingerprint(self) -> str:
+        """Fingerprint stable identity, presence, and exact config only."""
+        return _sha256(self._canonical_json())
+
+    def config_dict(self) -> dict[str, ConnectorConfigScalar]:
+        """Return a mutable copy of the observed immutable configuration."""
+        return dict(self.config)
+
+
+def _config_value_fingerprint(value: object) -> str:
+    """Return deterministic evidence for a config value without exposing it."""
+    try:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        # Connect configuration is expected to be JSON-compatible. Keep this
+        # fail-safe branch secret-neutral without making plan rendering fail.
+        canonical = json.dumps(
+            {"type": f"{type(value).__module__}.{type(value).__qualname__}"},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{_FINGERPRINT_PREFIX}{digest}"
+
+
+def _config_change_evidence(
+    *,
+    from_present: bool,
+    from_value: object,
+    to_present: bool,
+    to_value: object,
+) -> dict[str, object]:
+    if not from_present and to_present:
+        direction = "added"
+    elif from_present and not to_present:
+        direction = "removed"
+    else:
+        direction = "changed"
+
+    evidence: dict[str, object] = {
+        "change": direction,
+        "from_present": from_present,
+        "to_present": to_present,
+    }
+    if from_present:
+        evidence["from_fingerprint"] = _config_value_fingerprint(from_value)
+    if to_present:
+        evidence["to_fingerprint"] = _config_value_fingerprint(to_value)
+    return evidence
+
+
+def _is_fingerprint(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith(_FINGERPRINT_PREFIX):
+        return False
+    digest = value.removeprefix(_FINGERPRINT_PREFIX)
+    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+
+
+def _is_secret_neutral_change(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    allowed_keys = {
+        "change",
+        "from_present",
+        "to_present",
+        "from_fingerprint",
+        "to_fingerprint",
+    }
+    if not set(value).issubset(allowed_keys):
+        return False
+    if value.get("change") not in {"added", "changed", "removed"}:
+        return False
+    if not isinstance(value.get("from_present"), bool) or not isinstance(
+        value.get("to_present"), bool
+    ):
+        return False
+    for side in ("from", "to"):
+        present = value[f"{side}_present"]
+        fingerprint = value.get(f"{side}_fingerprint")
+        if present != _is_fingerprint(fingerprint):
+            return False
+    return True
+
+
+def secret_neutral_connector_changes(changes: object) -> dict[str, dict[str, object]]:
+    """Normalize connector diffs to changed keys and non-revealing evidence only."""
+    if not isinstance(changes, Mapping):
+        return {}
+
+    neutral: dict[str, dict[str, object]] = {}
+    for key in sorted(key for key in changes if isinstance(key, str)):
+        delta = changes[key]
+        if _is_secret_neutral_change(delta):
+            neutral[key] = dict(delta)
+            continue
+        if isinstance(delta, Mapping) and "from" in delta and "to" in delta:
+            from_value = delta["from"]
+            to_value = delta["to"]
+            from_present = from_value is not None
+            to_present = to_value is not None
+            if from_value is None and to_value is None:
+                from_present = to_present = True
+            neutral[key] = _config_change_evidence(
+                from_present=from_present,
+                from_value=from_value,
+                to_present=to_present,
+                to_value=to_value,
+            )
+            continue
+
+        # Unknown legacy evidence is never passed through. Its key still tells
+        # the reviewer what changed without serializing an arbitrary value.
+        neutral[key] = {
+            "change": "changed",
+            "from_present": False,
+            "to_present": False,
+        }
+    return neutral
 
 
 @dataclass
@@ -39,13 +354,12 @@ class ConnectorChange:
 
     connector_name: str
     action: str  # create, update, delete, none
-    current: Optional[ConnectorState] = None
-    desired: Optional[ConnectorArtifact] = None
+    current: Optional[ConnectorState] = field(default=None, repr=False)
+    desired: Optional[ConnectorArtifact] = field(default=None, repr=False)
     changes: dict = None
 
     def __post_init__(self) -> None:
-        if self.changes is None:
-            self.changes = {}
+        self.changes = secret_neutral_connector_changes(self.changes or {})
 
 
 class ConnectDeployer:
@@ -66,13 +380,17 @@ class ConnectDeployer:
         ssl_certificate_location: Optional[str] = None,
         ssl_key_location: Optional[str] = None,
         ssl_key_password: Optional[str] = None,
+        cluster_alias: Optional[str] = None,
     ) -> None:
         """Initialize Connect deployer."""
         from streamt.deployer.ssl_utils import configure_session_ssl
 
-        if not rest_url or not rest_url.startswith(("http://", "https://")):
-            raise ValueError(f"Invalid Connect REST URL: {rest_url!r} — must start with http:// or https://")
-        self.rest_url = rest_url.rstrip("/")
+        self.rest_url = _normalize_rest_endpoint(rest_url)
+        self.cluster_binding = (
+            ConnectClusterBinding.from_endpoint(cluster_alias, self.rest_url)
+            if cluster_alias is not None
+            else None
+        )
         self._closed = False
         self._http_session = requests.Session()
         if username and password:
@@ -84,6 +402,15 @@ class ConnectDeployer:
             ssl_key_location=ssl_key_location,
             ssl_key_password=ssl_key_password,
         )
+
+    @property
+    def backend_identity(self) -> str:
+        """Return the canonical identity of the configured bound cluster."""
+        if self.cluster_binding is None:
+            raise ConnectClusterBindingError(
+                "Kafka Connect backend identity requires an effective cluster binding"
+            )
+        return self.cluster_binding.backend_identity
 
     def __enter__(self) -> ConnectDeployer:
         """Enter context manager."""
@@ -146,11 +473,112 @@ class ConnectDeployer:
         """List all connectors."""
         return self._request("GET", "/connectors")
 
+    @staticmethod
+    def _connector_path(connector_name: str) -> str:
+        """Encode an exact connector name as one URL path segment."""
+        return quote(connector_name, safe="")
+
+    @staticmethod
+    def _strict_config(
+        config: object,
+        *,
+        connector_name: str,
+    ) -> tuple[tuple[str, ConnectorConfigScalar], ...]:
+        if not isinstance(config, dict):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response has no complete config object"
+            )
+        if config.get("name") != connector_name or not isinstance(config.get("name"), str):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response has mismatched config identity"
+            )
+
+        normalized: list[tuple[str, ConnectorConfigScalar]] = []
+        for key, value in config.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation config has an invalid key"
+                )
+            if type(value) in (str, bool, int):
+                normalized.append((key, value))
+                continue
+            if isinstance(value, float) and math.isfinite(value):
+                normalized.append((key, value))
+                continue
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation config has a non-finite or non-scalar value"
+            )
+        return tuple(sorted(normalized))
+
+    def observe_managed_connector(self, connector_name: str) -> ManagedConnectorObservation:
+        """Strictly observe one connector with one immutable, identity-bound GET."""
+        binding = self.cluster_binding
+        if binding is None:
+            raise ConnectClusterBindingError(
+                "Managed Kafka Connect observation requires an effective cluster binding"
+            )
+        if not isinstance(connector_name, str) or not connector_name.strip():
+            raise ConnectManagedObservationError(
+                "Managed Kafka Connect observation requires a non-empty connector name"
+            )
+        if self._closed:
+            raise ConnectManagedObservationError("Kafka Connect managed observation is closed")
+
+        endpoint = f"/connectors/{self._connector_path(connector_name)}"
+        try:
+            response = self._http_session.request(
+                "GET",
+                f"{self.rest_url}{endpoint}",
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except Exception:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation request failed"
+            ) from None
+
+        status_code = getattr(response, "status_code", None)
+        if status_code == 404:
+            return ManagedConnectorObservation(
+                binding=binding,
+                name=connector_name,
+                exists=False,
+            )
+        if status_code in {401, 403}:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation authorization failed"
+            )
+        if not isinstance(status_code, int) or not 200 <= status_code < 300:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation request returned an invalid status"
+            )
+        try:
+            data = response.json()
+        except Exception:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response is not valid JSON"
+            ) from None
+        if not isinstance(data, dict):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response is not an object"
+            )
+        if data.get("name") != connector_name or not isinstance(data.get("name"), str):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response has mismatched connector identity"
+            )
+        config = self._strict_config(data.get("config"), connector_name=connector_name)
+        return ManagedConnectorObservation(
+            binding=binding,
+            name=connector_name,
+            exists=True,
+            config=config,
+        )
+
     def get_connector_state(self, connector_name: str) -> ConnectorState:
         """Get current state of a connector."""
+        encoded_name = self._connector_path(connector_name)
         try:
-            config = self._request("GET", f"/connectors/{connector_name}/config")
-            status = self._request("GET", f"/connectors/{connector_name}/status")
+            config = self._request("GET", f"/connectors/{encoded_name}/config")
+            status = self._request("GET", f"/connectors/{encoded_name}/status")
 
             return ConnectorState(
                 name=connector_name,
@@ -177,25 +605,25 @@ class ConnectDeployer:
         config = artifact.to_dict()["config"]
         return self._request(
             "PUT",
-            f"/connectors/{artifact.name}/config",
+            f"/connectors/{self._connector_path(artifact.name)}/config",
             json=config,
         )
 
     def delete_connector(self, connector_name: str) -> None:
         """Delete a connector."""
-        self._request("DELETE", f"/connectors/{connector_name}")
+        self._request("DELETE", f"/connectors/{self._connector_path(connector_name)}")
 
     def restart_connector(self, connector_name: str) -> None:
         """Restart a connector."""
-        self._request("POST", f"/connectors/{connector_name}/restart")
+        self._request("POST", f"/connectors/{self._connector_path(connector_name)}/restart")
 
     def pause_connector(self, connector_name: str) -> None:
         """Pause a connector."""
-        self._request("PUT", f"/connectors/{connector_name}/pause")
+        self._request("PUT", f"/connectors/{self._connector_path(connector_name)}/pause")
 
     def resume_connector(self, connector_name: str) -> None:
         """Resume a connector."""
-        self._request("PUT", f"/connectors/{connector_name}/resume")
+        self._request("PUT", f"/connectors/{self._connector_path(connector_name)}/resume")
 
     def plan_connector(self, artifact: ConnectorArtifact) -> ConnectorChange:
         """Plan changes for a connector."""
@@ -211,7 +639,7 @@ class ConnectDeployer:
 
         # Check for config changes
         desired_config = artifact.to_dict()["config"]
-        changes = {}
+        changes: dict[str, dict[str, object]] = {}
 
         # Remove name from comparison
         current_config = dict(current.config or {})
@@ -220,12 +648,19 @@ class ConnectDeployer:
         desired_config_cmp.pop("name", None)
 
         for key, value in desired_config_cmp.items():
+            current_present = key in current_config
             current_value = current_config.get(key)
-            if current_value is None or str(current_value).lower() != str(value).lower():
-                changes[key] = {
-                    "from": current_value,
-                    "to": value,
-                }
+            if (
+                not current_present
+                or type(current_value) is not type(value)
+                or current_value != value
+            ):
+                changes[key] = _config_change_evidence(
+                    from_present=current_present,
+                    from_value=current_value,
+                    to_present=True,
+                    to_value=value,
+                )
 
         # Check for removed keys and warn
         removed_keys = set(current_config.keys()) - set(desired_config_cmp.keys())
@@ -233,11 +668,13 @@ class ConnectDeployer:
             logger.warning(
                 f"Connector '{artifact.name}' will have config keys removed: {sorted(removed_keys)}"
             )
-            for key in removed_keys:
-                changes[key] = {
-                    "from": current_config[key],
-                    "to": None,
-                }
+            for key in sorted(removed_keys):
+                changes[key] = _config_change_evidence(
+                    from_present=True,
+                    from_value=current_config[key],
+                    to_present=False,
+                    to_value=None,
+                )
 
         if changes:
             return ConnectorChange(

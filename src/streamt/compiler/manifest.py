@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional
 
 
+class ConnectorArtifactFormatError(ValueError):
+    """A compiled connector artifact cannot be represented unambiguously."""
+
+
 @dataclass(frozen=True)
 class ArtifactOwnership:
     """Lifecycle ownership for a compiled deployment artifact.
@@ -127,17 +131,23 @@ class ConnectorArtifact:
     ownership: ArtifactOwnership | dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
+        reserved_config = {
+            "name": self.name,
+            "connector.class": self.connector_class,
+            "topics": ",".join(self.topics),
+        }
+        for key, expected in reserved_config.items():
+            if key in self.config and self.config[key] != expected:
+                raise ConnectorArtifactFormatError(
+                    f"connector config field {key!r} conflicts with its canonical field"
+                )
+        config = {**self.config, **reserved_config}
         return _with_ownership({
             "name": self.name,
             "connector_class": self.connector_class,
             "topics": self.topics,
             "cluster": self.cluster,
-            "config": {
-                "name": self.name,
-                "connector.class": self.connector_class,
-                "topics": ",".join(self.topics),
-                **self.config,
-            },
+            "config": config,
         }, self.ownership)
 
 

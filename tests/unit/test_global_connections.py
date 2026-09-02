@@ -5,16 +5,18 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 from streamt.compiler import Compiler
+from streamt.compiler.manifest import ConnectorArtifactFormatError
 from streamt.core.parser import ProjectParser
 
 
 def _project_config(connections: dict | None = None, sink_connection: str | None = None) -> dict:
     sink: dict = {
         "connector": "snowflake",
-        "config": {"topics": "enriched", "snowflake.topic2table.map": "enriched:USERS"},
+        "config": {"topics": "enriched.v1", "snowflake.topic2table.map": "enriched:USERS"},
     }
     if sink_connection:
         sink["connection"] = sink_connection
@@ -61,6 +63,18 @@ def _compile(config: dict):
 
 
 class TestGlobalConnections:
+    def test_conflicting_reserved_connector_config_cannot_compile(self):
+        config = _project_config()
+        config["models"][0]["sink"]["config"]["topics"] = "another-topic"
+
+        with pytest.raises(ConnectorArtifactFormatError) as caught:
+            _compile(config)
+
+        assert str(caught.value) == (
+            "connector config field 'topics' conflicts with its canonical field"
+        )
+        assert "another-topic" not in str(caught.value)
+
     def test_connection_config_merges_into_sink(self):
         """Connection base config is merged, sink-specific overrides take precedence."""
         connections = {

@@ -17,6 +17,7 @@ from typing import Optional
 
 from streamt import __version__
 from streamt.compiler.manifest import Manifest
+from streamt.deployer.connect import secret_neutral_connector_changes
 from streamt.deployer.planner import DeploymentPlan
 from streamt.deployer.state import StateError
 from streamt.deployer.state_backend import (
@@ -168,7 +169,7 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             "connector",
             connector_change.connector_name,
             connector_change.action,
-            connector_change.changes,
+            secret_neutral_connector_changes(connector_change.changes),
         )
     for gateway_change in plan.gateway_changes:
         add(

@@ -337,6 +337,7 @@ def make_connect_deployer(
     def _create() -> ConnectDeployer:
         return ConnectDeployer(
             cfg.rest_url,
+            cluster_alias=default,
             username=cfg.username,
             password=_resolve_secret(cfg.password),
             ssl_ca_location=cfg.ssl_ca_location,

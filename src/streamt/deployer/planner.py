@@ -8,8 +8,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
+from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
-from streamt.deployer.connect import ConnectDeployer, ConnectorChange
+from streamt.deployer.connect import (
+    ConnectDeployer,
+    ConnectorChange,
+    secret_neutral_connector_changes,
+)
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import GatewayDeployer, GatewayRuleChange
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
@@ -571,7 +576,11 @@ class DeploymentPlan:
             if changes:
                 flags: tuple[str, ...] = ()
                 if any(
-                    isinstance(value, dict) and value.get("to") is None
+                    isinstance(value, dict)
+                    and (
+                        (kind == "connector" and value.get("change") == "removed")
+                        or (kind != "connector" and value.get("to") is None)
+                    )
                     for value in changes.values()
                 ):
                     flags = ("destructive",)
@@ -861,8 +870,15 @@ class DeploymentPlan:
                 lines.append(_add(f"+ connector: {change.connector_name}"))
             elif change.action == "update":
                 lines.append(_upd(f"~ connector: {change.connector_name}"))
-                for key, val in (change.changes or {}).items():
-                    lines.append(f"    {key}: {val['from']} -> {val['to']}")
+                for key, evidence in secret_neutral_connector_changes(
+                    change.changes
+                ).items():
+                    from_evidence = evidence.get("from_fingerprint", "absent")
+                    to_evidence = evidence.get("to_fingerprint", "absent")
+                    lines.append(
+                        f"    {key}: {evidence['change']} "
+                        f"({from_evidence} -> {to_evidence})"
+                    )
             elif change.action == "delete":
                 lines.append(_rm(f"- connector: {change.connector_name}"))
 
@@ -1107,7 +1123,6 @@ class DeploymentPlanner:
         deployment would look like without connecting to Kafka/SR/Flink.
         """
         from streamt.compiler.manifest import (
-            ConnectorArtifact,
             FlinkJobArtifact,
             GatewayRuleArtifact,
             TopicArtifact,
@@ -1182,32 +1197,22 @@ class DeploymentPlanner:
                 pass
 
         for conn_data in self.manifest.artifacts.get("connectors", []):
-            try:
-                cfg = conn_data.get("config", {})
-                artifact = ConnectorArtifact(
-                    name=conn_data["name"],
-                    connector_class=cfg.get("connector.class", ""),
-                    topics=cfg.get("topics", "").split(","),
-                    config={k: v for k, v in cfg.items() if k not in ["name", "connector.class", "topics"]},
-                    ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
-                )
-                change = ConnectorChange(
-                    connector_name=artifact.name,
-                    action="create",
-                    desired=artifact,
-                )
-                self._apply_ownership_policy(
-                    plan,
-                    kind="connector",
-                    logical_name=artifact.name,
-                    physical_name=artifact.name,
-                    ownership=artifact.ownership,
-                    change=change,
-                    create_actions=frozenset({"create"}),
-                )
-                plan.connector_changes.append(change)
-            except KeyError:
-                pass
+            artifact = parse_compiled_connector_artifact(conn_data)
+            change = ConnectorChange(
+                connector_name=artifact.name,
+                action="create",
+                desired=artifact,
+            )
+            self._apply_ownership_policy(
+                plan,
+                kind="connector",
+                logical_name=artifact.name,
+                physical_name=artifact.name,
+                ownership=artifact.ownership,
+                change=change,
+                create_actions=frozenset({"create"}),
+            )
+            plan.connector_changes.append(change)
 
         for rule_data in self.manifest.artifacts.get("gateway_rules", []):
             try:
@@ -1318,36 +1323,20 @@ class DeploymentPlanner:
 
         # Plan connectors
         if self.connect_deployer:
-            from streamt.compiler.manifest import ConnectorArtifact
-
             for conn_data in self.manifest.artifacts.get("connectors", []):
-                try:
-                    cfg = conn_data.get("config", {})
-                    artifact = ConnectorArtifact(
-                        name=conn_data["name"],
-                        connector_class=cfg.get("connector.class", ""),
-                        topics=cfg.get("topics", "").split(","),
-                        config={
-                            k: v
-                            for k, v in cfg.items()
-                            if k not in ["name", "connector.class", "topics"]
-                        },
-                        ownership=ArtifactOwnership.from_dict(conn_data.get("ownership")),
-                    )
-                    change = self.connect_deployer.plan_connector(artifact)
-                    self._apply_ownership_policy(
-                        plan,
-                        kind="connector",
-                        logical_name=artifact.name,
-                        physical_name=artifact.name,
-                        ownership=artifact.ownership,
-                        change=change,
-                        current=change.current,
-                        create_actions=frozenset({"create"}),
-                    )
-                    plan.connector_changes.append(change)
-                except KeyError as e:
-                    logger.error("Malformed connector artifact, missing key %s: %s", e, conn_data)
+                artifact = parse_compiled_connector_artifact(conn_data)
+                change = self.connect_deployer.plan_connector(artifact)
+                self._apply_ownership_policy(
+                    plan,
+                    kind="connector",
+                    logical_name=artifact.name,
+                    physical_name=artifact.name,
+                    ownership=artifact.ownership,
+                    change=change,
+                    current=change.current,
+                    create_actions=frozenset({"create"}),
+                )
+                plan.connector_changes.append(change)
 
         # Plan gateway rules
         if self.gateway_deployer:

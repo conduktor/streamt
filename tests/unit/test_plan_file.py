@@ -559,7 +559,7 @@ def test_plan_payload_redacts_sensitive_change_evidence() -> None:
     assert "kafka-password" not in serialized
     assert "jaas-password" not in serialized
     assert "super-secret" not in serialized
-    assert "<redacted>" in serialized
+    assert '"config"' in serialized
 
 
 def test_plan_payload_includes_sorted_ownership_requirements() -> None:

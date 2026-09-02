@@ -22,6 +22,7 @@ from streamt.cli.helpers import (
     redact_sensitive_text,
 )
 from streamt.core.errors import ErrorCode
+from streamt.deployer.connect import ConnectorChange, secret_neutral_connector_changes
 from streamt.deployer.plan_file import (
     PLAN_FILE_VERSION,
     PlanFileError,
@@ -39,6 +40,16 @@ from streamt.deployer.state_backend import (
     make_deployment_state_service,
 )
 from streamt.output import StructuredError
+
+
+def _connector_change_data(change: ConnectorChange) -> dict[str, object]:
+    """Serialize a connector plan without carrying raw configuration values."""
+    return {
+        "type": "connector",
+        "name": change.connector_name,
+        "action": change.action,
+        "changes": secret_neutral_connector_changes(change.changes),
+    }
 
 
 @click.command()
@@ -175,7 +186,7 @@ def plan(
                 changes.append({"type": "flink_job", "name": flink_change.job_name, "action": flink_change.action})
         for connector_change in deployment_plan.connector_changes:
             if connector_change.action != "none":
-                changes.append({"type": "connector", "name": connector_change.connector_name, "action": connector_change.action, "changes": connector_change.changes})
+                changes.append(_connector_change_data(connector_change))
         for gateway_change in deployment_plan.gateway_changes:
             if gateway_change.action != "none":
                 changes.append({"type": "gateway_rule", "name": gateway_change.name, "action": gateway_change.action, "changes": gateway_change.changes})
