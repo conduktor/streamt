@@ -23,6 +23,8 @@ from streamt.deployer.gateway import (
     classify_gateway_interceptor_name,
     generate_gateway_interceptor_name,
     is_gateway_backend_identity,
+    is_gateway_resource_name,
+    managed_gateway_absence_fingerprint,
 )
 
 
@@ -158,6 +160,32 @@ def test_gateway_binding_is_normalized_scoped_endpoint_free_and_versioned() -> N
     assert is_gateway_backend_identity(first.backend_identity)
     assert "gateway.example.test" not in first.backend_identity
     assert "production" not in first.backend_identity
+
+
+@pytest.mark.parametrize("virtual_cluster", [None, "production"])
+def test_absence_fingerprint_helper_matches_exact_managed_observation(
+    virtual_cluster: str | None,
+) -> None:
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test/admin",
+        virtual_cluster=virtual_cluster,
+    )
+    absent = ManagedGatewayRuleObservation(
+        binding=binding,
+        logical_name="orders_rule",
+        alias_name="orders.public",
+        exists=False,
+    )
+
+    assert managed_gateway_absence_fingerprint(
+        binding.backend_identity,
+        "orders_rule",
+        "orders.public",
+    ) == absent.fingerprint
+    assert is_gateway_resource_name("orders_rule") is True
+    assert is_gateway_resource_name("orders.public") is True
+    assert is_gateway_resource_name("orders/rule") is False
+    assert is_gateway_resource_name(1) is False
 
 
 @pytest.mark.parametrize(

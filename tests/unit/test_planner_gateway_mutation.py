@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -294,6 +295,95 @@ def test_planned_gateway_actions_use_exact_alias_locators() -> None:
     assert planner.operation_actions(DeploymentPlan(gateway_changes=[delete])) == [
         ("gateway_rule:orders_rule", "delete")
     ]
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_exists", "expected_counts"),
+    [
+        ("create", (False, True), (0, 1)),
+        ("update", (True, True), (0, 1)),
+        ("delete", (True, False), (1, 0)),
+    ],
+)
+def test_planned_gateway_actions_freeze_exact_secret_neutral_transition_evidence(
+    action: str,
+    expected_exists: tuple[bool, bool],
+    expected_counts: tuple[int, int],
+) -> None:
+    deployer = MagicMock()
+    artifact = GatewayRuleArtifact(
+        name="provider_rule",
+        virtual_topic="orders.public",
+        physical_topic="orders.v1",
+        interceptors=[
+            {
+                "type": "filter",
+                "config": {"where": "customer_token = 'raw-secret-value'"},
+            }
+        ],
+        ownership=ArtifactOwnership(
+            project="payments",
+            owner_type="model",
+            owner_name="state_owner",
+        ),
+    )
+    desired = build_desired_gateway_rule(artifact, _BINDING)
+    if action == "create":
+        change = plan_managed_gateway_rule(artifact, desired, _absent(desired))
+    elif action == "update":
+        change = plan_managed_gateway_rule(
+            artifact,
+            desired,
+            ManagedGatewayRuleObservation(
+                binding=_BINDING,
+                logical_name=artifact.name,
+                alias_name=artifact.virtual_topic,
+                exists=True,
+                physical_name="orders.previous",
+                physical_cluster="main",
+            ),
+        )
+    else:
+        change = plan_managed_gateway_rule_deletion(desired)
+
+    prior = LocalState(
+        project="payments",
+        environment="prod",
+        resources={
+            resource_id("payments", "prod", "gateway_rule", "state_owner"):
+                ManagedResourceRecord(
+                    physical_name=artifact.virtual_topic,
+                    ownership="managed",
+                    artifact_checksum=artifact_checksum(
+                        {"alias": artifact.virtual_topic}
+                    ),
+                    backend=_BINDING.backend_identity,
+                )
+        },
+    )
+    planned = _planner(deployer, prior_state=prior).planned_actions(
+        DeploymentPlan(gateway_changes=[change])
+    )[0]
+
+    assert planned.resource_id.endswith("/gateway_rule/state_owner")
+    assert planned.gateway_evidence is not None
+    evidence = planned.gateway_evidence
+    assert evidence.rule_name == "provider_rule"
+    assert evidence.rule_name != "state_owner"
+    assert evidence.alias_name == "orders.public"
+    assert evidence.backend_identity == _BINDING.backend_identity
+    assert (evidence.current.exists, evidence.desired.exists) == expected_exists
+    assert (
+        evidence.current.managed_interceptor_count,
+        evidence.desired.managed_interceptor_count,
+    ) == expected_counts
+    assert evidence.current.fingerprint != evidence.desired.fingerprint
+
+    wire = json.dumps(evidence.to_dict(), sort_keys=True)
+    assert "raw-secret-value" not in wire
+    assert "gateway.example.test" not in wire
+    assert "customer_token" not in wire
+    assert "orders.v1" not in wire
 
 
 def test_delete_ownership_lookup_is_qualified_by_canonical_backend() -> None:

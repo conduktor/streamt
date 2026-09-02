@@ -342,6 +342,15 @@ def is_gateway_backend_identity(value: object) -> bool:
     return canonical != "passthrough" and _scope_token(canonical) == token
 
 
+def is_gateway_resource_name(value: object) -> bool:
+    """Whether a value is one exact Gateway rule, alias, or topic name."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and _GATEWAY_RESOURCE_NAME.fullmatch(value) is not None
+    )
+
+
 GatewayScope = tuple[tuple[str, str | None], ...]
 _CANONICAL_INTERCEPTOR_SCOPE_KEYS = tuple(sorted(_KNOWN_INTERCEPTOR_SCOPE_KEYS))
 
@@ -447,6 +456,43 @@ class ManagedGatewayInterceptor:
             )
 
 
+def _managed_gateway_observation_canonical_json(
+    *,
+    backend_identity: str,
+    logical_name: str,
+    alias_name: str,
+    exists: bool,
+    physical_name: str | None,
+    physical_cluster: str | None,
+    interceptors: tuple[ManagedGatewayInterceptor, ...],
+) -> str:
+    """Return the one canonical managed-observation fingerprint preimage."""
+    return json.dumps(
+        {
+            "alias_name": alias_name,
+            "backend_identity": backend_identity,
+            "exists": exists,
+            "interceptors": [
+                {
+                    "config": interceptor.config_json,
+                    "name": interceptor.name,
+                    "plugin_class": interceptor.plugin_class,
+                    "priority": interceptor.priority,
+                    "scope": interceptor.scope,
+                }
+                for interceptor in interceptors
+            ],
+            "logical_name": logical_name,
+            "physical_cluster": physical_cluster,
+            "physical_name": physical_name,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 @dataclass(frozen=True, eq=False)
 class ManagedGatewayRuleObservation:
     """Complete immutable alias and rule-owned interceptor observation."""
@@ -511,29 +557,14 @@ class ManagedGatewayRuleObservation:
             )
 
     def _canonical_json(self) -> str:
-        return json.dumps(
-            {
-                "alias_name": self.alias_name,
-                "backend_identity": self.binding.backend_identity,
-                "exists": self.exists,
-                "interceptors": [
-                    {
-                        "config": interceptor.config_json,
-                        "name": interceptor.name,
-                        "plugin_class": interceptor.plugin_class,
-                        "priority": interceptor.priority,
-                        "scope": interceptor.scope,
-                    }
-                    for interceptor in self.interceptors
-                ],
-                "logical_name": self.logical_name,
-                "physical_cluster": self.physical_cluster,
-                "physical_name": self.physical_name,
-            },
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
+        return _managed_gateway_observation_canonical_json(
+            backend_identity=self.binding.backend_identity,
+            logical_name=self.logical_name,
+            alias_name=self.alias_name,
+            exists=self.exists,
+            physical_name=self.physical_name,
+            physical_cluster=self.physical_cluster,
+            interceptors=self.interceptors,
         )
 
     def __eq__(self, other: object) -> bool:
@@ -548,6 +579,36 @@ class ManagedGatewayRuleObservation:
     def fingerprint(self) -> str:
         """Fingerprint the binding and exact complete provider managed surface."""
         return _sha256(self._canonical_json())
+
+
+def managed_gateway_absence_fingerprint(
+    backend_identity: object,
+    rule_name: object,
+    alias_name: object,
+) -> str:
+    """Fingerprint the exact absent surface for one canonical managed rule identity."""
+    if (
+        not isinstance(backend_identity, str)
+        or not is_gateway_backend_identity(backend_identity)
+        or not isinstance(rule_name, str)
+        or not is_gateway_resource_name(rule_name)
+        or not isinstance(alias_name, str)
+        or not is_gateway_resource_name(alias_name)
+    ):
+        raise GatewayManagedObservationError(
+            "Gateway managed absence identity is invalid"
+        )
+    return _sha256(
+        _managed_gateway_observation_canonical_json(
+            backend_identity=backend_identity,
+            logical_name=rule_name,
+            alias_name=alias_name,
+            exists=False,
+            physical_name=None,
+            physical_cluster=None,
+            interceptors=(),
+        )
+    )
 
 
 _FILTER_COMPARISON_TYPES = (

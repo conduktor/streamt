@@ -51,6 +51,10 @@ from streamt.deployer.state import (
     StateIdentityError,
     resource_id,
 )
+from streamt.deployer.state_backend import (
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,7 @@ class PlannedAction:
     resource_id: str
     runtime_label: str
     action: str
+    gateway_evidence: GatewayActionEvidence | None = None
 
     def __post_init__(self) -> None:
         ResourceIdentity.parse(self.resource_id)
@@ -75,6 +80,11 @@ class PlannedAction:
             raise StateIdentityError("planned action runtime label must be non-empty")
         if not isinstance(self.action, str) or not self.action:
             raise StateIdentityError("planned action action must be non-empty")
+        if self.gateway_evidence is not None and not isinstance(
+            self.gateway_evidence,
+            GatewayActionEvidence,
+        ):
+            raise StateIdentityError("planned action Gateway evidence is invalid")
 
 
 _SENSITIVE_KV = re.compile(
@@ -2028,6 +2038,47 @@ class DeploymentPlanner:
                 "Actionable Gateway change has incoherent normalized aggregate evidence"
             ) from exc
 
+    @staticmethod
+    def _gateway_action_evidence(
+        *,
+        action: str,
+        current: ManagedGatewayRuleObservation,
+        desired: ManagedGatewayRuleObservation | None,
+    ) -> GatewayActionEvidence:
+        """Freeze the exact secret-neutral Gateway transition before mutation."""
+        candidate = desired
+        if action == "delete":
+            if desired is not None:
+                raise StateIdentityError(
+                    "Gateway delete evidence must have an explicit absent candidate"
+                )
+            candidate = ManagedGatewayRuleObservation(
+                binding=current.binding,
+                logical_name=current.logical_name,
+                alias_name=current.alias_name,
+                exists=False,
+            )
+        if candidate is None:
+            raise StateIdentityError(
+                "Gateway action evidence requires an exact desired candidate"
+            )
+        return GatewayActionEvidence(
+            version=1,
+            backend_identity=current.binding.backend_identity,
+            rule_name=current.logical_name,
+            alias_name=current.alias_name,
+            current=GatewayActionSurfaceEvidence(
+                exists=current.exists,
+                fingerprint=current.fingerprint,
+                managed_interceptor_count=len(current.interceptors),
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=candidate.exists,
+                fingerprint=candidate.fingerprint,
+                managed_interceptor_count=len(candidate.interceptors),
+            ),
+        )
+
     def _apply_resource_changes(
         self,
         results: dict[str, object],
@@ -2289,7 +2340,9 @@ class DeploymentPlanner:
         if self.gateway_deployer is not None:
             for change in actionable_gateway_changes:
                 action = str(change.action)
-                _, _, alias_name = self._require_managed_gateway_action(change)
+                current, desired, alias_name = self._require_managed_gateway_action(
+                    change
+                )
                 actions.append(
                     PlannedAction(
                         resource_id=self._planned_resource_id(
@@ -2300,6 +2353,11 @@ class DeploymentPlanner:
                         ),
                         runtime_label=f"gateway_rule:{change.name}",
                         action=action,
+                        gateway_evidence=self._gateway_action_evidence(
+                            action=action,
+                            current=current,
+                            desired=desired,
+                        ),
                     )
                 )
 

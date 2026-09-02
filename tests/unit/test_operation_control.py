@@ -5,21 +5,27 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from streamt.core.deployment_state import local_deployment_state_config
+from streamt.deployer.gateway import managed_gateway_absence_fingerprint
 from streamt.deployer.state import LocalState, StateFormatError, local_state_path
 from streamt.deployer.state_backend import (
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
     OperationAction,
     OperationControlState,
     OperationIntent,
     OperationProgress,
     OperationSnapshot,
     RecoveryRecord,
+    StateAddress,
     StateBackendConflictError,
     StateBackendRecoveryRequiredError,
     StateBackendUnknownCommitError,
@@ -27,6 +33,15 @@ from streamt.deployer.state_backend import (
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
+)
+
+GATEWAY_BACKEND = "conduktor-gateway:v1:p:sha256:" + "1" * 64
+CURRENT_FINGERPRINT = "sha256:" + "2" * 64
+DESIRED_FINGERPRINT = "sha256:" + "3" * 64
+ABSENCE_FINGERPRINT = managed_gateway_absence_fingerprint(
+    GATEWAY_BACKEND,
+    "orders_rule",
+    "orders.public",
 )
 
 
@@ -41,6 +56,308 @@ def _intent(state: LocalState) -> OperationIntent:
         reviewed_plan_checksum=None,
         actions=(OperationAction(0, "topic:orders", "create"),),
     )
+
+
+def _gateway_evidence(
+    *,
+    current_exists: bool = True,
+    desired_exists: bool = True,
+    current_fingerprint: str | None = None,
+    desired_fingerprint: str | None = None,
+) -> GatewayActionEvidence:
+    return GatewayActionEvidence(
+        version=1,
+        backend_identity=GATEWAY_BACKEND,
+        rule_name="orders_rule",
+        alias_name="orders.public",
+        current=GatewayActionSurfaceEvidence(
+            exists=current_exists,
+            fingerprint=(
+                current_fingerprint
+                if current_fingerprint is not None
+                else CURRENT_FINGERPRINT if current_exists else ABSENCE_FINGERPRINT
+            ),
+            managed_interceptor_count=1 if current_exists else 0,
+        ),
+        desired=GatewayActionSurfaceEvidence(
+            exists=desired_exists,
+            fingerprint=(
+                desired_fingerprint
+                if desired_fingerprint is not None
+                else DESIRED_FINGERPRINT if desired_exists else ABSENCE_FINGERPRINT
+            ),
+            managed_interceptor_count=1 if desired_exists else 0,
+        ),
+    )
+
+
+def _gateway_action(*, action: str = "update") -> OperationAction:
+    evidence = _gateway_evidence(
+        current_exists=action != "create",
+        desired_exists=action != "delete",
+    )
+    return OperationAction(
+        index=0,
+        resource_id="streamt://payments/dev/gateway_rule/orders_owner",
+        action=action,
+        gateway_evidence=evidence,
+    )
+
+
+def test_gateway_action_evidence_has_one_strict_secret_neutral_v2_shape() -> None:
+    action = _gateway_action()
+
+    serialized = action.to_dict()
+
+    assert serialized == {
+        "index": 0,
+        "resource_id": "streamt://payments/dev/gateway_rule/orders_owner",
+        "action": "update",
+        "gateway_evidence": {
+            "version": 1,
+            "backend_identity": GATEWAY_BACKEND,
+            "rule_name": "orders_rule",
+            "alias_name": "orders.public",
+            "current": {
+                "exists": True,
+                "fingerprint": CURRENT_FINGERPRINT,
+                "managed_interceptor_count": 1,
+            },
+            "desired": {
+                "exists": True,
+                "fingerprint": DESIRED_FINGERPRINT,
+                "managed_interceptor_count": 1,
+            },
+        },
+    }
+    assert OperationAction.from_dict(serialized, control_version=2) == action
+    assert action.resource_id.endswith("/orders_owner")
+    assert action.gateway_evidence is not None
+    assert action.gateway_evidence.rule_name == "orders_rule"
+    rendered = repr(action)
+    assert "http" not in rendered
+    assert "config" not in rendered
+
+
+def test_gateway_action_evidence_rejects_noncanonical_or_unsafe_fields() -> None:
+    original = _gateway_evidence().to_dict()
+
+    def add_raw_config(data: dict[str, Any]) -> None:
+        data["configuration"] = {"sql": "select secret"}
+
+    def remove_rule_name(data: dict[str, Any]) -> None:
+        data.pop("rule_name")
+
+    def add_surface_config(data: dict[str, Any]) -> None:
+        data["current"]["config"] = {"password": "secret"}
+
+    def malformed_fingerprint(data: dict[str, Any]) -> None:
+        data["current"]["fingerprint"] = "SHA256:" + "A" * 64
+
+    def missing_surface_field(data: dict[str, Any]) -> None:
+        data["desired"].pop("exists")
+
+    def nonboolean_exists(data: dict[str, Any]) -> None:
+        data["desired"]["exists"] = 1
+
+    def boolean_count(data: dict[str, Any]) -> None:
+        data["desired"]["managed_interceptor_count"] = True
+
+    def negative_count(data: dict[str, Any]) -> None:
+        data["desired"]["managed_interceptor_count"] = -1
+
+    def absent_nonzero_count(data: dict[str, Any]) -> None:
+        data["current"]["exists"] = False
+
+    def wrong_absence_fingerprint(data: dict[str, Any]) -> None:
+        data["current"] = {
+            "exists": False,
+            "fingerprint": CURRENT_FINGERPRINT,
+            "managed_interceptor_count": 0,
+        }
+
+    def present_with_absence_fingerprint(data: dict[str, Any]) -> None:
+        data["desired"]["fingerprint"] = ABSENCE_FINGERPRINT
+
+    def malformed_backend(data: dict[str, Any]) -> None:
+        data["backend_identity"] = "https://alice:secret@gateway.example"
+
+    def unsafe_alias(data: dict[str, Any]) -> None:
+        data["alias_name"] = "orders/secret"
+
+    def unsafe_rule_name(data: dict[str, Any]) -> None:
+        data["rule_name"] = "orders/rule"
+
+    def unknown_version(data: dict[str, Any]) -> None:
+        data["version"] = 2
+
+    for mutate in (
+        add_raw_config,
+        remove_rule_name,
+        add_surface_config,
+        malformed_fingerprint,
+        missing_surface_field,
+        nonboolean_exists,
+        boolean_count,
+        negative_count,
+        absent_nonzero_count,
+        wrong_absence_fingerprint,
+        present_with_absence_fingerprint,
+        malformed_backend,
+        unsafe_alias,
+        unsafe_rule_name,
+        unknown_version,
+    ):
+        payload = deepcopy(original)
+        mutate(payload)
+        with pytest.raises(StateFormatError) as captured:
+            GatewayActionEvidence.from_dict(payload)
+        assert "alice" not in str(captured.value)
+        assert "secret" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("resource_id", "action", "evidence"),
+    [
+        ("streamt://payments/dev/topic/orders", "update", _gateway_evidence()),
+        ("gateway_rule:orders", "update", _gateway_evidence()),
+        (
+            "streamt://payments/dev/gateway_rule/orders",
+            "noop",
+            _gateway_evidence(),
+        ),
+        (
+            "streamt://payments/dev/gateway_rule/orders",
+            "create",
+            _gateway_evidence(),
+        ),
+        (
+            "streamt://payments/dev/gateway_rule/orders",
+            "update",
+            _gateway_evidence(desired_fingerprint=CURRENT_FINGERPRINT),
+        ),
+        (
+            "streamt://payments/dev/gateway_rule/orders",
+            "delete",
+            _gateway_evidence(),
+        ),
+    ],
+)
+def test_gateway_action_evidence_rejects_kind_action_and_transition_mismatch(
+    resource_id: str,
+    action: str,
+    evidence: GatewayActionEvidence,
+) -> None:
+    with pytest.raises(StateFormatError, match="Gateway"):
+        OperationAction(
+            index=0,
+            resource_id=resource_id,
+            action=action,
+            gateway_evidence=evidence,
+        )
+
+
+def test_v1_control_roundtrips_exactly_and_rejects_gateway_evidence() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    intent = _intent(state)
+    legacy = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=intent,
+        control_version=1,
+    )
+    payload = legacy.to_dict()
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+    assert set(payload["intent"]["actions"][0]) == {
+        "index",
+        "resource_id",
+        "action",
+    }
+    loaded = OperationControlState.from_dict(payload, expected_address=address)
+    assert loaded.control_version == 1
+    assert loaded.to_dict() == payload
+    assert json.dumps(
+        loaded.to_dict(), separators=(",", ":"), sort_keys=True
+    ) == canonical
+
+    gateway_intent = replace(intent, actions=(_gateway_action(),))
+    with pytest.raises(StateFormatError, match="version 1"):
+        OperationControlState(
+            address=address,
+            status="in_progress",
+            intent=gateway_intent,
+            control_version=1,
+        )
+    gateway_payload = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=gateway_intent,
+    ).to_dict()
+    gateway_payload["control_version"] = 1
+    with pytest.raises(StateFormatError, match="unknown field"):
+        OperationControlState.from_dict(gateway_payload, expected_address=address)
+
+
+def test_v2_control_requires_explicit_action_evidence_member() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    control = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=_intent(state),
+    )
+    payload = control.to_dict()
+
+    assert payload["control_version"] == 2
+    assert payload["intent"]["actions"][0]["gateway_evidence"] is None
+    del payload["intent"]["actions"][0]["gateway_evidence"]
+    with pytest.raises(StateFormatError, match="missing field"):
+        OperationControlState.from_dict(payload, expected_address=address)
+
+
+def test_v2_control_requires_and_roundtrips_gateway_mutation_evidence() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    base_intent = _intent(state)
+    missing_evidence = replace(
+        base_intent,
+        actions=(
+            OperationAction(
+                index=0,
+                resource_id="streamt://payments/dev/gateway_rule/orders_owner",
+                action="update",
+            ),
+        ),
+    )
+    with pytest.raises(StateFormatError, match="require action evidence"):
+        OperationControlState(
+            address=address,
+            status="in_progress",
+            intent=missing_evidence,
+        )
+
+    intent = replace(base_intent, actions=(_gateway_action(),))
+    control = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=intent,
+    )
+    payload = control.to_dict()
+
+    loaded = OperationControlState.from_dict(payload, expected_address=address)
+    assert loaded == control
+    assert loaded.to_dict() == payload
+    assert loaded.intent is not None
+    assert loaded.intent.actions[0].gateway_evidence == _gateway_evidence()
+
+    with pytest.raises(StateFormatError, match="another state address"):
+        OperationControlState(
+            address=StateAddress("local", "other", "dev"),
+            status="in_progress",
+            intent=intent,
+        )
 
 
 def _crash_after_mock_mutation(project_path: str, runtime_marker: str) -> None:

@@ -22,7 +22,10 @@ from typing import TYPE_CHECKING, Literal
 from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
 from streamt.compiler.manifest import ArtifactOwnership
 from streamt.deployer.connect import is_connect_backend_identity
-from streamt.deployer.gateway import is_gateway_backend_identity
+from streamt.deployer.gateway import (
+    is_gateway_backend_identity,
+    is_gateway_resource_name,
+)
 
 if TYPE_CHECKING:
     from streamt.deployer.planner import DeploymentPlan
@@ -259,6 +262,46 @@ class ManagedResourceRecord:
             artifact_checksum=data["artifact_checksum"],
             backend=data["backend"],
         )
+
+
+@dataclass(frozen=True)
+class ManagedGatewayResourceDeletion:
+    """One exact secret-neutral Gateway ownership-state deletion claim.
+
+    Runtime mutation is authorized elsewhere.  This value only gives the state
+    projection boundary enough exact identity to remove the matching prior
+    record after that mutation has been validated as successful.
+    """
+
+    resource_id: str
+    backend_identity: str
+    alias_name: str
+
+    def __post_init__(self) -> None:
+        if type(self.resource_id) is not str:
+            raise StateFormatError(
+                "managed Gateway deletion resource_id must be a canonical string"
+            )
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+        except StateError:
+            raise StateFormatError(
+                "managed Gateway deletion resource_id must be canonical"
+            ) from None
+        if identity.kind != "gateway_rule":
+            raise StateFormatError(
+                "managed Gateway deletion resource_id must identify a gateway_rule"
+            )
+        if type(self.backend_identity) is not str or not is_gateway_backend_identity(
+            self.backend_identity
+        ):
+            raise StateFormatError("managed Gateway deletion backend_identity must be canonical")
+        if type(self.alias_name) is not str or not is_gateway_resource_name(
+            self.alias_name
+        ):
+            raise StateFormatError(
+                "managed Gateway deletion alias_name must be a valid Gateway resource name"
+            )
 
 
 @dataclass(frozen=True)
@@ -652,12 +695,25 @@ def desired_managed_records(
 def updated_local_state(
     prior_state: LocalState,
     plan: DeploymentPlan,
+    *,
+    managed_gateway_deletions: tuple[ManagedGatewayResourceDeletion, ...] = (),
 ) -> LocalState | None:
     """Return serial+1 state when desired owned records changed, else ``None``.
 
     Prior records absent from the desired plan are intentionally retained. This
-    helper never infers deletion or ownership relinquishment from absence.
+    helper never infers deletion or ownership relinquishment from absence.  It
+    removes a Gateway record only when the caller supplies an exact explicit
+    deletion claim that matches the prior state and does not conflict with any
+    desired claim.
     """
+    if type(managed_gateway_deletions) is not tuple:
+        raise StateFormatError("managed Gateway deletions must be an exact tuple")
+    if any(
+        type(deletion) is not ManagedGatewayResourceDeletion
+        for deletion in managed_gateway_deletions
+    ):
+        raise StateFormatError("managed Gateway deletions must contain exact deletion values")
+
     desired = desired_managed_records(
         plan,
         project=prior_state.project,
@@ -665,10 +721,68 @@ def updated_local_state(
     )
     resources = dict(prior_state.resources)
     changed = False
-    for identity, record in desired.items():
-        if resources.get(identity) != record:
-            resources[identity] = record
+
+    deletion_resource_ids: set[str] = set()
+    deletion_provider_ids: set[tuple[str, str]] = set()
+    prior_provider_owners: dict[tuple[str, str], list[str]] = {}
+    desired_provider_owners: dict[tuple[str, str], list[str]] = {}
+    for resource_uri, record in prior_state.resources.items():
+        if ResourceIdentity.parse(resource_uri).kind == "gateway_rule":
+            prior_provider_owners.setdefault(
+                (record.backend, record.physical_name),
+                [],
+            ).append(resource_uri)
+    for resource_uri, record in desired.items():
+        if ResourceIdentity.parse(resource_uri).kind == "gateway_rule":
+            desired_provider_owners.setdefault(
+                (record.backend, record.physical_name),
+                [],
+            ).append(resource_uri)
+
+    for deletion in managed_gateway_deletions:
+        deletion_identity = ResourceIdentity.parse(deletion.resource_id)
+        if (
+            deletion_identity.project != prior_state.project
+            or deletion_identity.environment != prior_state.environment
+        ):
+            raise StateIdentityError(
+                "managed Gateway deletion does not belong to the current state"
+            )
+        if deletion.resource_id in deletion_resource_ids:
+            raise StateIdentityError(
+                "managed Gateway deletions contain a duplicate resource identity"
+            )
+        deletion_resource_ids.add(deletion.resource_id)
+
+        provider_id = (deletion.backend_identity, deletion.alias_name)
+        if provider_id in deletion_provider_ids:
+            raise StateIdentityError(
+                "managed Gateway deletions contain a duplicate provider identity"
+            )
+        deletion_provider_ids.add(provider_id)
+
+        prior_record = prior_state.resources.get(deletion.resource_id)
+        if (
+            prior_record is None
+            or prior_record.backend != deletion.backend_identity
+            or prior_record.physical_name != deletion.alias_name
+            or prior_provider_owners.get(provider_id) != [deletion.resource_id]
+        ):
+            raise StateIdentityError(
+                "managed Gateway deletion does not match one exact prior-state record"
+            )
+        if deletion.resource_id in desired or provider_id in desired_provider_owners:
+            raise StateIdentityError(
+                "managed Gateway deletion conflicts with a desired resource claim"
+            )
+
+    for resource_uri, record in desired.items():
+        if resources.get(resource_uri) != record:
+            resources[resource_uri] = record
             changed = True
+    for deletion in managed_gateway_deletions:
+        del resources[deletion.resource_id]
+        changed = True
     if not changed:
         return None
     return LocalState(

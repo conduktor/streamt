@@ -13,8 +13,17 @@ import yaml
 from click.testing import CliRunner
 
 from streamt.cli import main
-from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    GatewayRuleArtifact,
+    Manifest,
+    TopicArtifact,
+)
 from streamt.core.deployment_state import local_deployment_state_config
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    ManagedGatewaySnapshot,
+)
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import ReviewedPlanFile, StateReference
 from streamt.deployer.state import (
@@ -169,6 +178,49 @@ def _write_project(path: Path) -> None:
         "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
     }
     (path / "stream_project.yml").write_text(yaml.safe_dump(config))
+
+
+def _write_gateway_project(path: Path) -> None:
+    config = {
+        "apiVersion": "streamt.dev/v1alpha1",
+        "project": {"name": "plan-test"},
+        "runtime": {
+            "kafka": {"bootstrap_servers": "localhost:9092"},
+            "conduktor": {
+                "gateway": {
+                    "admin_url": "https://gateway.example.test",
+                    "username": "gateway-user",
+                    "password": "gateway-password-secret",
+                    "virtual_cluster": "production",
+                }
+            },
+        },
+    }
+    (path / "stream_project.yml").write_text(yaml.safe_dump(config))
+
+
+def _gateway_manifest() -> Manifest:
+    rule = GatewayRuleArtifact(
+        name="provider_rule",
+        virtual_topic="orders.public",
+        physical_topic="orders.v1",
+        interceptors=[
+            {
+                "type": "filter",
+                "config": {"where": "customer_token = 'raw-rule-secret'"},
+            }
+        ],
+        ownership=ArtifactOwnership(
+            project="plan-test",
+            owner_type="model",
+            owner_name="state_owner",
+        ),
+    )
+    return Manifest(
+        version="1.0",
+        project_name="plan-test",
+        artifacts={"gateway_rules": [rule.to_dict()]},
+    )
 
 
 def _write_multi_environment_project(path: Path) -> None:
@@ -497,6 +549,163 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
     ]
     assert "state-save" not in events
     assert "control-clear" not in events
+
+
+def test_gateway_apply_persists_exact_evidence_and_started_progress_before_request(
+    tmp_path: Path,
+) -> None:
+    _write_gateway_project(tmp_path)
+    manifest = _gateway_manifest()
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster="production",
+    )
+    gateway = MagicMock()
+    gateway.cluster_binding = binding
+    gateway.observe_managed_gateway_snapshot.return_value = ManagedGatewaySnapshot(
+        binding=binding,
+        aliases=(),
+        interceptors=(),
+    )
+    events: list[str] = []
+    captured_action: list[OperationAction] = []
+    delegate_service = make_deployment_state_service(
+        tmp_path,
+        project="plan-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    )
+
+    def apply_gateway(_current: object, _desired: object) -> str:
+        events.append("gateway-request")
+        control = delegate_service.read_control().control
+        assert control.status == "in_progress"
+        assert control.intent is not None
+        assert [
+            (progress.action_index, progress.status, progress.succeeded)
+            for progress in control.progress
+        ] == [(0, "started", None)]
+        captured_action.append(control.intent.actions[0])
+        return "created"
+
+    gateway.apply_managed_gateway_rule.side_effect = apply_gateway
+
+    @contextmanager
+    def operation() -> Iterator[_RecordingStateOperation]:
+        with delegate_service.operation() as delegate:
+            yield _RecordingStateOperation(delegate, events)
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=_kafka(exists=False),
+        ),
+        patch(
+            "streamt.cli.commands.apply.make_gateway_deployer",
+            return_value=gateway,
+        ),
+        patch(
+            "streamt.cli.commands.apply.make_deployment_state_service",
+            return_value=state_service,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert events.index("control-begin") < events.index("progress-started")
+    assert events.index("progress-started") < events.index("gateway-request")
+    assert len(captured_action) == 1
+    action = captured_action[0]
+    assert action.resource_id.endswith("/gateway_rule/state_owner")
+    assert action.gateway_evidence is not None
+    assert action.gateway_evidence.rule_name == "provider_rule"
+    assert action.gateway_evidence.current.exists is False
+    assert action.gateway_evidence.desired.exists is True
+    assert action.gateway_evidence.current.managed_interceptor_count == 0
+    assert action.gateway_evidence.desired.managed_interceptor_count == 1
+
+    durable_wire = json.dumps(action.to_dict(), sort_keys=True)
+    for forbidden in (
+        "gateway.example.test",
+        "gateway-password-secret",
+        "raw-rule-secret",
+        "customer_token",
+        "orders.v1",
+    ):
+        assert forbidden not in durable_wire
+
+
+def test_gateway_apply_rejects_in_memory_evidence_tampering_before_request(
+    tmp_path: Path,
+) -> None:
+    _write_gateway_project(tmp_path)
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster="production",
+    )
+    gateway = MagicMock()
+    gateway.cluster_binding = binding
+    gateway.observe_managed_gateway_snapshot.return_value = ManagedGatewaySnapshot(
+        binding=binding,
+        aliases=(),
+        interceptors=(),
+    )
+    delegate_service = make_deployment_state_service(
+        tmp_path,
+        project="plan-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    )
+
+    class _TamperingStateOperation(_RecordingStateOperation):
+        def begin_operation(
+            self,
+            observation: OperationSnapshot,
+            intent: OperationIntent,
+        ) -> OperationSnapshot:
+            active = super().begin_operation(observation, intent)
+            action = intent.actions[0]
+            assert action.gateway_evidence is not None
+            object.__setattr__(action, "gateway_evidence", None)
+            return active
+
+    @contextmanager
+    def operation() -> Iterator[_TamperingStateOperation]:
+        with delegate_service.operation() as delegate:
+            yield _TamperingStateOperation(delegate, [])
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=_gateway_manifest()),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=_kafka(exists=False),
+        ),
+        patch(
+            "streamt.cli.commands.apply.make_gateway_deployer",
+            return_value=gateway,
+        ),
+        patch(
+            "streamt.cli.commands.apply.make_deployment_state_service",
+            return_value=state_service,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 1
+    assert _json(result)["errors"][0]["code"] == "E411_STATE_INVALID"
+    assert "durable operation intent" in _json(result)["errors"][0]["message"]
+    gateway.apply_managed_gateway_rule.assert_not_called()
 
 
 def test_runtime_base_exception_leaves_recovery_marker_and_blocks_successor(

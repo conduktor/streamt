@@ -16,7 +16,7 @@ import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload, runtime_checkable
@@ -28,6 +28,7 @@ from streamt.core.deployment_state import (
 from streamt.deployer.state import (
     LocalState,
     LocalStateOperationLock,
+    ResourceIdentity,
     StateConflictError,
     StateError,
     StateFormatError,
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
 LOCAL_STATE_NAMESPACE = "local"
 ABSENT_STATE_REVISION = "ABSENT"
-CURRENT_CONTROL_VERSION = 1
+CURRENT_CONTROL_VERSION = 2
 CURRENT_RECOVERY_HISTORY_VERSION = 1
 CURRENT_RECOVERY_HISTORY_EVENT_VERSION = 1
 MAX_LOCAL_RECOVERY_HISTORY_BYTES = 1024 * 1024
@@ -277,12 +278,158 @@ def _require_safe_text(value: object, label: str, *, maximum: int = 512) -> str:
 
 
 @dataclass(frozen=True)
+class GatewayActionSurfaceEvidence:
+    """One exact, secret-neutral normalized Gateway aggregate surface."""
+
+    exists: bool
+    fingerprint: str
+    managed_interceptor_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.exists) is not bool:
+            raise StateFormatError("Gateway action surface exists must be a boolean")
+        _require_checksum(
+            self.fingerprint,
+            "Gateway action surface fingerprint",
+        )
+        if (
+            type(self.managed_interceptor_count) is not int
+            or self.managed_interceptor_count < 0
+        ):
+            raise StateFormatError(
+                "Gateway action surface managed_interceptor_count must be a "
+                "non-negative integer"
+            )
+        if not self.exists and self.managed_interceptor_count != 0:
+            raise StateFormatError(
+                "An absent Gateway action surface must have zero managed interceptors"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "exists": self.exists,
+            "fingerprint": self.fingerprint,
+            "managed_interceptor_count": self.managed_interceptor_count,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> GatewayActionSurfaceEvidence:
+        data = _strict_object(
+            value,
+            label="Gateway action surface evidence",
+            expected={"exists", "fingerprint", "managed_interceptor_count"},
+        )
+        return cls(
+            exists=cast(bool, data["exists"]),
+            fingerprint=cast(str, data["fingerprint"]),
+            managed_interceptor_count=cast(
+                int,
+                data["managed_interceptor_count"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class GatewayActionEvidence:
+    """Exact Gateway preimage and candidate evidence for one durable action."""
+
+    version: int
+    backend_identity: str
+    rule_name: str
+    alias_name: str
+    current: GatewayActionSurfaceEvidence
+    desired: GatewayActionSurfaceEvidence
+
+    def __post_init__(self) -> None:
+        # Keep the provider-specific import out of module initialization. This
+        # value remains secret-neutral JSON while using Gateway's canonical
+        # backend-identity contract.
+        from streamt.deployer.gateway import (
+            is_gateway_backend_identity,
+            is_gateway_resource_name,
+            managed_gateway_absence_fingerprint,
+        )
+
+        if type(self.version) is not int or self.version != 1:
+            raise StateFormatError("Unsupported Gateway action evidence version")
+        if not is_gateway_backend_identity(self.backend_identity):
+            raise StateFormatError(
+                "Gateway action evidence backend_identity must be canonical"
+            )
+        for value, label in (
+            (self.rule_name, "rule_name"),
+            (self.alias_name, "alias_name"),
+        ):
+            if not is_gateway_resource_name(value):
+                raise StateFormatError(f"Gateway action evidence {label} is invalid")
+        if type(self.current) is not GatewayActionSurfaceEvidence or type(
+            self.desired
+        ) is not GatewayActionSurfaceEvidence:
+            raise StateFormatError(
+                "Gateway action evidence requires exact current and desired surfaces"
+            )
+        absence_fingerprint = managed_gateway_absence_fingerprint(
+            self.backend_identity,
+            self.rule_name,
+            self.alias_name,
+        )
+        if any(
+            (not surface.exists and surface.fingerprint != absence_fingerprint)
+            or (surface.exists and surface.fingerprint == absence_fingerprint)
+            for surface in (self.current, self.desired)
+        ):
+            raise StateFormatError(
+                "Gateway action evidence contains an incoherent absence fingerprint"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "backend_identity": self.backend_identity,
+            "rule_name": self.rule_name,
+            "alias_name": self.alias_name,
+            "current": self.current.to_dict(),
+            "desired": self.desired.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> GatewayActionEvidence:
+        data = _strict_object(
+            value,
+            label="Gateway action evidence",
+            expected={
+                "version",
+                "backend_identity",
+                "rule_name",
+                "alias_name",
+                "current",
+                "desired",
+            },
+        )
+        return cls(
+            version=cast(int, data["version"]),
+            backend_identity=cast(str, data["backend_identity"]),
+            rule_name=cast(str, data["rule_name"]),
+            alias_name=cast(str, data["alias_name"]),
+            current=GatewayActionSurfaceEvidence.from_dict(data["current"]),
+            desired=GatewayActionSurfaceEvidence.from_dict(data["desired"]),
+        )
+
+
+@dataclass(frozen=True)
 class OperationAction:
     """One ordered runtime or state action covered by an operation intent."""
 
     index: int
     resource_id: str
     action: str
+    gateway_evidence: GatewayActionEvidence | None = None
+    _wire_version: int = field(
+        default=CURRENT_CONTROL_VERSION,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.index) is not int or self.index < 0:
@@ -293,25 +440,108 @@ class OperationAction:
                 "operation action must be a lowercase action identifier"
             )
 
-    def to_dict(self) -> dict[str, object]:
+        evidence = self.gateway_evidence
+        if evidence is None:
+            return
+        if type(evidence) is not GatewayActionEvidence:
+            raise StateFormatError("operation action Gateway evidence is invalid")
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+        except StateFormatError as error:
+            raise StateFormatError(
+                "Gateway operation action requires a canonical resource identity"
+            ) from error
+        if identity.kind != "gateway_rule":
+            raise StateFormatError(
+                "Gateway action evidence is allowed only for gateway_rule resources"
+            )
+        current = evidence.current
+        desired = evidence.desired
+        valid_transition = (
+            current.fingerprint != desired.fingerprint
+            and (
+                (
+                    self.action == "create"
+                    and not current.exists
+                    and desired.exists
+                )
+                or (
+                    self.action == "update"
+                    and current.exists
+                    and desired.exists
+                )
+                or (
+                    self.action == "delete"
+                    and current.exists
+                    and not desired.exists
+                )
+            )
+        )
+        if not valid_transition:
+            raise StateFormatError(
+                "Gateway action evidence does not match the action transition"
+            )
+
+    def to_dict(self, *, control_version: int | None = None) -> dict[str, object]:
+        version = self._wire_version if control_version is None else control_version
+        if type(version) is not int or version not in (1, CURRENT_CONTROL_VERSION):
+            raise StateFormatError("operation action control version is unsupported")
+        if version == 1:
+            if self.gateway_evidence is not None:
+                raise StateFormatError(
+                    "control version 1 cannot contain Gateway action evidence"
+                )
+            return {
+                "index": self.index,
+                "resource_id": self.resource_id,
+                "action": self.action,
+            }
         return {
             "index": self.index,
             "resource_id": self.resource_id,
             "action": self.action,
+            "gateway_evidence": (
+                self.gateway_evidence.to_dict()
+                if self.gateway_evidence is not None
+                else None
+            ),
         }
 
     @classmethod
-    def from_dict(cls, value: object) -> OperationAction:
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        control_version: int | None = None,
+    ) -> OperationAction:
+        if not isinstance(value, dict):
+            raise StateFormatError("operation action must be an object")
+        version = control_version
+        if version is None:
+            version = 2 if "gateway_evidence" in value else 1
+        if type(version) is not int or version not in (1, CURRENT_CONTROL_VERSION):
+            raise StateFormatError("operation action control version is unsupported")
+        expected = {"index", "resource_id", "action"}
+        if version == CURRENT_CONTROL_VERSION:
+            expected.add("gateway_evidence")
         data = _strict_object(
             value,
             label="operation action",
-            expected={"index", "resource_id", "action"},
+            expected=expected,
         )
-        return cls(
+        raw_evidence = data.get("gateway_evidence")
+        action = cls(
             index=cast(int, data["index"]),
             resource_id=cast(str, data["resource_id"]),
             action=cast(str, data["action"]),
+            gateway_evidence=(
+                None
+                if raw_evidence is None
+                else GatewayActionEvidence.from_dict(raw_evidence)
+            ),
         )
+        object.__setattr__(action, "_wire_version", version)
+        return action
 
 
 OperationKind = Literal["apply", "adopt"]
@@ -329,6 +559,12 @@ class OperationIntent:
     prior_state_checksum: str
     reviewed_plan_checksum: str | None
     actions: tuple[OperationAction, ...]
+    _wire_version: int = field(
+        default=CURRENT_CONTROL_VERSION,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         _require_uuid(self.operation_id, "operation_id")
@@ -348,10 +584,13 @@ class OperationIntent:
             )
         if not isinstance(self.actions, tuple):
             raise StateFormatError("operation actions must be an ordered tuple")
+        if any(type(action) is not OperationAction for action in self.actions):
+            raise StateFormatError("operation actions must contain exact actions")
         if [action.index for action in self.actions] != list(range(len(self.actions))):
             raise StateFormatError("operation action indexes must be contiguous from zero")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, *, control_version: int | None = None) -> dict[str, object]:
+        version = self._wire_version if control_version is None else control_version
         return {
             "operation_id": self.operation_id,
             "kind": self.kind,
@@ -360,11 +599,23 @@ class OperationIntent:
             "prior_state_serial": self.prior_state_serial,
             "prior_state_checksum": self.prior_state_checksum,
             "reviewed_plan_checksum": self.reviewed_plan_checksum,
-            "actions": [action.to_dict() for action in self.actions],
+            "actions": [
+                action.to_dict(control_version=version) for action in self.actions
+            ],
         }
 
     @classmethod
-    def from_dict(cls, value: object) -> OperationIntent:
+    def from_dict(
+        cls,
+        value: object,
+        *,
+        control_version: int = CURRENT_CONTROL_VERSION,
+    ) -> OperationIntent:
+        if type(control_version) is not int or control_version not in (
+            1,
+            CURRENT_CONTROL_VERSION,
+        ):
+            raise StateFormatError("operation intent control version is unsupported")
         data = _strict_object(
             value,
             label="operation intent",
@@ -385,7 +636,7 @@ class OperationIntent:
         kind = data["kind"]
         if kind not in ("apply", "adopt"):
             raise StateFormatError("operation kind must be 'apply' or 'adopt'")
-        return cls(
+        intent = cls(
             operation_id=cast(str, data["operation_id"]),
             kind=cast(OperationKind, kind),
             started_at=cast(str, data["started_at"]),
@@ -393,8 +644,16 @@ class OperationIntent:
             prior_state_serial=cast(int, data["prior_state_serial"]),
             prior_state_checksum=cast(str, data["prior_state_checksum"]),
             reviewed_plan_checksum=cast(str | None, data["reviewed_plan_checksum"]),
-            actions=tuple(OperationAction.from_dict(action) for action in raw_actions),
+            actions=tuple(
+                OperationAction.from_dict(
+                    action,
+                    control_version=control_version,
+                )
+                for action in raw_actions
+            ),
         )
+        object.__setattr__(intent, "_wire_version", control_version)
+        return intent
 
 
 ProgressStatus = Literal["started", "completed"]
@@ -550,10 +809,21 @@ class OperationControlState:
     control_version: int = CURRENT_CONTROL_VERSION
 
     def __post_init__(self) -> None:
-        if type(self.control_version) is not int or self.control_version != CURRENT_CONTROL_VERSION:
+        # Provider implementations reconstruct controls around the immutable
+        # intent. Preserve a loaded v1 intent's version and canonical checksum.
+        if (
+            self.control_version == CURRENT_CONTROL_VERSION
+            and self.intent is not None
+            and self.intent._wire_version == 1
+        ):
+            object.__setattr__(self, "control_version", 1)
+        if type(self.control_version) is not int or self.control_version not in (
+            1,
+            CURRENT_CONTROL_VERSION,
+        ):
             raise StateFormatError(
                 f"unsupported control version {self.control_version!r}; "
-                f"expected {CURRENT_CONTROL_VERSION}"
+                f"expected 1 or {CURRENT_CONTROL_VERSION}"
             )
         if self.status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
@@ -563,6 +833,33 @@ class OperationControlState:
             return
         if self.intent is None:
             raise StateFormatError("active control state requires an operation intent")
+        if self.control_version == 1 and any(
+            action.gateway_evidence is not None for action in self.intent.actions
+        ):
+            raise StateFormatError(
+                "control version 1 cannot contain Gateway action evidence"
+            )
+        if self.control_version == CURRENT_CONTROL_VERSION:
+            for action in self.intent.actions:
+                try:
+                    identity = ResourceIdentity.parse(action.resource_id)
+                except StateFormatError:
+                    continue
+                if action.gateway_evidence is not None and (
+                    identity.project != self.address.project
+                    or identity.environment != self.address.environment
+                ):
+                    raise StateFormatError(
+                        "Gateway action evidence belongs to another state address"
+                    )
+                if (
+                    identity.kind == "gateway_rule"
+                    and action.action in ("create", "update", "delete")
+                    and action.gateway_evidence is None
+                ):
+                    raise StateFormatError(
+                        "control version 2 Gateway mutations require action evidence"
+                    )
         if self.status == "in_progress" and self.recovery is not None:
             raise StateFormatError("in_progress control state cannot contain recovery data")
         if self.status == "recovery_required":
@@ -630,7 +927,11 @@ class OperationControlState:
             "control_version": self.control_version,
             "address": self.address.uri,
             "status": self.status,
-            "intent": self.intent.to_dict() if self.intent is not None else None,
+            "intent": (
+                self.intent.to_dict(control_version=self.control_version)
+                if self.intent is not None
+                else None
+            ),
             "progress": [item.to_dict() for item in self.progress],
             "recovery": self.recovery.to_dict() if self.recovery is not None else None,
         }
@@ -663,14 +964,26 @@ class OperationControlState:
         status = data["status"]
         if status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
+        control_version = data["control_version"]
+        if type(control_version) is not int or control_version not in (
+            1,
+            CURRENT_CONTROL_VERSION,
+        ):
+            raise StateFormatError(
+                f"unsupported control version {control_version!r}; "
+                f"expected 1 or {CURRENT_CONTROL_VERSION}"
+            )
         return cls(
-            control_version=cast(int, data["control_version"]),
+            control_version=control_version,
             address=address,
             status=cast(ControlStatus, status),
             intent=(
                 None
                 if data["intent"] is None
-                else OperationIntent.from_dict(data["intent"])
+                else OperationIntent.from_dict(
+                    data["intent"],
+                    control_version=control_version,
+                )
             ),
             progress=tuple(OperationProgress.from_dict(item) for item in raw_progress),
             recovery=(

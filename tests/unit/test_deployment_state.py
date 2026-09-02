@@ -10,13 +10,20 @@ from unittest.mock import patch
 
 import pytest
 
-from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, TopicArtifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    ConnectorArtifact,
+    GatewayRuleArtifact,
+    TopicArtifact,
+)
 from streamt.deployer.connect import ConnectClusterBinding, ConnectorChange
+from streamt.deployer.gateway import GatewayBackendBinding, GatewayRuleChange
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.planner import DeploymentPlan
 from streamt.deployer.state import (
     CURRENT_STATE_VERSION,
     LocalState,
+    ManagedGatewayResourceDeletion,
     ManagedResourceRecord,
     ResourceIdentity,
     StateConflictError,
@@ -77,6 +84,45 @@ def _state(serial: int = 12) -> LocalState:
             topic_id: _record("payments.clean.v1"),
             schema_id: _record("payments.clean.v1-value", ownership="adopted"),
         },
+    )
+
+
+_GATEWAY_BACKEND = GatewayBackendBinding.from_endpoint(
+    "https://gateway.example.test/admin",
+    virtual_cluster="payments-prod",
+).backend_identity
+
+
+def _gateway_record(
+    physical_name: str = "orders.public",
+    *,
+    backend: str = _GATEWAY_BACKEND,
+) -> ManagedResourceRecord:
+    return ManagedResourceRecord(
+        physical_name=physical_name,
+        ownership="managed",
+        artifact_checksum=artifact_checksum({"name": "orders_rule"}),
+        backend=backend,
+    )
+
+
+def _gateway_deletion(
+    owner_name: str = "orders_owner",
+    *,
+    project: str = "payments",
+    environment: str = "prod",
+    alias_name: str = "orders.public",
+    backend: str = _GATEWAY_BACKEND,
+) -> ManagedGatewayResourceDeletion:
+    return ManagedGatewayResourceDeletion(
+        resource_id=resource_id(
+            project,
+            environment,
+            "gateway_rule",
+            owner_name,
+        ),
+        backend_identity=backend,
+        alias_name=alias_name,
     )
 
 
@@ -392,6 +438,237 @@ class TestStateUpdates:
             project="payments",
             environment="prod",
         ) == {}
+
+
+class TestManagedGatewayStateDeletion:
+    @staticmethod
+    def _state_with_gateway(*, serial: int = 7) -> LocalState:
+        gateway_id = resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "orders_owner",
+        )
+        topic_id = resource_id("payments", "prod", "topic", "payments_clean")
+        return LocalState(
+            project="payments",
+            environment="prod",
+            serial=serial,
+            resources={
+                gateway_id: _gateway_record(),
+                topic_id: _record("payments.clean.v1"),
+            },
+        )
+
+    @staticmethod
+    def _desired_gateway_plan(
+        *,
+        owner_name: str = "orders_owner",
+        alias_name: str = "orders.public",
+    ) -> DeploymentPlan:
+        artifact = GatewayRuleArtifact(
+            name="orders_rule",
+            virtual_topic=alias_name,
+            physical_topic="orders.v1",
+            ownership=ArtifactOwnership(
+                project="payments",
+                owner_type="model",
+                owner_name=owner_name,
+                mode="managed",
+            ),
+        )
+        change = GatewayRuleChange(
+            name=artifact.name,
+            action="create",
+            desired=artifact,
+        )
+        change.backend_identity = _GATEWAY_BACKEND
+        return DeploymentPlan(gateway_changes=[change])
+
+    def test_exact_explicit_deletion_removes_only_matching_gateway_record(self) -> None:
+        prior = self._state_with_gateway()
+        gateway_id = _gateway_deletion().resource_id
+        topic_id = resource_id("payments", "prod", "topic", "payments_clean")
+
+        updated = updated_local_state(
+            prior,
+            DeploymentPlan(),
+            managed_gateway_deletions=(_gateway_deletion(),),
+        )
+
+        assert updated is not None
+        assert updated.serial == prior.serial + 1
+        assert gateway_id not in updated.resources
+        assert updated.resources[topic_id] == prior.resources[topic_id]
+        assert gateway_id in prior.resources
+
+    def test_desired_update_and_explicit_deletion_advance_serial_once(self) -> None:
+        prior = self._state_with_gateway(serial=3)
+
+        updated = updated_local_state(
+            prior,
+            TestStateUpdates._plan(partitions=9),
+            managed_gateway_deletions=(_gateway_deletion(),),
+        )
+
+        assert updated is not None
+        assert updated.serial == 4
+        topic_id = resource_id("payments", "prod", "topic", "payments_clean")
+        assert updated.resources[topic_id].artifact_checksum != (
+            prior.resources[topic_id].artifact_checksum
+        )
+
+    def test_manifest_absence_and_legacy_delete_retain_gateway_state(self) -> None:
+        prior = self._state_with_gateway()
+        legacy_delete = DeploymentPlan(
+            gateway_changes=[GatewayRuleChange(name="orders_rule", action="delete")]
+        )
+
+        assert updated_local_state(prior, DeploymentPlan()) is None
+        assert updated_local_state(prior, legacy_delete) is None
+
+    @pytest.mark.parametrize(
+        "deletions",
+        [
+            [],
+            (_gateway_deletion(), object()),
+        ],
+    )
+    def test_deletion_input_requires_an_exact_tuple_of_exact_values(
+        self,
+        deletions: object,
+    ) -> None:
+        with pytest.raises(StateFormatError, match="exact"):
+            updated_local_state(
+                self._state_with_gateway(),
+                DeploymentPlan(),
+                managed_gateway_deletions=deletions,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            (
+                {
+                    "resource_id": resource_id(
+                        "payments",
+                        "prod",
+                        "topic",
+                        "orders_owner",
+                    )
+                },
+                "gateway_rule",
+            ),
+            ({"backend_identity": "conduktor-gateway"}, "canonical"),
+            ({"alias_name": "orders/public"}, "resource name"),
+        ],
+    )
+    def test_deletion_value_requires_canonical_gateway_identity(
+        self,
+        kwargs: dict[str, str],
+        message: str,
+    ) -> None:
+        values = {
+            "resource_id": _gateway_deletion().resource_id,
+            "backend_identity": _GATEWAY_BACKEND,
+            "alias_name": "orders.public",
+            **kwargs,
+        }
+
+        with pytest.raises(StateFormatError, match=message):
+            ManagedGatewayResourceDeletion(**values)
+
+    @pytest.mark.parametrize(
+        "deletion",
+        [
+            _gateway_deletion(project="other"),
+            _gateway_deletion(environment="dev"),
+        ],
+    )
+    def test_deletion_must_belong_to_prior_state(
+        self,
+        deletion: ManagedGatewayResourceDeletion,
+    ) -> None:
+        with pytest.raises(StateIdentityError, match="current state"):
+            updated_local_state(
+                self._state_with_gateway(),
+                DeploymentPlan(),
+                managed_gateway_deletions=(deletion,),
+            )
+
+    @pytest.mark.parametrize(
+        "deletion",
+        [
+            _gateway_deletion(owner_name="missing_owner"),
+            _gateway_deletion(alias_name="other.public"),
+            _gateway_deletion(
+                backend=GatewayBackendBinding.from_endpoint(
+                    "https://other-gateway.example.test/admin",
+                    virtual_cluster="payments-prod",
+                ).backend_identity
+            ),
+        ],
+    )
+    def test_deletion_must_match_exact_prior_record(
+        self,
+        deletion: ManagedGatewayResourceDeletion,
+    ) -> None:
+        with pytest.raises(StateIdentityError, match="exact prior-state record"):
+            updated_local_state(
+                self._state_with_gateway(),
+                DeploymentPlan(),
+                managed_gateway_deletions=(deletion,),
+            )
+
+    def test_duplicate_resource_or_provider_deletion_is_rejected(self) -> None:
+        prior = self._state_with_gateway()
+        duplicate = _gateway_deletion()
+
+        with pytest.raises(StateIdentityError, match="duplicate resource identity"):
+            updated_local_state(
+                prior,
+                DeploymentPlan(),
+                managed_gateway_deletions=(duplicate, duplicate),
+            )
+
+        provider_duplicate = _gateway_deletion(owner_name="other_owner")
+        with pytest.raises(StateIdentityError, match="duplicate provider identity"):
+            updated_local_state(
+                prior,
+                DeploymentPlan(),
+                managed_gateway_deletions=(duplicate, provider_duplicate),
+            )
+
+        second_id = resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "other_owner",
+        )
+        prior.resources[second_id] = _gateway_record()
+        with pytest.raises(StateIdentityError, match="exact prior-state record"):
+            updated_local_state(
+                prior,
+                DeploymentPlan(),
+                managed_gateway_deletions=(duplicate,),
+            )
+
+    def test_deletion_rejects_desired_resource_or_provider_claim(self) -> None:
+        prior = self._state_with_gateway()
+
+        with pytest.raises(StateIdentityError, match="desired resource claim"):
+            updated_local_state(
+                prior,
+                self._desired_gateway_plan(),
+                managed_gateway_deletions=(_gateway_deletion(),),
+            )
+
+        with pytest.raises(StateIdentityError, match="desired resource claim"):
+            updated_local_state(
+                prior,
+                self._desired_gateway_plan(owner_name="replacement_owner"),
+                managed_gateway_deletions=(_gateway_deletion(),),
+            )
 
 
 class TestConnectorStateBinding:

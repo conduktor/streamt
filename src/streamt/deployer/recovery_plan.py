@@ -22,10 +22,10 @@ from streamt.deployer.recovery import (
     _reject_unsafe_text,
 )
 from streamt.deployer.state import LocalState, StateError
-from streamt.deployer.state_backend import state_checksum
+from streamt.deployer.state_backend import OperationAction, state_checksum
 
 RECOVERY_PLAN_FILE_KIND = "streamt.recovery-plan"
-RECOVERY_PLAN_FILE_VERSION = 1
+RECOVERY_PLAN_FILE_VERSION = 2
 MAX_RECOVERY_PLAN_FILE_BYTES = 10 * 1024 * 1024
 
 _CHECKSUM_PREFIX = "sha256:"
@@ -126,8 +126,14 @@ class RecoveryPlanFile:
     manifest_checksum: str | None
     streamt_version: str = __version__
     evidence_checksum: str = ""
+    format_version: int = RECOVERY_PLAN_FILE_VERSION
 
     def __post_init__(self) -> None:
+        if type(self.format_version) is not int or self.format_version not in (1, 2):
+            raise RecoveryPlanError(
+                f"Unsupported recovery plan format version {self.format_version!r}; "
+                "expected 1 or 2"
+            )
         if self.resolution not in (
             "observed",
             "rolled_back",
@@ -146,6 +152,25 @@ class RecoveryPlanFile:
             )
         if not isinstance(self.targets, tuple):
             raise RecoveryPlanError("Recovery plan targets must be an ordered tuple")
+        if self.format_version == 1:
+            intent = self.snapshot.control.intent
+            if (
+                self.snapshot.control.control_version != 1
+                or (
+                    intent is not None
+                    and any(
+                        action.gateway_evidence is not None
+                        for action in intent.actions
+                    )
+                )
+                or any(
+                    target.action.gateway_evidence is not None
+                    for target in self.targets
+                )
+            ):
+                raise RecoveryPlanError(
+                    "Recovery plan format version 1 cannot contain Gateway evidence"
+                )
         if not isinstance(self.streamt_version, str) or not self.streamt_version:
             raise RecoveryPlanError("Recovery plan streamt_version must be non-empty")
         if any(ord(character) < 32 for character in self.streamt_version):
@@ -327,19 +352,26 @@ class RecoveryPlanFile:
     def _unsigned_dict(self) -> dict[str, object]:
         return {
             "kind": RECOVERY_PLAN_FILE_KIND,
-            "format_version": RECOVERY_PLAN_FILE_VERSION,
+            "format_version": self.format_version,
             "streamt_version": self.streamt_version,
             "resolution": self.resolution,
             "blocked_operation_id": self.blocked_operation_id,
             "recovery_operation_id": self.recovery_operation_id,
             "snapshot": self.snapshot.to_dict(),
-            "targets": [target.to_dict() for target in self.targets],
+            "targets": [self._target_dict(target) for target in self.targets],
             "candidate_state": (
                 self.candidate_state.to_dict() if self.candidate_state is not None else None
             ),
             "environment_fingerprint": self.environment_fingerprint,
             "manifest_checksum": self.manifest_checksum,
         }
+
+    def _target_dict(self, target: RecoveryTargetEvidence) -> dict[str, object]:
+        serialized = target.to_dict()
+        serialized["action"] = target.action.to_dict(
+            control_version=self.format_version,
+        )
+        return serialized
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete recovery-plan envelope including integrity evidence."""
@@ -494,14 +526,15 @@ class RecoveryPlanFile:
         )
         if data["kind"] != RECOVERY_PLAN_FILE_KIND:
             raise RecoveryPlanError("Unsupported recovery plan kind")
-        if (
-            type(data["format_version"]) is not int
-            or data["format_version"] != RECOVERY_PLAN_FILE_VERSION
+        if type(data["format_version"]) is not int or data["format_version"] not in (
+            1,
+            RECOVERY_PLAN_FILE_VERSION,
         ):
             raise RecoveryPlanError(
                 f"Unsupported recovery plan format version {data['format_version']!r}; "
-                f"expected {RECOVERY_PLAN_FILE_VERSION}"
+                f"expected 1 or {RECOVERY_PLAN_FILE_VERSION}"
             )
+        format_version = data["format_version"]
         evidence_checksum = _require_checksum(
             data["evidence_checksum"], "evidence_checksum"
         )
@@ -528,14 +561,25 @@ class RecoveryPlanFile:
                     expected_environment=snapshot.address.environment,
                 )
             )
+            targets: list[RecoveryTargetEvidence] = []
+            for raw_target in raw_targets:
+                target_data = _strict_object(
+                    raw_target,
+                    label="target evidence",
+                    expected={"action", "presence", "accepted_as", "fingerprint"},
+                )
+                action = OperationAction.from_dict(
+                    target_data["action"],
+                    control_version=format_version,
+                )
+                parsed_target = RecoveryTargetEvidence.from_dict(raw_target)
+                targets.append(replace(parsed_target, action=action))
             return cls(
                 resolution=_parse_resolution(data["resolution"]),
                 blocked_operation_id=cast(str, data["blocked_operation_id"]),
                 recovery_operation_id=cast(str, data["recovery_operation_id"]),
                 snapshot=snapshot,
-                targets=tuple(
-                    RecoveryTargetEvidence.from_dict(target) for target in raw_targets
-                ),
+                targets=tuple(targets),
                 candidate_state=candidate,
                 environment_fingerprint=cast(
                     str | None, data["environment_fingerprint"]
@@ -543,6 +587,7 @@ class RecoveryPlanFile:
                 manifest_checksum=cast(str | None, data["manifest_checksum"]),
                 streamt_version=data["streamt_version"],
                 evidence_checksum=evidence_checksum,
+                format_version=format_version,
             )
         except RecoveryPlanError:
             raise

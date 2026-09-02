@@ -35,6 +35,7 @@ from streamt.core.errors import ErrorCode
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
+    ManagedGatewayResourceDeletion,
     StateError,
     StateFormatError,
     local_state_path,
@@ -549,7 +550,6 @@ def apply(
                 close_deployers(sr, kafka, flink, connect, gateway)
                 return
 
-            next_state = updated_local_state(prior_state, deployment_plan)
             ordered_actions = planner.planned_actions(deployment_plan)
 
             # Bind the durable intent to a fresh state/control pair immediately
@@ -592,9 +592,24 @@ def apply(
                         index=index,
                         resource_id=planned_action.resource_id,
                         action=planned_action.action,
+                        gateway_evidence=planned_action.gateway_evidence,
                     )
                     for index, planned_action in enumerate(ordered_actions)
                 ),
+            )
+            managed_gateway_deletions = tuple(
+                ManagedGatewayResourceDeletion(
+                    resource_id=action.resource_id,
+                    backend_identity=action.gateway_evidence.backend_identity,
+                    alias_name=action.gateway_evidence.alias_name,
+                )
+                for action in intent.actions
+                if action.action == "delete" and action.gateway_evidence is not None
+            )
+            next_state = updated_local_state(
+                prior_state,
+                deployment_plan,
+                managed_gateway_deletions=managed_gateway_deletions,
             )
             active_snapshot: list[OperationSnapshot] = [
                 state_operation.begin_operation(intent_snapshot, intent)
@@ -612,6 +627,7 @@ def apply(
                     planned_action.runtime_label != label
                     or action.resource_id != planned_action.resource_id
                     or action.action != planned_action.action
+                    or action.gateway_evidence != planned_action.gateway_evidence
                 ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"
@@ -639,6 +655,7 @@ def apply(
                     planned_action.runtime_label != label
                     or action.resource_id != planned_action.resource_id
                     or action.action != planned_action.action
+                    or action.gateway_evidence != planned_action.gateway_evidence
                 ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"
