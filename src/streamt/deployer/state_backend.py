@@ -2211,3 +2211,53 @@ def make_deployment_state_service(
         backend=LocalDeploymentStateBackend(project_path),
         address=address,
     )
+
+
+def make_recovery_state_service(
+    project_path: Path,
+    *,
+    project: str,
+    environment: str,
+    config: DeploymentStateConfig,
+) -> DeploymentStateService:
+    """Construct the explicitly recovery-scoped deployment-state authority."""
+    if config.backend == "local":
+        return make_deployment_state_service(
+            project_path,
+            project=project,
+            environment=environment,
+            config=config,
+        )
+
+    writer_dsn_env = config.postgres.writer_dsn_env
+    if writer_dsn_env is None:
+        raise StateBackendUnavailableError(
+            "PostgreSQL recovery state credentials are not configured"
+        )
+    writer_dsn = os.environ.get(writer_dsn_env)
+    if writer_dsn is None or not writer_dsn.strip():
+        raise StateBackendUnavailableError(
+            "PostgreSQL recovery state credentials are unavailable"
+        )
+
+    # Keep the optional PostgreSQL dependency outside the local recovery path.
+    from streamt.deployer.postgres_state_backend import (
+        PrivatePostgresStateReadBackend,
+    )
+
+    address = StateAddress(
+        namespace=config.namespace,
+        project=project,
+        environment=environment,
+    )
+    return DeploymentStateService(
+        backend=cast(
+            DeploymentStateBackend,
+            PrivatePostgresStateReadBackend(
+                dsn=writer_dsn,
+                schema=config.postgres.schema_name,
+                lock_timeout_seconds=config.lock_timeout_seconds,
+            ),
+        ),
+        address=address,
+    )
