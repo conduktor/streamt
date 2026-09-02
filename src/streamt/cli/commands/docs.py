@@ -24,12 +24,22 @@ from streamt.core.errors import ErrorCode
 from streamt.output import OutputFormatter, StructuredError, StructuredWarning
 
 _ODCS_VALIDATION_LOCATION_RE = re.compile(r"validation failed at ([^:]+):")
+_OPENLINEAGE_CORE_SCHEMA_VERSION = "2-0-2"
+_PARSER_WARNING_PREFIX = "[yellow]WARNING[/yellow]: "
 
 
 class _ODCSCommandError(ValueError):
     """A safe command-boundary ODCS failure with an optional stable location."""
 
     def __init__(self, message: str, *, location: str | None = None) -> None:
+        super().__init__(message)
+        self.location = location
+
+
+class _OpenLineageCommandError(ValueError):
+    """A secret-neutral OpenLineage command failure with a stable location."""
+
+    def __init__(self, message: str, *, location: str) -> None:
         super().__init__(message)
         self.location = location
 
@@ -336,6 +346,202 @@ def docs_odcs(
         )
 
 
+@docs.command("openlineage")
+@click.option("--job-namespace", help="OpenLineage job namespace")
+@click.option("--kafka-namespace", help="Kafka dataset namespace (kafka://host:port)")
+@click.option(
+    "--gateway-namespace",
+    help="Gateway dataset namespace (kafka://host:port)",
+)
+@click.option(
+    "--output-file",
+    type=click.Path(),
+    help="Atomically write validated OpenLineage JSONL to this file",
+)
+@click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
+@click.option("--env", "-e", "environment", help="Target environment")
+@click.pass_context
+def docs_openlineage(
+    ctx: click.Context,
+    job_namespace: str | None,
+    kafka_namespace: str | None,
+    gateway_namespace: str | None,
+    output_file: str | None,
+    project_dir: str | None,
+    environment: str | None,
+) -> None:
+    """Export deterministic OpenLineage 1.53.0 design metadata as JSONL."""
+    from streamt.compiler import Compiler
+    from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
+    from streamt.integrations.openlineage import (
+        OPENLINEAGE_RELEASE,
+        OpenLineageNamespaceError,
+        OpenLineageStaticError,
+        build_static_export,
+        resolve_openlineage_namespaces,
+        serialize_static_jsonl,
+        static_namespace_requirements,
+    )
+
+    fmt = make_formatter(ctx, "docs openlineage")
+    project_path = get_project_path(project_dir)
+
+    def parser_warning(message: str) -> None:
+        _emit_openlineage_warning(
+            fmt,
+            "W000_WARNING",
+            _normalize_parser_warning(message),
+        )
+
+    try:
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=parser_warning,
+        )
+        project = parser.parse()
+
+        # Namespace environment values are intentionally read only after parse:
+        # ProjectParser is the owner of project and environment-specific .env loading.
+        selected_job_namespace = _option_or_environment(
+            job_namespace,
+            "OPENLINEAGE_NAMESPACE",
+        )
+        selected_kafka_namespace = _option_or_environment(
+            kafka_namespace,
+            "STREAMT_OPENLINEAGE_KAFKA_NAMESPACE",
+        )
+        selected_gateway_namespace = _option_or_environment(
+            gateway_namespace,
+            "STREAMT_OPENLINEAGE_GATEWAY_NAMESPACE",
+        )
+
+        # Fail on missing job identity or any explicitly selected dataset
+        # identity before doing compiler work. Dataset derivation remains lazy
+        # until the successful compile tells us which namespace kinds are used.
+        selected_namespaces = resolve_openlineage_namespaces(
+            job_namespace=selected_job_namespace,
+            kafka_namespace=selected_kafka_namespace,
+            gateway_namespace=selected_gateway_namespace,
+            kafka_bootstrap=None,
+            gateway_bootstrap=None,
+            require_kafka=False,
+            require_gateway=False,
+        )
+
+        compiler = Compiler(project)
+        try:
+            manifest = compiler.compile(dry_run=True)
+        except Exception as error:
+            raise _OpenLineageCommandError(
+                "Could not compile project for OpenLineage export",
+                location="models",
+            ) from error
+
+        requirements = static_namespace_requirements(project, compiler.compiled_models)
+        gateway = (
+            project.runtime.conduktor.gateway
+            if project.runtime.conduktor is not None
+            else None
+        )
+        namespaces = resolve_openlineage_namespaces(
+            job_namespace=selected_namespaces.job,
+            kafka_namespace=selected_namespaces.kafka,
+            gateway_namespace=selected_namespaces.gateway,
+            kafka_bootstrap=project.runtime.kafka.bootstrap_servers,
+            gateway_bootstrap=gateway.proxy_bootstrap if gateway is not None else None,
+            require_kafka=requirements.kafka,
+            require_gateway=requirements.gateway,
+        )
+        export = build_static_export(
+            project,
+            manifest,
+            compiler.resolved_models,
+            compiler.compiled_models,
+            job_namespace=namespaces.job,
+            kafka_namespace=namespaces.kafka,
+            gateway_namespace=namespaces.gateway,
+        )
+        for warning in export.warnings:
+            _emit_openlineage_warning(
+                fmt,
+                warning.code,
+                warning.message,
+                location=warning.location,
+            )
+
+        # Validate and render the complete sequence before any externally visible write.
+        rendered = serialize_static_jsonl(export.events)
+
+        rendered_output_file: str | None = None
+        if output_file is not None:
+            target = Path(output_file)
+            try:
+                _atomic_write_openlineage(target, rendered)
+            except Exception as error:
+                raise _OpenLineageCommandError(
+                    "Could not write OpenLineage output file atomically",
+                    location="output_file",
+                ) from error
+            rendered_output_file = str(target)
+        elif fmt.format == "text" and not fmt.quiet:
+            try:
+                click.echo(rendered, nl=False)
+            except OSError as error:
+                raise _OpenLineageCommandError(
+                    "Could not write OpenLineage events to stdout",
+                    location="stdout",
+                ) from error
+
+        data: dict[str, object] = {
+            "standard": "OpenLineage",
+            "release": OPENLINEAGE_RELEASE,
+            "core_schema": _OPENLINEAGE_CORE_SCHEMA_VERSION,
+            "events": list(export.events),
+            "counts": {
+                "total": len(export.events),
+                "datasets": export.dataset_count,
+                "jobs": export.job_count,
+            },
+        }
+        if rendered_output_file is not None:
+            data["output_file"] = rendered_output_file
+        fmt.set_data(data)
+
+        if output_file is not None and fmt.format == "text" and not fmt.quiet:
+            click.echo(f"OpenLineage events written to {output_file}")
+        fmt.flush()
+
+    except (EnvVarError, ParseError, EnvironmentError) as error:
+        _fail_openlineage_command(fmt, error, ErrorCode.PARSE_ERROR)
+    except (OpenLineageNamespaceError, OpenLineageStaticError) as error:
+        _fail_openlineage_command(
+            fmt,
+            error,
+            ErrorCode.OPENLINEAGE_INVALID,
+            location=error.location,
+        )
+    except _OpenLineageCommandError as error:
+        _fail_openlineage_command(
+            fmt,
+            error,
+            ErrorCode.OPENLINEAGE_INVALID,
+            location=error.location,
+        )
+    except Exception:
+        generic = _OpenLineageCommandError(
+            "Could not generate validated OpenLineage export",
+            location="events",
+        )
+        _fail_openlineage_command(
+            fmt,
+            generic,
+            ErrorCode.OPENLINEAGE_INVALID,
+            location=generic.location,
+        )
+
+
 def _require_odcs_option(
     value: str | None,
     *,
@@ -400,6 +606,86 @@ def _atomic_write_odcs(path: Path, content: str) -> None:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _atomic_write_openlineage(path: Path, content: str) -> None:
+    """Atomically replace an OpenLineage JSONL path and clean staging files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _option_or_environment(option: str | None, environment_name: str) -> str | None:
+    """Apply exact option-over-environment precedence without truthiness fallback."""
+    return option if option is not None else os.environ.get(environment_name)
+
+
+def _normalize_parser_warning(message: str) -> str:
+    """Remove the parser's display-only prefix before structured warning capture."""
+    if message.startswith(_PARSER_WARNING_PREFIX):
+        return message[len(_PARSER_WARNING_PREFIX) :]
+    return message
+
+
+def _emit_openlineage_warning(
+    fmt: OutputFormatter,
+    code: str,
+    message: str,
+    *,
+    location: str | None = None,
+) -> None:
+    """Capture warnings once; only raw text mode mirrors them to stderr."""
+    safe_message = redact_sensitive_text(message)
+    fmt.add_warning(
+        StructuredWarning(
+            code=code,
+            message=safe_message,
+            location=location,
+        )
+    )
+    if fmt.format == "text" and not fmt.quiet:
+        fmt.stderr.print(f"[yellow]WARNING[/yellow]: {safe_message}")
+
+
+def _fail_openlineage_command(
+    fmt: OutputFormatter,
+    error: Exception,
+    code: str,
+    *,
+    location: str | None = None,
+) -> NoReturn:
+    """Emit one credential-redacted standard CLI error and exit non-zero."""
+    safe_message = redact_sensitive_text(error)
+    fmt.add_error(
+        StructuredError(
+            code=code,
+            message=safe_message,
+            location=location,
+        )
+    )
+    fmt.print_error(safe_message)
+    fmt.flush()
+    raise click.exceptions.Exit(1)
 
 
 def _emit_odcs_warning(
