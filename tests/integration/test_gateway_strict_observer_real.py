@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 from dataclasses import FrozenInstanceError
 
@@ -291,21 +292,52 @@ def test_gateway_315_alias_only_adoption_uses_two_read_only_snapshots() -> None:
                 for interceptor in unrelated_desired.interceptors
             ]
 
-            initial = deployer.observe_managed_gateway_snapshot()
-            assert (
-                deployer.apply_managed_gateway_rule(
-                    initial.rule(rule_name, alias_name),
-                    setup_target,
+            setup_aliases = (setup_target, unrelated_desired)
+            for desired in setup_aliases:
+                payload, _expected = GatewayDeployer._managed_alias_payload(desired)
+                response = cleanup.put(
+                    alias_endpoint,
+                    json=payload,
+                    timeout=10,
+                    allow_redirects=False,
+                    stream=True,
                 )
-                == "created"
-            )
-            assert (
-                deployer.apply_managed_gateway_rule(
-                    initial.rule(unrelated_rule_name, unrelated_alias_name),
-                    unrelated_desired,
+                try:
+                    assert response.status_code in {200, 201}, response.text
+                finally:
+                    response.close()
+            for interceptor in unrelated_desired.interceptors:
+                payload, _expected = GatewayDeployer._managed_interceptor_payload(
+                    deployer.cluster_binding,
+                    interceptor,
                 )
-                == "created"
-            )
+                response = cleanup.put(
+                    interceptor_endpoint,
+                    json=payload,
+                    timeout=10,
+                    allow_redirects=False,
+                    stream=True,
+                )
+                try:
+                    assert response.status_code in {200, 201}, response.text
+                finally:
+                    response.close()
+
+            # Gateway can acknowledge setup before both global list views have
+            # converged. Keep that fixture convergence outside the four reads
+            # whose read-only adoption boundary is asserted below.
+            setup_deadline = time.monotonic() + 10
+            while True:
+                setup_snapshot = deployer.observe_managed_gateway_snapshot()
+                if (
+                    setup_snapshot.rule(rule_name, alias_name) == setup_target
+                    and setup_snapshot.rule(unrelated_rule_name, unrelated_alias_name)
+                    == unrelated_desired
+                ):
+                    break
+                if time.monotonic() >= setup_deadline:
+                    pytest.fail("Gateway setup did not become observable before adoption")
+                time.sleep(0.2)
 
             adoption_desired = build_desired_gateway_rule(
                 adoption_artifact,
