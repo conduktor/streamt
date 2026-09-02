@@ -23,7 +23,15 @@ from streamt.cli.helpers import (
     make_sr_deployer,
     redact_sensitive_text,
 )
+from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
+from streamt.compiler.manifest import ArtifactOwnership
 from streamt.core.errors import ErrorCode
+from streamt.deployer.gateway import (
+    build_desired_gateway_rule,
+    classify_gateway_interceptor_name,
+    plan_managed_gateway_rule,
+    secret_neutral_gateway_changes,
+)
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
 
 
@@ -93,8 +101,16 @@ class GatewayRuleStatus(TypedDict):
     exists: bool
     virtual_topic: str
     physical_topic: str
-    interceptors_desired: NotRequired[int]
-    interceptors_found: NotRequired[int]
+    status: Literal["OK", "MISSING", "DRIFT"]
+    interceptors_desired: int
+    interceptors_found: int
+    scope: str
+    backend_fingerprint: str
+    current_fingerprint: str
+    desired_fingerprint: str
+    observed_physical_topic: str | None
+    observed_physical_cluster: str | None
+    drift_categories: NotRequired[list[str]]
 
 
 def _artifact_str(artifact: dict[str, object], key: str) -> str:
@@ -113,19 +129,6 @@ def _artifact_optional_int(artifact: dict[str, object], key: str) -> int | None:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"Compiled artifact field {key!r} must be an integer")
     return value
-
-
-def _artifact_dicts(artifact: dict[str, object], key: str) -> list[dict[str, object]]:
-    """Return a list of string-keyed mappings from a compiler artifact."""
-    value = artifact.get(key, [])
-    if not isinstance(value, list):
-        raise TypeError(f"Compiled artifact field {key!r} must be a list")
-    result: list[dict[str, object]] = []
-    for item in value:
-        if not isinstance(item, dict) or not all(isinstance(k, str) for k in item):
-            raise TypeError(f"Compiled artifact field {key!r} must contain mappings")
-        result.append(item)
-    return result
 
 
 @contextmanager
@@ -494,50 +497,123 @@ def status(
             if gd is not None:
                 deployers_to_close.append(gd)
                 with _deployer_section(fmt, is_text, "Gateway"):
-                    for rule_artifact in manifest.artifacts["gateway_rules"]:
-                        rule_name = _artifact_str(rule_artifact, "name")
-                        virtual_topic = _artifact_str(rule_artifact, "virtualTopic")
-                        physical_topic = _artifact_str(rule_artifact, "physicalTopic")
-                        if not matches(rule_name):
-                            continue
-                        alias = gd.get_alias_topic(virtual_topic)
-                        exists = alias is not None
-                        rule_entry: GatewayRuleStatus = {
-                            "name": rule_name,
-                            "exists": exists,
-                            "virtual_topic": virtual_topic,
-                            "physical_topic": physical_topic,
-                        }
-                        desired_interceptors = _artifact_dicts(
-                            rule_artifact, "interceptors"
+                    resolved_rules = []
+                    logical_owners: set[str] = set()
+                    aliases: set[str] = set()
+                    interceptor_locators: set[tuple[object, str]] = set()
+                    for raw_rule in manifest.artifacts["gateway_rules"]:
+                        artifact = parse_compiled_gateway_rule_artifact(raw_rule)
+                        desired = build_desired_gateway_rule(
+                            artifact,
+                            gd.cluster_binding,
                         )
-                        if exists and desired_interceptors:
-                            found = 0
-                            for interceptor in desired_interceptors:
-                                interceptor_name = interceptor.get("name")
-                                if (
-                                    isinstance(interceptor_name, str)
-                                    and gd.get_interceptor(interceptor_name) is not None
-                                ):
-                                    found += 1
-                            rule_entry["interceptors_desired"] = len(desired_interceptors)
-                            rule_entry["interceptors_found"] = found
+                        ownership = ArtifactOwnership.from_dict(artifact.ownership)
+                        logical_owner = (
+                            ownership.owner_name if ownership is not None else artifact.name
+                        )
+                        if logical_owner in logical_owners:
+                            raise ValueError("Gateway status found a duplicate logical rule owner")
+                        logical_owners.add(logical_owner)
+                        if desired.alias_name in aliases:
+                            raise ValueError(
+                                "Gateway status found a duplicate canonical alias locator"
+                            )
+                        aliases.add(desired.alias_name)
+                        for interceptor in desired.interceptors:
+                            locator = (interceptor.scope, interceptor.name)
+                            if locator in interceptor_locators:
+                                raise ValueError(
+                                    "Gateway status found a duplicate interceptor locator"
+                                )
+                            interceptor_locators.add(locator)
+                        resolved_rules.append((artifact, desired))
+
+                    for artifact, desired in resolved_rules:
+                        for interceptor in desired.interceptors:
+                            owners: list[str] = []
+                            for candidate, _candidate_desired in resolved_rules:
+                                try:
+                                    generated = classify_gateway_interceptor_name(
+                                        candidate.name,
+                                        interceptor.name,
+                                    )
+                                except ValueError:
+                                    raise ValueError(
+                                        "Gateway status found an ambiguous generated namespace"
+                                    ) from None
+                                if generated is not None:
+                                    owners.append(candidate.name)
+                            if owners != [artifact.name]:
+                                raise ValueError(
+                                    "Gateway status found an ambiguous generated namespace"
+                                )
+
+                    selected_rules = [
+                        (artifact, desired)
+                        for artifact, desired in resolved_rules
+                        if matches(artifact.name)
+                    ]
+                    snapshot = gd.observe_managed_gateway_snapshot() if selected_rules else None
+                    for artifact, desired in selected_rules:
+                        if snapshot is None:  # pragma: no cover - narrowed above
+                            raise RuntimeError("Gateway status snapshot is unavailable")
+                        current = snapshot.rule(
+                            artifact.name,
+                            artifact.virtual_topic,
+                        )
+                        change = plan_managed_gateway_rule(
+                            artifact,
+                            desired,
+                            current,
+                        )
+                        evidence = secret_neutral_gateway_changes(change.changes)
+                        raw_categories = evidence.get("categories", [])
+                        if not isinstance(raw_categories, list) or any(
+                            not isinstance(category, str) for category in raw_categories
+                        ):
+                            raise TypeError("Gateway status received invalid drift evidence")
+                        drift_categories = list(raw_categories)
+                        rule_status: Literal["OK", "MISSING", "DRIFT"] = (
+                            "OK"
+                            if change.action == "none"
+                            else "MISSING"
+                            if not current.exists
+                            else "DRIFT"
+                        )
+                        rule_entry: GatewayRuleStatus = {
+                            "name": artifact.name,
+                            "exists": current.exists,
+                            "virtual_topic": artifact.virtual_topic,
+                            "physical_topic": artifact.physical_topic,
+                            "status": rule_status,
+                            "interceptors_desired": len(desired.interceptors),
+                            "interceptors_found": len(current.interceptors),
+                            "scope": current.binding.scope_name,
+                            "backend_fingerprint": (current.binding.endpoint_fingerprint),
+                            "current_fingerprint": current.fingerprint,
+                            "desired_fingerprint": desired.fingerprint,
+                            "observed_physical_topic": current.physical_name,
+                            "observed_physical_cluster": current.physical_cluster,
+                        }
+                        if drift_categories:
+                            rule_entry["drift_categories"] = drift_categories
                         gateway_rules.append(rule_entry)
                         if is_text:
-                            if exists:
-                                ic_info = ""
-                                if "interceptors_found" in rule_entry:
-                                    ic_info = (
-                                        ", interceptors: "
-                                        f"{rule_entry['interceptors_found']}/"
-                                        f"{rule_entry['interceptors_desired']}"
-                                    )
+                            if rule_status == "OK":
                                 fmt.print(
-                                    f"  [green]OK[/green] {rule_name} "
-                                    f"({virtual_topic} -> {physical_topic}{ic_info})"
+                                    f"  [green]OK[/green] {artifact.name} "
+                                    f"({artifact.virtual_topic} -> "
+                                    f"{artifact.physical_topic}, interceptors: "
+                                    f"{len(current.interceptors)}/"
+                                    f"{len(desired.interceptors)})"
+                                )
+                            elif rule_status == "DRIFT":
+                                fmt.print(
+                                    f"  [yellow]DRIFT[/yellow] {artifact.name} "
+                                    f"({', '.join(drift_categories)})"
                                 )
                             else:
-                                fmt.print(f"  [red]MISSING[/red] {rule_name}")
+                                fmt.print(f"  [red]MISSING[/red] {artifact.name}")
             elif is_text:
                 fmt.print("  [yellow]No Gateway configured[/yellow]")
             if gd is None:
@@ -577,12 +653,7 @@ def status(
                 not connector["exists"] or connector["status"] != "RUNNING"
                 for connector in connectors
             )
-            or any(
-                not rule["exists"]
-                or rule.get("interceptors_found", 0)
-                < rule.get("interceptors_desired", 0)
-                for rule in gateway_rules
-            )
+            or any(rule["status"] != "OK" for rule in gateway_rules)
         )
 
         fmt.flush()

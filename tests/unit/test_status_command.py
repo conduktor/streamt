@@ -5,14 +5,23 @@ from __future__ import annotations
 import json
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from click.testing import CliRunner, Result
 
 from streamt.cli import main
+from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.flink import FlinkJobState
-from streamt.deployer.gateway import GatewayDeployer
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayDeployer,
+    GatewayManagedObservationError,
+    ManagedGatewayInterceptor,
+    ManagedGatewayRuleObservation,
+    ManagedGatewaySnapshot,
+    build_desired_gateway_rule,
+)
 from streamt.deployer.kafka import (
     ConsumerGroupLag,
     ConsumerGroupObservationError,
@@ -81,6 +90,83 @@ def _invoke_status(
         )
 
 
+_GATEWAY_ENDPOINT = "https://gateway.status.example.test/admin"
+_GATEWAY_FILTER_SECRET = "status-filter-secret-6017"
+
+
+def _gateway_binding() -> GatewayBackendBinding:
+    return GatewayBackendBinding.from_endpoint(
+        _GATEWAY_ENDPOINT,
+        virtual_cluster="status-vcluster",
+    )
+
+
+def _gateway_artifact(
+    *,
+    name: str = "orders_rule",
+    virtual_topic: str = "orders.public",
+    physical_topic: str = "orders.v1",
+    where: str | None = None,
+) -> dict[str, object]:
+    interceptors: list[dict[str, object]] = []
+    if where is not None:
+        interceptors.append({"type": "filter", "config": {"where": where}})
+    return {
+        "name": name,
+        "virtualTopic": virtual_topic,
+        "physicalTopic": physical_topic,
+        "interceptors": interceptors,
+    }
+
+
+def _gateway_desired(
+    raw_artifact: dict[str, object],
+    binding: GatewayBackendBinding,
+) -> ManagedGatewayRuleObservation:
+    return build_desired_gateway_rule(
+        parse_compiled_gateway_rule_artifact(raw_artifact),
+        binding,
+    )
+
+
+def _gateway_present(
+    desired: ManagedGatewayRuleObservation,
+    *,
+    physical_name: str | None = None,
+    interceptors: tuple[ManagedGatewayInterceptor, ...] | None = None,
+) -> ManagedGatewayRuleObservation:
+    return ManagedGatewayRuleObservation(
+        binding=desired.binding,
+        logical_name=desired.logical_name,
+        alias_name=desired.alias_name,
+        exists=True,
+        physical_name=physical_name or desired.physical_name,
+        physical_cluster="main",
+        interceptors=(desired.interceptors if interceptors is None else interceptors),
+    )
+
+
+def _gateway_absent(
+    desired: ManagedGatewayRuleObservation,
+) -> ManagedGatewayRuleObservation:
+    return ManagedGatewayRuleObservation(
+        binding=desired.binding,
+        logical_name=desired.logical_name,
+        alias_name=desired.alias_name,
+        exists=False,
+    )
+
+
+def _gateway_deployer(
+    binding: GatewayBackendBinding,
+    snapshot: ManagedGatewaySnapshot | MagicMock,
+) -> MagicMock:
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = binding
+    gateway.observe_managed_gateway_snapshot.return_value = snapshot
+    return gateway
+
+
 def test_health_treats_missing_job_with_no_status_as_unhealthy(tmp_path: Path) -> None:
     flink = MagicMock()
     flink.get_job_state.return_value = FlinkJobState(name="orders", exists=False)
@@ -145,63 +231,291 @@ def test_health_fails_on_redacted_backend_error(tmp_path: Path) -> None:
     assert "supersecret" not in result.output
 
 
-def test_gateway_interceptor_count_handles_found_payloads(tmp_path: Path) -> None:
-    gateway = MagicMock(spec=GatewayDeployer)
-    gateway.get_alias_topic.return_value = {"metadata": {"name": "orders"}}
-    gateway.get_interceptor.side_effect = [
-        {"metadata": {"name": "mask-orders"}},
-        None,
-    ]
+def test_gateway_status_reuses_one_snapshot_for_exact_multiple_rules(
+    tmp_path: Path,
+) -> None:
+    binding = _gateway_binding()
+    orders = _gateway_artifact(where=f"customer_token = '{_GATEWAY_FILTER_SECRET}'")
+    payments = _gateway_artifact(
+        name="payments_rule",
+        virtual_topic="payments.public",
+        physical_topic="payments.v1",
+    )
+    desired_orders = _gateway_desired(orders, binding)
+    desired_payments = _gateway_desired(payments, binding)
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.side_effect = [desired_orders, desired_payments]
+    gateway = _gateway_deployer(binding, snapshot)
 
     result = _invoke_status(
         tmp_path,
-        {
-            "gateway_rules": [
-                {
-                    "name": "orders-rule",
-                    "virtualTopic": "orders",
-                    "physicalTopic": "orders-v1",
-                    "interceptors": [
-                        {"name": "mask-orders"},
-                        {"name": "filter-orders"},
-                    ],
-                }
-            ]
-        },
+        {"gateway_rules": [orders, payments]},
         gateway=gateway,
     )
 
     assert result.exit_code == 0, result.output
-    rule = json.loads(result.output)["data"]["gateway_rules"][0]
-    assert rule["interceptors_desired"] == 2
-    assert rule["interceptors_found"] == 1
+    rules = json.loads(result.output)["data"]["gateway_rules"]
+    assert [rule["status"] for rule in rules] == ["OK", "OK"]
+    assert [rule["interceptors_desired"] for rule in rules] == [1, 0]
+    assert [rule["interceptors_found"] for rule in rules] == [1, 0]
+    assert all(rule["scope"] == "status-vcluster" for rule in rules)
+    assert all(rule["backend_fingerprint"] == binding.endpoint_fingerprint for rule in rules)
+    assert rules[0]["observed_physical_topic"] == "orders.v1"
+    assert rules[0]["observed_physical_cluster"] == "main"
+    assert "drift_categories" not in rules[0]
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    snapshot.rule.assert_has_calls(
+        [
+            call("orders_rule", "orders.public"),
+            call("payments_rule", "payments.public"),
+        ]
+    )
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
+    assert _GATEWAY_ENDPOINT not in result.output
+    assert _GATEWAY_FILTER_SECRET not in result.output
 
 
-def test_health_fails_when_gateway_interceptor_is_missing(tmp_path: Path) -> None:
-    gateway = MagicMock(spec=GatewayDeployer)
-    gateway.get_alias_topic.return_value = {"metadata": {"name": "orders"}}
-    gateway.get_interceptor.return_value = None
+def test_gateway_health_fails_when_managed_rule_is_missing(tmp_path: Path) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where=f"customer_token = '{_GATEWAY_FILTER_SECRET}'")
+    desired = _gateway_desired(artifact, binding)
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.return_value = _gateway_absent(desired)
+    gateway = _gateway_deployer(binding, snapshot)
 
     result = _invoke_status(
         tmp_path,
-        {
-            "gateway_rules": [
-                {
-                    "name": "orders-rule",
-                    "virtualTopic": "orders",
-                    "physicalTopic": "orders-v1",
-                    "interceptors": [{"name": "mask-orders"}],
-                }
-            ]
-        },
+        {"gateway_rules": [artifact]},
         status_args=["--health"],
         gateway=gateway,
     )
 
     assert result.exit_code == 1
     rule = json.loads(result.output)["data"]["gateway_rules"][0]
-    assert rule["exists"] is True
+    assert rule["status"] == "MISSING"
+    assert rule["exists"] is False
+    assert rule["drift_categories"] == ["presence"]
     assert rule["interceptors_found"] == 0
+    assert rule["interceptors_desired"] == 1
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
+
+
+def test_gateway_health_fails_on_mapping_and_scope_drift(tmp_path: Path) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where="region = 'US'")
+    desired = _gateway_desired(artifact, binding)
+    current = _gateway_present(
+        desired,
+        physical_name="orders.previous",
+        # An expected interceptor observed under another scope is absent from
+        # the exact target-scope aggregate returned by snapshot.rule().
+        interceptors=(),
+    )
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.return_value = current
+    gateway = _gateway_deployer(binding, snapshot)
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1, result.output
+    rule = json.loads(result.output)["data"]["gateway_rules"][0]
+    assert rule["status"] == "DRIFT"
+    assert rule["exists"] is True
+    assert rule["observed_physical_topic"] == "orders.previous"
+    assert rule["drift_categories"] == [
+        "alias_mapping",
+        "interceptor_identities",
+    ]
+    assert rule["current_fingerprint"] != rule["desired_fingerprint"]
+
+
+def test_gateway_health_fails_on_config_fingerprint_drift(tmp_path: Path) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where="region = 'US'")
+    desired = _gateway_desired(artifact, binding)
+    desired_interceptor = desired.interceptors[0]
+    drifted_interceptor = ManagedGatewayInterceptor(
+        name=desired_interceptor.name,
+        scope=desired_interceptor.scope,
+        plugin_class=desired_interceptor.plugin_class,
+        priority=desired_interceptor.priority,
+        config_json="{}",
+    )
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.return_value = _gateway_present(
+        desired,
+        interceptors=(drifted_interceptor,),
+    )
+    gateway = _gateway_deployer(binding, snapshot)
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1, result.output
+    rule = json.loads(result.output)["data"]["gateway_rules"][0]
+    assert rule["status"] == "DRIFT"
+    assert rule["drift_categories"] == ["configuration"]
+    assert rule["current_fingerprint"] != rule["desired_fingerprint"]
+    assert "config" not in rule
+
+
+def test_gateway_health_fails_on_stale_managed_interceptor(tmp_path: Path) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where="region = 'US'")
+    desired = _gateway_desired(artifact, binding)
+    desired_interceptor = desired.interceptors[0]
+    stale_interceptor = ManagedGatewayInterceptor(
+        name="orders_rule_filter_1",
+        scope=desired_interceptor.scope,
+        plugin_class=desired_interceptor.plugin_class,
+        priority=desired_interceptor.priority,
+        config_json=desired_interceptor.config_json,
+    )
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.return_value = _gateway_present(
+        desired,
+        interceptors=(desired_interceptor, stale_interceptor),
+    )
+    gateway = _gateway_deployer(binding, snapshot)
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1, result.output
+    rule = json.loads(result.output)["data"]["gateway_rules"][0]
+    assert rule["status"] == "DRIFT"
+    assert rule["interceptors_found"] == 2
+    assert rule["interceptors_desired"] == 1
+    assert rule["drift_categories"] == ["interceptor_identities"]
+
+
+def test_gateway_health_fails_closed_when_orphan_exists_without_alias(
+    tmp_path: Path,
+) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where="region = 'US'")
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.side_effect = GatewayManagedObservationError(
+        "Gateway managed observation is partial: alias is absent with interceptors"
+    )
+    gateway = _gateway_deployer(binding, snapshot)
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["data"]["gateway_rules"] == []
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    snapshot.rule.assert_called_once_with("orders_rule", "orders.public")
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
+    assert _GATEWAY_ENDPOINT not in result.output
+    assert _GATEWAY_FILTER_SECRET not in result.output
+
+
+def test_gateway_health_fails_closed_when_snapshot_rejects_physical_cluster(
+    tmp_path: Path,
+) -> None:
+    binding = _gateway_binding()
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = binding
+    # The strict snapshot parser rejects an AliasTopic outside the supported
+    # physical cluster before it can become a managed rule value object.
+    gateway.observe_managed_gateway_snapshot.side_effect = (
+        GatewayManagedObservationError(
+            "Gateway managed snapshot contains an invalid alias"
+        )
+    )
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [_gateway_artifact()]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["data"]["gateway_rules"] == []
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
+    assert _GATEWAY_ENDPOINT not in result.output
+
+
+def test_gateway_health_fails_closed_before_observation_on_legacy_artifact(
+    tmp_path: Path,
+) -> None:
+    binding = _gateway_binding()
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    gateway = _gateway_deployer(binding, snapshot)
+    artifact = _gateway_artifact()
+    artifact["interceptors"] = [{"name": "legacy-point-read"}]
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["data"]["gateway_rules"] == []
+    gateway.observe_managed_gateway_snapshot.assert_not_called()
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
+
+
+def test_gateway_text_status_does_not_render_config_or_admin_endpoint(
+    tmp_path: Path,
+) -> None:
+    binding = _gateway_binding()
+    artifact = _gateway_artifact(where=f"customer_token = '{_GATEWAY_FILTER_SECRET}'")
+    desired = _gateway_desired(artifact, binding)
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    snapshot.rule.return_value = desired
+    gateway = _gateway_deployer(binding, snapshot)
+
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [artifact]},
+        json_output=False,
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "OK orders_rule" in result.output
+    assert _GATEWAY_ENDPOINT not in result.output
+    assert _GATEWAY_FILTER_SECRET not in result.output
+    assert "VirtualSqlTopicPlugin" not in result.output
+    assert "statement" not in result.output
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    gateway.get_alias_topic.assert_not_called()
+    gateway.get_interceptor.assert_not_called()
 
 
 def test_consumer_group_partition_lag_is_json_serializable(tmp_path: Path) -> None:
