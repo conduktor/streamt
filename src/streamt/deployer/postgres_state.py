@@ -18,6 +18,7 @@ import ipaddress
 import json
 import os
 import shlex
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,8 +33,12 @@ from streamt.core.deployment_state import (
 from streamt.deployer.state import LocalState, StateError, StateFormatError
 from streamt.deployer.state_backend import (
     OperationControlState,
+    OperationIntent,
+    OperationProgress,
     StateAddress,
     StateBackendInvalidStateError,
+    StateBackendLockTimeoutError,
+    StateBackendReleaseAfterCommitError,
     StateBackendUnavailableError,
     StateBackendUnknownCommitError,
     StateStoreIdentity,
@@ -41,6 +46,7 @@ from streamt.deployer.state_backend import (
 )
 
 POSTGRES_SCHEMA_VERSION = 1
+POSTGRES_SCHEMA_V2_VERSION = 2
 POSTGRES_STATE_MAX_BYTES = 10 * 1024 * 1024
 _CONNECT_TIMEOUT_SECONDS = 10
 _STATEMENT_TIMEOUT_MILLISECONDS = 30_000
@@ -620,6 +626,138 @@ _EXPECTED_INDEXES: tuple[tuple[str, str, bool, bool, str], ...] = tuple(
         )
     )
 )
+
+# Version 2 is an explicit, additive administrative migration.  Version 1's
+# constants remain frozen because the shipped initializer and its checksum are
+# a durable compatibility contract.
+_EXPECTED_COLUMNS_V2: tuple[tuple[str, str, str, str, str, object], ...] = tuple(
+    sorted(
+        (
+            *_EXPECTED_COLUMNS,
+            ("store_metadata", "writer_role_name", "text", "text", "NO", None),
+        ),
+        key=lambda column: column[0],
+    )
+)
+_EXPECTED_CONSTRAINTS_V2: tuple[
+    tuple[str, str, str, str, str | None, str | None, str | None], ...
+] = tuple(
+    sorted(
+        (
+            *(
+                constraint
+                for constraint in _EXPECTED_CONSTRAINTS
+                if constraint[1] != "store_metadata_schema_version_check"
+            ),
+            (
+                "store_metadata",
+                "store_metadata_schema_version_check",
+                "c",
+                "",
+                None,
+                None,
+                "schema_version = 2",
+            ),
+            (
+                "store_metadata",
+                "store_metadata_writer_role_name_check",
+                "c",
+                "",
+                None,
+                None,
+                "writer_role_name <> ''::text",
+            ),
+        )
+    )
+)
+
+_CURRENT_STATE_COLUMNS = (
+    "namespace",
+    "project",
+    "environment",
+    "revision",
+    "state_serial",
+    "state_checksum",
+    "state_json",
+    "updated_at",
+)
+_OPERATION_CONTROL_UPDATE_COLUMNS = (
+    "revision",
+    "status",
+    "control_json",
+    "updated_at",
+)
+_STATE_HISTORY_COLUMNS = (
+    "namespace",
+    "project",
+    "environment",
+    "revision",
+    "state_serial",
+    "state_checksum",
+    "state_json",
+    "operation_id",
+    "recorded_at",
+)
+_OPERATION_HISTORY_COLUMNS = (
+    "namespace",
+    "project",
+    "environment",
+    "operation_id",
+    "event_index",
+    "event_kind",
+    "control_json",
+    "recorded_at",
+)
+_SCHEMA_V2_WRITER_COLUMN_PRIVILEGES: tuple[
+    tuple[str, str, tuple[str, ...]], ...
+] = (
+    ("current_state", "INSERT", _CURRENT_STATE_COLUMNS),
+    (
+        "current_state",
+        "UPDATE",
+        ("revision", "state_serial", "state_checksum", "state_json", "updated_at"),
+    ),
+    ("operation_control", "UPDATE", _OPERATION_CONTROL_UPDATE_COLUMNS),
+    ("state_history", "INSERT", _STATE_HISTORY_COLUMNS),
+    ("operation_history", "INSERT", _OPERATION_HISTORY_COLUMNS),
+)
+_SCHEMA_V2_CONTRACT_BYTES = json.dumps(
+    {
+        "columns": _EXPECTED_COLUMNS_V2,
+        "constraints": _EXPECTED_CONSTRAINTS_V2,
+        "indexes": _EXPECTED_INDEXES,
+        "writer_schema_privileges": ("USAGE",),
+        "writer_table_privileges": tuple(
+            (table, ("SELECT",)) for table in _EXPECTED_TABLES
+        ),
+        "writer_column_privileges": _SCHEMA_V2_WRITER_COLUMN_PRIVILEGES,
+        "writer_role_contract": (
+            "LOGIN",
+            "NOINHERIT",
+            "NOSUPERUSER",
+            "NOCREATEDB",
+            "NOCREATEROLE",
+            "NOREPLICATION",
+            "NOBYPASSRLS",
+            "NO_MEMBERSHIPS",
+            "NOT_OWNER",
+        ),
+        "writer_grantor": "schema_owner",
+        "status_reader_contract": ("USAGE", "SELECT", "NO_GRANT_OPTION"),
+        "default_acl": "none",
+    },
+    sort_keys=True,
+    ensure_ascii=False,
+    separators=(",", ":"),
+).encode("utf-8")
+POSTGRES_SCHEMA_V2_CHECKSUM = (
+    "sha256:" + hashlib.sha256(_SCHEMA_V2_CONTRACT_BYTES).hexdigest()
+)
+_EXPECTED_MIGRATION_V2 = (
+    POSTGRES_SCHEMA_V2_VERSION,
+    "schema-v2-writer-role",
+    POSTGRES_SCHEMA_V2_CHECKSUM,
+)
 _SCHEMA_CONTRACT_BYTES = json.dumps(
     {
         "columns": _EXPECTED_COLUMNS,
@@ -636,6 +774,15 @@ _EXPECTED_MIGRATION = (
     "schema-v1",
     POSTGRES_SCHEMA_V1_CHECKSUM,
 )
+_EXPECTED_MIGRATIONS_V2 = (_EXPECTED_MIGRATION, _EXPECTED_MIGRATION_V2)
+_V2_OPERATION_EVENT_KINDS = {
+    "intent",
+    "progress_started",
+    "progress_completed",
+    "recovery_required",
+    "cleared_before_mutation",
+    "succeeded",
+}
 
 # Each template's first placeholder is the table being created.  Templates
 # with a second placeholder reference the qualified state-address table.  The
@@ -861,7 +1008,11 @@ class PostgresStateStatus:
             "operation_status": (
                 self.operation_status.to_dict() if self.operation_status is not None else None
             ),
-            "mutation_status": "disabled",
+            "mutation_status": (
+                "catalog_ready"
+                if self.schema_version == POSTGRES_SCHEMA_V2_VERSION
+                else "disabled"
+            ),
         }
 
 
@@ -873,6 +1024,7 @@ class PostgresStateInitialization:
     address: StateAddress
     created_store: bool
     registered_address: bool
+    schema_version: int = POSTGRES_SCHEMA_VERSION
 
     @property
     def outcome(self) -> str:
@@ -887,11 +1039,32 @@ class PostgresStateInitialization:
             "backend": "postgres",
             "outcome": self.outcome,
             "store_id": self.store_id,
-            "schema_version": POSTGRES_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "address": self.address.uri,
             "address_status": "registered",
             "state_status": "absent",
             "operation_status": "clear",
+            "ordinary_state_authority": "disabled",
+        }
+
+
+@dataclass(frozen=True)
+class PostgresStateV2Migration:
+    """Secret-neutral result of the direct-only schema-v2 migration."""
+
+    store_id: str
+    migrated: bool
+
+    @property
+    def outcome(self) -> str:
+        return "migrated" if self.migrated else "already_migrated"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "backend": "postgres",
+            "outcome": self.outcome,
+            "store_id": self.store_id,
+            "schema_version": POSTGRES_SCHEMA_V2_VERSION,
             "ordinary_state_authority": "disabled",
         }
 
@@ -1195,6 +1368,47 @@ def _canonical_json(value: dict[str, object]) -> str:
     )
 
 
+def _validated_v2_role(
+    cursor: _Cursor,
+    *,
+    schema: str,
+    writer_name: str,
+) -> tuple[int, int]:
+    """Resolve one portable role name to its transient writer and owner OIDs."""
+    role_rows = _rows(
+        cursor,
+        (
+            "SELECT r.oid::bigint, r.rolname, r.rolsuper, r.rolcreaterole, "
+            "r.rolcreatedb, r.rolcanlogin, r.rolreplication, r.rolbypassrls, "
+            "r.rolinherit, r.oid <> n.nspowner, NOT EXISTS ("
+            "SELECT 1 FROM pg_catalog.pg_auth_members AS m "
+            "WHERE m.member = r.oid OR m.roleid = r.oid), n.nspowner::bigint "
+            "FROM pg_catalog.pg_roles AS r "
+            "JOIN pg_catalog.pg_namespace AS n ON n.nspname = %s "
+            "WHERE r.rolname = %s ORDER BY r.oid"
+        ),
+        (schema, writer_name),
+    )
+    if len(role_rows) != 1 or len(role_rows[0]) != 12:
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state writer role is invalid"
+        )
+    writer_oid, stored_name, *role_contract, owner_oid = role_rows[0]
+    if (
+        type(writer_oid) is not int
+        or writer_oid <= 0
+        or type(owner_oid) is not int
+        or owner_oid <= 0
+        or stored_name != writer_name
+        or role_contract
+        != [False, False, False, True, False, False, False, True, True]
+    ):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state writer role is invalid"
+        )
+    return writer_oid, owner_oid
+
+
 class PostgresStateAdministration:
     """Narrow PostgreSQL status reader; intentionally no mutation methods."""
 
@@ -1380,18 +1594,14 @@ class PostgresStateAdministration:
                     "PostgreSQL deployment state catalog is invalid"
                 )
             return self._uninitialized(address)
-        if (
-            relation_rows
-            != [
-                (table, "r", "p", False, False, False, True, True)
-                for table in _EXPECTED_TABLES
-            ]
-            or function_rows
-            or type_rows
-            or schema_object_rows
-        ):
-            raise StateBackendInvalidStateError("PostgreSQL deployment state catalog is invalid")
-
+        expected_relation_structure = [
+            (table, "r", "p", False, False, False, True)
+            for table in _EXPECTED_TABLES
+        ]
+        if [row[:7] for row in relation_rows] != expected_relation_structure:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state catalog is invalid"
+            )
         column_rows = _rows(
             cursor,
             (
@@ -1401,7 +1611,34 @@ class PostgresStateAdministration:
             ),
             (self._schema,),
         )
-        if column_rows != list(_EXPECTED_COLUMNS):
+        schema_version = (
+            POSTGRES_SCHEMA_V2_VERSION
+            if column_rows == list(_EXPECTED_COLUMNS_V2)
+            else POSTGRES_SCHEMA_VERSION
+        )
+        expected_relations = [
+            (table, "r", "p", False, False, False, True, True)
+            for table in _EXPECTED_TABLES
+        ]
+        # The v1 query's final flag deliberately rejects every non-reader
+        # column grant.  V2's exact writer-column ACL is checked below from
+        # pg_catalog rows, so ignore only that aggregate flag for this branch.
+        if schema_version == POSTGRES_SCHEMA_V2_VERSION:
+            relation_rows = [(*row[:7], True) for row in relation_rows]
+        if (
+            relation_rows != expected_relations
+            or function_rows
+            or type_rows
+            or schema_object_rows
+        ):
+            raise StateBackendInvalidStateError("PostgreSQL deployment state catalog is invalid")
+
+        expected_columns = (
+            _EXPECTED_COLUMNS_V2
+            if schema_version == POSTGRES_SCHEMA_V2_VERSION
+            else _EXPECTED_COLUMNS
+        )
+        if column_rows != list(expected_columns):
             raise StateBackendInvalidStateError("PostgreSQL deployment state catalog is invalid")
 
         constraint_rows = _rows(
@@ -1441,9 +1678,14 @@ class PostgresStateAdministration:
             ),
             (self._schema,),
         )
+        constraint_contract = (
+            _EXPECTED_CONSTRAINTS_V2
+            if schema_version == POSTGRES_SCHEMA_V2_VERSION
+            else _EXPECTED_CONSTRAINTS
+        )
         expected_constraints = [
             (*constraint[:6], _normalize_check_expression(constraint[6]))
-            for constraint in _EXPECTED_CONSTRAINTS
+            for constraint in constraint_contract
         ]
         if _normalized_constraints(constraint_rows) != expected_constraints:
             raise StateBackendInvalidStateError(
@@ -1516,25 +1758,33 @@ class PostgresStateAdministration:
         if policy_rule_rows:
             raise StateBackendInvalidStateError("PostgreSQL deployment state policies are invalid")
 
+        metadata_columns = (
+            "singleton, store_id::text, schema_version, writer_role_name"
+            if schema_version == POSTGRES_SCHEMA_V2_VERSION
+            else "singleton, store_id::text, schema_version"
+        )
         metadata = _one_or_none(
             _rows(
                 cursor,
                 _query(
                     sql_module,
-                    "SELECT singleton, store_id::text, schema_version FROM {} LIMIT 2",
+                    f"SELECT {metadata_columns} FROM {{}} LIMIT 2",
                     self._schema,
                     "store_metadata",
                 ),
             ),
             label="metadata",
         )
-        if metadata is None or len(metadata) != 3:
+        expected_metadata_length = (
+            4 if schema_version == POSTGRES_SCHEMA_V2_VERSION else 3
+        )
+        if metadata is None or len(metadata) != expected_metadata_length:
             raise StateBackendInvalidStateError("PostgreSQL deployment state metadata is invalid")
-        singleton, store_id, schema_version = metadata
+        singleton, store_id, stored_schema_version, *writer_identity = metadata
         if (
             singleton is not True
-            or type(schema_version) is not int
-            or schema_version != POSTGRES_SCHEMA_VERSION
+            or type(stored_schema_version) is not int
+            or stored_schema_version != schema_version
         ):
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state schema version is invalid"
@@ -1561,9 +1811,28 @@ class PostgresStateAdministration:
                 "schema_migrations",
             ),
         )
-        if migrations != [_EXPECTED_MIGRATION]:
+        expected_migrations = (
+            list(_EXPECTED_MIGRATIONS_V2)
+            if schema_version == POSTGRES_SCHEMA_V2_VERSION
+            else [_EXPECTED_MIGRATION]
+        )
+        if migrations != expected_migrations:
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state migration ledger is invalid"
+            )
+        if schema_version == POSTGRES_SCHEMA_V2_VERSION:
+            if len(writer_identity) != 1:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state writer identity is invalid"
+                )
+            (writer_name,) = writer_identity
+            if not isinstance(writer_name, str) or not writer_name:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state writer identity is invalid"
+                )
+            self._validate_v2_access(
+                cursor,
+                writer_name=writer_name,
             )
 
         lock_key = _registered_advisory_lock_key(
@@ -1576,7 +1845,7 @@ class PostgresStateAdministration:
             return PostgresStateStatus(
                 store_status="ready",
                 store_id=identity.store_id,
-                schema_version=POSTGRES_SCHEMA_VERSION,
+                schema_version=schema_version,
                 address=address,
                 address_status="unregistered",
                 state_status="unregistered",
@@ -1610,7 +1879,7 @@ class PostgresStateAdministration:
             return PostgresStateStatus(
                 store_status="ready",
                 store_id=identity.store_id,
-                schema_version=POSTGRES_SCHEMA_VERSION,
+                schema_version=schema_version,
                 address=address,
                 address_status="registered",
                 state_status="absent",
@@ -1622,7 +1891,7 @@ class PostgresStateAdministration:
         return PostgresStateStatus(
             store_status="ready",
             store_id=identity.store_id,
-            schema_version=POSTGRES_SCHEMA_VERSION,
+            schema_version=schema_version,
             address=address,
             address_status="registered",
             state_status="present",
@@ -1630,6 +1899,157 @@ class PostgresStateAdministration:
             state_checksum=checksum,
             operation_status=operation_status,
         )
+
+    def _validate_v2_access(
+        self,
+        cursor: _Cursor,
+        *,
+        writer_name: str,
+    ) -> None:
+        """Validate the stored writer identity and its complete effective ACL.
+
+        Owner ACL entries are PostgreSQL's implicit administration contract.
+        Every non-owner entry is constrained to the v1 reader contract, except
+        for the one stored writer identity whose additional column privileges
+        must be exactly the v2 mutation set.
+        """
+        writer_oid, owner_oid = _validated_v2_role(
+            cursor,
+            schema=self._schema,
+            writer_name=writer_name,
+        )
+
+        default_acl_rows = _rows(
+            cursor,
+            (
+                "SELECT d.defaclobjtype, d.defaclrole::bigint, "
+                "COALESCE(n.nspname, '') "
+                "FROM pg_catalog.pg_default_acl AS d "
+                "LEFT JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace "
+                "WHERE d.defaclobjtype IN ('r', 'S') "
+                "AND d.defaclrole IN (%s, %s) "
+                "AND (d.defaclnamespace = 0 OR n.nspname = %s) "
+                "ORDER BY d.defaclobjtype, d.defaclrole, n.nspname"
+            ),
+            (owner_oid, writer_oid, self._schema),
+        )
+        if default_acl_rows:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state default privileges are invalid"
+            )
+
+        schema_acl_rows = _rows(
+            cursor,
+            (
+                "SELECT acl.grantee::bigint, acl.grantor::bigint, "
+                "acl.privilege_type, acl.is_grantable "
+                "FROM pg_catalog.pg_namespace AS n CROSS JOIN LATERAL "
+                "pg_catalog.aclexplode(COALESCE(n.nspacl, "
+                "pg_catalog.acldefault('n', n.nspowner))) AS acl "
+                "WHERE n.nspname = %s AND acl.grantee <> n.nspowner "
+                "ORDER BY acl.grantee, acl.privilege_type"
+            ),
+            (self._schema,),
+        )
+        if any(len(row) != 4 for row in schema_acl_rows):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state schema privileges are invalid"
+            )
+        if any(
+            grantee == 0
+            or (grantee == writer_oid and grantor != owner_oid)
+            or privilege != "USAGE"
+            or grantable is not False
+            for grantee, grantor, privilege, grantable in schema_acl_rows
+        ) or sum(row[0] == writer_oid for row in schema_acl_rows) != 1:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state schema privileges are invalid"
+            )
+
+        table_acl_rows = _rows(
+            cursor,
+            (
+                "SELECT c.relname, acl.grantee::bigint, acl.grantor::bigint, "
+                "acl.privilege_type, acl.is_grantable FROM pg_catalog.pg_class AS c "
+                "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+                "CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(c.relacl, "
+                "pg_catalog.acldefault('r', c.relowner))) AS acl "
+                "WHERE n.nspname = %s AND c.relkind = 'r' "
+                "AND acl.grantee <> c.relowner "
+                "ORDER BY c.relname, acl.grantee, acl.privilege_type"
+            ),
+            (self._schema,),
+        )
+        if any(len(row) != 5 for row in table_acl_rows):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state table privileges are invalid"
+            )
+        if any(
+            grantee == 0
+            or (grantee == writer_oid and grantor != owner_oid)
+            or privilege != "SELECT"
+            or grantable is not False
+            for _table, grantee, grantor, privilege, grantable in table_acl_rows
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state table privileges are invalid"
+            )
+        writer_table_privileges = {
+            (table, privilege)
+            for table, grantee, _grantor, privilege, _grantable in table_acl_rows
+            if grantee == writer_oid
+        }
+        if writer_table_privileges != {
+            (table, "SELECT") for table in _EXPECTED_TABLES
+        }:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state writer table privileges are invalid"
+            )
+
+        column_acl_rows = _rows(
+            cursor,
+            (
+                "SELECT c.relname, a.attname, acl.grantee::bigint, "
+                "acl.grantor::bigint, acl.privilege_type, acl.is_grantable "
+                "FROM pg_catalog.pg_attribute AS a "
+                "JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid "
+                "JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+                "CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS acl "
+                "WHERE n.nspname = %s AND c.relkind = 'r' AND a.attnum > 0 "
+                "AND NOT a.attisdropped AND acl.grantee <> c.relowner "
+                "ORDER BY c.relname, a.attnum, acl.grantee, acl.privilege_type"
+            ),
+            (self._schema,),
+        )
+        if any(len(row) != 6 for row in column_acl_rows):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state column privileges are invalid"
+            )
+        expected_writer_columns = {
+            (table, column, privilege)
+            for table, privilege, columns in _SCHEMA_V2_WRITER_COLUMN_PRIVILEGES
+            for column in columns
+        }
+        actual_writer_columns: set[tuple[object, object, object]] = set()
+        for table, column, grantee, grantor, privilege, grantable in column_acl_rows:
+            if (
+                grantee == 0
+                or (grantee == writer_oid and grantor != owner_oid)
+                or grantable is not False
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state column privileges are invalid"
+                )
+            if grantee == writer_oid:
+                actual_writer_columns.add((table, column, privilege))
+            elif privilege != "SELECT":
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state column privileges are invalid"
+                )
+        if actual_writer_columns != expected_writer_columns:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state writer column privileges are invalid"
+            )
 
     @staticmethod
     def _uninitialized(address: StateAddress) -> PostgresStateStatus:
@@ -1738,6 +2158,57 @@ class PostgresStateAdministration:
         if state.serial != serial or state_checksum(state) != checksum:
             raise StateBackendInvalidStateError("PostgreSQL deployment ownership state is invalid")
         return state, checksum
+
+
+def _prove_private_postgres_v2_writer(
+    cursor: _Cursor,
+    sql_module: _SqlModule,
+    *,
+    schema: str,
+    address: StateAddress,
+    lock_timeout_seconds: int,
+) -> PostgresStateStatus:
+    """Prove exact v2 catalog and direct writer-session identity in one tx."""
+    status = PostgresStateAdministration(
+        dsn="",
+        schema=schema,
+        lock_timeout_seconds=lock_timeout_seconds,
+    )._read_status(cursor, sql_module, address)
+    if status.store_status != "ready" or status.schema_version != POSTGRES_SCHEMA_V2_VERSION:
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state writer catalog is invalid"
+        )
+    writer_row = _one_or_none(
+        _rows(
+            cursor,
+            _query(
+                sql_module,
+                "SELECT writer_role_name FROM {} WHERE singleton IS TRUE LIMIT 2",
+                schema,
+                "store_metadata",
+            ),
+        ),
+        label="writer identity",
+    )
+    if (
+        writer_row is None
+        or len(writer_row) != 1
+        or not isinstance(writer_row[0], str)
+        or not writer_row[0]
+    ):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state writer identity is invalid"
+        )
+    writer_name = writer_row[0]
+    identity_rows = _rows(
+        cursor,
+        "SELECT session_user, current_user",
+    )
+    if identity_rows != [(writer_name, writer_name)]:
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state writer session is invalid"
+        )
+    return status
 
 
 class PostgresStateLockProbe:
@@ -2108,6 +2579,11 @@ class PostgresStateInitializer:
             address=address,
             created_store=created_store,
             registered_address=registered_address,
+            schema_version=(
+                POSTGRES_SCHEMA_VERSION
+                if created_store
+                else cast(int, status.schema_version)
+            ),
         )
         precommit_status = PostgresStateAdministration(
             dsn=self._dsn,
@@ -2257,7 +2733,7 @@ class PostgresStateInitializer:
         return (
             status.store_status == "ready"
             and status.store_id == result.store_id
-            and status.schema_version == POSTGRES_SCHEMA_VERSION
+            and status.schema_version == result.schema_version
             and status.address == result.address
             and status.address_status == "registered"
             and status.state_status == "absent"
@@ -2268,6 +2744,1233 @@ class PostgresStateInitializer:
             and operation.kind is None
             and operation.failure_code is None
             and operation.last_completed_action_index is None
+        )
+
+
+class PrivatePostgresStateV2Migrator:
+    """Direct-only v1-to-v2 catalog and writer-role administrator.
+
+    This class is intentionally absent from configuration and CLI factories.
+    It never creates a role and never makes the ordinary backend selectable.
+    """
+
+    __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema", "_writer_role")
+
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        schema: str,
+        lock_timeout_seconds: int,
+        writer_role: str,
+    ) -> None:
+        if (
+            not isinstance(writer_role, str)
+            or not writer_role
+            or "\x00" in writer_role
+            or len(writer_role.encode("utf-8")) > 63
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state writer role confirmation is invalid"
+            ) from None
+        self._dsn = dsn
+        self._schema = schema
+        self._lock_timeout_seconds = lock_timeout_seconds
+        self._writer_role = writer_role
+
+    def migrate(
+        self,
+        *,
+        confirmed_writer_role: str,
+        confirmed_store_id: str,
+    ) -> PostgresStateV2Migration:
+        """Migrate exact v1, or exactly verify an existing same-role v2."""
+        # Confirmation is deliberately checked before driver loading or any
+        # connection attempt.  Neither role value is reflected in an error.
+        try:
+            canonical_store_id = str(uuid.UUID(confirmed_store_id))
+        except (ValueError, AttributeError, TypeError):
+            canonical_store_id = ""
+        if (
+            confirmed_writer_role != self._writer_role
+            or canonical_store_id != confirmed_store_id
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration confirmation does not match"
+            ) from None
+
+        options = _dsn_tls_options(self._dsn)
+        bundle = _load_psycopg()
+        connection: _Connection | None = None
+        cursor: _Cursor | None = None
+        result: PostgresStateV2Migration | None = None
+        acquired_address_locks: list[int] = []
+        schema_lock_acquired = False
+        backend_pid: int | None = None
+        transaction_started = False
+        commit_attempted = False
+        commit_acknowledged = False
+        commit_uncertain = False
+        committed = False
+        release_unknown_after_commit = False
+        invalid = False
+        unavailable = False
+        release_failed = False
+        timeout_error: StateBackendLockTimeoutError | None = None
+        interrupted: BaseException | None = None
+        deadline = time.monotonic() + self._lock_timeout_seconds
+        schema_lock_key = _initialization_lock_key(self._schema)
+
+        try:
+            connection = bundle.driver.connect(
+                self._dsn,
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                autocommit=True,
+                **options,
+            )
+            cursor = connection.cursor()
+            self._configure_session(cursor)
+            identity_rows = _rows(
+                cursor,
+                "SELECT pg_catalog.pg_backend_pid(), "
+                "NOT pg_catalog.pg_is_in_recovery(), NOT EXISTS ("
+                "SELECT 1 FROM pg_catalog.pg_locks AS l WHERE l.locktype = 'advisory' "
+                "AND l.pid = pg_catalog.pg_backend_pid() AND l.granted)",
+            )
+            if (
+                len(identity_rows) != 1
+                or len(identity_rows[0]) != 3
+                or type(identity_rows[0][0]) is not int
+                or identity_rows[0][1] is not True
+                or identity_rows[0][2] is not True
+            ):
+                raise StateBackendUnavailableError(
+                    "PostgreSQL deployment state migration requires a direct primary session"
+                )
+            backend_pid = identity_rows[0][0]
+            self._acquire_schema_lock(
+                cursor,
+                backend_pid=backend_pid,
+                lock_key=schema_lock_key,
+                deadline=deadline,
+            )
+            schema_lock_acquired = True
+
+            cursor.execute(
+                "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+            )
+            transaction_started = True
+            self._prove_migration_authority(
+                cursor,
+                backend_pid=backend_pid,
+                schema_lock_key=schema_lock_key,
+                address_lock_keys=(),
+            )
+            self._configure_transaction(cursor)
+            source, address_keys = self._read_migration_source(cursor, bundle.sql)
+            if source.store_id != confirmed_store_id:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state store confirmation does not match"
+                )
+            connection.rollback()
+            transaction_started = False
+
+            self._acquire_address_locks(
+                cursor,
+                address_keys,
+                backend_pid=backend_pid,
+                deadline=deadline,
+                acquired=acquired_address_locks,
+            )
+            cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE")
+            transaction_started = True
+            self._prove_migration_authority(
+                cursor,
+                backend_pid=backend_pid,
+                schema_lock_key=schema_lock_key,
+                address_lock_keys=tuple(acquired_address_locks),
+            )
+            self._configure_transaction(cursor)
+            result = self._migrate_transaction(
+                cursor,
+                bundle.sql,
+                expected_store_id=confirmed_store_id,
+                expected_schema_version=source.schema_version,
+                acquired_address_locks=acquired_address_locks,
+            )
+            self._prove_migration_authority(
+                cursor,
+                backend_pid=backend_pid,
+                schema_lock_key=schema_lock_key,
+                address_lock_keys=tuple(acquired_address_locks),
+            )
+            if result.migrated:
+                commit_attempted = True
+                connection.commit()
+                commit_acknowledged = True
+                transaction_started = False
+                committed = True
+            else:
+                connection.rollback()
+                transaction_started = False
+
+            verification = self._fresh_catalog_state(bundle)
+            if not self._is_expected_postimage(verification, result):
+                invalid = True
+        except StateBackendLockTimeoutError as exc:
+            timeout_error = exc
+        except StateBackendInvalidStateError:
+            if commit_attempted and not commit_acknowledged:
+                commit_uncertain = True
+                cursor, connection = self._close_uncertain_session(cursor, connection)
+                classification = self._classify_commit(bundle, result, backend_pid)
+                if classification == "committed":
+                    committed = True
+                elif classification == "committed_release_unknown":
+                    committed = True
+                    release_unknown_after_commit = True
+                elif classification == "not_committed":
+                    unavailable = True
+                else:
+                    invalid = False
+            else:
+                invalid = True
+        except (KeyboardInterrupt, SystemExit) as exc:
+            if commit_attempted and not commit_acknowledged:
+                commit_uncertain = True
+                cursor, connection = self._close_uncertain_session(cursor, connection)
+                classification = self._classify_commit(bundle, result, backend_pid)
+                if classification == "committed":
+                    committed = True
+                elif classification == "committed_release_unknown":
+                    committed = True
+                    release_unknown_after_commit = True
+                elif classification == "not_committed":
+                    unavailable = True
+                else:
+                    invalid = False
+            else:
+                interrupted = exc
+        except Exception:
+            if commit_attempted and not commit_acknowledged:
+                commit_uncertain = True
+                cursor, connection = self._close_uncertain_session(cursor, connection)
+                classification = self._classify_commit(bundle, result, backend_pid)
+                if classification == "committed":
+                    committed = True
+                elif classification == "committed_release_unknown":
+                    committed = True
+                    release_unknown_after_commit = True
+                elif classification == "not_committed":
+                    unavailable = True
+            else:
+                unavailable = True
+        finally:
+            if connection is not None and transaction_started and not commit_attempted:
+                try:
+                    connection.rollback()
+                    transaction_started = False
+                except Exception:
+                    unavailable = True
+            authority_released = False
+            if (
+                cursor is not None
+                and not commit_uncertain
+                and backend_pid is not None
+            ):
+                all_released = True
+                for lock_key in reversed(acquired_address_locks):
+                    try:
+                        if _rows(
+                            cursor,
+                            "SELECT pg_catalog.pg_backend_pid(), "
+                            "NOT pg_catalog.pg_is_in_recovery(), "
+                            "CASE WHEN pg_catalog.pg_backend_pid() = %s "
+                            "AND NOT pg_catalog.pg_is_in_recovery() "
+                            "THEN pg_catalog.pg_advisory_unlock(%s) ELSE FALSE END",
+                            (backend_pid, lock_key),
+                        ) != [(backend_pid, True, True)]:
+                            all_released = False
+                    except Exception:
+                        all_released = False
+                if schema_lock_acquired:
+                    try:
+                        if _rows(
+                            cursor,
+                            "SELECT pg_catalog.pg_backend_pid(), "
+                            "NOT pg_catalog.pg_is_in_recovery(), "
+                            "CASE WHEN pg_catalog.pg_backend_pid() = %s "
+                            "AND NOT pg_catalog.pg_is_in_recovery() "
+                            "THEN pg_catalog.pg_advisory_unlock(%s, %s) "
+                            "ELSE FALSE END",
+                            (backend_pid, *schema_lock_key),
+                        ) != [(backend_pid, True, True)]:
+                            all_released = False
+                    except Exception:
+                        all_released = False
+                if all_released:
+                    try:
+                        absence_rows = _rows(
+                            cursor,
+                            "SELECT pg_catalog.pg_backend_pid(), "
+                            "NOT pg_catalog.pg_is_in_recovery(), NOT EXISTS ("
+                            "SELECT 1 FROM pg_catalog.pg_locks AS l "
+                            "WHERE l.locktype = 'advisory' "
+                            "AND l.pid = pg_catalog.pg_backend_pid() AND l.granted)",
+                        )
+                        all_released = absence_rows == [(backend_pid, True, True)]
+                    except Exception:
+                        all_released = False
+                authority_released = all_released
+                release_failed = not all_released
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    if not authority_released:
+                        release_failed = True
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    if not authority_released:
+                        release_failed = True
+
+        if (release_failed or release_unknown_after_commit) and committed:
+            raise StateBackendReleaseAfterCommitError(
+                "PostgreSQL deployment state migration committed but lock release failed"
+            ) from None
+        if interrupted is not None:
+            raise interrupted
+        if release_failed:
+            unavailable = True
+        if commit_attempted and commit_uncertain and not committed and not unavailable:
+            raise StateBackendUnknownCommitError(
+                "PostgreSQL deployment state migration outcome is unknown; run state status"
+            ) from None
+        if timeout_error is not None:
+            raise timeout_error
+        if invalid:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration is incompatible"
+            ) from None
+        if unavailable or result is None:
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state migration is unavailable"
+            ) from None
+        return result
+
+    def _configure_session(self, cursor: _Cursor) -> None:
+        cursor.execute(
+            "SELECT pg_catalog.set_config('statement_timeout', %s, false)",
+            (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
+        )
+        cursor.execute(
+            "SELECT pg_catalog.set_config('lock_timeout', %s, false)",
+            (f"{self._lock_timeout_seconds * 1000}ms",),
+        )
+
+    def _configure_transaction(self, cursor: _Cursor) -> None:
+        cursor.execute(
+            "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"
+        )
+        cursor.execute(
+            "SELECT pg_catalog.set_config('lock_timeout', %s, true)",
+            (f"{self._lock_timeout_seconds * 1000}ms",),
+        )
+        cursor.execute(
+            "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
+            (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
+        )
+
+    @staticmethod
+    def _advisory_catalog_identity(lock_key: int) -> tuple[int, int, int]:
+        unsigned = lock_key & ((1 << 64) - 1)
+        return ((unsigned >> 32) & 0xFFFFFFFF, unsigned & 0xFFFFFFFF, 1)
+
+    def _prove_migration_authority(
+        self,
+        cursor: _Cursor,
+        *,
+        backend_pid: int,
+        schema_lock_key: tuple[int, int],
+        address_lock_keys: tuple[int, ...],
+    ) -> None:
+        rows = _rows(
+            cursor,
+            (
+                "SELECT pg_catalog.pg_backend_pid(), "
+                "NOT pg_catalog.pg_is_in_recovery(), l.classid::bigint, "
+                "l.objid::bigint, l.objsubid FROM pg_catalog.pg_locks AS l "
+                "WHERE l.locktype = 'advisory' "
+                "AND l.pid = pg_catalog.pg_backend_pid() AND l.granted "
+                "ORDER BY l.classid, l.objid, l.objsubid"
+            ),
+        )
+        expected_lock_ids = {
+            (
+                schema_lock_key[0] & 0xFFFFFFFF,
+                schema_lock_key[1] & 0xFFFFFFFF,
+                2,
+            ),
+            *(
+                self._advisory_catalog_identity(lock_key)
+                for lock_key in address_lock_keys
+            ),
+        }
+        expected = sorted(
+            (backend_pid, True, class_id, object_id, object_sub_id)
+            for class_id, object_id, object_sub_id in expected_lock_ids
+        )
+        if rows != expected:
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state migration authority is invalid"
+            )
+
+    def _migrate_transaction(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+        *,
+        expected_store_id: str,
+        expected_schema_version: int | None,
+        acquired_address_locks: list[int],
+    ) -> PostgresStateV2Migration:
+        initial, current_keys = self._read_migration_source(cursor, sql_module)
+        if (
+            initial.store_id != expected_store_id
+            or initial.schema_version != expected_schema_version
+            or current_keys != sorted(acquired_address_locks)
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration source changed"
+            )
+        self._validate_all_controls_clear(cursor, sql_module, acquired_address_locks)
+        self._validate_all_durable_rows(cursor, sql_module)
+
+        if initial.schema_version == POSTGRES_SCHEMA_V2_VERSION:
+            if self._stored_writer_name(cursor, sql_module) != self._writer_role:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state writer identity is invalid"
+                )
+            return PostgresStateV2Migration(store_id=expected_store_id, migrated=False)
+
+        self._apply_v2(cursor, sql_module)
+        verified = PostgresStateAdministration(
+            dsn=self._dsn,
+            schema=self._schema,
+            lock_timeout_seconds=self._lock_timeout_seconds,
+        )._read_status(cursor, sql_module, self._catalog_probe_address())
+        if (
+            verified.store_status != "ready"
+            or verified.store_id != expected_store_id
+            or verified.schema_version != POSTGRES_SCHEMA_V2_VERSION
+            or self._stored_writer_name(cursor, sql_module) != self._writer_role
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration verification failed"
+            )
+        return PostgresStateV2Migration(store_id=expected_store_id, migrated=True)
+
+    def _read_migration_source(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+    ) -> tuple[PostgresStateStatus, list[int]]:
+        owner_rows = _rows(
+            cursor,
+            (
+                "SELECT n.nspname, n.nspowner = (SELECT r.oid FROM "
+                "pg_catalog.pg_roles AS r WHERE r.rolname = current_user) "
+                "FROM pg_catalog.pg_namespace AS n WHERE n.nspname = %s "
+                "ORDER BY n.nspname"
+            ),
+            (self._schema,),
+        )
+        if owner_rows != [(self._schema, True)]:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration administrator is invalid"
+            )
+        _validated_v2_role(
+            cursor,
+            schema=self._schema,
+            writer_name=self._writer_role,
+        )
+
+        probe = self._catalog_probe_address()
+        initial = PostgresStateAdministration(
+            dsn=self._dsn,
+            schema=self._schema,
+            lock_timeout_seconds=self._lock_timeout_seconds,
+        )._read_status(cursor, sql_module, probe)
+        if initial.store_status != "ready" or initial.store_id is None:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration source is invalid"
+            )
+        if initial.schema_version not in (
+            POSTGRES_SCHEMA_VERSION,
+            POSTGRES_SCHEMA_V2_VERSION,
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state migration source is invalid"
+            )
+        return initial, self._read_address_keys(cursor, sql_module)
+
+    def _read_address_keys(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+    ) -> list[int]:
+        key_rows = _rows(
+            cursor,
+            _query(
+                sql_module,
+                "SELECT advisory_lock_key FROM {} ORDER BY advisory_lock_key",
+                self._schema,
+                "state_addresses",
+            ),
+        )
+        keys: list[int] = []
+        for row in key_rows:
+            if len(row) != 1 or type(row[0]) is not int or row[0] in keys:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state address locks are invalid"
+                )
+            keys.append(row[0])
+        return keys
+
+    def _acquire_schema_lock(
+        self,
+        cursor: _Cursor,
+        *,
+        backend_pid: int,
+        lock_key: tuple[int, int],
+        deadline: float,
+    ) -> None:
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                raise StateBackendLockTimeoutError(
+                    "PostgreSQL deployment state migration lock timed out"
+                ) from None
+            rows = _rows(
+                cursor,
+                "SELECT pg_catalog.pg_backend_pid(), "
+                "NOT pg_catalog.pg_is_in_recovery(), "
+                "CASE WHEN pg_catalog.pg_backend_pid() = %s "
+                "AND NOT pg_catalog.pg_is_in_recovery() "
+                "THEN pg_catalog.pg_try_advisory_lock(%s, %s) ELSE FALSE END",
+                (backend_pid, *lock_key),
+            )
+            if rows == [(backend_pid, True, True)]:
+                return
+            if rows != [(backend_pid, True, False)]:
+                raise StateBackendUnavailableError(
+                    "PostgreSQL deployment state migration lock session is invalid"
+                )
+            now = time.monotonic()
+            if now >= deadline:
+                raise StateBackendLockTimeoutError(
+                    "PostgreSQL deployment state migration lock timed out"
+                ) from None
+            time.sleep(min(0.05, deadline - now))
+
+    def _acquire_address_locks(
+        self,
+        cursor: _Cursor,
+        keys: list[int],
+        *,
+        backend_pid: int,
+        deadline: float,
+        acquired: list[int],
+    ) -> None:
+        for lock_key in keys:
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    raise StateBackendLockTimeoutError(
+                        "PostgreSQL deployment state migration lock timed out"
+                    ) from None
+                rows = _rows(
+                    cursor,
+                    "SELECT pg_catalog.pg_backend_pid(), "
+                    "NOT pg_catalog.pg_is_in_recovery(), "
+                    "CASE WHEN pg_catalog.pg_backend_pid() = %s "
+                    "AND NOT pg_catalog.pg_is_in_recovery() "
+                    "THEN pg_catalog.pg_try_advisory_lock(%s) ELSE FALSE END",
+                    (backend_pid, lock_key),
+                )
+                if rows == [(backend_pid, True, True)]:
+                    acquired.append(lock_key)
+                    break
+                elif rows == [(backend_pid, True, False)]:
+                    pass
+                else:
+                    raise StateBackendUnavailableError(
+                        "PostgreSQL deployment state address lock session is invalid"
+                    )
+                now = time.monotonic()
+                if now >= deadline:
+                    raise StateBackendLockTimeoutError(
+                        "PostgreSQL deployment state migration lock timed out"
+                    ) from None
+                time.sleep(min(0.05, deadline - now))
+
+    def _validate_all_controls_clear(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+        acquired_address_locks: list[int],
+    ) -> None:
+        rows = _rows(
+            cursor,
+            sql_module.SQL(
+                "SELECT a.namespace, a.project, a.environment, a.address_uri, "
+                "a.advisory_lock_key, o.revision, o.status, o.control_json, "
+                "octet_length(o.control_json) FROM {} AS a LEFT JOIN {} AS o "
+                "ON o.namespace = a.namespace AND o.project = a.project "
+                "AND o.environment = a.environment ORDER BY a.advisory_lock_key"
+            ).format(
+                _qualified(sql_module, self._schema, "state_addresses"),
+                _qualified(sql_module, self._schema, "operation_control"),
+            ),
+        )
+        seen_keys: list[int] = []
+        for row in rows:
+            if len(row) != 9:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state operation control is invalid"
+                )
+            namespace, project, environment, uri, lock_key, revision, status, raw, size = row
+            try:
+                address = StateAddress(
+                    namespace=cast(str, namespace),
+                    project=cast(str, project),
+                    environment=cast(str, environment),
+                )
+            except StateError:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state operation control is invalid"
+                ) from None
+            if (
+                uri != address.uri
+                or type(lock_key) is not int
+                or lock_key != _advisory_lock_key(address)
+                or type(revision) is not int
+                or revision < 0
+                or status != "clear"
+                or type(size) is not int
+                or size < 0
+                or size > POSTGRES_STATE_MAX_BYTES
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state operation control is invalid"
+                )
+            try:
+                control = OperationControlState.from_dict(
+                    _strict_json(raw, label="operation control"),
+                    expected_address=address,
+                )
+            except StateError:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state operation control is invalid"
+                ) from None
+            safe = _safe_operation_status(control)
+            if (
+                safe.status != "clear"
+                or safe.operation_id is not None
+                or safe.kind is not None
+                or safe.failure_code is not None
+                or safe.last_completed_action_index is not None
+                or len(cast(str, raw).encode("utf-8")) != size
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state operation control is invalid"
+                )
+            seen_keys.append(lock_key)
+        if seen_keys != sorted(acquired_address_locks):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state operation controls are incomplete"
+            )
+
+    def _validate_all_durable_rows(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+    ) -> None:
+        current_rows = _rows(
+            cursor,
+            _query(
+                sql_module,
+                (
+                    "SELECT namespace, project, environment, revision, state_serial, "
+                    "state_checksum, state_json, octet_length(state_json) FROM {} "
+                    "ORDER BY namespace, project, environment"
+                ),
+                self._schema,
+                "current_state",
+            ),
+        )
+        current: dict[StateAddress, tuple[int, LocalState, str, str]] = {}
+        for row in current_rows:
+            if len(row) != 8:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment ownership state is invalid"
+                )
+            namespace, project, environment, revision, serial, checksum, raw, size = row
+            address = self._validated_row_address(namespace, project, environment)
+            try:
+                state, parsed_checksum = PostgresStateAdministration._parse_state_row(
+                    (revision, serial, checksum, raw, size),
+                    address,
+                )
+            except StateBackendInvalidStateError:
+                raise
+            if (
+                address in current
+                or not isinstance(raw, str)
+                or raw != _canonical_json(state.to_dict())
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment ownership state is invalid"
+                )
+            current[address] = (
+                cast(int, revision),
+                state,
+                parsed_checksum,
+                raw,
+            )
+
+        state_history_rows = _rows(
+            cursor,
+            _query(
+                sql_module,
+                (
+                    "SELECT namespace, project, environment, revision, state_serial, "
+                    "state_checksum, state_json, operation_id::text, "
+                    "octet_length(state_json) FROM {} ORDER BY namespace, project, "
+                    "environment, revision"
+                ),
+                self._schema,
+                "state_history",
+            ),
+        )
+        state_history: dict[
+            StateAddress,
+            list[tuple[int, LocalState, str, str, str | None]],
+        ] = {}
+        history_operation_ids: set[tuple[StateAddress, str]] = set()
+        for row in state_history_rows:
+            if len(row) != 9:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state history is invalid"
+                )
+            namespace, project, environment, revision, serial, checksum, raw, op_id, size = row
+            address = self._validated_row_address(namespace, project, environment)
+            try:
+                state, parsed_checksum = PostgresStateAdministration._parse_state_row(
+                    (revision, serial, checksum, raw, size),
+                    address,
+                )
+                if op_id is not None and str(uuid.UUID(cast(str, op_id))) != op_id:
+                    raise ValueError
+            except (StateBackendInvalidStateError, ValueError, TypeError, AttributeError):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state history is invalid"
+                ) from None
+            if not isinstance(raw, str) or raw != _canonical_json(state.to_dict()):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state history is invalid"
+                )
+            typed_operation_id = cast(str | None, op_id)
+            if typed_operation_id is not None:
+                history_key = (address, typed_operation_id)
+                if history_key in history_operation_ids:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment state history operation is invalid"
+                    )
+                history_operation_ids.add(history_key)
+            state_history.setdefault(address, []).append(
+                (
+                    cast(int, revision),
+                    state,
+                    parsed_checksum,
+                    raw,
+                    typed_operation_id,
+                )
+            )
+
+        for address, entries in state_history.items():
+            revisions = [entry[0] for entry in entries]
+            serials = [entry[1].serial for entry in entries]
+            expected_sequence = list(range(1, len(entries) + 1))
+            if revisions != expected_sequence or serials != expected_sequence:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state history is invalid"
+                )
+            current_entry = current.get(address)
+            last = entries[-1]
+            if (
+                current_entry is None
+                or current_entry[:4] != last[:4]
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment state history is invalid"
+                )
+        if set(current) != set(state_history):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state history is incomplete"
+            )
+
+        operation_rows = _rows(
+            cursor,
+            _query(
+                sql_module,
+                (
+                    "SELECT namespace, project, environment, operation_id::text, "
+                    "event_index, event_kind, control_json, octet_length(control_json) "
+                    "FROM {} ORDER BY namespace, project, environment, operation_id, "
+                    "event_index"
+                ),
+                self._schema,
+                "operation_history",
+            ),
+        )
+        operations: dict[
+            tuple[StateAddress, str],
+            list[tuple[int, str, OperationControlState]],
+        ] = {}
+        for row in operation_rows:
+            if len(row) != 8:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                )
+            namespace, project, environment, op_id, index, kind, raw, size = row
+            address = self._validated_row_address(namespace, project, environment)
+            try:
+                operation_id = str(uuid.UUID(cast(str, op_id)))
+                if operation_id != op_id:
+                    raise ValueError
+                control = OperationControlState.from_dict(
+                    _strict_json(raw, label="operation history"),
+                    expected_address=address,
+                )
+            except (StateError, ValueError, TypeError, AttributeError):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                ) from None
+            if (
+                type(index) is not int
+                or index < 0
+                or kind not in _V2_OPERATION_EVENT_KINDS
+                or type(size) is not int
+                or size < 0
+                or size > POSTGRES_STATE_MAX_BYTES
+                or not isinstance(raw, str)
+                or len(raw.encode("utf-8")) != size
+                or raw != _canonical_json(control.to_dict())
+            ):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                )
+            operations.setdefault((address, operation_id), []).append(
+                (index, cast(str, kind), control)
+            )
+
+        successful_operations: dict[tuple[StateAddress, str], OperationIntent] = {}
+        for (operation_address, operation_id), events in operations.items():
+            if [event[0] for event in events] != list(range(len(events))):
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                )
+            first_control = events[0][2]
+            base_intent = first_control.intent
+            if base_intent is None:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is invalid"
+                )
+            prior_progress: tuple[OperationProgress, ...] = ()
+            for index, (event_index, kind, control) in enumerate(events):
+                if event_index != index:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment operation history is invalid"
+                    )
+                if kind == "intent":
+                    valid = (
+                        index == 0
+                        and control.status == "in_progress"
+                        and control.intent is not None
+                        and control.intent == base_intent
+                        and not control.progress
+                    )
+                elif kind in {"progress_started", "progress_completed"}:
+                    valid = (
+                        control.status == "in_progress"
+                        and control.intent == base_intent
+                        and len(control.progress) == index
+                        and bool(control.progress)
+                        and control.progress[:-1] == prior_progress
+                        and f"progress_{control.progress[-1].status}" == kind
+                    )
+                elif kind == "recovery_required":
+                    valid = (
+                        control.status == "recovery_required"
+                        and control.intent == base_intent
+                        and control.progress == prior_progress
+                        and index == len(control.progress) + 1
+                    )
+                else:
+                    valid = (
+                        control.status == "clear"
+                        and index == len(events) - 1
+                        and kind in {"succeeded", "cleared_before_mutation"}
+                        and (kind != "cleared_before_mutation" or index == 1)
+                    )
+                if not valid:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment operation history is invalid"
+                    )
+                if kind in {"progress_started", "progress_completed"}:
+                    prior_progress = control.progress
+            if events[-1][1] not in {"succeeded", "cleared_before_mutation"}:
+                raise StateBackendInvalidStateError(
+                    "PostgreSQL deployment operation history is incomplete"
+                )
+            if events[-1][1] == "succeeded":
+                expected_progress: list[tuple[int, str, bool | None]] = [
+                    (action.index, status, succeeded)
+                    for action in base_intent.actions
+                    for status, succeeded in (("started", None), ("completed", True))
+                ]
+                actual_progress: list[tuple[int, str, bool | None]] = [
+                    (progress.action_index, progress.status, progress.succeeded)
+                    for progress in prior_progress
+                ]
+                if actual_progress != expected_progress:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment operation history is incomplete"
+                    )
+                successful_operations[(operation_address, operation_id)] = base_intent
+        if not history_operation_ids <= set(successful_operations):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state history operation is invalid"
+            )
+        for address, entries in state_history.items():
+            previous_state = LocalState(
+                project=address.project,
+                environment=address.environment,
+            )
+            for _revision, state, _checksum, _raw, history_id in entries:
+                if history_id is not None:
+                    intent = successful_operations[(address, history_id)]
+                    if (
+                        intent.prior_state_serial != previous_state.serial
+                        or intent.prior_state_checksum != state_checksum(previous_state)
+                        or state.serial != intent.prior_state_serial + 1
+                    ):
+                        raise StateBackendInvalidStateError(
+                            "PostgreSQL deployment state history operation is invalid"
+                        )
+                previous_state = state
+
+    @staticmethod
+    def _validated_row_address(
+        namespace: object,
+        project: object,
+        environment: object,
+    ) -> StateAddress:
+        try:
+            return StateAddress(
+                namespace=cast(str, namespace),
+                project=cast(str, project),
+                environment=cast(str, environment),
+            )
+        except StateError:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state row address is invalid"
+            ) from None
+
+    def _apply_v2(self, cursor: _Cursor, sql_module: _SqlModule) -> None:
+        metadata = _qualified(sql_module, self._schema, "store_metadata")
+        cursor.execute(
+            sql_module.SQL(
+                "ALTER TABLE {} DROP CONSTRAINT store_metadata_schema_version_check"
+            ).format(metadata)
+        )
+        cursor.execute(
+            sql_module.SQL("ALTER TABLE {} ADD COLUMN writer_role_name text").format(
+                metadata
+            )
+        )
+        updated_at = datetime.now(timezone.utc)
+        updated_rows = _rows(
+            cursor,
+            sql_module.SQL(
+                "UPDATE {} SET schema_version = %s, writer_role_name = %s "
+                "WHERE singleton IS TRUE AND schema_version = %s "
+                "AND writer_role_name IS NULL RETURNING singleton"
+            ).format(metadata),
+            (POSTGRES_SCHEMA_V2_VERSION, self._writer_role, POSTGRES_SCHEMA_VERSION),
+        )
+        if updated_rows != [(True,)]:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state metadata migration is invalid"
+            )
+        cursor.execute(
+            sql_module.SQL(
+                "ALTER TABLE {} ALTER COLUMN writer_role_name SET NOT NULL"
+            ).format(metadata)
+        )
+        cursor.execute(
+            sql_module.SQL(
+                "ALTER TABLE {} ADD CONSTRAINT store_metadata_schema_version_check "
+                "CHECK (schema_version = 2)"
+            ).format(metadata)
+        )
+        cursor.execute(
+            sql_module.SQL(
+                "ALTER TABLE {} ADD CONSTRAINT store_metadata_writer_role_name_check "
+                "CHECK (writer_role_name <> '')"
+            ).format(metadata)
+        )
+        cursor.execute(
+            _query(
+                sql_module,
+                (
+                    "INSERT INTO {} (schema_version, migration_name, "
+                    "migration_checksum, applied_at) VALUES (%s, %s, %s, %s)"
+                ),
+                self._schema,
+                "schema_migrations",
+            ),
+            (*_EXPECTED_MIGRATION_V2, updated_at),
+        )
+        self._replace_writer_acl(cursor, sql_module)
+
+    def _replace_writer_acl(self, cursor: _Cursor, sql_module: _SqlModule) -> None:
+        role = sql_module.Identifier(self._writer_role)
+        schema = sql_module.Identifier(self._schema)
+        cursor.execute(
+            sql_module.SQL("REVOKE ALL PRIVILEGES ON SCHEMA {} FROM {}").format(
+                schema,
+                role,
+            )
+        )
+        cursor.execute(
+            sql_module.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(schema, role)
+        )
+        for table in _EXPECTED_TABLES:
+            relation = _qualified(sql_module, self._schema, table)
+            cursor.execute(
+                sql_module.SQL("REVOKE ALL PRIVILEGES ON TABLE {} FROM {}").format(
+                    relation,
+                    role,
+                )
+            )
+            columns = tuple(
+                column[1] for column in _EXPECTED_COLUMNS_V2 if column[0] == table
+            )
+            rendered_columns = sql_module.SQL(", ".join("{}" for _ in columns)).format(
+                *(sql_module.Identifier(column) for column in columns)
+            )
+            for privilege in ("SELECT", "INSERT", "UPDATE", "REFERENCES"):
+                cursor.execute(
+                    sql_module.SQL(
+                        f"REVOKE {privilege} ({{}}) ON TABLE {{}} FROM {{}}"
+                    ).format(rendered_columns, relation, role)
+                )
+            cursor.execute(
+                sql_module.SQL("GRANT SELECT ON TABLE {} TO {}").format(
+                    relation,
+                    role,
+                )
+            )
+        for table, privilege, columns in _SCHEMA_V2_WRITER_COLUMN_PRIVILEGES:
+            rendered_columns = sql_module.SQL(", ".join("{}" for _ in columns)).format(
+                *(sql_module.Identifier(column) for column in columns)
+            )
+            cursor.execute(
+                sql_module.SQL(f"GRANT {privilege} ({{}}) ON TABLE {{}} TO {{}}").format(
+                    rendered_columns,
+                    _qualified(sql_module, self._schema, table),
+                    role,
+                )
+            )
+
+    def _fresh_catalog_state(
+        self,
+        bundle: _PsycopgBundle,
+        *,
+        departed_backend_pid: int | None = None,
+    ) -> tuple[PostgresStateStatus, str | None, bool | None]:
+        options = _dsn_tls_options(self._dsn)
+        connection: _Connection | None = None
+        cursor: _Cursor | None = None
+        try:
+            connection = bundle.driver.connect(
+                self._dsn,
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                **options,
+            )
+            cursor = connection.cursor()
+            cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            verifier_identity = _rows(
+                cursor,
+                "SELECT pg_catalog.pg_backend_pid(), "
+                "NOT pg_catalog.pg_is_in_recovery()",
+            )
+            if (
+                len(verifier_identity) != 1
+                or len(verifier_identity[0]) != 2
+                or type(verifier_identity[0][0]) is not int
+                or verifier_identity[0][1] is not True
+            ):
+                raise StateBackendUnavailableError(
+                    "PostgreSQL deployment state migration verification requires "
+                    "a direct primary session"
+                )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
+                (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
+            )
+            status = PostgresStateAdministration(
+                dsn=self._dsn,
+                schema=self._schema,
+                lock_timeout_seconds=self._lock_timeout_seconds,
+            )._read_status(cursor, bundle.sql, self._catalog_probe_address())
+            writer_name = (
+                self._stored_writer_name(cursor, bundle.sql)
+                if status.schema_version == POSTGRES_SCHEMA_V2_VERSION
+                else None
+            )
+            backend_departed: bool | None = None
+            if departed_backend_pid is not None:
+                departure_rows = _rows(
+                    cursor,
+                    "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity "
+                    "WHERE pid = %s)",
+                    (departed_backend_pid,),
+                )
+                if departure_rows not in ([(True,)], [(False,)]):
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment state migration session is invalid"
+                    )
+                backend_departed = departure_rows == [(True,)]
+            return status, writer_name, backend_departed
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    def _classify_commit(
+        self,
+        bundle: _PsycopgBundle,
+        result: PostgresStateV2Migration | None,
+        backend_pid: int | None,
+    ) -> Literal[
+        "committed",
+        "committed_release_unknown",
+        "not_committed",
+        "unknown",
+    ]:
+        if result is None or backend_pid is None:
+            return "unknown"
+        try:
+            observed = self._fresh_catalog_state(
+                bundle,
+                departed_backend_pid=backend_pid,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            return "unknown"
+        except Exception:
+            return "unknown"
+        status, writer_name, backend_departed = observed
+        if self._is_expected_postimage(observed, result):
+            return "committed" if backend_departed is True else "committed_release_unknown"
+        if (
+            backend_departed is True
+            and
+            status.store_status == "ready"
+            and status.store_id == result.store_id
+            and status.schema_version == POSTGRES_SCHEMA_VERSION
+            and writer_name is None
+        ):
+            return "not_committed"
+        return "unknown"
+
+    def _is_expected_postimage(
+        self,
+        observed: tuple[PostgresStateStatus, str | None, bool | None],
+        result: PostgresStateV2Migration,
+    ) -> bool:
+        status, writer_name, _backend_departed = observed
+        return (
+            status.store_status == "ready"
+            and status.store_id == result.store_id
+            and status.schema_version == POSTGRES_SCHEMA_V2_VERSION
+            and writer_name == self._writer_role
+        )
+
+    @staticmethod
+    def _close_uncertain_session(
+        cursor: _Cursor | None,
+        connection: _Connection | None,
+    ) -> tuple[None, None]:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        return None, None
+
+    def _stored_writer_name(
+        self,
+        cursor: _Cursor,
+        sql_module: _SqlModule,
+    ) -> str:
+        row = _one_or_none(
+            _rows(
+                cursor,
+                _query(
+                    sql_module,
+                    "SELECT writer_role_name FROM {} WHERE singleton IS TRUE LIMIT 2",
+                    self._schema,
+                    "store_metadata",
+                ),
+            ),
+            label="writer identity",
+        )
+        if row is None or len(row) != 1 or not isinstance(row[0], str) or not row[0]:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state writer identity is invalid"
+            )
+        return row[0]
+
+    @staticmethod
+    def _catalog_probe_address() -> StateAddress:
+        return StateAddress(
+            namespace="streamt-internal",
+            project="catalog-migration",
+            environment="v2",
         )
 
 

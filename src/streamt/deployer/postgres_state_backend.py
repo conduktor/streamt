@@ -20,6 +20,8 @@ from contextlib import AbstractContextManager
 from types import TracebackType
 
 from streamt.deployer.postgres_state import (
+    POSTGRES_SCHEMA_V2_VERSION,
+    POSTGRES_SCHEMA_VERSION,
     POSTGRES_STATE_MAX_BYTES,
     PostgresStateAdministration,
     _advisory_lock_key,
@@ -28,6 +30,7 @@ from streamt.deployer.postgres_state import (
     _dsn_tls_options,
     _load_psycopg,
     _one_or_none,
+    _prove_private_postgres_v2_writer,
     _PsycopgBundle,
     _query,
     _registered_advisory_lock_key,
@@ -383,6 +386,47 @@ def _prove_v1_owner(cursor: _Cursor, schema: str) -> None:
         )
 
 
+def _prove_mutation_authority(
+    cursor: _Cursor,
+    bundle: _PsycopgBundle,
+    *,
+    dsn: str,
+    schema: str,
+    lock_timeout_seconds: int,
+    address: StateAddress,
+) -> None:
+    """Select the exact private writer contract from validated metadata.
+
+    Version one remains isolated owner-only scaffolding. Version two delegates
+    its complete catalog, ACL, role, and direct-session proof to the canonical
+    validator in ``postgres_state``; this module adds no competing ACL model.
+    """
+    status = PostgresStateAdministration(
+        dsn=dsn,
+        schema=schema,
+        lock_timeout_seconds=lock_timeout_seconds,
+    )._read_status(cursor, bundle.sql, address)
+    if status.store_status != "ready" or status.address_status != "registered":
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state mutation target is invalid"
+        )
+    if status.schema_version == POSTGRES_SCHEMA_VERSION:
+        _prove_v1_owner(cursor, schema)
+        return
+    if status.schema_version == POSTGRES_SCHEMA_V2_VERSION:
+        _prove_private_postgres_v2_writer(
+            cursor,
+            bundle.sql,
+            schema=schema,
+            address=address,
+            lock_timeout_seconds=lock_timeout_seconds,
+        )
+        return
+    raise StateBackendInvalidStateError(
+        "PostgreSQL deployment state schema version is invalid"
+    )
+
+
 class _PostgresStateReadOperation:
     """One test-only physical session holding the registered advisory lock."""
 
@@ -734,7 +778,14 @@ class _PostgresStateReadOperation:
             _begin_mutation(self._cursor, self._lock_timeout_seconds)
             transaction_started = True
             self.check_lock()
-            _prove_v1_owner(self._cursor, self._schema)
+            _prove_mutation_authority(
+                self._cursor,
+                self._bundle,
+                dsn=self._dsn,
+                schema=self._schema,
+                lock_timeout_seconds=self._lock_timeout_seconds,
+                address=self._address,
+            )
             current = _read_snapshot_transaction(
                 cursor=self._cursor,
                 bundle=self._bundle,
@@ -1749,7 +1800,7 @@ class _PostgresStateOperationContext(AbstractContextManager[_PostgresStateReadOp
 
 
 class PrivatePostgresStateReadBackend:
-    """Direct-construction-only owner-v1 read/lock/mutation scaffold."""
+    """Direct-only v1-owner/v2-writer read, lock, and mutation scaffold."""
 
     __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema")
 
@@ -1800,7 +1851,8 @@ class PrivatePostgresStateReadBackend:
                 len(rows) != 1
                 or len(rows[0]) != 2
                 or not isinstance(rows[0][0], str)
-                or rows[0][1] != 1
+                or rows[0][1]
+                not in (POSTGRES_SCHEMA_VERSION, POSTGRES_SCHEMA_V2_VERSION)
             ):
                 raise StateBackendInvalidStateError(
                     "PostgreSQL deployment state metadata is invalid"
