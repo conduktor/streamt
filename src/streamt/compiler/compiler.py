@@ -362,8 +362,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
     def _compile_virtual_topic_model(self, model: Model) -> CompiledModelView:
         """Compile a virtual topic model (Gateway rule)."""
-        tc = model.get_topic_config()
-        virtual_topic_name = tc.name if tc and tc.name else model.name
+        try:
+            virtual_topic_name = model.get_virtual_topic_name()
+        except ValueError as error:
+            raise CompileError(str(error)) from error
 
         source_topic = self._get_source_topic(model)
         if not source_topic:

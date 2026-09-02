@@ -775,7 +775,7 @@ Top-level `gateway:` field on models (for virtual topic models):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `virtual_topic.name` | string | Custom virtual topic name |
+| `virtual_topic.name` | string | Authoritative custom virtual topic name |
 | `virtual_topic.compression` | string | Compression type (`gzip`, `snappy`, `lz4`, `zstd`) |
 
 ```yaml
@@ -793,6 +793,11 @@ models:
         name: orders.us.filtered
         compression: lz4
 ```
+
+For virtual-topic models, `gateway.virtual_topic.name` determines the compiled
+Gateway alias. The older `topic.name` spelling remains supported as a fallback
+when `gateway.virtual_topic.name` is omitted. If both fields are present, they
+must contain the same name.
 
 !!! tip "Virtual Topics"
     Virtual topics are automatically inferred when Gateway is configured. They provide schema transformation and data masking without creating physical Kafka topics. See the [Gateway Guide](../guides/gateway.md).

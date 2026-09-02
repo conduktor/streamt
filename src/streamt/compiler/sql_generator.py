@@ -12,6 +12,7 @@ from streamt.compiler.model_resolution import direct_model_dependencies
 from streamt.core.models import (
     DataTest,
     EventTimeConfig,
+    MaterializedType,
     Model,
     Source,
     WatermarkStrategy,
@@ -226,6 +227,8 @@ WHERE {condition}""")
 
     def _model_topic_name(self, model: Model) -> str:
         """Return the configured output topic name or the model name fallback."""
+        if model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
+            return model.get_virtual_topic_name()
         topic_config = model.get_topic_config()
         return topic_config.name if topic_config and topic_config.name else model.name
 

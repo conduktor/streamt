@@ -3280,6 +3280,7 @@
             }
           ],
           "default": null,
+          "description": "Authoritative virtual-topic alias. The model topic.name remains a legacy fallback only when this field is omitted.",
           "title": "Name"
         },
         "compression": {

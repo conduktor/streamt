@@ -138,7 +138,6 @@ def _write_gateway_recovery_project(path: Path, *, include_rule: bool) -> None:
                 "name": "orders_rule",
                 "materialized": "virtual_topic",
                 "gateway": {"virtual_topic": {"name": "orders.public"}},
-                "topic": {"name": "orders.public"},
                 "sql": 'SELECT * FROM {{ source("orders_source") }}',
             }
         ]

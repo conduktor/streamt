@@ -534,7 +534,13 @@ class FromRef(BaseModel):
 class VirtualTopicConfig(BaseModel):
     """Virtual topic configuration for Gateway."""
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Authoritative virtual-topic alias. The model topic.name remains a "
+            "legacy fallback only when this field is omitted."
+        ),
+    )
     compression: Optional[str] = None
 
 
@@ -656,6 +662,12 @@ class Model(BaseModel):
             )
             # Clear the legacy spelling after conversion.
             self.connector = None
+        return self
+
+    @model_validator(mode="after")
+    def validate_virtual_topic_aliases(self) -> Model:
+        """Reject two divergent names for the same Gateway output."""
+        self.get_virtual_topic_name()
         return self
 
     def get_materialized(self) -> MaterializedType:
@@ -786,6 +798,18 @@ class Model(BaseModel):
 
     def get_topic_config(self) -> Optional[TopicConfig]:
         return self.topic
+
+    def get_virtual_topic_name(self) -> str:
+        """Resolve the documented Gateway alias with a legacy topic-name fallback."""
+        virtual_topic = self.gateway.virtual_topic if self.gateway else None
+        gateway_name = virtual_topic.name if virtual_topic and virtual_topic.name else None
+        topic_name = self.topic.name if self.topic and self.topic.name else None
+        if gateway_name and topic_name and gateway_name != topic_name:
+            raise ValueError(
+                f"Model '{self.name}': gateway.virtual_topic.name and topic.name "
+                "must match when both are configured"
+            )
+        return gateway_name or topic_name or self.name
 
     def get_flink_cluster(self) -> Optional[str]:
         return self.flink_cluster
