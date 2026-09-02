@@ -800,10 +800,19 @@ create `.streamt/`, ownership state, a control sidecar, or lock files.
 Both `in_progress` and `recovery_required` are shown without modification. The
 text output directs operators to retain the sidecar evidence because those
 markers still block apply/adopt indefinitely. `state status` cannot clear or
-recover them. Local is the only working backend. PostgreSQL configuration is
-recognized but status returns sanitized `E420_STATE_BACKEND_UNAVAILABLE` and
-never falls back to local state. `state init`, recovery, migration, remote lock
-availability probing, and the PostgreSQL provider are not implemented.
+recover them.
+
+For `backend: postgres`, the optional `postgres` package extra enables a
+separate administrative reader. It verifies the exact version-1 store catalog,
+then reports safe store, address, ownership, and operation-control fields from
+one bounded, repeatable-read, read-only snapshot. It never returns the DSN,
+endpoint, SQL, raw driver errors, or ownership payload. An absent schema is
+`uninitialized`; an initialized store can report an unregistered, absent, or
+present address. Missing dependencies or credentials, incompatible stores, and
+connection failures use sanitized state errors and never fall back to local.
+PostgreSQL remains unavailable to ordinary plan/apply/adopt. `state init`,
+recovery, migration, mutation, and remote lock-availability probing are not
+implemented.
 
 ```bash
 streamt state status -p . -e prod

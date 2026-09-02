@@ -31,7 +31,16 @@ be `python -m pip install streamt`.
 
 The base package currently includes the client dependencies used for Kafka,
 Flink, Schema Registry, Kafka Connect, and Conduktor Gateway. Integration-
-specific package extras are not defined in this alpha.
+specific dependencies for read-only PostgreSQL deployment-state status are
+kept in an optional extra:
+
+```bash
+python -m pip install "streamt[postgres] @ git+https://github.com/conduktor/streamt.git@main"
+```
+
+The base package continues to support local deployment state without Psycopg.
+The PostgreSQL extra does not enable PostgreSQL plan/apply/adopt or mutation;
+it only enables the separately gated `streamt state status` reader.
 
 ## Development Installation
 

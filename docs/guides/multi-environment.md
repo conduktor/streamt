@@ -120,9 +120,10 @@ intentionally different from root `runtime`, which is ignored whenever an
 The configuration contains only the DSN environment-variable name. Its value
 is read when an online command constructs the selected provider, after
 `.env`, `.env.<environment>`, and the real process environment are applied.
-Offline plan and validation do not read it. PostgreSQL execution is not yet
-available in this release, so online commands fail safely without falling back
-to local state.
+Offline plan and validation do not read it. With the optional `postgres`
+package extra, `state status` can inspect an existing exact version-1 store;
+ordinary PostgreSQL plan/apply/adopt and every mutation remain unavailable and
+fail safely without falling back to local state.
 
 ## CLI Usage
 

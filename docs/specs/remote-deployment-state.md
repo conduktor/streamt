@@ -2,12 +2,14 @@
 
 ## Status
 
-Proposed safety contract. The provider-neutral state boundary, local version 1
-JSON provider, strict provider configuration, and safe status command are
-implemented. PostgreSQL configuration is recognized but fails closed as
-unavailable; remote state is not operational until an implementation satisfies
-this specification and its conformance tests. Local JSON remains the only
-working provider and the compatibility default for single-user development.
+Partially implemented safety contract. The provider-neutral state boundary,
+local version 1 JSON provider, strict provider configuration, and safe status
+command are implemented. PostgreSQL has a separate optional read-only
+administrative status adapter with strict version-1 catalog verification; it
+is not selectable as ordinary state authority. Remote mutation and locking are
+not operational until an implementation satisfies this specification and its
+conformance tests. Local JSON remains the only ordinary provider and the
+compatibility default for single-user development.
 
 ## Scope
 
@@ -324,7 +326,7 @@ plus a best-effort lock file does not meet this contract.
 Use `deployment_state` to avoid confusion with Flink application state:
 
 ```yaml
-# Recognized configuration; PostgreSQL execution is not available yet.
+# Read-only status is available; PostgreSQL state authority is not.
 deployment_state:
   backend: postgres
   namespace: platform
@@ -359,9 +361,11 @@ provider without a command-line override.
 The parser validates only the `dsn_env` name. Its value is resolved after
 `.env`, `.env.<environment>`, and the real process environment have been
 applied, and only when an online command constructs the provider. Validation,
-compilation, and offline planning neither require nor read the DSN. Until the
-PostgreSQL provider lands, both a missing DSN and a present DSN fail with a
-sanitized backend-unavailable error and never fall back to local state.
+compilation, and offline planning neither require nor read the DSN. The
+read-only PostgreSQL status adapter requires the optional package extra and an
+explicit endpoint in the DSN, enforces TLS for non-loopback connections, and
+returns only secret-neutral failures. Ordinary plan/apply/adopt still fail with
+a sanitized backend-unavailable error and never fall back to local state.
 
 State backend selection belongs to effective environment configuration and
 cannot be overridden by `plan`, `apply`, or `adopt` flags. This prevents an
@@ -375,10 +379,13 @@ The implemented read-only administrative command is:
 streamt state status -p PATH -e ENV
 ```
 
-`status` is read-only and reports backend kind, store ID, address, serial,
-checksum, and operation status without credentials. Lock-availability probing,
-`init`, `migrate`, `recover`, and `export` remain deferred. Normal commands
-never initialize or migrate a remote store implicitly.
+For PostgreSQL, `status` uses a separate administrative adapter and one bounded,
+repeatable-read, read-only snapshot. It verifies the exact version-1 catalog
+and reports backend kind, store ID, address, serial, checksum, and safe
+operation status without credentials, endpoint details, SQL, raw exceptions,
+or ownership payload. Lock-availability probing, `init`, ordinary state
+authority, mutation, `migrate`, `recover`, and `export` remain deferred. Normal
+commands never initialize or migrate a remote store implicitly.
 
 The environment-only `safety.require_remote_state` policy defaults to `false`.
 When enabled, it fails `apply` and `adopt` before confirmation, compilation,

@@ -93,7 +93,8 @@ Local accepts no remote fields and stores ownership at
 not shared or distributed runners.
 
 The strict PostgreSQL shape is recognized so projects can establish their
-future authority explicitly:
+future authority explicitly and inspect a separately initialized version-1
+store with `streamt state status`:
 
 ```yaml
 deployment_state:
@@ -119,12 +120,15 @@ YAML. streamt resolves the named variable only when an online command constructs
 the provider, after `.env`, `.env.<environment>`, and the real environment have
 been applied. Validation, compilation, and offline plan do not read it.
 
-!!! warning "PostgreSQL provider not available yet"
-    This release validates PostgreSQL configuration but cannot use it. Online
-    plan, apply, adopt, and state status fail with
-    `E420_STATE_BACKEND_UNAVAILABLE`, whether the DSN is missing or present.
-    They never fall back to local state. `state init`, migration, recovery, and
-    lock-availability probing remain deferred.
+!!! warning "PostgreSQL is administrative-only"
+    With the optional `postgres` package extra, `state status` can inspect an
+    existing exact version-1 store in a bounded, repeatable-read, read-only
+    transaction. A missing extra, DSN, invalid connection policy, unavailable
+    database, or incompatible store fails with a secret-neutral state error.
+    Online plan, apply, and adopt still fail with
+    `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local state.
+    `state init`, mutation, migration, recovery, and lock-availability probing
+    remain deferred.
 
 In multi-environment mode, a root `deployment_state` is inherited when the
 selected environment omits the block. An environment block replaces the whole

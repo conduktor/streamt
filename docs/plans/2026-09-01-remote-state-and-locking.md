@@ -173,9 +173,10 @@ Progress: complete in `2b75090`, building on the read-only local `state status`
 command in `0e04112`. The strict tagged local/PostgreSQL configuration
 boundary, whole-block environment replacement, environment-only remote-state
 policy, central redaction coverage, and safe administrative command boundary
-are implemented. Local remains the only working provider. PostgreSQL
-configuration deliberately returns a sanitized unavailable error with no local
-fallback. `state init` and lock-availability probing remain Slice 4B work.
+are implemented. Local remains the only ordinary state provider. PostgreSQL
+ordinary selection deliberately returns a sanitized unavailable error with no
+local fallback. `state init` and lock-availability probing remain Slice 4B
+work.
 
 1. Add strict `deployment_state` models to base and environment configuration.
 2. Support `local` and `postgres` tagged shapes. Local is the default. Reject
@@ -198,6 +199,14 @@ Acceptance:
 - Strict docs/schema tests cover the new fields.
 
 ### Slice 4B: PostgreSQL initialization and diagnostics
+
+Progress: the first read-only administrative boundary is complete in
+`81c97fc`. The optional Psycopg dependency, strict version-1 schema contract,
+bounded read-only `state status` snapshot, TLS/endpoint policy, size caps,
+secret-neutral failure translation, and no-fallback CLI wiring are implemented.
+Initialization, lock probing, real-PostgreSQL process tests, and the CI service
+matrix remain before Slice 4B is complete. Ordinary PostgreSQL authority stays
+disabled.
 
 This slice makes a configured PostgreSQL store administratively inspectable;
 it does not make PostgreSQL the state authority for normal commands. Keep

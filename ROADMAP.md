@@ -127,7 +127,10 @@ Target: close the loop between declared intent and runtime evidence.
       ordered progress, recovery blocking, and read-only plan status.
 - [x] Add strict local/PostgreSQL deployment-state configuration, whole-block
       environment selection, sanitized no-fallback preflight, and an opt-in
-      remote-state safety policy. PostgreSQL execution remains unavailable.
+      remote-state safety policy. PostgreSQL remains unavailable as the
+      authority for plan/apply/adopt.
+- [x] Add optional, bounded, read-only PostgreSQL `state status` inspection
+      with strict version-1 catalog verification and secret-neutral failures.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is
