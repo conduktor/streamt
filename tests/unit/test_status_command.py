@@ -7,6 +7,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+import pytest
 from click.testing import CliRunner, Result
 
 from streamt.cli import main
@@ -274,6 +275,81 @@ def test_gateway_status_reuses_one_snapshot_for_exact_multiple_rules(
     gateway.get_interceptor.assert_not_called()
     assert _GATEWAY_ENDPOINT not in result.output
     assert _GATEWAY_FILTER_SECRET not in result.output
+
+
+@pytest.mark.parametrize(
+    ("collision", "message"),
+    [
+        ("owner", "Gateway manifest maps one logical owner to multiple rules"),
+        ("alias", "Gateway manifest contains a duplicate canonical alias locator"),
+        ("interceptor", "Gateway manifest contains a duplicate interceptor locator"),
+        (
+            "generated_namespace",
+            "Gateway generated interceptor identity maps to multiple rules",
+        ),
+    ],
+)
+def test_gateway_status_rejects_the_same_manifest_collisions_before_snapshot(
+    tmp_path: Path,
+    collision: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _gateway_artifact(
+        name="first_rule",
+        virtual_topic="first.public",
+        where=(
+            "region = 'us'"
+            if collision in {"interceptor", "generated_namespace"}
+            else None
+        ),
+    )
+    second = _gateway_artifact(
+        name="second_rule",
+        virtual_topic="second.public",
+        where=(
+            "region = 'eu'"
+            if collision in {"interceptor", "generated_namespace"}
+            else None
+        ),
+    )
+    first["ownership"] = {
+        "mode": "managed",
+        "project": "status-test",
+        "type": "model",
+        "name": "first_owner",
+    }
+    second["ownership"] = {
+        "mode": "managed",
+        "project": "status-test",
+        "type": "model",
+        "name": "second_owner",
+    }
+    if collision == "owner":
+        second["ownership"] = dict(first["ownership"])  # type: ignore[arg-type]
+    elif collision == "alias":
+        second["virtualTopic"] = first["virtualTopic"]
+    elif collision == "interceptor":
+        second["name"] = first["name"]
+    else:
+        monkeypatch.setattr(
+            "streamt.deployer.gateway.classify_gateway_interceptor_name",
+            lambda _logical_name, _candidate: object(),
+        )
+
+    binding = _gateway_binding()
+    snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    gateway = _gateway_deployer(binding, snapshot)
+    result = _invoke_status(
+        tmp_path,
+        {"gateway_rules": [first, second]},
+        status_args=["--health"],
+        gateway=gateway,
+    )
+
+    assert result.exit_code == 1
+    assert message in result.output
+    gateway.observe_managed_gateway_snapshot.assert_not_called()
 
 
 def test_gateway_health_fails_when_managed_rule_is_missing(tmp_path: Path) -> None:

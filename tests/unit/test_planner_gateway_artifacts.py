@@ -359,29 +359,58 @@ def test_live_gateway_binding_must_match_project_before_provider_access(
         request.assert_not_called()
 
 
-@pytest.mark.parametrize("collision", ["owner", "alias", "interceptor"])
-def test_gateway_identity_collisions_fail_before_provider_access(collision: str) -> None:
+@pytest.mark.parametrize(
+    ("collision", "message"),
+    [
+        ("owner", "Gateway manifest maps one logical owner to multiple rules"),
+        ("alias", "Gateway manifest contains a duplicate canonical alias locator"),
+        ("interceptor", "Gateway manifest contains a duplicate interceptor locator"),
+        (
+            "generated_namespace",
+            "Gateway generated interceptor identity maps to multiple rules",
+        ),
+    ],
+)
+def test_gateway_identity_collisions_fail_before_provider_access(
+    collision: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first = _rule(
         name="first_rule",
         alias="orders.first",
         owner_name="first_owner",
-        where="region = 'us'" if collision == "interceptor" else None,
+        where=(
+            "region = 'us'"
+            if collision in {"interceptor", "generated_namespace"}
+            else None
+        ),
     )
     second = _rule(
         name="second_rule",
         alias="orders.second",
         owner_name="second_owner",
-        where="region = 'eu'" if collision == "interceptor" else None,
+        where=(
+            "region = 'eu'"
+            if collision in {"interceptor", "generated_namespace"}
+            else None
+        ),
     )
     if collision == "owner":
         second["ownership"] = _ownership("first_owner")
     elif collision == "alias":
         second["virtualTopic"] = first["virtualTopic"]
     else:
-        second["name"] = first["name"]
+        if collision == "interceptor":
+            second["name"] = first["name"]
+        else:
+            monkeypatch.setattr(
+                "streamt.deployer.gateway.classify_gateway_interceptor_name",
+                lambda _logical_name, _candidate: object(),
+            )
 
     with _mocked_gateway() as (deployer, request):
-        with pytest.raises(StateIdentityError, match="Gateway"):
+        with pytest.raises(StateIdentityError, match=message):
             DeploymentPlanner(
                 _manifest(first, second),
                 project=_project(),

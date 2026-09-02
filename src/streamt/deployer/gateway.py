@@ -9,7 +9,7 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -22,7 +22,11 @@ from requests.auth import HTTPBasicAuth
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from streamt.compiler.manifest import GatewayRuleArtifact
+from streamt.compiler.gateway_artifact import (
+    GatewayArtifactFormatError,
+    parse_compiled_gateway_rule_artifact,
+)
+from streamt.compiler.manifest import ArtifactOwnership, GatewayRuleArtifact
 from streamt.deployer.ssl_utils import configure_session_ssl
 
 logger = logging.getLogger(__name__)
@@ -74,6 +78,10 @@ class GatewayManagedObservationError(GatewayError):
 
 class GatewayDesiredAggregateError(ValueError):
     """A compiled Gateway rule cannot become exact supported provider state."""
+
+
+class GatewayManifestResolutionError(ValueError):
+    """A complete Gateway manifest cannot map to unique managed identities."""
 
 
 class GatewayManagedMutationError(GatewayError):
@@ -1071,6 +1079,130 @@ class GatewayRuleLocator:
     def alias(self) -> GatewayAliasLocator:
         """Return the exact AliasTopic identity in this rule."""
         return GatewayAliasLocator(binding=self.binding, name=self.alias_name)
+
+
+@dataclass(frozen=True)
+class ResolvedManagedGatewayRule:
+    """One strict compiled rule and its exact provider-managed desired surface."""
+
+    artifact: GatewayRuleArtifact = dataclass_field(repr=False)
+    desired: ManagedGatewayRuleObservation = dataclass_field(repr=False)
+    logical_owner: str
+
+    def __post_init__(self) -> None:
+        if type(self.artifact) is not GatewayRuleArtifact or type(
+            self.desired
+        ) is not ManagedGatewayRuleObservation:
+            raise GatewayManifestResolutionError(
+                "Resolved Gateway rule requires strict artifact and desired values"
+            )
+        try:
+            artifact = parse_compiled_gateway_rule_artifact(self.artifact.to_dict())
+            desired = _copy_strict_managed_gateway_observation(self.desired)
+            expected = build_desired_gateway_rule(artifact, desired.binding)
+        except (
+            AttributeError,
+            GatewayArtifactFormatError,
+            GatewayDesiredAggregateError,
+            GatewayManagedObservationError,
+            TypeError,
+            ValueError,
+        ):
+            raise GatewayManifestResolutionError(
+                "Resolved Gateway rule contains invalid managed values"
+            ) from None
+        ownership = ArtifactOwnership.from_dict(artifact.ownership)
+        expected_owner = ownership.owner_name if ownership is not None else artifact.name
+        if self.logical_owner != expected_owner or desired != expected:
+            raise GatewayManifestResolutionError(
+                "Resolved Gateway rule has mismatched managed identity"
+            )
+        object.__setattr__(self, "artifact", artifact)
+        object.__setattr__(self, "desired", desired)
+
+
+def resolve_managed_gateway_rules(
+    raw_rules: Sequence[object],
+    binding: GatewayBackendBinding,
+) -> tuple[ResolvedManagedGatewayRule, ...]:
+    """Strictly bind a complete rule set and reject manifest identity collisions."""
+    if (
+        not isinstance(raw_rules, Sequence)
+        or isinstance(raw_rules, (str, bytes, bytearray))
+        or type(binding) is not GatewayBackendBinding
+    ):
+        raise GatewayManifestResolutionError(
+            "Gateway manifest resolution requires a complete rule set and binding"
+        )
+
+    rules = tuple(raw_rules)
+    resolved: list[ResolvedManagedGatewayRule] = []
+    logical_owners: set[str] = set()
+    alias_locators: set[GatewayAliasLocator] = set()
+    interceptor_locators: set[GatewayInterceptorLocator] = set()
+
+    for raw_rule in rules:
+        artifact = parse_compiled_gateway_rule_artifact(raw_rule)
+        desired = build_desired_gateway_rule(artifact, binding)
+        ownership = ArtifactOwnership.from_dict(artifact.ownership)
+        logical_owner = ownership.owner_name if ownership is not None else artifact.name
+        if logical_owner in logical_owners:
+            raise GatewayManifestResolutionError(
+                "Gateway manifest maps one logical owner to multiple rules"
+            )
+        logical_owners.add(logical_owner)
+
+        alias_locator = GatewayAliasLocator(binding=binding, name=desired.alias_name)
+        if alias_locator in alias_locators:
+            raise GatewayManifestResolutionError(
+                "Gateway manifest contains a duplicate canonical alias locator"
+            )
+        alias_locators.add(alias_locator)
+
+        for interceptor in desired.interceptors:
+            interceptor_locator = GatewayInterceptorLocator(
+                binding=binding,
+                name=interceptor.name,
+                scope=interceptor.scope,
+            )
+            if interceptor_locator in interceptor_locators:
+                raise GatewayManifestResolutionError(
+                    "Gateway manifest contains a duplicate interceptor locator"
+                )
+            interceptor_locators.add(interceptor_locator)
+
+        resolved.append(
+            ResolvedManagedGatewayRule(
+                artifact=artifact,
+                desired=desired,
+                logical_owner=logical_owner,
+            )
+        )
+
+    # A desired generated name must belong to exactly its declaring rule.
+    # Classifying against every declared logical rule also detects malformed
+    # generated-looking namespaces without relying on prefix ownership.
+    for rule in resolved:
+        for interceptor in rule.desired.interceptors:
+            owners: list[str] = []
+            for candidate in resolved:
+                try:
+                    classified = classify_gateway_interceptor_name(
+                        candidate.artifact.name,
+                        interceptor.name,
+                    )
+                except ValueError:
+                    raise GatewayManifestResolutionError(
+                        "Gateway manifest contains an ambiguous generated namespace"
+                    ) from None
+                if classified is not None:
+                    owners.append(candidate.artifact.name)
+            if owners != [rule.artifact.name]:
+                raise GatewayManifestResolutionError(
+                    "Gateway generated interceptor identity maps to multiple rules"
+                )
+
+    return tuple(resolved)
 
 
 @dataclass(frozen=True)

@@ -23,13 +23,10 @@ from streamt.cli.helpers import (
     make_sr_deployer,
     redact_sensitive_text,
 )
-from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
-from streamt.compiler.manifest import ArtifactOwnership
 from streamt.core.errors import ErrorCode
 from streamt.deployer.gateway import (
-    build_desired_gateway_rule,
-    classify_gateway_interceptor_name,
     plan_managed_gateway_rule,
+    resolve_managed_gateway_rules,
     secret_neutral_gateway_changes,
 )
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
@@ -497,64 +494,18 @@ def status(
             if gd is not None:
                 deployers_to_close.append(gd)
                 with _deployer_section(fmt, is_text, "Gateway"):
-                    resolved_rules = []
-                    logical_owners: set[str] = set()
-                    aliases: set[str] = set()
-                    interceptor_locators: set[tuple[object, str]] = set()
-                    for raw_rule in manifest.artifacts["gateway_rules"]:
-                        artifact = parse_compiled_gateway_rule_artifact(raw_rule)
-                        desired = build_desired_gateway_rule(
-                            artifact,
-                            gd.cluster_binding,
-                        )
-                        ownership = ArtifactOwnership.from_dict(artifact.ownership)
-                        logical_owner = (
-                            ownership.owner_name if ownership is not None else artifact.name
-                        )
-                        if logical_owner in logical_owners:
-                            raise ValueError("Gateway status found a duplicate logical rule owner")
-                        logical_owners.add(logical_owner)
-                        if desired.alias_name in aliases:
-                            raise ValueError(
-                                "Gateway status found a duplicate canonical alias locator"
-                            )
-                        aliases.add(desired.alias_name)
-                        for interceptor in desired.interceptors:
-                            locator = (interceptor.scope, interceptor.name)
-                            if locator in interceptor_locators:
-                                raise ValueError(
-                                    "Gateway status found a duplicate interceptor locator"
-                                )
-                            interceptor_locators.add(locator)
-                        resolved_rules.append((artifact, desired))
-
-                    for artifact, desired in resolved_rules:
-                        for interceptor in desired.interceptors:
-                            owners: list[str] = []
-                            for candidate, _candidate_desired in resolved_rules:
-                                try:
-                                    generated = classify_gateway_interceptor_name(
-                                        candidate.name,
-                                        interceptor.name,
-                                    )
-                                except ValueError:
-                                    raise ValueError(
-                                        "Gateway status found an ambiguous generated namespace"
-                                    ) from None
-                                if generated is not None:
-                                    owners.append(candidate.name)
-                            if owners != [artifact.name]:
-                                raise ValueError(
-                                    "Gateway status found an ambiguous generated namespace"
-                                )
+                    resolved_rules = resolve_managed_gateway_rules(
+                        manifest.artifacts["gateway_rules"],
+                        gd.cluster_binding,
+                    )
 
                     selected_rules = [
-                        (artifact, desired)
-                        for artifact, desired in resolved_rules
-                        if matches(artifact.name)
+                        rule for rule in resolved_rules if matches(rule.artifact.name)
                     ]
                     snapshot = gd.observe_managed_gateway_snapshot() if selected_rules else None
-                    for artifact, desired in selected_rules:
+                    for rule in selected_rules:
+                        artifact = rule.artifact
+                        desired = rule.desired
                         if snapshot is None:  # pragma: no cover - narrowed above
                             raise RuntimeError("Gateway status snapshot is unavailable")
                         current = snapshot.rule(

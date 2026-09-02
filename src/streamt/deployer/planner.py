@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
-from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
@@ -32,13 +31,15 @@ from streamt.deployer.gateway import (
     GatewayDeployer,
     GatewayDesiredAggregateError,
     GatewayManagedMutationError,
+    GatewayManifestResolutionError,
     GatewayRuleChange,
     ManagedGatewayRuleObservation,
+    ResolvedManagedGatewayRule,
     build_desired_gateway_rule,
-    classify_gateway_interceptor_name,
     is_gateway_backend_identity,
     plan_managed_gateway_rule,
     plan_managed_gateway_rule_deletion,
+    resolve_managed_gateway_rules,
     secret_neutral_gateway_changes,
 )
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
@@ -58,15 +59,6 @@ class _PlannedChange(Protocol):
     """Common mutable action carried by backend-specific change records."""
 
     action: str
-
-
-@dataclass(frozen=True)
-class _ResolvedGatewayRule:
-    """One strict compiled rule and its exact provider-managed desired surface."""
-
-    artifact: GatewayRuleArtifact
-    desired: ManagedGatewayRuleObservation
-    logical_owner: str
 
 
 @dataclass(frozen=True)
@@ -1268,77 +1260,18 @@ class DeploymentPlanner:
             canonical_claims[claim] = identity
         return records
 
-    def _resolved_gateway_rules(
+    def _gateway_rules_with_prior_state_checks(
         self,
         binding: GatewayBackendBinding,
-    ) -> list[_ResolvedGatewayRule]:
-        """Strictly bind all Gateway rules and reject collisions before observation."""
-        resolved: list[_ResolvedGatewayRule] = []
-        logical_owners: set[str] = set()
-        alias_locators: set[tuple[str, str]] = set()
-        interceptor_locators: set[tuple[str, object, str]] = set()
-
-        for raw_rule in self.manifest.artifacts.get("gateway_rules", []):
-            artifact = parse_compiled_gateway_rule_artifact(raw_rule)
-            desired = build_desired_gateway_rule(artifact, binding)
-            ownership = ArtifactOwnership.from_dict(artifact.ownership)
-            logical_owner = (
-                ownership.owner_name if ownership is not None else artifact.name
+    ) -> tuple[ResolvedManagedGatewayRule, ...]:
+        """Resolve manifest identities, then enforce planner-only prior claims."""
+        try:
+            resolved = resolve_managed_gateway_rules(
+                self.manifest.artifacts.get("gateway_rules", []),
+                binding,
             )
-            if logical_owner in logical_owners:
-                raise StateIdentityError(
-                    "Gateway manifest maps one logical owner to multiple rules"
-                )
-            logical_owners.add(logical_owner)
-
-            alias_locator = (binding.backend_identity, desired.alias_name)
-            if alias_locator in alias_locators:
-                raise StateIdentityError(
-                    "Gateway manifest contains a duplicate canonical alias locator"
-                )
-            alias_locators.add(alias_locator)
-
-            for interceptor in desired.interceptors:
-                locator = (
-                    binding.backend_identity,
-                    interceptor.scope,
-                    interceptor.name,
-                )
-                if locator in interceptor_locators:
-                    raise StateIdentityError(
-                        "Gateway manifest contains a duplicate interceptor locator"
-                    )
-                interceptor_locators.add(locator)
-            resolved.append(
-                _ResolvedGatewayRule(
-                    artifact=artifact,
-                    desired=desired,
-                    logical_owner=logical_owner,
-                )
-            )
-
-        # A desired generated name must belong to exactly its declaring rule.
-        # Classifying against every declared logical rule also detects malformed
-        # generated-looking namespaces without relying on prefix ownership.
-        for rule in resolved:
-            for interceptor in rule.desired.interceptors:
-                owners: list[str] = []
-                for candidate in resolved:
-                    try:
-                        classified = classify_gateway_interceptor_name(
-                            candidate.artifact.name,
-                            interceptor.name,
-                        )
-                    except ValueError:
-                        raise StateIdentityError(
-                            "Gateway manifest contains an ambiguous generated namespace"
-                        ) from None
-                    if classified is not None:
-                        owners.append(candidate.artifact.name)
-                if owners != [rule.artifact.name]:
-                    raise StateIdentityError(
-                        "Gateway generated interceptor identity maps to multiple rules"
-                    )
+        except GatewayManifestResolutionError as error:
+            raise StateIdentityError(str(error)) from None
 
         prior_records = self._prior_gateway_records()
         for rule in resolved:
@@ -1358,7 +1291,7 @@ class DeploymentPlanner:
 
     @staticmethod
     def _absent_gateway_rule(
-        rule: _ResolvedGatewayRule,
+        rule: ResolvedManagedGatewayRule,
     ) -> ManagedGatewayRuleObservation:
         """Construct explicit complete absence for deterministic offline planning."""
         return ManagedGatewayRuleObservation(
@@ -1371,7 +1304,7 @@ class DeploymentPlanner:
     def _append_planned_gateway_rule(
         self,
         plan: DeploymentPlan,
-        rule: _ResolvedGatewayRule,
+        rule: ResolvedManagedGatewayRule,
         current: ManagedGatewayRuleObservation,
     ) -> None:
         """Purely plan and apply ownership policy to one resolved Gateway rule."""
@@ -1497,7 +1430,7 @@ class DeploymentPlanner:
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
         if gateway_data:
             binding = self._gateway_binding_from_project()
-            gateway_rules = self._resolved_gateway_rules(binding)
+            gateway_rules = self._gateway_rules_with_prior_state_checks(binding)
             for rule in gateway_rules:
                 self._append_planned_gateway_rule(
                     plan,
@@ -1515,7 +1448,7 @@ class DeploymentPlanner:
 
         # Gateway identities are a whole-manifest preflight. Complete strict
         # parsing, binding, and collision checks before any provider is read.
-        gateway_rules: list[_ResolvedGatewayRule] = []
+        gateway_rules: tuple[ResolvedManagedGatewayRule, ...] = ()
         gateway_deployer = self.gateway_deployer
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
         if gateway_data:
@@ -1528,7 +1461,9 @@ class DeploymentPlanner:
                 raise GatewayBindingError(
                     "Gateway deployer binding does not match project runtime configuration"
                 )
-            gateway_rules = self._resolved_gateway_rules(configured_gateway_binding)
+            gateway_rules = self._gateway_rules_with_prior_state_checks(
+                configured_gateway_binding
+            )
 
         # Plan schemas first (before topics that may depend on them)
         if self.schema_registry_deployer:
