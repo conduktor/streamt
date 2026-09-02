@@ -225,7 +225,7 @@ def test_unfinished_marker_is_read_only_and_text_directs_operator(
     assert "blocks apply/adopt" in normalized_output
     assert "Retain the control sidecar as evidence" in normalized_output
     assert "do not delete or edit it" in normalized_output
-    assert "Recovery is not implemented yet" in normalized_output
+    assert "streamt state recovery-plan" in normalized_output
     assert control_path.read_bytes() == before
     assert not local_state_path(tmp_path, environment="default").exists()
 
