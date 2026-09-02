@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictInt, StrictStr, TypeAdapter
+from pydantic import Field, StrictInt, StrictStr, TypeAdapter, model_validator
 
 from streamt.core.base import StreamtBaseModel
 
@@ -22,6 +22,10 @@ class PostgresConnectionConfig(StreamtBaseModel):
     """Non-secret PostgreSQL provider configuration."""
 
     dsn_env: Annotated[StrictStr, Field(pattern=_ENVIRONMENT_VARIABLE_NAME)]
+    writer_dsn_env: Annotated[
+        StrictStr,
+        Field(pattern=_ENVIRONMENT_VARIABLE_NAME),
+    ] | None = None
     writer_role_env: Annotated[
         StrictStr,
         Field(pattern=_ENVIRONMENT_VARIABLE_NAME),
@@ -30,6 +34,13 @@ class PostgresConnectionConfig(StreamtBaseModel):
         StrictStr,
         Field(alias="schema", pattern=_POSTGRES_SCHEMA_NAME),
     ] = "streamt"
+
+    @model_validator(mode="after")
+    def validate_writer_dsn_is_distinct(self) -> PostgresConnectionConfig:
+        """Keep runtime writer credentials distinct from administration credentials."""
+        if self.writer_dsn_env is not None and self.writer_dsn_env == self.dsn_env:
+            raise ValueError("writer_dsn_env must differ from dsn_env")
+        return self
 
 
 class PostgresDeploymentStateConfig(StreamtBaseModel):

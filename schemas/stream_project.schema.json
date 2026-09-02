@@ -2146,6 +2146,19 @@
           "title": "Dsn Env",
           "type": "string"
         },
+        "writer_dsn_env": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writer Dsn Env"
+        },
         "writer_role_env": {
           "anyOf": [
             {
