@@ -381,7 +381,8 @@ entire version-4 live evidence before writing `OperationIntent`. The durable
 intent must reuse equal action values rather than independently rediscovering
 identities.
 
-Versions 1 through 3 cannot authorize a lifecycle-removal apply and are
+The global plan format advances to version 4. Versions 1 through 3 cannot
+authorize any apply after that bump, including lifecycle removals, and are
 rejected with the existing regenerate-plan guidance. Version 4 remains strict
 about unknown or missing fields.
 
@@ -411,8 +412,12 @@ The following fail before provider access:
 - `--target` or `--select` with a removal declaration;
 - an offline reviewed plan;
 - plan format version 1, 2, or 3;
-- a stale manifest, environment, state, action, or aggregate; and
+- a stale manifest, environment, state, or pure target identity; and
 - any pending operation-control recovery marker.
+
+Fresh aggregate drift can only be discovered by the bounded two-list Gateway
+observation. It fails after those reads but before any provider mutation or
+durable intent write.
 
 ## Lifecycle and edge cases
 
