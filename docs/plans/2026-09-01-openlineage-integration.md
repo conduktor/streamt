@@ -152,16 +152,32 @@ The CLI tests must include:
 
 ## Slice 3: bounded File and HTTP transport
 
+Progress: Slice 3A, the pure transport-configuration boundary, is complete. It
+loads only an explicit bounded duplicate-free YAML mapping, applies an exact
+modern environment overlay, rejects implicit and legacy configuration, and
+returns frozen secret-safe File or HTTP settings. It performs no file append,
+HTTP request, event emission, or command hook.
+
+The File/HTTP boundary does not use `openlineage-python`. streamt already owns
+the validated event dictionaries and has `requests` as a core dependency. A
+direct synchronous adapter can enforce the narrower timeout, retry, TLS,
+redirect, environment-inheritance, and close contract without accepting client
+factory defaults. No dependency or lockfile change belongs to this slice.
+
 ### Scope
 
-- Add `src/streamt/integrations/openlineage/transport.py`.
-- Add optional dependency `openlineage-python>=1.53,<1.54` in `pyproject.toml`
-  and update `uv.lock` mechanically.
+- Add the pure configuration foundation in
+  `src/streamt/integrations/openlineage/transport.py` with frozen secret-safe
+  records, bounded duplicate/alias-safe YAML loading, exact environment
+  precedence, strict File/HTTP allowlists, and safe located errors.
 - Require explicit modern official transport configuration and an explicit
-  command enable flag; never instantiate the client's console default.
-- Parse only the transport boundary. Reject unsupported client facet, tag,
-  filter, normalization, legacy alias, and custom transport configuration.
-- Support a local append-only File transport and synchronous HTTP only.
+  command enable flag; never discover an implicit configuration or console
+  output path.
+- Parse only the transport boundary. Reject facet, tag, filter, normalization,
+  legacy alias, arbitrary nested environment, and custom transport
+  configuration.
+- In the next Slice 3B commit, add a local append-only File adapter and a
+  synchronous direct HTTP adapter without changing a CLI command.
 - Enforce URL credential rejection, TLS verification, timeout and retry bounds,
   per-event validation before delivery, explicit close behavior, and redacted
   diagnostics.
@@ -170,9 +186,10 @@ The CLI tests must include:
 ### Required tests
 
 - `tests/unit/test_openlineage_transport.py`
-- Optional-dependency-absent and optional-dependency-present CLI smoke tests.
+- An import/package smoke test proving the transport boundary has no
+  OpenLineage runtime dependency.
 
-Tests use a fake transport or local mock HTTP server and must prove:
+Slice 3A tests prove:
 
 - missing configuration and `OPENLINEAGE_DISABLED=true` fail before command
   execution;
@@ -180,10 +197,19 @@ Tests use a fake transport or local mock HTTP server and must prove:
   rejected;
 - HTTP TLS-disable, credentials in URLs, excessive timeout, and excessive retry
   settings are rejected;
-- authorization values never appear in results, warnings, logs, or exception
-  text;
+- authorization and configuration values never appear in record reprs or
+  exception text;
+- an explicit config file is UTF-8, regular, size/nesting/token bounded, and
+  duplicate/alias-free;
+- exact recognized nested environment fields override by presence, including
+  an empty value that must fail rather than fall back.
+
+Slice 3B tests use a fake transport or local mock HTTP server and must prove:
+
 - events are validated before the first transport call;
 - local file events are appended and flushed in order;
+- HTTP never inherits proxy or `.netrc` state, never follows redirects, keeps
+  TLS verification enabled, and attempts at most one retry;
 - transport close is bounded and deterministic;
 - delivery failures become the planned warning rather than an unhandled error
   after execution starts.
@@ -193,7 +219,8 @@ Tests use a fake transport or local mock HTTP server and must prove:
 - No configuration produces implicit console output.
 - HTTP behavior is bounded by the normative limits.
 - No transport test requires an external service.
-- Static export remains usable without the optional dependency.
+- Static export and transport configuration remain usable without an
+  OpenLineage runtime dependency.
 
 ## Slice 4: finite test-command RunEvents
 

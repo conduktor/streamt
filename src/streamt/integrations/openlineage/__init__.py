@@ -34,6 +34,14 @@ from streamt.integrations.openlineage.static import (
     serialize_static_jsonl,
     static_namespace_requirements,
 )
+from streamt.integrations.openlineage.transport import (
+    FileTransportConfig,
+    HttpTransportConfig,
+    OpenLineageTransportConfig,
+    OpenLineageTransportConfigurationError,
+    load_openlineage_transport_config,
+    parse_openlineage_transport_config,
+)
 from streamt.integrations.openlineage.validation import (
     OpenLineageResourceError,
     OpenLineageValidationError,
@@ -50,6 +58,8 @@ __all__ = [
     "OPENLINEAGE_PRODUCER",
     "OPENLINEAGE_RELEASE",
     "DatasetIdentity",
+    "FileTransportConfig",
+    "HttpTransportConfig",
     "JobIdentity",
     "OpenLineageConstructionError",
     "OpenLineageExportWarning",
@@ -57,6 +67,8 @@ __all__ = [
     "OpenLineageNamespaces",
     "OpenLineageResourceError",
     "OpenLineageStaticError",
+    "OpenLineageTransportConfig",
+    "OpenLineageTransportConfigurationError",
     "OpenLineageValidationError",
     "RunIdentity",
     "StaticNamespaceRequirements",
@@ -69,7 +81,9 @@ __all__ = [
     "encode_job_segment",
     "event_kind",
     "kafka_namespace_from_bootstrap",
+    "load_openlineage_transport_config",
     "model_job_name",
+    "parse_openlineage_transport_config",
     "resolve_openlineage_namespaces",
     "serialize_static_jsonl",
     "standard_facet",
