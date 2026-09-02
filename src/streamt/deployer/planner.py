@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
+from streamt.compiler.gateway_artifact import (
+    GatewayArtifactFormatError,
+    parse_compiled_gateway_rule_artifact,
+)
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
@@ -36,7 +41,10 @@ from streamt.deployer.gateway import (
     ManagedGatewayRuleObservation,
     ResolvedManagedGatewayRule,
     build_desired_gateway_rule,
+    classify_gateway_interceptor_name,
+    generate_gateway_interceptor_name,
     is_gateway_backend_identity,
+    is_gateway_resource_name,
     plan_managed_gateway_rule,
     plan_managed_gateway_rule_deletion,
     resolve_managed_gateway_rules,
@@ -50,6 +58,7 @@ from streamt.deployer.state import (
     ResourceIdentity,
     StateError,
     StateIdentityError,
+    artifact_checksum,
     resource_id,
 )
 from streamt.deployer.state_backend import (
@@ -106,6 +115,507 @@ class GatewayRecoveryObservation:
             raise StateIdentityError(
                 "Gateway recovery observation requires an exact managed surface"
             )
+
+
+@dataclass(frozen=True, init=False)
+class ResolvedGatewayRuleRemoval:
+    """One exact compiled Gateway tombstone bound to state and runtime identity."""
+
+    resource_id: str
+    logical_owner: str
+    _prior_artifact_json: str = field(repr=False)
+    prior_artifact_checksum: str
+    binding: GatewayBackendBinding
+    rule_name: str
+    alias_name: str
+
+    def __init__(
+        self,
+        *,
+        resource_id: str,
+        logical_owner: str,
+        prior_artifact: GatewayRuleArtifact,
+        prior_artifact_checksum: str,
+        binding: GatewayBackendBinding,
+        rule_name: str,
+        alias_name: str,
+    ) -> None:
+        if type(prior_artifact) is not GatewayRuleArtifact:
+            raise StateIdentityError(
+                "Resolved Gateway removal contains invalid compiled identity"
+            )
+        try:
+            identity = ResourceIdentity.parse(resource_id)
+            prior_artifact = parse_compiled_gateway_rule_artifact(
+                prior_artifact.to_dict()
+            )
+            expected_checksum = artifact_checksum(prior_artifact.to_dict())
+        except (AttributeError, GatewayArtifactFormatError, StateError, TypeError):
+            raise StateIdentityError(
+                "Resolved Gateway removal contains invalid compiled identity"
+            ) from None
+        ownership = ArtifactOwnership.from_dict(prior_artifact.ownership)
+        if (
+            identity.kind != "gateway_rule"
+            or identity.logical_name != logical_owner
+            or type(binding) is not GatewayBackendBinding
+            or not is_gateway_resource_name(rule_name)
+            or not is_gateway_resource_name(alias_name)
+            or rule_name != prior_artifact.name
+            or alias_name != prior_artifact.virtual_topic
+            or prior_artifact_checksum != expected_checksum
+            or ownership is None
+            or ownership.mode != "managed"
+            or ownership.project != identity.project
+            or ownership.owner_type != "model"
+            or ownership.owner_name != logical_owner
+        ):
+            raise StateIdentityError(
+                "Resolved Gateway removal contains mismatched compiled identity"
+            )
+        object.__setattr__(self, "resource_id", resource_id)
+        object.__setattr__(self, "logical_owner", logical_owner)
+        object.__setattr__(
+            self,
+            "_prior_artifact_json",
+            json.dumps(
+                prior_artifact.to_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        object.__setattr__(self, "prior_artifact_checksum", prior_artifact_checksum)
+        object.__setattr__(self, "binding", binding)
+        object.__setattr__(self, "rule_name", rule_name)
+        object.__setattr__(self, "alias_name", alias_name)
+
+    @property
+    def prior_artifact(self) -> GatewayRuleArtifact:
+        """Return an independent strict copy of the checksum-bound prior artifact."""
+        return parse_compiled_gateway_rule_artifact(
+            json.loads(self._prior_artifact_json)
+        )
+
+
+@dataclass(frozen=True)
+class GatewayPlanningTargets:
+    """Immutable provider-free Gateway desired and removal target set."""
+
+    binding: GatewayBackendBinding
+    desired_rules: tuple[ResolvedManagedGatewayRule, ...] = ()
+    removals: tuple[ResolvedGatewayRuleRemoval, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not GatewayBackendBinding:
+            raise StateIdentityError("Gateway planning targets require a canonical binding")
+        if not isinstance(self.desired_rules, tuple) or any(
+            type(rule) is not ResolvedManagedGatewayRule for rule in self.desired_rules
+        ):
+            raise StateIdentityError(
+                "Gateway planning targets require immutable desired rules"
+            )
+        if not isinstance(self.removals, tuple) or any(
+            type(removal) is not ResolvedGatewayRuleRemoval
+            for removal in self.removals
+        ):
+            raise StateIdentityError(
+                "Gateway planning targets require immutable removal targets"
+            )
+        if any(
+            rule.desired.binding != self.binding for rule in self.desired_rules
+        ) or any(removal.binding != self.binding for removal in self.removals):
+            raise StateIdentityError(
+                "Gateway planning targets contain a mismatched provider binding"
+            )
+
+
+@dataclass(frozen=True)
+class _ParsedGatewayRuleRemoval:
+    logical_owner: str
+    prior_artifact: GatewayRuleArtifact = field(repr=False)
+    prior_artifact_checksum: str
+
+
+def _gateway_binding_from_parsed_project(
+    project: StreamtProject,
+) -> GatewayBackendBinding:
+    conduktor = project.runtime.conduktor
+    gateway = conduktor.gateway if conduktor is not None else None
+    if gateway is None or gateway.admin_url is None:
+        raise GatewayBindingError(
+            "Gateway planning requires a configured project runtime"
+        )
+    return GatewayBackendBinding.from_endpoint(
+        gateway.admin_url,
+        virtual_cluster=gateway.virtual_cluster,
+    )
+
+
+def _parse_gateway_rule_removals(
+    raw_removals: object,
+    *,
+    project_name: str,
+) -> tuple[_ParsedGatewayRuleRemoval, ...]:
+    if type(raw_removals) is not list:
+        raise StateIdentityError(
+            "Gateway removal manifest collection must be an exact list"
+        )
+    parsed: list[_ParsedGatewayRuleRemoval] = []
+    for raw_removal in raw_removals:
+        if not isinstance(raw_removal, dict) or set(raw_removal) != {
+            "logicalOwner",
+            "priorArtifact",
+        }:
+            raise StateIdentityError(
+                "Gateway removal manifest entry must have exact compiled fields"
+            )
+        logical_owner = raw_removal["logicalOwner"]
+        if (
+            not isinstance(logical_owner, str)
+            or not logical_owner.strip()
+            or "/" in logical_owner
+        ):
+            raise StateIdentityError(
+                "Gateway removal manifest has an invalid logical owner"
+            )
+        try:
+            prior_artifact = parse_compiled_gateway_rule_artifact(
+                raw_removal["priorArtifact"]
+            )
+        except GatewayArtifactFormatError:
+            raise StateIdentityError(
+                "Gateway removal manifest has an invalid prior artifact"
+            ) from None
+        ownership = ArtifactOwnership.from_dict(prior_artifact.ownership)
+        if ownership != ArtifactOwnership(
+            project=project_name,
+            owner_type="model",
+            owner_name=logical_owner,
+            mode="managed",
+        ):
+            raise StateIdentityError(
+                "Gateway removal manifest has mismatched managed ownership"
+            )
+        if not all(
+            is_gateway_resource_name(name)
+            for name in (
+                prior_artifact.name,
+                prior_artifact.virtual_topic,
+                prior_artifact.physical_topic,
+            )
+        ):
+            raise StateIdentityError(
+                "Gateway removal manifest has an invalid provider identity"
+            )
+        parsed.append(
+            _ParsedGatewayRuleRemoval(
+                logical_owner=logical_owner,
+                prior_artifact=prior_artifact,
+                prior_artifact_checksum=artifact_checksum(
+                    prior_artifact.to_dict()
+                ),
+            )
+        )
+    return tuple(parsed)
+
+
+def _gateway_prior_records(
+    prior_state: LocalState | None,
+) -> tuple[tuple[ResourceIdentity, ManagedResourceRecord], ...]:
+    if prior_state is None:
+        return ()
+    records: list[tuple[ResourceIdentity, ManagedResourceRecord]] = []
+    canonical_claims: dict[tuple[str, str], ResourceIdentity] = {}
+    for resource_uri, record in prior_state.resources.items():
+        identity = ResourceIdentity.parse(resource_uri)
+        if identity.kind != "gateway_rule":
+            continue
+        records.append((identity, record))
+        if not is_gateway_backend_identity(record.backend):
+            continue
+        claim = (record.backend, record.physical_name)
+        previous = canonical_claims.get(claim)
+        if previous is not None and previous != identity:
+            raise StateIdentityError(
+                "Gateway prior state contains duplicate canonical provider claims"
+            )
+        canonical_claims[claim] = identity
+    return tuple(records)
+
+
+def _generated_removal_interceptor_names(
+    removal: _ParsedGatewayRuleRemoval,
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for ordinal, declaration in enumerate(removal.prior_artifact.interceptors):
+        declaration_type = declaration.get("type")
+        if not isinstance(declaration_type, str):  # pragma: no cover - strict parser
+            raise StateIdentityError(
+                "Gateway removal manifest has an invalid interceptor identity"
+            )
+        try:
+            names.append(
+                generate_gateway_interceptor_name(
+                    removal.prior_artifact.name,
+                    declaration_type,
+                    ordinal,
+                )
+            )
+        except ValueError:
+            raise StateIdentityError(
+                "Gateway removal manifest has an invalid interceptor identity"
+            ) from None
+    return tuple(names)
+
+
+def _validate_gateway_planning_target_collisions(
+    *,
+    project_name: str,
+    environment: str,
+    binding: GatewayBackendBinding,
+    desired_rules: tuple[ResolvedManagedGatewayRule, ...],
+    removals: tuple[_ParsedGatewayRuleRemoval, ...],
+) -> None:
+    owner_claims: dict[object, str] = {}
+    resource_claims: dict[object, str] = {}
+    rule_claims: dict[object, str] = {}
+    alias_claims: dict[object, str] = {}
+    interceptor_claims: dict[object, str] = {}
+    generated_names: list[tuple[str, str]] = []
+    all_rule_names: list[str] = []
+
+    def claim(
+        *,
+        label: str,
+        logical_owner: str,
+        rule_name: str,
+        alias_name: str,
+        interceptor_names: Sequence[str],
+    ) -> None:
+        try:
+            resource_uri = resource_id(
+                project_name,
+                environment,
+                "gateway_rule",
+                logical_owner,
+            )
+        except StateError:
+            raise StateIdentityError(
+                "Gateway planning target has an invalid canonical resource identity"
+            ) from None
+        claims: tuple[tuple[dict[object, str], object, str], ...] = (
+            (owner_claims, logical_owner, "logical owner"),
+            (resource_claims, resource_uri, "canonical resource"),
+            (
+                rule_claims,
+                (binding.backend_identity, rule_name),
+                "rule locator",
+            ),
+            (
+                alias_claims,
+                (binding.backend_identity, alias_name),
+                "alias locator",
+            ),
+        )
+        for registry, identity, identity_label in claims:
+            previous = registry.get(identity)
+            if previous is not None:
+                raise StateIdentityError(
+                    f"Gateway planning targets collide on {identity_label}"
+                )
+            registry[identity] = label
+        for interceptor_name in interceptor_names:
+            locator = (binding.backend_identity, interceptor_name)
+            if locator in interceptor_claims:
+                raise StateIdentityError(
+                    "Gateway planning targets collide on generated interceptor locator"
+                )
+            interceptor_claims[locator] = label
+            generated_names.append((rule_name, interceptor_name))
+        all_rule_names.append(rule_name)
+
+    for rule in desired_rules:
+        claim(
+            label="desired",
+            logical_owner=rule.logical_owner,
+            rule_name=rule.artifact.name,
+            alias_name=rule.artifact.virtual_topic,
+            interceptor_names=tuple(
+                interceptor.name for interceptor in rule.desired.interceptors
+            ),
+        )
+    for index, removal in enumerate(removals):
+        claim(
+            label=f"removal[{index}]",
+            logical_owner=removal.logical_owner,
+            rule_name=removal.prior_artifact.name,
+            alias_name=removal.prior_artifact.virtual_topic,
+            interceptor_names=_generated_removal_interceptor_names(removal),
+        )
+
+    for owning_rule, generated_name in generated_names:
+        classified_owners: list[str] = []
+        for candidate_rule in all_rule_names:
+            try:
+                classified = classify_gateway_interceptor_name(
+                    candidate_rule,
+                    generated_name,
+                )
+            except ValueError:
+                raise StateIdentityError(
+                    "Gateway planning targets contain an ambiguous generated namespace"
+                ) from None
+            if classified is not None:
+                classified_owners.append(candidate_rule)
+        if classified_owners != [owning_rule]:
+            raise StateIdentityError(
+                "Gateway generated interceptor identity maps to multiple planning targets"
+            )
+
+
+def resolve_gateway_planning_targets(
+    manifest: Manifest,
+    project: object,
+    *,
+    environment: str,
+    prior_state: LocalState | None,
+    require_authoritative_state: bool,
+) -> GatewayPlanningTargets:
+    """Resolve all Gateway manifest targets without constructing or reading a provider."""
+    if not isinstance(manifest, Manifest) or not isinstance(project, StreamtProject):
+        raise StateIdentityError(
+            "Gateway planning target resolution requires parsed project and manifest"
+        )
+    if type(require_authoritative_state) is not bool:
+        raise StateIdentityError(
+            "Gateway planning target resolution requires an exact state policy"
+        )
+    project_name = manifest.project_name
+    if project.project.name != project_name:
+        raise StateIdentityError(
+            "Gateway project runtime does not match deployment manifest"
+        )
+    try:
+        ResourceIdentity(project_name, environment, "gateway_rule", "validation")
+    except StateError:
+        raise StateIdentityError(
+            "Gateway planning target has an invalid project environment"
+        ) from None
+
+    raw_removals = manifest.artifacts.get("gateway_rule_removals", [])
+    parsed_removals = _parse_gateway_rule_removals(
+        raw_removals,
+        project_name=project_name,
+    )
+    if parsed_removals and require_authoritative_state and type(prior_state) is not LocalState:
+        raise StateIdentityError(
+            "Online Gateway removal planning requires authoritative ownership state"
+        )
+    if prior_state is not None:
+        if not isinstance(prior_state, LocalState):
+            raise StateIdentityError(
+                "Gateway removal planning received invalid ownership state"
+            )
+        if (
+            prior_state.project != project_name
+            or prior_state.environment != environment
+        ):
+            raise StateIdentityError(
+                "Gateway removal planning state belongs to another project environment"
+            )
+
+    binding = _gateway_binding_from_parsed_project(project)
+    try:
+        desired_rules = resolve_managed_gateway_rules(
+            manifest.artifacts.get("gateway_rules", []),
+            binding,
+        )
+    except GatewayManifestResolutionError as error:
+        raise StateIdentityError(str(error)) from None
+
+    _validate_gateway_planning_target_collisions(
+        project_name=project_name,
+        environment=environment,
+        binding=binding,
+        desired_rules=desired_rules,
+        removals=parsed_removals,
+    )
+
+    prior_records = _gateway_prior_records(prior_state)
+    for rule in desired_rules:
+        for identity, record in prior_records:
+            if identity.logical_name == rule.logical_owner:
+                continue
+            if (
+                record.physical_name == rule.desired.alias_name
+                and record.backend
+                in (binding.backend_identity, "conduktor-gateway")
+            ):
+                raise StateIdentityError(
+                    "Gateway desired alias is claimed by another logical record"
+                )
+
+    resolved_removals: list[ResolvedGatewayRuleRemoval] = []
+    for removal in parsed_removals:
+        resource_uri = resource_id(
+            project_name,
+            environment,
+            "gateway_rule",
+            removal.logical_owner,
+        )
+        prior_record = (
+            prior_state.resources.get(resource_uri)
+            if prior_state is not None
+            else None
+        )
+        if prior_record is not None:
+            if prior_record.ownership != "managed":
+                raise StateIdentityError(
+                    "Gateway removal requires managed prior ownership"
+                )
+            if prior_record.backend == "conduktor-gateway":
+                raise StateIdentityError(
+                    "Gateway removal cannot use legacy unbound ownership state"
+                )
+            if prior_record.backend != binding.backend_identity:
+                raise StateIdentityError(
+                    "Gateway removal prior ownership has a different provider binding"
+                )
+            if prior_record.physical_name != removal.prior_artifact.virtual_topic:
+                raise StateIdentityError(
+                    "Gateway removal prior ownership has a different alias"
+                )
+            if prior_record.artifact_checksum != removal.prior_artifact_checksum:
+                raise StateIdentityError(
+                    "Gateway removal prior ownership has a different artifact checksum"
+                )
+        if any(
+            identity.uri != resource_uri
+            and record.physical_name == removal.prior_artifact.virtual_topic
+            and record.backend
+            in (binding.backend_identity, "conduktor-gateway")
+            for identity, record in prior_records
+        ):
+            raise StateIdentityError(
+                "Gateway removal alias is claimed by another logical record"
+            )
+        resolved_removals.append(
+            ResolvedGatewayRuleRemoval(
+                resource_id=resource_uri,
+                logical_owner=removal.logical_owner,
+                prior_artifact=removal.prior_artifact,
+                prior_artifact_checksum=removal.prior_artifact_checksum,
+                binding=binding,
+                rule_name=removal.prior_artifact.name,
+                alias_name=removal.prior_artifact.virtual_topic,
+            )
+        )
+
+    return GatewayPlanningTargets(
+        binding=binding,
+        desired_rules=desired_rules,
+        removals=tuple(resolved_removals),
+    )
 
 
 _SENSITIVE_KV = re.compile(
@@ -1269,40 +1779,13 @@ class DeploymentPlanner:
             raise GatewayBindingError(
                 "Gateway planning requires parsed project runtime configuration"
             )
-        conduktor = self.project.runtime.conduktor
-        gateway = conduktor.gateway if conduktor is not None else None
-        if gateway is None or gateway.admin_url is None:
-            raise GatewayBindingError(
-                "Gateway planning requires a configured project runtime"
-            )
-        return GatewayBackendBinding.from_endpoint(
-            gateway.admin_url,
-            virtual_cluster=gateway.virtual_cluster,
-        )
+        return _gateway_binding_from_parsed_project(self.project)
 
     def _prior_gateway_records(
         self,
     ) -> list[tuple[ResourceIdentity, ManagedResourceRecord]]:
         """Return canonical prior Gateway identities after rejecting claim collisions."""
-        if self.prior_state is None:
-            return []
-        records: list[tuple[ResourceIdentity, ManagedResourceRecord]] = []
-        canonical_claims: dict[tuple[str, str], ResourceIdentity] = {}
-        for resource_uri, record in self.prior_state.resources.items():
-            identity = ResourceIdentity.parse(resource_uri)
-            if identity.kind != "gateway_rule":
-                continue
-            records.append((identity, record))
-            if not is_gateway_backend_identity(record.backend):
-                continue
-            claim = (record.backend, record.physical_name)
-            previous = canonical_claims.get(claim)
-            if previous is not None and previous != identity:
-                raise StateIdentityError(
-                    "Gateway prior state contains duplicate canonical provider claims"
-                )
-            canonical_claims[claim] = identity
-        return records
+        return list(_gateway_prior_records(self.prior_state))
 
     def _gateway_rules_with_prior_state_checks(
         self,
@@ -1540,6 +2023,21 @@ class DeploymentPlanner:
         from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
         plan = DeploymentPlan()
+        raw_gateway_removals = self.manifest.artifacts.get(
+            "gateway_rule_removals",
+            [],
+        )
+        gateway_targets = (
+            resolve_gateway_planning_targets(
+                self.manifest,
+                self.project,
+                environment=self.environment,
+                prior_state=self.prior_state,
+                require_authoritative_state=False,
+            )
+            if type(raw_gateway_removals) is not list or raw_gateway_removals
+            else None
+        )
 
         for schema_data in self.manifest.artifacts.get("schemas", []):
             try:
@@ -1634,8 +2132,11 @@ class DeploymentPlanner:
 
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
         if gateway_data:
-            binding = self._gateway_binding_from_project()
-            gateway_rules = self._gateway_rules_with_prior_state_checks(binding)
+            if gateway_targets is None:
+                binding = self._gateway_binding_from_project()
+                gateway_rules = self._gateway_rules_with_prior_state_checks(binding)
+            else:
+                gateway_rules = gateway_targets.desired_rules
             for rule in gateway_rules:
                 self._append_planned_gateway_rule(
                     plan,
@@ -1655,6 +2156,22 @@ class DeploymentPlanner:
         """Create a deployment plan."""
         plan = DeploymentPlan()
 
+        raw_gateway_removals = self.manifest.artifacts.get(
+            "gateway_rule_removals",
+            [],
+        )
+        gateway_targets = (
+            resolve_gateway_planning_targets(
+                self.manifest,
+                self.project,
+                environment=self.environment,
+                prior_state=self.prior_state,
+                require_authoritative_state=True,
+            )
+            if type(raw_gateway_removals) is not list or raw_gateway_removals
+            else None
+        )
+
         # Gateway identities are a whole-manifest preflight. Complete strict
         # parsing, binding, and collision checks before any provider is read.
         if not isinstance(gateway_recovery_actions, tuple):
@@ -1667,7 +2184,11 @@ class DeploymentPlanner:
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
         configured_gateway_binding: GatewayBackendBinding | None = None
         if gateway_data or gateway_recovery_actions:
-            configured_gateway_binding = self._gateway_binding_from_project()
+            configured_gateway_binding = (
+                gateway_targets.binding
+                if gateway_targets is not None
+                else self._gateway_binding_from_project()
+            )
             if gateway_deployer is None:
                 raise GatewayBindingError(
                     "Live Gateway planning requires a bound Gateway deployer"
@@ -1676,8 +2197,12 @@ class DeploymentPlanner:
                 raise GatewayBindingError(
                     "Gateway deployer binding does not match project runtime configuration"
                 )
-            gateway_rules = self._gateway_rules_with_prior_state_checks(
-                configured_gateway_binding
+            gateway_rules = (
+                gateway_targets.desired_rules
+                if gateway_targets is not None
+                else self._gateway_rules_with_prior_state_checks(
+                    configured_gateway_binding
+                )
             )
             validated_gateway_recovery_actions = (
                 self._validated_gateway_recovery_actions(
