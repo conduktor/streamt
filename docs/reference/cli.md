@@ -673,6 +673,14 @@ flag. A successful adoption atomically advances only the configured
 environment-scoped ownership state. Repeating an identical adoption is a no-op
 and does not advance its serial.
 
+The only accepted `--kind` values are currently `topic` and `schema`. Kafka
+Connect, Conduktor Gateway, and Flink adoption are not supported. They require
+provider-specific exact identity, observation, recovery, and secret-neutrality
+gates described in the
+[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md);
+configuration or direct plan/apply support does not make those resources
+adoptable.
+
 !!! warning "Adoption uses configured state"
     Local adoption state is safe only for a single-user checkout. PostgreSQL v2
     adoption uses the same exact writer and distributed address lock as apply,

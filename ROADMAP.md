@@ -63,8 +63,18 @@ to deploy anything.
 - [x] Add no-clobber `streamt import` for external Kafka source declarations.
 - [x] Add explicit, fail-closed adoption for one existing Kafka topic at a time.
 - [x] Extend fail-closed adoption to one Schema Registry subject at a time.
-- [ ] Extend adoption to jobs, connectors, and Gateway rules after their exact
-      management surfaces and compound identities are specified.
+- [ ] Extend fail-closed adoption beyond topics and schemas in the scoped order
+      defined by the
+      [extended resource adoption plan](docs/plans/2026-09-02-extended-resource-adoption.md):
+  - [ ] Make Connector planning secret-neutral, bind the canonical artifact to
+        an exact Connect cluster locator, and add a strict one-request observer.
+  - [ ] Use that Connector observer for reviewed recovery before enabling
+        single-Connector state-only adoption.
+  - [ ] Normalize the complete scoped Gateway alias/interceptor aggregate, then
+        enable only exact alias-only rules with zero interceptors.
+  - [ ] Keep Flink adoption deferred until stable per-job identity, strict
+        cluster routing, provider-visible artifact evidence, unambiguous
+        discovery, and evidence-gated state advancement exist.
 - [x] Resolve Schema Registry subjects, versions, references, and compatibility
       rules during validation.
 - [x] Compare the desired project with both the last applied manifest and live

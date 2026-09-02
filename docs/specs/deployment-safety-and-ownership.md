@@ -268,9 +268,41 @@ uses the planner-identical artifact checksum and `schema-registry` backend, so a
 fresh plan can safely distinguish the adopted subject from unowned live data.
 No register, compatibility-update, list, or delete API is called.
 
-Flink, Kafka Connect, and Gateway adoption remain unsupported until their exact
-management surfaces and compound resource identities have equivalent
-fail-closed workflows.
+Flink, Kafka Connect, and Gateway adoption remain unsupported. Their safe
+sequence is specified in the
+[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md)
+and must not be reordered merely by adding a CLI kind.
+
+Connector work starts by making normal planning secret-neutral and exact. A
+Connector's logical identity uses `ownership.owner_name`; its provider locator
+binds the effective Connect cluster alias, a normalized REST-endpoint
+fingerprint, and the connector name. The strict observer uses one
+`GET /connectors/<encoded-name>` response and fingerprints stable name and
+configuration only. Volatile status and tasks cannot authorize ownership.
+Exact case and JSON types are preserved, reserved generated configuration keys
+cannot be overridden, and raw configuration never enters output or durable
+control data. That observer must support reviewed recovery before
+single-Connector adoption is enabled. Legacy `backend: kafka-connect` records
+are unbound and require explicit migration or re-adoption; they never silently
+authorize a selected cluster.
+
+A Gateway rule has compound provider identity: the backend and vCluster-scoped
+AliasTopic key plus the exact deterministic set of scoped Interceptor keys. Its
+physical topic and interceptor plugin class, priority, scope, and transformed
+configuration are managed content. Planning, status, apply, rollback,
+recovery, and eventual adoption must share one strict normalized aggregate;
+list order, broad name prefixes, or a logical rule name substituted for an
+alias are not identity evidence. The first adoption slice is limited to an
+exact alias whose desired and observed interceptor sets are both empty. Full
+interceptor adoption remains unsupported.
+
+Flink adoption is deferred further. Runtime status and a display-name match do
+not prove SQL or execution settings. Stable per-job provider identity, strict
+cluster routing, collision-free ownership for every emitted job,
+provider-visible artifact fingerprints, exact discovery, savepoint/stateless
+lifecycle semantics, and evidence-gated state advancement are prerequisites.
+Reviewed recovery must pass on that same evidence before Flink adoption can be
+offered.
 
 ## Destructive operations
 
