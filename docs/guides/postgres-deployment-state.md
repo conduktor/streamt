@@ -267,9 +267,9 @@ runtime mutations.
 
 Follow the [deployment-state recovery runbook](state-recovery.md) for the
 two-command workflow, exact confirmations, supported observation boundaries,
-backup requirements, and indeterminate-outcome handling. Present Flink jobs
-and nonempty or present-prior Gateway rules cannot currently be reconstructed
-exactly and fail closed.
+backup requirements, and indeterminate-outcome handling. Present Flink jobs and
+Gateway actions without exact durable aggregate evidence cannot currently be
+reconstructed and fail closed.
 
 ## Topology and HA boundary
 

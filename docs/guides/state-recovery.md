@@ -266,7 +266,7 @@ provider response or every action is recoverable.
 | Schema Registry subject | Exact prior or candidate content can be proven for supported register/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Partial schema metadata, identity mismatch, or a checksum that cannot be reconstructed fails closed. |
 | Kafka topic | Exact partitions, replication factor, and complete config can prove prior or candidate state for supported create/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Recovery requires a strict, complete config read; filtered or partial broker config is rejected. |
 | Kafka Connect connector | Exact connector config can prove supported create/update/adopt prior or candidate state. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Evidence is bound to the effective alias, normalized-endpoint fingerprint, and connector name. Partial config/status/task observations, legacy unbound state, unsupported cluster representation, or ambiguous identity fails closed. |
-| Conduktor Gateway rule | The complete alias plus rule-owned interceptor aggregate must match exactly the durable current surface or desired surface. A desired match proves a completed create/update candidate; a current match proves the prior result, including a rolled-back update or delete. | Exact current absence proves an unapplied or rolled-back create. Exact desired absence proves a completed delete candidate. | Evidence is bound to the endpoint/vCluster backend identity, provider rule name, alias, aggregate fingerprint, and owned-interceptor count. Anything between the durable current and desired surfaces fails closed. |
+| Conduktor Gateway rule | The complete alias plus rule-owned interceptor aggregate must match exact durable evidence. A desired match proves a completed create/update candidate; a current match proves the prior result for mutation actions. Alias-only adoption requires the exact reviewed current present surface: `observed` records its candidate ownership and `rolled_back` retains prior absence. | Exact current absence proves an unapplied or rolled-back create. Exact desired absence proves a completed delete candidate. Adoption does not accept absence. | Evidence is bound to the endpoint/vCluster backend identity, provider rule name, alias, aggregate fingerprint, and owned-interceptor count. Anything outside the action-specific exact surfaces fails closed. |
 | Flink job | Unsupported. Current live status and job ID cannot prove the managed SQL artifact or execution settings. | Exact absence can prove a not-yet-submitted prior state or a completed cancel candidate. | Any present Flink target fails closed, even when its runtime status looks healthy. |
 
 Additional action constraints apply:
@@ -286,16 +286,17 @@ Additional action constraints apply:
   action never produced a target.
 - `observed` may mix prior and candidate classifications across the ordered
   action list. Every individual classification must still be exact.
-- Adoption recovery is limited to exact schema-subject, Kafka-topic, and bound
-  default-cluster Connector observations declared with adopted ownership.
+- Adoption recovery is limited to exact schema-subject, Kafka-topic, bound
+  default-cluster Connector, and alias-only Gateway observations declared with
+  adopted ownership.
 
 Gateway recovery never infers deletion from the current manifest. An absent
 manifest rule is accepted as a deletion target only when the blocked intent
 already contains that exact durable `delete` action; only its desired-absent
 surface can remove the corresponding ownership record. Ordinary planning does
 not currently perform broad removed-rule discovery, so removing a Gateway rule
-from the project does not itself create a delete plan or action. Gateway
-adoption also remains unsupported.
+from the project does not itself create a delete plan or action. Full adoption
+of Gateway rules with Interceptors remains unsupported.
 
 Control-version-1 Gateway actions predate the exact current/desired aggregate
 evidence. They therefore fail closed for live `observed` or `rolled_back`

@@ -13,7 +13,7 @@ are not enabled.
 | Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility, single-subject adoption | Register source schemas | Registry-incompatible updates are classified schema-breaking and blocked. Compatible updates remain risky until downstream column/contract impact exists. Adoption is state-only and fail-closed; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates and resubmissions are classified state-migration-requiring and blocked until a savepoint-safe or explicitly stateless workflow exists. Adoption is not supported: current status cannot prove SQL or managed execution settings. |
 | Kafka Connect REST | Yes | Strict connector managed content and single-connector adoption | Sink connectors | Adoption is state-only: an omitted or explicitly matching default cluster is accepted; a non-default cluster fails closed. The claim binds its alias, versioned normalized-endpoint fingerprint, and exact connector name. Two encoded resource reads bracket confirmation for a new claim; an identical claim returns after one read with no confirmation or write. Output exposes only whole-config checksums and sanitized changed-key categories/directions. Legacy `backend: kafka-connect` state fails closed. Connector profiles remain deliberately generic. |
-| Conduktor Gateway | Yes | Strict backend/vCluster-scoped AliasTopic and Interceptor aggregate | Virtual-topic interceptor rules and explicit reviewed rule removal | Removal requires an exact lifecycle tombstone, matching managed ownership, one complete live aggregate, reviewed-plan version 4 action evidence, and destructive authorization. Removing a model or omitting a rule never requests deletion; broad discovery and deletion by absence are unsupported. The AliasTopic and Interceptor list reads are sequential rather than provider-atomic, so an external writer remains a TOCTOU boundary and ambiguous or third-state evidence fails closed. Gateway adoption remains unsupported; its planned initial slice is limited to exact alias-only rules with no interceptors. Console catalog publication is separate. |
+| Conduktor Gateway | Yes | Strict backend/vCluster-scoped AliasTopic and Interceptor aggregate; single-rule alias-only adoption | Virtual-topic interceptor rules and explicit reviewed rule removal | Alias-only adoption is state-only and requires one exact adopted artifact, a present canonical `main` AliasTopic, and zero desired or selected owned Interceptors. Two complete observations bracket confirmation; an identical claim uses one. Full interceptor adoption remains unsupported. Removal requires an exact lifecycle tombstone, matching managed ownership, reviewed-plan version 4 action evidence, and destructive authorization. Removing a model or omitting a rule never requests deletion; broad discovery and deletion by absence are unsupported. The two list reads are sequential rather than provider-atomic, so an external writer remains a TOCTOU boundary and ambiguous or third-state evidence fails closed. Console catalog publication is separate. |
 | Local deployment state | No | Status and explicit reviewed recovery | Ordinary local plan/apply/adopt | Single-host file locking, durable intent/progress, and crash-safe recovery history are supported. It provides no cross-host exclusion, shared-runner fencing, or HA durability. |
 | PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, confirmed v1-to-v2 migration, and reviewed recovery | Ordinary plan/apply/adopt and recovery through the exact v2 writer | Requires `streamt[postgres]`, `writer_dsn_env`, an exact v2 catalog/ACL, and a direct standalone primary. The owner/admin credential is never a runtime fallback. Version 1 remains administrative only. PostgreSQL 14 and 18 run real-server, command, ACL, mutation, recovery, and process-concurrency gates. All poolers and every HA/failover topology are unsupported. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
@@ -32,12 +32,12 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Continue adoption beyond Kafka topics, Schema Registry subjects, and the
-   exact default-cluster Kafka Connect slice in the
-   [fail-closed provider order](../plans/2026-09-02-extended-resource-adoption.md):
-   normalized Gateway aggregate and alias-only adoption are next. Flink remains
-   gated on artifact evidence and lifecycle semantics. Add export/import
-   workflows for deployment ownership state separately.
+1. Continue adoption beyond the exact topic, schema, default-cluster Connector,
+   and alias-only Gateway slices in the
+   [fail-closed provider order](../plans/2026-09-02-extended-resource-adoption.md).
+   Full Gateway interceptor adoption needs round-trip provider evidence, while
+   Flink remains gated on artifact evidence and lifecycle semantics. Add
+   export/import workflows for deployment ownership state separately.
 2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a

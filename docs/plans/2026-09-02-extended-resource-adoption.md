@@ -19,8 +19,9 @@ of resource identity. Delivery is deliberately ordered:
 This plan also records the implemented boundary; it is not by itself a broad
 production-readiness claim. Packages 1 through 5 are complete and the public
 `adopt` command accepts `topic`, `schema`, and the deliberately narrow
-`connector` slice. Package 6 is complete; Package 7 and Gateway adoption remain
-planned.
+`connector` slice. Packages 6 and 7 are complete. The public command also
+accepts the deliberately narrow alias-only `gateway_rule` slice; full Gateway
+interceptor adoption and Flink adoption remain deferred.
 
 ## Current boundary
 
@@ -45,9 +46,11 @@ artifact with no cluster or with the explicit default alias enters this slice;
 an explicit non-default cluster fails closed. An identical existing state claim
 returns after the first strict observation without confirmation or a state
 write. Flink does not yet provide enough exact provider evidence to enter this
-protocol safely. Gateway now has durable action evidence and exact bounded
-reviewed-recovery decisions and has passed the Package 6 release gates, but its
-adoption command remains disabled until the Package 7 command gates pass.
+protocol safely. Gateway now has durable action evidence, exact bounded
+reviewed-recovery decisions, explicit reviewed removal, and exact alias-only
+adoption. A new Gateway adoption makes two complete sequential two-list
+observations around confirmation, records ownership only, and never calls a
+mutation endpoint.
 
 ## Cross-provider invariants
 
@@ -272,7 +275,7 @@ writer and operation history.
 
 ## Package 6: normalized scoped Gateway aggregate
 
-Status: complete; adoption remains unsupported. The strict artifact parser,
+Status: complete; adoption is delivered separately by Package 7. The strict artifact parser,
 versioned endpoint/vCluster binding, pure desired aggregate, reusable strict
 two-list snapshot, immutable observations and fingerprints, normalized change
 model, desired/prior collision gates, online/offline planner integration,
@@ -293,8 +296,8 @@ planning, reviewed-plan version 4 action evidence, destructive authorization,
 exact apply deletion, state projection, and recovery reuse are enabled. The
 local reviewed command lifecycle, PostgreSQL 14/18 ordinary-delete and
 uncertain-result recovery, isolated installed-wheel lifecycle, and focused real
-Gateway 3.15 exact-delete gate pass. This completes Package 6; adoption remains
-the separately gated Package 7. The
+Gateway 3.15 exact-delete gate pass. This completes Package 6; its separately
+gated alias-only adoption follow-up is complete in Package 7. The
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md)
 records the staged contract and release evidence.
 
@@ -452,7 +455,7 @@ rule.
 
 ## Package 7: alias-only Gateway adoption
 
-Status: planned; follows Package 6.
+Status: complete for alias-only rules; follows the completed Package 6.
 
 The first Gateway adoption release is intentionally restricted to compiled
 rules whose desired interceptor list is empty. The command must prove:
@@ -476,6 +479,10 @@ priority evidence.
 Exit gate: unit, command, installed-wheel, and real Gateway tests prove scoped
 identity, zero mutation, two-observation drift rejection, state conflicts,
 recovery, and rejection of every nonempty or incomplete rule.
+
+The exit gate passes in source and isolated-wheel execution, PostgreSQL 14/18
+v2 state and reviewed recovery, and focused Conduktor Gateway 3.15 tests. Full
+interceptor-rule adoption remains outside Package 7.
 
 ## Flink adoption remains deferred
 

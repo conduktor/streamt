@@ -70,7 +70,7 @@ to deploy anything.
         an exact Connect cluster locator, and add a strict one-request observer.
   - [x] Use that Connector observer for reviewed recovery and enable
         single-Connector state-only adoption.
-  - [ ] Normalize the complete scoped Gateway alias/interceptor aggregate under
+  - [x] Normalize the complete scoped Gateway alias/interceptor aggregate under
         the frozen
         [Gateway implementation specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md),
         then enable only exact alias-only rules with zero interceptors. The
@@ -90,9 +90,11 @@ to deploy anything.
         reviewed-plan v4, destructive authorization, exact deletion, state
         projection, and recovery reuse. Its local, PostgreSQL 14/18, isolated
         installed-wheel, and real Gateway 3.15 exact-deletion gates pass, so the
-        normalized Package 6 boundary is complete. Gateway adoption remains
-        unsupported and moves next through the deliberately alias-only Package 7
-        gates in the
+        normalized Package 6 boundary is complete. Package 7 now adds exact
+        alias-only, state-only Gateway adoption with two complete observations,
+        zero mutation, exact reviewed recovery, local and PostgreSQL v2 state,
+        isolated-wheel execution, and real Gateway 3.15 coverage. Adoption of
+        rules with interceptors remains deliberately unsupported under the
         [Gateway specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md).
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous

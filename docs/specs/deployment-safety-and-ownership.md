@@ -297,18 +297,21 @@ locking, intent, compare-and-swap, and idempotency boundaries as topic and
 schema adoption. Reviewed Connector recovery uses the same strict managed
 observation and rejects partial, status/task-based, or unbound evidence.
 
-Flink and Gateway adoption remain unsupported. Their safe sequence is
-specified in the
-[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md)
-and must not be reordered merely by adding a CLI kind.
+Alias-only Gateway adoption now uses the same state-only protocol. It accepts
+one exact compiled adopted rule only when both the desired artifact and
+selected live aggregate have zero owned Interceptors. Two complete sequential
+Gateway observations bracket confirmation, exact action evidence makes an
+uncertain state commit recoverable, and no mutation endpoint is called. The
+safe sequence is specified in the [extended resource adoption
+plan](../plans/2026-09-02-extended-resource-adoption.md).
 
 A Gateway rule has compound provider identity: the backend and vCluster-scoped
 AliasTopic key plus the exact deterministic set of scoped Interceptor keys. Its
 physical topic and interceptor plugin class, priority, scope, and transformed
 configuration are managed content. Planning, status, apply, rollback,
-recovery, and eventual adoption must share one strict normalized aggregate;
+recovery, and adoption share one strict normalized aggregate;
 list order, broad name prefixes, or a logical rule name substituted for an
-alias are not identity evidence. The first adoption slice is limited to an
+alias are not identity evidence. The shipped adoption slice is limited to an
 exact alias whose desired and observed interceptor sets are both empty. Full
 interceptor adoption remains unsupported.
 

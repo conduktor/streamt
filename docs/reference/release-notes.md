@@ -5,6 +5,31 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
+## Unreleased — exact alias-only Gateway adoption
+
+`streamt adopt --kind gateway_rule` can now claim one compiled adopted
+Conduktor Gateway rule without changing the provider. The initial boundary is
+deliberately alias-only: the desired artifact and selected live aggregate must
+have zero rule-owned Interceptors, the exact AliasTopic must already exist in
+the bound backend and effective vCluster, and its physical cluster must
+normalize to canonical `main`.
+
+A new claim reads the AliasTopic and Interceptor collections once for review
+and repeats the same ordered pair after exact confirmation. Review output
+contains only the logical resource ID, effective vCluster, endpoint
+fingerprint, alias, canonical physical cluster, mapping checksums, aggregate
+fingerprints, artifact checksum, and pending-change categories. Physical topic
+names, the endpoint, credentials, and interceptor configuration are not
+emitted. An identical managed or adopted state claim returns after one complete
+two-GET observation without confirmation or a state write.
+
+Adoption records a version-1 Gateway action with exact reviewed current and
+desired aggregate surfaces, so uncertain local or PostgreSQL v2 state commits
+can use the normal reviewed recovery workflow. Source, PostgreSQL 14/18,
+isolated-wheel, and Conduktor Gateway 3.15 gates prove state-only behavior and
+zero mutation requests. Full adoption of rules with Interceptors remains
+unsupported.
+
 ## Unreleased — explicit reviewed Gateway rule removal
 
 Projects can now request removal of one exact managed Gateway rule with a
@@ -33,8 +58,8 @@ then observes one complete Gateway aggregate and deletion removes only its exact
 owned Interceptors and AliasTopic. The AliasTopic and Interceptor collection
 reads are sequential, not provider-atomic; external writers remain a TOCTOU
 boundary and any ambiguous or third-state evidence fails closed. Broad
-discovery, deletion by manifest absence, and Gateway adoption remain
-unsupported.
+discovery and deletion by manifest absence remain unsupported; Gateway
+adoption is a separate explicit alias-only workflow.
 
 ## Unreleased — exact Kafka Connect adoption
 
@@ -57,10 +82,10 @@ unbound and fail closed instead of inheriting authority over the configured
 endpoint.
 
 The command inherits the existing local and PostgreSQL v2 state-operation,
-locking, compare-and-swap, remote-state policy, and idempotency behavior.
-Gateway adoption remains planned, and Flink adoption remains deferred. This
-boundary is covered by source tests, an isolated-wheel command smoke test, a
-real Connect observer test, and the existing PostgreSQL 14/18 release gates.
+locking, compare-and-swap, remote-state policy, and idempotency behavior. Flink
+adoption remains deferred. This boundary is covered by source tests, an
+isolated-wheel command smoke test, a real Connect observer test, and the
+existing PostgreSQL 14/18 release gates.
 
 ## Unreleased — PostgreSQL v2 deployment state
 

@@ -557,7 +557,7 @@ streamt deletes only the exact live AliasTopic and owned Interceptors bound by
 the tombstone, reviewed action evidence, and ownership state. Removing a model
 or omitting a rule does not request deletion, and streamt does not discover
 Gateway deletion candidates by prefix or cluster-wide search. Gateway adoption
-remains unsupported.
+is a separate exact alias-only workflow described below.
 
 Online JSON plan output also includes `operation_status`, containing only safe
 status, operation ID/kind, stable failure code, and last safely successful
@@ -660,9 +660,10 @@ Summary: 2 created, 1 updated, 0 unchanged
 
 ### adopt
 
-Explicitly claim one existing Kafka topic, Schema Registry subject, or Kafka
-Connect connector for lifecycle management. Adoption changes only the
-configured ownership state; it never mutates the provider resource.
+Explicitly claim one existing Kafka topic, Schema Registry subject, Kafka
+Connect connector, or alias-only Conduktor Gateway rule for lifecycle
+management. Adoption changes only the configured ownership state; it never
+mutates the provider resource.
 
 ```bash
 streamt adopt \
@@ -700,8 +701,21 @@ streamt adopt \
   --confirm-env prod
 ```
 
+For one compiled Gateway rule with no desired Interceptors, use
+`--kind gateway_rule` and the model's logical ownership name:
+
+```bash
+streamt adopt \
+  --project-dir . \
+  --env prod \
+  --kind gateway_rule \
+  --name orders_view \
+  --confirm-resource streamt://payments/prod/gateway_rule/orders_view \
+  --confirm-env prod
+```
+
 `--name` is the stable logical declaration name, not a physical topic, subject,
-or connector name. It must resolve to exactly one compiled artifact whose
+connector, Gateway rule, or AliasTopic name. It must resolve to exactly one compiled artifact whose
 declaration explicitly sets `ownership.mode: adopted`. Topic adoption displays
 partitions, replication factor, dynamic configuration, and pending differences.
 Schema adoption displays only the subject, type, version, schema ID,
@@ -711,7 +725,13 @@ cluster equal to the effective default; an explicit non-default cluster fails
 closed. The claim binds the default alias, versioned normalized-endpoint
 fingerprint, and exact connector name. Review output contains checksums for the
 whole configuration plus sanitized changed-key categories and directions,
-never raw connector configuration or per-value fingerprints.
+never raw connector configuration or per-value fingerprints. Gateway adoption
+requires the exact AliasTopic to exist at the bound endpoint and effective
+vCluster with canonical physical cluster `main`. Both the desired rule and the
+selected live aggregate must have zero rule-owned Interceptors. Its review
+shows only the alias, binding fingerprint, mapping and aggregate fingerprints,
+artifact checksum, and pending-change categories; physical topic names,
+credentials, endpoint, and Interceptor configuration are omitted.
 
 Interactive use requires typing an exact token containing both the full
 resource ID and environment. Non-interactive use requires both exact
@@ -719,21 +739,28 @@ resource ID and environment. Non-interactive use requires both exact
 flag. A successful adoption atomically advances only the configured
 environment-scoped ownership state. Repeating an identical adoption is a no-op
 and does not advance its serial. Connector idempotency returns after one strict
-resource `GET`, without confirmation or a state write.
+resource `GET`; Gateway idempotency returns after one complete two-list
+observation. Neither path asks for confirmation or writes state.
 
-The accepted `--kind` values are `topic`, `schema`, and `connector`. A new
+The accepted `--kind` values are `topic`, `schema`, `connector`, and
+`gateway_rule`. A new
 Connector adoption performs exactly one percent-encoded
 `GET /connectors/<connector-name>` before confirmation and the same strict read
 again after confirmation. It does not call Connect list, status, task, create,
 update, delete, pause, resume, or restart APIs. A legacy unbound
 `backend: kafka-connect` ownership record fails closed; it is never silently
-rebound to the selected endpoint. Conduktor Gateway and Flink adoption remain
-unsupported under the gates in the
-[extended resource adoption plan](../plans/2026-09-02-extended-resource-adoption.md).
+rebound to the selected endpoint. A new Gateway adoption makes exactly two
+ordered collection GETs for review and repeats them after confirmation. The
+AliasTopic and Interceptor reads are sequential rather than provider-atomic,
+so external writers remain a TOCTOU boundary; any changed or third-state
+aggregate fails closed. Gateway POST, PUT, PATCH, and DELETE endpoints are not
+used. Full Gateway Interceptor adoption and Flink adoption remain unsupported
+under the gates in the [extended resource adoption
+plan](../plans/2026-09-02-extended-resource-adoption.md).
 
 !!! warning "Adoption uses configured state"
     Local adoption state is safe only for a single-user checkout. PostgreSQL v2
-    adoption for every supported kind, including Connector, uses the same exact
+    adoption for every supported kind, including Connector and Gateway, uses the same exact
     writer and distributed address lock as apply, and requires
     `writer_dsn_env`; owner/admin and local fallback are forbidden.
     Run `streamt plan --out ...` after adoption and review that plan before
@@ -1271,7 +1298,9 @@ For Gateway specifically, only a desired-absent match for an exact durable
 `delete` action may remove its ownership record. Manifest absence never creates
 or implies that action. Ordinary planning currently has no broad discovery of
 removed Gateway rules, so deleting a rule declaration does not itself schedule
-a provider delete. Gateway adoption remains unsupported.
+a provider delete. Alias-only `adopt` recovery requires the exact reviewed
+current aggregate; `observed` records the adopted ownership candidate and
+`rolled_back` retains the absent prior claim.
 
 Local recovery uses the local state authority and a crash-safe history
 sequence. PostgreSQL recovery requires an exact v2 catalog and resolves only

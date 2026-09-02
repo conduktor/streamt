@@ -268,6 +268,47 @@ This creates:
 2. **Filter interceptors** from SQL WHERE clauses
 3. **Masking interceptors** from security policies
 
+## Adopt an existing alias-only rule
+
+An existing AliasTopic can enter streamt ownership without a Gateway mutation
+when its compiled model is explicitly adopted and has no Interceptors:
+
+```yaml
+models:
+  - name: orders_public
+    ownership:
+      mode: adopted
+    materialized: virtual_topic
+    gateway:
+      virtual_topic:
+        name: orders.public
+    sql: |
+      SELECT * FROM {{ source("orders_raw") }}
+```
+
+```bash
+streamt adopt \
+  --project-dir . \
+  --env prod \
+  --kind gateway_rule \
+  --name orders_public \
+  --confirm-resource streamt://my-project/prod/gateway_rule/orders_public \
+  --confirm-env prod
+```
+
+The exact alias must already exist in the configured Gateway backend and
+effective vCluster, map to physical cluster `main`, and have no Interceptors
+owned by the selected rule. The physical topic may differ from the compiled
+desired mapping; the review reports that as secret-neutral checksums for a
+later plan. A new claim performs the AliasTopic and Interceptor list reads once
+before confirmation and once afterward, then writes ownership state only. The
+two list reads are sequential, not provider-atomic, so freeze external Gateway
+writers during adoption. Any changed or ambiguous aggregate fails closed.
+
+Rules with filters, masking, or any other Interceptor are not eligible for
+adoption yet. Create and review a fresh plan after adoption before applying a
+desired mapping difference.
+
 ## Troubleshooting
 
 ### Gateway Not Configured

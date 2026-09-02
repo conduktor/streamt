@@ -649,11 +649,12 @@ The completed Package 6 release boundary satisfies all of these gates:
 8. A focused real Gateway 3.15 test proves exact deletion and cleanup.
 9. Full unit, integration, lint, zero-error mypy, packaging, targeted secrecy,
    and strict documentation gates pass together.
-10. Gateway recovery documentation remains accurate and Gateway adoption stays
-    unsupported.
+10. Gateway recovery documentation remains accurate and removal never implies
+    or authorizes adoption.
 
 All ten gates pass, so Package 6's ordinary delete-source boundary is complete.
-Gateway adoption remains separately gated by the alias-only adoption plan.
+Alias-only Gateway adoption is delivered separately by the completed Package 7;
+this removal contract does not broaden it.
 
 ## Completion checklist
 

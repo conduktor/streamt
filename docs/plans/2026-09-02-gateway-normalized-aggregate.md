@@ -20,15 +20,17 @@ tombstones, exact state preflight, one-snapshot planning, reviewed-plan v4
 action evidence, destructive authorization, mutation, state projection, and
 recovery reuse are enabled. Local and PostgreSQL 14/18 command lifecycles,
 uncertain-delete recovery, isolated installed-wheel execution, and focused real
-Gateway 3.15 exact deletion pass. Gateway adoption remains unsupported and is
-the separate Package 7 boundary.
+Gateway 3.15 exact deletion pass. Package 7 is also complete: exact alias-only
+Gateway adoption, durable recovery, local and PostgreSQL v2 state, isolated
+installed-wheel execution, and focused real Gateway 3.15 observation pass.
 
-This specification freezes the implementation contract for Package 6 of the
+This specification freezes the implementation contract for Packages 6 and 7 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
-Package 6 is complete, while Gateway adoption remains unsupported.
+Packages 6 and 7 are complete. Adoption remains intentionally limited to rules
+with no desired or selected owned interceptors.
 
-The work is intentionally staged. The public `streamt adopt` choices must not
-include `gateway_rule` until the normalized aggregate is used by planning,
+The work was intentionally staged. The public `streamt adopt` choices did not
+include `gateway_rule` until the normalized aggregate was used by planning,
 status, state projection, exact mutation and rollback, and reviewed recovery,
 and the alias-only release gates in this document pass. A partial observer or a
 working happy-path command is not enough to cross that boundary.
@@ -44,7 +46,7 @@ working happy-path command is not enough to cross that boundary.
 | Status and health | Complete | All selected rules derive normalized status and health from one reusable strict snapshot with secret-neutral drift evidence. |
 | Exact apply, delete, and rollback | Complete | The managed mutation core and planner routing require canonical aggregate evidence; rollback is limited to exact reviewed creates, and explicit removal is sourced only from a strict lifecycle tombstone and complete present surface, never broad discovery. |
 | Reviewed recovery | Complete | Durable current/desired action evidence, legacy compatibility, preflight identity/state binding, one bounded snapshot across desired and explicitly removed targets, and exact create/update/delete current-or-candidate decisions pass local, PostgreSQL 14/18, installed-wheel, and real-Gateway release gates. |
-| Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
+| Alias-only adoption | Complete | `streamt adopt --kind gateway_rule` claims one exact present alias-only rule with two bounded observations, no provider mutation, and reviewed recovery. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
 resources. A streamt Gateway rule is a compound provider resource, never an
@@ -650,10 +652,12 @@ The implementation and durable workflow release gates are complete:
    documentation checks pass together.
 
 The required local and PostgreSQL v2 reviewed-recovery gates now pass. Gateway
-adoption remains absent from `_SUPPORTED_ACTIONS` and the CLI until the separate
-alias-only Stage 10 gates pass.
+alias-only adoption is represented as a state-only `adopt` action with exact
+current and desired aggregate evidence.
 
 ## Stage 10: alias-only adoption
+
+Status: complete.
 
 Only after Stages 1 through 9 are complete may `streamt adopt --kind
 gateway_rule` be exposed. The initial release accepts exactly one strict bound
@@ -701,7 +705,7 @@ equivalence for every supported plugin.
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
 | Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit authenticated Gateway readiness | `tests/integration/test_gateway_strict_observer_real.py`, `.github/workflows/ci.yml` |
 | PostgreSQL v2 | Production factory and writer; finalized `adopt` history; no local state; exact Gateway backend; two observations; exact reviewed recovery | `tests/postgres/test_postgres_ordinary_factory_commands_real.py`, `tests/postgres/test_postgres_recovery_commands_real.py` |
-| Installed wheel | Gateway kind appears in isolated CLI; PostgreSQL command tests execute from the isolated wheel on supported PostgreSQL majors | `.github/workflows/ci.yml` |
+| Installed wheel | Gateway kind appears in the isolated CLI; a strict authenticated fake Gateway proves four ordered GETs, zero mutation, exact state, secret-neutral output, and an idempotent two-GET retry; PostgreSQL command tests execute from the isolated wheel on supported PostgreSQL majors | `tests/package/gateway_adoption_wheel_smoke.py`, `.github/workflows/ci.yml` |
 
 The real Gateway release job may run the narrow strict-observer case rather than
 the entire Gateway semantic suite, but it must start and explicitly wait for the
@@ -743,7 +747,16 @@ checked:
       3.15 exact-deletion gate pass.
 - [x] Unit, typing, lint, strict documentation, packaging, PostgreSQL, and real
       Gateway observation/deletion checks pass together.
+- [x] Alias-only adoption selects one exact adopted rule with no desired or
+      selected owned interceptors and persists only canonical ownership state.
+- [x] New adoption uses two complete two-list observations, rejects drift, and
+      exposes only secret-neutral mapping, aggregate, and artifact evidence.
+- [x] Interrupted adoption has exact local and PostgreSQL v2 reviewed recovery;
+      the existing Gateway action-evidence version and legacy checksums remain
+      stable.
+- [x] Isolated installed-wheel and real Gateway 3.15 adoption gates prove four
+      ordered GETs, unrelated-resource isolation, and zero provider mutation.
 
-Package 7 is now the next planned implementation. Gateway adoption remains
-unsupported until its additional alias-only command, installed-wheel, local
-state, PostgreSQL v2, and real Gateway gates pass.
+Package 7 is complete. Full adoption of Gateway rules with interceptors remains
+unsupported until declaration-to-provider round-trip equivalence and complete
+extra-interceptor evidence have a separately reviewed release design.
