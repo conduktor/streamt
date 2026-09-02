@@ -12,11 +12,11 @@ from the same prior snapshot. The normative boundary is
 Slices 1 through 3 and the Slice 4A configuration/policy boundary are
 complete. Slice 4A landed in `2b75090`, building on the read-only local status
 command from `0e04112`. Slice 4B now includes explicit PostgreSQL store/address
-initialization, read-only diagnostics, and PostgreSQL 14/18 real-server and
-process-concurrency gates. The non-reserving lock-availability probe remains.
-Normal PostgreSQL state reads and mutations for `plan`, `apply`, and `adopt`
-remain deliberately disabled until the full backend and operation protocol pass
-later acceptance gates.
+initialization, read-only status, non-reserving lock diagnostics, and PostgreSQL
+14/18 real-server and process-concurrency gates. Slice 4B is complete. Normal
+PostgreSQL state reads and mutations for `plan`, `apply`, and `adopt` remain
+deliberately disabled until the full backend and operation protocol pass later
+acceptance gates.
 
 ## Current implementation audit
 
@@ -208,16 +208,17 @@ Psycopg dependency, strict version-1 schema/owner/ACL contract, bounded
 read-only `state status` snapshot, confirmation-gated `state init`,
 TLS/endpoint policy, size caps, secret-neutral failure translation, no-fallback
 CLI wiring, and separate-process initialization convergence are implemented.
-The status lock probe remains before Slice 4B is complete. Ordinary PostgreSQL
-authority stays disabled.
+The separate `state lock-status` diagnostic completes Slice 4B with full
+catalog validation and a primary-only, instantaneous, transaction-scoped probe.
+Ordinary PostgreSQL authority stays disabled.
 
 This slice makes a configured PostgreSQL store administratively inspectable;
 it does not make PostgreSQL the state authority for normal commands. Keep
 `make_deployment_state_service()` and the online `plan`, `apply`, and `adopt`
 paths on their current sanitized unavailable result for `backend: postgres`.
-Use a separate, narrow administrative factory from `state init` and
-`state status` so an incomplete mutation backend cannot be selected
-accidentally.
+Use separate, narrow administrative factories from `state init`, `state
+status`, and `state lock-status` so an incomplete mutation backend cannot be
+selected accidentally.
 
 1. Add a lazy optional Psycopg 3 dependency and an administrative adapter under
    `src/streamt/deployer/`. A base installation must still import and operate
@@ -255,11 +256,17 @@ accidentally.
    current ownership, and operation control in one bounded, read-only,
    repeatable-read transaction and report only safe fields. Distinguish
    `uninitialized` from `ready`; fail closed on partial or incompatible stores.
-6. Add an explicit status lock probe that uses an immediate PostgreSQL session
-   advisory try-lock and releases it on the same session. Report only
-   `available`, `busy`, or `unregistered`; do not expose an owner, token,
-   backend key, connection detail, or imply that the racy probe reserves the
-   lock for a later command.
+6. Add explicit `streamt state lock-status`. Validate the complete version-1
+   catalog and require a primary server in an explicit repeatable-read,
+   read-only transaction. For a registered address, call
+   `pg_try_advisory_xact_lock(bigint)` exactly once; for an unregistered address,
+   do not touch the advisory lock. Return `available`, `busy`, or `unregistered`
+   as successful diagnostic outcomes. Require rollback to succeed before
+   returning so the transaction-scoped lock is released, and report
+   `reservation: none`. The full read validates operation-control rows, but the
+   command must not report, clear, or interpret durable operation control as
+   mutation safety; operators use `state status` to view it. Never imply that
+   this instantaneous, racy observation authorizes later mutation.
 7. Set connection, statement, and lock timeouts; enforce TLS policy and the
    state-read size cap; set transaction-local `search_path` to `pg_catalog`;
    qualify state objects explicitly; and close/rollback on every failure path.
@@ -289,7 +296,12 @@ Acceptance:
   closed without returning resource content.
 - Lock probing covers available, busy, unregistered, and terminated-session
   behavior in separate-process tests. It never creates an address row or
-  operation marker.
+  operation marker, never invokes an advisory lock for an unregistered address,
+  and returns no result unless rollback releases any acquired transaction lock.
+- Lock diagnostics require a direct, session-affine primary endpoint.
+  Transaction- and statement-pooling endpoints are unsupported: PostgreSQL
+  advisory locks are physical-session and reentrant state, and Slice 5 operation
+  locking must preserve that affinity for the complete operation.
 - Secret-shaped DSNs, driver messages, SQL, identifiers, and nested exception
   values do not appear in text or structured errors.
 - CI exercises the minimum and current supported PostgreSQL majors, while a
@@ -306,10 +318,9 @@ Implemented surface: the optional dependency metadata, focused
 `src/streamt/deployer/postgres_state.py` administrative adapter, narrow wiring
 in `src/streamt/cli/commands/state_cmd.py`, unit tests for SQL composition and
 failure translation, CLI init/status tests, process-level PostgreSQL
-integration tests, and the PostgreSQL CI service matrix. The remaining lock
-probe belongs in this same narrow adapter. Do not alter the ordinary
-state-service factory beyond tests that prove PostgreSQL selection remains
-disabled.
+integration tests, the `state lock-status` CLI and probe tests, and the
+PostgreSQL CI service matrix. Do not alter the ordinary state-service factory
+beyond tests that prove PostgreSQL selection remains disabled.
 
 ### Slice 5: PostgreSQL mutation backend
 

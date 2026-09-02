@@ -93,8 +93,8 @@ Local accepts no remote fields and stores ownership at
 not shared or distributed runners.
 
 The strict PostgreSQL shape lets projects explicitly initialize, register, and
-inspect a future remote authority through the narrow `state init` and
-`state status` administrative commands:
+inspect a future remote authority through the narrow `state init`, `state
+status`, and `state lock-status` administrative commands:
 
 ```yaml
 deployment_state:
@@ -110,7 +110,7 @@ deployment_state:
 |-------|------|---------|-------------|
 | `backend` | `local` or `postgres` | local when the block is omitted | Required discriminator in every explicit block |
 | `namespace` | string | - | Required, nonempty, slash-free PostgreSQL state-address namespace |
-| `lock_timeout_seconds` | integer | `30` | PostgreSQL initializer advisory-lock and catalog lock wait, from 1 through 300 seconds |
+| `lock_timeout_seconds` | integer | `30` | PostgreSQL initializer advisory-lock and administrative catalog lock wait, from 1 through 300 seconds |
 | `postgres.dsn_env` | string | - | Required environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `postgres.schema` | string | `streamt` | Unquoted schema name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 
@@ -125,12 +125,14 @@ been applied. Validation, compilation, and offline plan do not read it.
     version-1 store in a bounded, repeatable-read, read-only transaction.
     `state init` is the sole PostgreSQL administrative write: it requires exact
     project, effective-environment, and canonical-address confirmations and can
-    create or register only an empty address. A missing extra, DSN, invalid
-    connection policy, unavailable database, or incompatible store fails with
-    a secret-neutral state error. Online plan, apply, and adopt still fail with
-    `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local state.
-    Ownership mutation, migration, recovery, ordinary operation locking, and
-    lock-availability probing remain deferred.
+    create or register only an empty address. `state lock-status` separately
+    reports instantaneous `available`, `busy`, or `unregistered` diagnostics;
+    it reserves nothing and cannot authorize mutation. A missing extra, DSN,
+    invalid connection policy, unavailable database, or incompatible store
+    fails with a secret-neutral state error. Online plan, apply, and adopt still
+    fail with `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local
+    state. Ownership mutation, migration, recovery, and ordinary operation
+    locking remain deferred.
 
 !!! note "PostgreSQL roles and catalog security"
     The initializer identity owns a newly created schema and all seven state
@@ -140,9 +142,17 @@ been applied. Validation, compilation, and offline plan do not read it.
     catalog requires one common schema/table owner and rejects every `PUBLIC`
     ACL; a named status role may have only non-grantable schema `USAGE` and
     non-grantable table or column `SELECT`. Any mutating or grantable non-owner
-    ACL fails closed. Both administrative paths set the transaction-local
+    ACL fails closed. All three administrative paths set the transaction-local
     `search_path` to `pg_catalog`, and all state objects use validated,
     schema-qualified identifiers.
+
+!!! warning "PostgreSQL endpoint affinity"
+    Lock diagnostics require a direct, session-affine primary endpoint.
+    Transaction- and statement-pooling endpoints are unsupported because
+    PostgreSQL advisory locks are physical-session and reentrant state, and the
+    future operation lock must retain one connection for its complete lifetime.
+    The diagnostic uses one transaction-scoped try-lock and requires successful
+    rollback before returning, so even `available` means no reservation remains.
 
 In multi-environment mode, a root `deployment_state` is inherited when the
 selected environment omits the block. An environment block replaces the whole

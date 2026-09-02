@@ -138,7 +138,10 @@ Target: close the loop between declared intent and runtime evidence.
       registration, fresh read-back verification, and PostgreSQL 14/18
       process-concurrency gates. PostgreSQL remains unavailable as the authority
       for plan/apply/adopt.
-- [ ] Add the non-reserving PostgreSQL operation-lock availability probe.
+- [x] Add non-reserving PostgreSQL `state lock-status` diagnostics with exact
+      catalog validation, primary-only endpoint checks, and explicit proof that
+      every successful probe releases its transaction-scoped lock before
+      returning. The instantaneous result does not reserve future work.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is

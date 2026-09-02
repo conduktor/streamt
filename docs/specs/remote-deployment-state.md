@@ -6,11 +6,12 @@ Partially implemented safety contract. The provider-neutral state boundary,
 local version 1 JSON provider, strict provider configuration, and safe status
 command are implemented. PostgreSQL has a separate optional administrative
 adapter for strict read-only status and explicit, confirmation-gated version-1
-store/address initialization; it is not selectable as ordinary state authority.
-Remote ownership mutation and operation locking are not operational until an
-implementation satisfies this specification and its conformance tests. Local
-JSON remains the only ordinary provider and the compatibility default for
-single-user development.
+store/address initialization. A separate `state lock-status` command reports
+instantaneous, non-reserving advisory-lock availability. PostgreSQL is not
+selectable as ordinary state authority. Remote ownership mutation and operation
+locking are not operational until an implementation satisfies this
+specification and its conformance tests. Local JSON remains the only ordinary
+provider and the compatibility default for single-user development.
 
 ## Scope
 
@@ -333,14 +334,20 @@ There is no ordinary PostgreSQL runtime role yet; any later DML/lock role and
 schema-migration role contract must land with the mutation backend rather than
 weakening this administrative catalog implicitly.
 
-Status and initialization set transaction-local `search_path` to `pg_catalog`.
-All state-object identifiers are validated and schema-qualified. Initialization
-takes a bounded schema-scoped session advisory lock before beginning its
-serializable transaction, so a concurrent waiter starts from a fresh snapshot
-after the prior initializer commits. The complete result is validated before
-commit and again through a fresh read-only connection afterward. A precommit
-failure rolls back DDL and rows together. An ambiguous commit is not retried;
-the operator resolves it with status or the identical confirmed init request.
+All three administrative paths set transaction-local `search_path` to
+`pg_catalog`. All state-object identifiers are validated and schema-qualified.
+Initialization takes a bounded schema-scoped session advisory lock before
+beginning its serializable transaction, so a concurrent waiter starts from a
+fresh snapshot after the prior initializer commits. The complete result is
+validated before commit and again through a fresh read-only connection
+afterward. A precommit failure rolls back DDL and rows together. An ambiguous
+commit is not retried; the operator resolves it with status or the identical
+confirmed init request.
+
+Lock diagnostics require a direct, session-affine primary endpoint. PostgreSQL
+advisory locks are physical-session, reentrant state, and the future operation
+lock must remain on one connection for its complete lifetime. Transaction- and
+statement-pooling endpoints are therefore unsupported for this integration.
 
 State size has a configured hard limit checked before mutation. The provider
 must set statement and lock timeouts, require TLS for non-loopback endpoints by
@@ -355,7 +362,8 @@ plus a best-effort lock file does not meet this contract.
 Use `deployment_state` to avoid confusion with Flink application state:
 
 ```yaml
-# Administrative init/status are available; PostgreSQL state authority is not.
+# Administrative init/status/lock diagnostics are available.
+# PostgreSQL state authority is not.
 deployment_state:
   backend: postgres
   namespace: platform
@@ -410,6 +418,7 @@ streamt state init -p PATH -e ENV \
   --confirm-env ENV \
   --confirm-address streamt-state://NAMESPACE/PROJECT/ENV
 streamt state status -p PATH -e ENV
+streamt state lock-status -p PATH -e ENV
 ```
 
 `init` is PostgreSQL-only and requires all three confirmations to exactly match
@@ -424,9 +433,26 @@ For PostgreSQL, `status` uses a separate administrative adapter and one bounded,
 repeatable-read, read-only snapshot. It verifies the exact version-1 catalog
 and reports backend kind, store ID, address, serial, checksum, and safe
 operation status without credentials, endpoint details, SQL, raw exceptions,
-or ownership payload. Lock-availability probing, ordinary state authority,
-ownership mutation, `migrate`, `recover`, and `export` remain deferred. Normal
-commands never initialize or migrate a remote store implicitly.
+or ownership payload.
+
+`lock-status` is a separate diagnostic command. It validates the complete
+version-1 catalog and requires `pg_is_in_recovery()` to report a primary inside
+an explicit repeatable-read, read-only transaction. An unregistered address
+returns `unregistered` without invoking an advisory-lock function. A registered
+address calls `pg_try_advisory_xact_lock(bigint)` once and reports `available`
+or `busy`. All three are successful CLI outcomes. Before returning any result,
+streamt requires rollback to succeed, releasing a transaction-scoped lock; the
+probe therefore reserves nothing and cannot leak a successful acquisition.
+
+The result contains only `backend`, safe `store_id`, canonical `address`,
+`lock_status`, `reservation: none`, and
+`ordinary_state_authority: disabled`. It is an instantaneous, racy observation,
+not a lock for later work and not evidence that mutation is safe. Full catalog
+validation reads the operation-control rows, but the command does not report,
+clear, or interpret durable operation control as mutation safety; use `state
+status` to view it. Ordinary state authority, ownership mutation, operation
+locking, `migrate`, `recover`, and `export` remain deferred. Normal commands
+never initialize or migrate a remote store implicitly.
 
 The environment-only `safety.require_remote_state` policy defaults to `false`.
 When enabled, it fails `apply` and `adopt` before confirmation, compilation,
@@ -447,6 +473,9 @@ documented config migration and release notice.
   out of status-only and ordinary deployment jobs. Provision status roles
   externally with only the non-grantable `USAGE`/`SELECT` ACL accepted by the
   exact catalog; streamt never creates or grants a database role.
+- Point lock diagnostics directly at a session-affine primary. Do not use a
+  transaction- or statement-pooling endpoint. The probe creates no role or
+  grant and does not enable ordinary state authority.
 - Map provider failures to stable sanitized errors. Detailed diagnostics, when
   explicitly enabled, still pass through central key, URL, authorization, and
   inline-value redaction.

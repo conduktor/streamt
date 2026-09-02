@@ -41,8 +41,9 @@ python -m pip install "streamt[postgres] @ git+https://github.com/conduktor/stre
 The base package continues to support local deployment state without Psycopg.
 The PostgreSQL extra enables the bounded `streamt state status` reader and the
 separately gated, confirmation-required `streamt state init` administrator. It
-does not enable PostgreSQL plan/apply/adopt, ownership-state mutation, or
-operation locking.
+also enables the instantaneous, non-reserving `streamt state lock-status`
+diagnostic. It does not enable PostgreSQL plan/apply/adopt, ownership-state
+mutation, or operation locking.
 
 Initialization requires an explicit DSN endpoint and a database identity that
 can create the configured schema, or that already owns the configured empty
@@ -52,6 +53,13 @@ status-only identity outside streamt. A status-only identity may have only
 non-grantable `USAGE` on the schema and non-grantable `SELECT` on its state
 tables or columns. `PUBLIC` access, mutating or grantable reader privileges, and
 mixed schema/table ownership fail catalog verification.
+
+Point `state lock-status` at a direct, session-affine primary endpoint.
+Transaction- and statement-pooling endpoints are unsupported because advisory
+locks are physical-session and reentrant state, and future operation locking
+must retain one connection for the complete operation. The diagnostic needs no
+role or grant beyond the permitted status-reader access and releases its
+transaction-scoped probe before returning.
 
 ## Development Installation
 

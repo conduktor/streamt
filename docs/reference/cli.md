@@ -20,6 +20,7 @@ Complete reference for all streamt CLI commands.
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
 | Initialize configured PostgreSQL state | `state init` | No |
+| Probe instantaneous PostgreSQL lock availability | `state lock-status` | No |
 | Inspect ownership/recovery metadata | `state status` | No |
 | Claim an existing declared topic or schema subject | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
@@ -862,6 +863,67 @@ secret-neutral `E420_STATE_BACKEND_UNAVAILABLE`; no local fallback occurs.
 
 ---
 
+### state lock-status
+
+Probe the instantaneous availability of the configured PostgreSQL address lock.
+This separate diagnostic command does not acquire a reservation for later work
+or enable ordinary PostgreSQL state authority.
+
+```bash
+streamt state lock-status [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
+
+The command validates the complete version-1 catalog and requires a direct,
+session-affine primary endpoint. It runs in an explicit repeatable-read,
+read-only transaction. For an unregistered address it returns `unregistered`
+without invoking an advisory-lock function. For a registered address it calls
+`pg_try_advisory_xact_lock(bigint)` once and returns `available` or `busy`.
+`available`, `busy`, and `unregistered` are all successful command outcomes.
+
+Before returning any result, streamt requires the transaction rollback to
+succeed. That rollback releases a successful transaction-scoped probe lock, so
+the command neither reserves nor leaks it. The observation is instantaneous
+and racy: another process may acquire the lock immediately afterward, and the
+result cannot authorize mutation. Full catalog validation reads the
+operation-control rows, but the command does not report, clear, or interpret
+durable operation control as mutation safety; use `streamt state status` to
+view it.
+
+Structured output contains only:
+
+```json
+{
+  "backend": "postgres",
+  "store_id": "8d04f3f7-...",
+  "address": "streamt-state://platform/payments/prod",
+  "lock_status": "available",
+  "reservation": "none",
+  "ordinary_state_authority": "disabled"
+}
+```
+
+PostgreSQL advisory locks are physical-session and reentrant state. Use a direct
+or session-affine primary connection; transaction- and statement-pooling
+endpoints are unsupported. This is also required by the future operation lock,
+which must retain one connection for its complete lifetime. The probe creates no
+roles, grants, address rows, or operation markers.
+
+An invalid catalog uses `E411_STATE_INVALID`. A replica, missing dependency or
+credential, connection failure, or unsuccessful rollback uses secret-neutral
+`E420_STATE_BACKEND_UNAVAILABLE`. No local fallback occurs.
+
+```bash
+streamt state lock-status -p . -e prod
+streamt -o json state lock-status -p . -e prod
+```
+
+---
+
 ### state status
 
 Inspect safe configured ownership-state and operation-control metadata without
@@ -901,7 +963,7 @@ ACL, and no non-owner access beyond non-grantable schema `USAGE` and table or
 column `SELECT`. The read-only transaction sets `search_path` to `pg_catalog`
 and uses schema-qualified state objects. PostgreSQL remains unavailable to
 ordinary plan/apply/adopt. Recovery, migration, ownership mutation, ordinary
-operation locking, and remote lock-availability probing are not implemented.
+operation locking, and lock reservation for mutation are not implemented.
 
 ```bash
 streamt state status -p . -e prod
