@@ -517,7 +517,16 @@ def test_one_run_identity_cannot_cross_job_identities() -> None:
 def test_wheel_contains_every_openlineage_schema_resource(tmp_path: Path) -> None:
     repository = Path(__file__).parents[2]
     subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--wheel-dir",
+            str(tmp_path),
+            str(repository),
+        ],
         cwd=repository,
         check=True,
         capture_output=True,
@@ -539,7 +548,16 @@ def test_wheel_contains_every_openlineage_schema_resource(tmp_path: Path) -> Non
 
     installed = tmp_path / "installed"
     subprocess.run(
-        ["uv", "pip", "install", "--target", str(installed), "--no-deps", str(wheel)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            str(installed),
+            "--no-deps",
+            str(wheel),
+        ],
         check=True,
         capture_output=True,
         text=True,
