@@ -103,6 +103,76 @@ jobs:
           /tmp/streamt-wheel-smoke/bin/streamt --help
           /tmp/streamt-wheel-smoke/bin/python -c 'from streamt.docs.asyncapi import generate_asyncapi_document; from streamt.core.models import StreamtProject; project = StreamtProject.model_validate({"apiVersion": "streamt.dev/v1alpha1", "project": {"name": "wheel-smoke"}, "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}}, "sources": [{"name": "events", "topic": "events"}]}); assert generate_asyncapi_document(project)["asyncapi"] == "3.1.0"'
 
+      - name: Smoke-test installed ODCS export offline
+        run: |
+          cd /tmp
+          /tmp/streamt-wheel-smoke/bin/python - <<'PY'
+          import socket
+          import tempfile
+          from pathlib import Path
+
+          import yaml
+          from click.testing import CliRunner
+
+          def fail_network(*_args: object, **_kwargs: object) -> None:
+              raise AssertionError("installed ODCS export attempted network access")
+
+          socket.getaddrinfo = fail_network
+          socket.create_connection = fail_network
+
+          from streamt.cli import main
+          from streamt.docs.odcs import _official_schema, validate_odcs_document
+
+          schema = _official_schema()
+          assert schema["$schema"] == "https://json-schema.org/draft/2019-09/schema"
+
+          project_dir = Path(tempfile.mkdtemp(prefix="streamt-odcs-wheel-"))
+          (project_dir / "stream_project.yml").write_text(
+              yaml.safe_dump(
+                  {
+                      "apiVersion": "streamt.dev/v1alpha1",
+                      "project": {"name": "wheel-smoke", "version": "1.0.0"},
+                      "runtime": {
+                          "kafka": {
+                              "bootstrap_servers": "offline.invalid:9092",
+                          }
+                      },
+                      "sources": [
+                          {
+                              "name": "events",
+                              "topic": "events.v1",
+                              "columns": [
+                                  {"name": "id", "type": "BIGINT", "required": True}
+                              ],
+                          }
+                      ],
+                  },
+                  sort_keys=False,
+              ),
+              encoding="utf-8",
+          )
+          result = CliRunner().invoke(
+              main,
+              [
+                  "docs",
+                  "odcs",
+                  "--project-dir",
+                  str(project_dir),
+                  "--contract-id",
+                  "urn:streamt:wheel-smoke",
+                  "--status",
+                  "draft",
+              ],
+              catch_exceptions=False,
+          )
+          assert result.exit_code == 0, result.output
+          document = yaml.safe_load(result.stdout)
+          assert document["apiVersion"] == "v3.1.0"
+          assert document["id"] == "urn:streamt:wheel-smoke"
+          assert "offline.invalid" not in result.stdout
+          validate_odcs_document(document)
+          PY
+
   docs:
     runs-on: ubuntu-latest
 

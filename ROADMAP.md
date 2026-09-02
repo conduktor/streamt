@@ -94,7 +94,9 @@ plane.
 - [x] Generate validated AsyncAPI 3.x documents (3.1 documents validated
       offline against the pinned official schema plus semantic reference
       checks).
-- [ ] Generate Open Data Contract Standard documents.
+- [x] Generate Open Data Contract Standard 3.1.0 project-wide schema documents
+      with pinned offline validation and explicit contract identity, status,
+      and version metadata.
 - [ ] Emit OpenLineage-compatible compile and runtime events.
 - [ ] Publish catalog metadata to Conduktor Console and support portable exports
       for Backstage/DataHub-style catalogs.

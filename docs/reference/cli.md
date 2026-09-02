@@ -1107,6 +1107,68 @@ without declared columns. Unsupported or malformed Flink types and identifier
 collisions fail closed. See [AsyncAPI export](asyncapi.md) for the exact
 validation and representation boundary.
 
+#### docs odcs
+
+Generate one deterministic, offline-validated Open Data Contract Standard
+(ODCS) 3.1.0 document for one parsed streamt project.
+
+```bash
+streamt docs odcs [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--contract-id ID` | Explicit contract identity; semantically required and copied exactly |
+| `--status STATUS` | Explicit lifecycle status; semantically required and copied exactly |
+| `--contract-version VERSION` | Contract version; defaults to the exact `project.version` |
+| `--format yaml\|json` | Raw-document serialization (default: `yaml`) |
+| `--output-file PATH` | Atomically replace this file instead of writing the raw document to stdout |
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+**Examples:**
+
+```bash
+# YAML is the default raw format
+streamt docs odcs \
+  --contract-id urn:acme:data-contract:payments \
+  --status active > payments.odcs.yaml
+
+# Write validated JSON through an atomic file replacement
+streamt docs odcs \
+  --contract-id urn:acme:data-contract:payments \
+  --status active \
+  --contract-version 2.3.0 \
+  --format json \
+  --output-file payments.odcs.json
+
+# Keep the document as an object in the standard streamt JSON envelope
+streamt --output json docs odcs \
+  --contract-id urn:acme:data-contract:payments \
+  --status active \
+  --format yaml
+```
+
+Without `--output-file`, text mode reserves stdout for exactly one raw YAML or
+JSON document. Parser notices and incomplete-schema warnings go to stderr. The
+global `--output json` option instead returns one normal streamt envelope with
+the document under `data.document`; local `--format` remains serialization
+metadata and does not replace the envelope. With `--output-file`, serialization
+and validation complete before streamt stages and atomically replaces the
+explicit target.
+
+Contract ID and status never receive defaults. A version must come from
+`--contract-version` or non-blank `project.version`. Invalid contract metadata,
+mapping, validation, serialization, or output uses `E505_ODCS_INVALID`.
+
+The document contains every declared source and model once. It maps only
+declared schema facts and does not export data quality, SLAs, teams, roles,
+servers, runtime endpoints, credentials, SQL, catalog publication state, or a
+separate contract per model. See [ODCS export](odcs.md) for the exact mapping,
+validation, and omission boundary.
+
 #### docs openapi
 
 Deprecated compatibility alias for `streamt docs asyncapi`. It emits the exact
@@ -1318,6 +1380,8 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E501_PARSE_ERROR` | YAML/SQL parsing error |
 | `E502_ENV_VAR_ERROR` | Environment variable not set |
 | `E503_ENVIRONMENT_ERROR` | Environment configuration error |
+| `E504_ASYNCAPI_INVALID` | AsyncAPI generation or validation failed |
+| `E505_ODCS_INVALID` | ODCS metadata, mapping, validation, serialization, or output failed |
 
 **Governance Errors (E6xx):**
 
@@ -1348,6 +1412,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `W106_LOCAL_STATE_ONLY` | Local ownership state is unsafe for shared CI without remote locking |
 | `W107_SCHEMA_ENRICHMENT_SKIPPED` | Optional Schema Registry enrichment was unavailable or unsupported |
 | `W108_IMPORT_TARGET_EXISTS` | Dry-run target exists; a real import would refuse to overwrite it |
+| `W109_ODCS_SCHEMA_INCOMPLETE` | A source or model has no declared columns, so its ODCS object omits properties |
 | `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
 | `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
 | `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |
