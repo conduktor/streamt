@@ -312,8 +312,10 @@ def docs_odcs(
                 "output_file": rendered_output_file,
             }
         )
-        if output_file is not None:
-            fmt.print(f"ODCS document written to {output_file}")
+        if output_file is not None and fmt.format == "text" and not fmt.quiet:
+            # Paths are machine-significant confirmation data. Rich may insert
+            # hard line breaks at the terminal width, even in captured output.
+            click.echo(f"ODCS document written to {output_file}")
         fmt.flush()
 
     except (EnvVarError, ParseError, EnvironmentError) as error:
