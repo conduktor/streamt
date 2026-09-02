@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Optional
 
 from streamt.compiler.flink_ddl import kafka_with_properties
@@ -16,11 +17,15 @@ from streamt.core.models import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from streamt.core.models import StreamtProject
+    from streamt.core.parser import ProjectParser
 
 
 class SQLGeneratorMixin:
     """Mixin providing SQL generation methods for the Compiler."""
+
+    project: StreamtProject
+    parser: Optional[ProjectParser]
 
     def _get_type_cast_expression(self, user_type: str) -> str:
         """Map user-friendly type names to Flink SQL type expressions."""
@@ -49,7 +54,7 @@ class SQLGeneratorMixin:
         self, test: DataTest, source_topic: str, columns: list[str]
     ) -> str:
         """Generate Flink SQL for a continuous test."""
-        bootstrap = self._get_flink_bootstrap_servers()  # type: ignore[attr-defined]
+        bootstrap = self._get_flink_bootstrap_servers()
         sql_parts = []
 
         # Generate column DDL
@@ -59,7 +64,7 @@ class SQLGeneratorMixin:
             columns_ddl = "`_raw` STRING"
 
         # Source table (model output)
-        kafka = self.project.runtime.kafka  # type: ignore[attr-defined]
+        kafka = self.project.runtime.kafka
         src_with = kafka_with_properties(
             kafka, source_topic, bootstrap, {"scan.startup.mode": "latest-offset"}
         )
@@ -78,17 +83,25 @@ class SQLGeneratorMixin:
         violation_conditions: list[tuple[str, str, str]] = []
         for assertion in test.assertions:
             assertion_type = list(assertion.keys())[0]
-            config = assertion[assertion_type]
+            raw_config = assertion[assertion_type]
+            if not isinstance(raw_config, Mapping):
+                raise TypeError(f"{assertion_type} assertion config must be a mapping")
+            config: Mapping[str, object] = raw_config
 
             if assertion_type == "not_null":
-                for col in config.get("columns", []):
-                    if col in columns:
+                configured_columns = config.get("columns", [])
+                if not isinstance(configured_columns, list):
+                    raise TypeError("not_null assertion columns must be a list")
+                for col in configured_columns:
+                    if isinstance(col, str) and col in columns:
                         violation_conditions.append((f"`{col}` IS NULL", f"not_null:{col}", col))
 
             elif assertion_type == "accepted_values":
                 col = config.get("column")
                 values = config.get("values", [])
-                if col and col in columns and values:
+                if not isinstance(values, list):
+                    raise TypeError("accepted_values assertion values must be a list")
+                if isinstance(col, str) and col in columns and values:
                     values_str = ", ".join(f"'{v}'" for v in values)
                     violation_conditions.append(
                         (f"`{col}` NOT IN ({values_str})", f"accepted_values:{col}", col)
@@ -98,7 +111,7 @@ class SQLGeneratorMixin:
                 col = config.get("column")
                 min_val = config.get("min")
                 max_val = config.get("max")
-                if col and col in columns:
+                if isinstance(col, str) and col in columns:
                     if min_val is not None:
                         violation_conditions.append(
                             (f"CAST(`{col}` AS DOUBLE) < {min_val}", f"range_min:{col}", col)
@@ -110,8 +123,12 @@ class SQLGeneratorMixin:
 
             elif assertion_type == "accepted_types":
                 types = config.get("types", {})
+                if not isinstance(types, Mapping):
+                    raise TypeError("accepted_types assertion types must be a mapping")
                 for col, expected_type in types.items():
-                    if col in columns:
+                    if isinstance(col, str) and col in columns:
+                        if not isinstance(expected_type, str):
+                            raise TypeError("accepted_types assertion values must be strings")
                         type_cast = self._get_type_cast_expression(expected_type)
                         if type_cast:
                             violation_conditions.append(
@@ -127,7 +144,11 @@ class SQLGeneratorMixin:
                 where_clause = config.get("where")
                 detail_column = config.get("detail_column", columns[0] if columns else "_raw")
 
-                if where_clause and detail_column in columns:
+                if (
+                    isinstance(where_clause, str)
+                    and isinstance(detail_column, str)
+                    and detail_column in columns
+                ):
                     violation_conditions.append((where_clause, f"custom_sql:{name}", detail_column))
 
         # Generate INSERT statement for each violation type
@@ -161,17 +182,13 @@ WHERE {condition}""")
 
         for dep_name, dep_type in dependencies:
             if dep_type == "source":
-                source = self.project.get_source(dep_name)  # type: ignore[attr-defined]
+                source = self.project.get_source(dep_name)
                 if source:
                     sql_parts.append(self._generate_source_table_ddl(source, dep_name))
             else:
-                dep_model = self.project.get_model(dep_name)  # type: ignore[attr-defined]
+                dep_model = self.project.get_model(dep_name)
                 if dep_model:
-                    topic_name = (
-                        dep_model.get_topic_config().name
-                        if dep_model.get_topic_config() and dep_model.get_topic_config().name
-                        else dep_model.name
-                    )
+                    topic_name = self._model_topic_name(dep_model)
                     sql_parts.append(
                         self._generate_model_table_ddl(dep_model, dep_name, topic_name)
                     )
@@ -186,7 +203,13 @@ WHERE {condition}""")
             for policy in model.security.policies:
                 if "mask" in policy:
                     mask_config = policy["mask"]
-                    masks.append({"column": mask_config["column"], "method": mask_config["method"]})
+                    if not isinstance(mask_config, Mapping):
+                        raise TypeError("mask policy config must be a mapping")
+                    column = mask_config.get("column")
+                    method = mask_config.get("method")
+                    if not isinstance(column, str) or not isinstance(method, str):
+                        raise TypeError("mask policy column and method must be strings")
+                    masks.append({"column": column, "method": method})
             if masks:
                 transformed_sql = apply_masking_to_sql(transformed_sql, masks, schema)
 
@@ -197,8 +220,13 @@ WHERE {condition}""")
 
     def _get_flink_bootstrap_servers(self) -> str:
         """Get bootstrap servers for Flink (internal if available)."""
-        kafka_config = self.project.runtime.kafka  # type: ignore[attr-defined]
+        kafka_config = self.project.runtime.kafka
         return kafka_config.bootstrap_servers_internal or kafka_config.bootstrap_servers
+
+    def _model_topic_name(self, model: Model) -> str:
+        """Return the configured output topic name or the model name fallback."""
+        topic_config = model.get_topic_config()
+        return topic_config.name if topic_config and topic_config.name else model.name
 
     def _generate_source_table_ddl(self, source: Source, alias: str) -> str:
         """Generate Flink CREATE TABLE DDL for a source."""
@@ -225,7 +253,7 @@ WHERE {condition}""")
 
         columns = ",\n    ".join(column_lines)
 
-        kafka = self.project.runtime.kafka  # type: ignore[attr-defined]
+        kafka = self.project.runtime.kafka
         with_clause = kafka_with_properties(
             kafka, source.topic, bootstrap, {"scan.startup.mode": "earliest-offset"}
         )
@@ -364,7 +392,7 @@ WHERE {condition}""")
         else:
             columns_ddl = "`_raw` STRING"
 
-        kafka = self.project.runtime.kafka  # type: ignore[attr-defined]
+        kafka = self.project.runtime.kafka
         with_clause = kafka_with_properties(
             kafka, topic_name, bootstrap, {"scan.startup.mode": "earliest-offset"}
         )
@@ -391,7 +419,7 @@ WHERE {condition}""")
             pk_cols = ", ".join(f"`{k}`" for k in model.primary_key)
             columns_ddl += f",\n    PRIMARY KEY ({pk_cols}) NOT ENFORCED"
 
-        kafka = self.project.runtime.kafka  # type: ignore[attr-defined]
+        kafka = self.project.runtime.kafka
         fc = model.get_flink_config()
         extra: dict[str, str] = {}
         connector = "kafka"
@@ -414,7 +442,7 @@ WHERE {condition}""")
 
         for dep_name, dep_type in dependencies:
             if dep_type == "source":
-                source = self.project.get_source(dep_name)  # type: ignore[attr-defined]
+                source = self.project.get_source(dep_name)
                 if source and source.columns:
                     for col in source.columns:
                         if col.proctime:
@@ -428,7 +456,7 @@ WHERE {condition}""")
                         schema[col.name] = col_type
                         schema[f"{dep_name}.{col.name}"] = col_type
             else:
-                dep_model = self.project.get_model(dep_name)  # type: ignore[attr-defined]
+                dep_model = self.project.get_model(dep_name)
                 if dep_model and dep_model.sql:
                     upstream_schema = self._build_source_schema(dep_model)
                     dep_columns = self._extract_select_columns_with_types(  # type: ignore[attr-defined]
@@ -455,68 +483,52 @@ WHERE {condition}""")
 
     def _get_source_topic(self, model: Model) -> Optional[str]:
         """Get the source topic for a model."""
-        if model.sql and self.parser:  # type: ignore[attr-defined]
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)  # type: ignore[attr-defined]
+        if model.sql and self.parser:
+            sources, refs = self.parser.extract_refs_from_sql(model.sql)
             if sources:
-                source = self.project.get_source(sources[0])  # type: ignore[attr-defined]
+                source = self.project.get_source(sources[0])
                 if source:
                     return source.topic
             if refs:
-                ref_model = self.project.get_model(refs[0])  # type: ignore[attr-defined]
+                ref_model = self.project.get_model(refs[0])
                 if ref_model:
-                    return (
-                        ref_model.get_topic_config().name
-                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                        else ref_model.name
-                    )
+                    return self._model_topic_name(ref_model)
         elif model.from_:
             for from_ref in model.from_:
                 if from_ref.source:
-                    source = self.project.get_source(from_ref.source)  # type: ignore[attr-defined]
+                    source = self.project.get_source(from_ref.source)
                     if source:
                         return source.topic
                 if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)  # type: ignore[attr-defined]
+                    ref_model = self.project.get_model(from_ref.ref)
                     if ref_model:
-                        return (
-                            ref_model.get_topic_config().name
-                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                            else ref_model.name
-                        )
+                        return self._model_topic_name(ref_model)
         return None
 
     def _get_source_topics(self, model: Model) -> list[str]:
         """Get all source topics for a model."""
         topics = []
 
-        if model.sql and self.parser:  # type: ignore[attr-defined]
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)  # type: ignore[attr-defined]
+        if model.sql and self.parser:
+            sources, refs = self.parser.extract_refs_from_sql(model.sql)
             for source_name in sources:
-                source = self.project.get_source(source_name)  # type: ignore[attr-defined]
+                source = self.project.get_source(source_name)
                 if source:
                     topics.append(source.topic)
             for ref_name in refs:
-                ref_model = self.project.get_model(ref_name)  # type: ignore[attr-defined]
+                ref_model = self.project.get_model(ref_name)
                 if ref_model:
-                    topics.append(
-                        ref_model.get_topic_config().name
-                        if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                        else ref_model.name
-                    )
+                    topics.append(self._model_topic_name(ref_model))
         elif model.from_:
             for from_ref in model.from_:
                 if from_ref.source:
-                    source = self.project.get_source(from_ref.source)  # type: ignore[attr-defined]
+                    source = self.project.get_source(from_ref.source)
                     if source:
                         topics.append(source.topic)
                 if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)  # type: ignore[attr-defined]
+                    ref_model = self.project.get_model(from_ref.ref)
                     if ref_model:
-                        topics.append(
-                            ref_model.get_topic_config().name
-                            if ref_model.get_topic_config() and ref_model.get_topic_config().name
-                            else ref_model.name
-                        )
+                        topics.append(self._model_topic_name(ref_model))
 
         return topics
 
@@ -525,8 +537,8 @@ WHERE {condition}""")
         dependencies = []
 
         if model.sql:
-            if self.parser:  # type: ignore[attr-defined]
-                sources, refs = self.parser.extract_refs_from_sql(model.sql)  # type: ignore[attr-defined]
+            if self.parser:
+                sources, refs = self.parser.extract_refs_from_sql(model.sql)
             else:
                 sources, refs = self._extract_refs_from_sql(model.sql)
 
