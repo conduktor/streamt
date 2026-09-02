@@ -64,6 +64,8 @@ def _gateway_evidence(
     desired_exists: bool = True,
     current_fingerprint: str | None = None,
     desired_fingerprint: str | None = None,
+    current_interceptor_count: int | None = None,
+    desired_interceptor_count: int | None = None,
 ) -> GatewayActionEvidence:
     return GatewayActionEvidence(
         version=1,
@@ -77,7 +79,11 @@ def _gateway_evidence(
                 if current_fingerprint is not None
                 else CURRENT_FINGERPRINT if current_exists else ABSENCE_FINGERPRINT
             ),
-            managed_interceptor_count=1 if current_exists else 0,
+            managed_interceptor_count=(
+                current_interceptor_count
+                if current_interceptor_count is not None
+                else 1 if current_exists else 0
+            ),
         ),
         desired=GatewayActionSurfaceEvidence(
             exists=desired_exists,
@@ -86,7 +92,11 @@ def _gateway_evidence(
                 if desired_fingerprint is not None
                 else DESIRED_FINGERPRINT if desired_exists else ABSENCE_FINGERPRINT
             ),
-            managed_interceptor_count=1 if desired_exists else 0,
+            managed_interceptor_count=(
+                desired_interceptor_count
+                if desired_interceptor_count is not None
+                else 1 if desired_exists else 0
+            ),
         ),
     )
 
@@ -95,6 +105,8 @@ def _gateway_action(*, action: str = "update") -> OperationAction:
     evidence = _gateway_evidence(
         current_exists=action != "create",
         desired_exists=action != "delete",
+        current_interceptor_count=0 if action == "adopt" else None,
+        desired_interceptor_count=0 if action == "adopt" else None,
     )
     return OperationAction(
         index=0,
@@ -257,6 +269,62 @@ def test_gateway_action_evidence_rejects_kind_action_and_transition_mismatch(
         )
 
 
+@pytest.mark.parametrize(
+    "desired_fingerprint",
+    [CURRENT_FINGERPRINT, DESIRED_FINGERPRINT],
+    ids=["equal-surface", "different-desired-surface"],
+)
+def test_gateway_adopt_allows_present_zero_interceptor_surfaces(
+    desired_fingerprint: str,
+) -> None:
+    evidence = _gateway_evidence(
+        desired_fingerprint=desired_fingerprint,
+        current_interceptor_count=0,
+        desired_interceptor_count=0,
+    )
+
+    action = OperationAction(
+        index=0,
+        resource_id="streamt://payments/dev/gateway_rule/orders_owner",
+        action="adopt",
+        gateway_evidence=evidence,
+    )
+
+    assert OperationAction.from_dict(action.to_dict(), control_version=2) == action
+    assert action.to_dict()["gateway_evidence"] == evidence.to_dict()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        _gateway_evidence(
+            current_exists=False,
+            current_interceptor_count=0,
+            desired_interceptor_count=0,
+        ),
+        _gateway_evidence(
+            current_interceptor_count=1,
+            desired_interceptor_count=0,
+        ),
+        _gateway_evidence(
+            current_interceptor_count=0,
+            desired_interceptor_count=1,
+        ),
+    ],
+    ids=["absent-current", "current-interceptors", "desired-interceptors"],
+)
+def test_gateway_adopt_rejects_non_state_only_surfaces(
+    evidence: GatewayActionEvidence,
+) -> None:
+    with pytest.raises(StateFormatError, match="Gateway"):
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/dev/gateway_rule/orders_owner",
+            action="adopt",
+            gateway_evidence=evidence,
+        )
+
+
 def test_v1_control_roundtrips_exactly_and_rejects_gateway_evidence() -> None:
     address = StateAddress("local", "payments", "dev")
     state = LocalState(project="payments", environment="dev")
@@ -358,6 +426,40 @@ def test_v2_control_requires_and_roundtrips_gateway_mutation_evidence() -> None:
             status="in_progress",
             intent=intent,
         )
+
+
+def test_v2_control_requires_and_roundtrips_gateway_adopt_evidence() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    base_intent = replace(_intent(state), kind="adopt")
+    missing_evidence = replace(
+        base_intent,
+        actions=(
+            OperationAction(
+                index=0,
+                resource_id="streamt://payments/dev/gateway_rule/orders_owner",
+                action="adopt",
+            ),
+        ),
+    )
+
+    with pytest.raises(StateFormatError, match="require action evidence"):
+        OperationControlState(
+            address=address,
+            status="in_progress",
+            intent=missing_evidence,
+        )
+
+    intent = replace(base_intent, actions=(_gateway_action(action="adopt"),))
+    control = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=intent,
+    )
+
+    assert OperationControlState.from_dict(
+        control.to_dict(), expected_address=address
+    ) == control
 
 
 def _crash_after_mock_mutation(project_path: str, runtime_marker: str) -> None:

@@ -458,6 +458,12 @@ class OperationAction:
         current = evidence.current
         desired = evidence.desired
         valid_transition = (
+            self.action == "adopt"
+            and current.exists
+            and desired.exists
+            and current.managed_interceptor_count == 0
+            and desired.managed_interceptor_count == 0
+        ) or (
             current.fingerprint != desired.fingerprint
             and (
                 (
@@ -854,11 +860,11 @@ class OperationControlState:
                     )
                 if (
                     identity.kind == "gateway_rule"
-                    and action.action in ("create", "update", "delete")
+                    and action.action in ("create", "update", "delete", "adopt")
                     and action.gateway_evidence is None
                 ):
                     raise StateFormatError(
-                        "control version 2 Gateway mutations require action evidence"
+                        "control version 2 Gateway actions require action evidence"
                     )
         if self.status == "in_progress" and self.recovery is not None:
             raise StateFormatError("in_progress control state cannot contain recovery data")

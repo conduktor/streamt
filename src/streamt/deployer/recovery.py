@@ -156,7 +156,7 @@ class RecoveryTargetEvidence:
         if gateway_evidence is not None:
             accepted_surface = (
                 gateway_evidence.current
-                if self.accepted_as == "prior"
+                if self.accepted_as == "prior" or self.action.action == "adopt"
                 else gateway_evidence.desired
             )
             expected_presence = "present" if accepted_surface.exists else "absent"

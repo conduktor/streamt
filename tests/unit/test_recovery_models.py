@@ -202,6 +202,57 @@ def test_gateway_target_evidence_is_bound_to_the_accepted_surface() -> None:
         )
 
 
+def test_gateway_adopt_candidate_is_bound_to_current_not_desired_surface() -> None:
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster="payments-prod",
+    )
+    current_fingerprint = "sha256:" + "d" * 64
+    desired_fingerprint = "sha256:" + "e" * 64
+    action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "orders_owner",
+        ),
+        action="adopt",
+        gateway_evidence=GatewayActionEvidence(
+            version=1,
+            backend_identity=binding.backend_identity,
+            rule_name="orders_rule",
+            alias_name="orders.public",
+            current=GatewayActionSurfaceEvidence(
+                exists=True,
+                fingerprint=current_fingerprint,
+                managed_interceptor_count=0,
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=True,
+                fingerprint=desired_fingerprint,
+                managed_interceptor_count=0,
+            ),
+        ),
+    )
+
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="candidate",
+        fingerprint=current_fingerprint,
+    )
+
+    assert RecoveryTargetEvidence.from_dict(target.to_dict()) == target
+    with pytest.raises(StateFormatError, match="fingerprint does not match"):
+        RecoveryTargetEvidence(
+            action=action,
+            presence="present",
+            accepted_as="candidate",
+            fingerprint=desired_fingerprint,
+        )
+
+
 def test_snapshot_evidence_is_exact_but_excludes_provider_revisions() -> None:
     evidence = RecoverySnapshotEvidence.from_operation_snapshot(_snapshot())
     serialized = json.dumps(evidence.to_dict())
