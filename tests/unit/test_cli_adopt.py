@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from streamt.cli import main
 from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.state import (
     LocalState,
@@ -229,6 +230,7 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
             tmp_path,
             project="adoption-test",
             environment="default",
+            config=local_deployment_state_config(),
         ).read_control().control.status
         == "clear"
     )
@@ -242,6 +244,7 @@ def test_existing_recovery_marker_blocks_adoption_before_runtime_setup(
         tmp_path,
         project="adoption-test",
         environment="default",
+        config=local_deployment_state_config(),
     )
     with service.operation() as operation:
         state = operation.read().state
@@ -307,6 +310,7 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
             tmp_path,
             project="adoption-test",
             environment="default",
+            config=local_deployment_state_config(),
         )
         with service.operation() as delegate:
             operation = MagicMock()
@@ -660,6 +664,7 @@ def test_atomic_save_failure_reports_error_and_leaves_no_state(tmp_path: Path) -
         tmp_path,
         project="adoption-test",
         environment="default",
+        config=local_deployment_state_config(),
     ).read_control().control
     assert control.status == "recovery_required"
     assert control.recovery is not None

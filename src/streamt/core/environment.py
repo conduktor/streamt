@@ -18,6 +18,12 @@ from typing import Literal
 
 import yaml
 from dotenv import dotenv_values
+from pydantic import ValidationError
+
+from streamt.core.deployment_state import (
+    DeploymentStateConfig,
+    validate_deployment_state_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,7 @@ class SafetyConfig:
     confirm_apply: bool = True
     allow_destructive: bool = False
     require_reviewed_plan: bool = False
+    require_remote_state: bool = False
 
 
 @dataclass
@@ -113,6 +120,7 @@ class EnvironmentConfig:
     environment: EnvironmentInfo
     runtime: dict[str, object]
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    deployment_state: DeploymentStateConfig | None = None
     raw_data: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -124,6 +132,11 @@ class EnvironmentConfig:
     def requires_apply_confirmation(self) -> bool:
         """Return whether apply requires explicit environment confirmation."""
         return self.environment.protected or self.safety.confirm_apply
+
+    @property
+    def requires_remote_state(self) -> bool:
+        """Return whether mutating commands require a remote state provider."""
+        return self.safety.require_remote_state
 
 
 class EnvironmentManager:
@@ -250,7 +263,12 @@ class EnvironmentManager:
                 f"Invalid environment file '{env_file.name}': expected an object"
             )
 
-        allowed_top_level_fields = {"environment", "runtime", "safety"}
+        allowed_top_level_fields = {
+            "environment",
+            "runtime",
+            "safety",
+            "deployment_state",
+        }
         unknown_top_level_fields = sorted(set(data) - allowed_top_level_fields)
         if unknown_top_level_fields:
             details = "; ".join(
@@ -338,6 +356,7 @@ class EnvironmentManager:
             "confirm_apply",
             "allow_destructive",
             "require_reviewed_plan",
+            "require_remote_state",
         }
         unknown_safety_fields = sorted(set(safety_data) - allowed_safety_fields)
         if unknown_safety_fields:
@@ -352,6 +371,7 @@ class EnvironmentManager:
             ("confirm_apply", environment.protected),
             ("allow_destructive", False),
             ("require_reviewed_plan", False),
+            ("require_remote_state", False),
         ):
             value = safety_data.get(field_name, default)
             if not isinstance(value, bool):
@@ -363,12 +383,36 @@ class EnvironmentManager:
             confirm_apply=safety_data.get("confirm_apply", environment.protected),
             allow_destructive=safety_data.get("allow_destructive", False),
             require_reviewed_plan=safety_data.get("require_reviewed_plan", False),
+            require_remote_state=safety_data.get("require_remote_state", False),
         )
+
+        deployment_state: DeploymentStateConfig | None = None
+        if "deployment_state" in data:
+            try:
+                deployment_state = validate_deployment_state_config(
+                    data["deployment_state"]
+                )
+            except ValidationError as error:
+                details = "; ".join(
+                    "field 'deployment_state"
+                    + (
+                        " → " + " → ".join(str(part) for part in item["loc"])
+                        if item["loc"]
+                        else ""
+                    )
+                    + f"': {item['msg']}"
+                    for item in error.errors()
+                )
+                raise EnvironmentError(
+                    f"Invalid deployment_state configuration in "
+                    f"'{env_file.name}': {details}"
+                ) from error
 
         return EnvironmentConfig(
             environment=environment,
             runtime=runtime,
             safety=safety,
+            deployment_state=deployment_state,
             raw_data=data,
         )
 

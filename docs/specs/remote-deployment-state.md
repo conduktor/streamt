@@ -2,11 +2,12 @@
 
 ## Status
 
-Proposed safety contract. The provider-neutral state boundary and its local
-version 1 JSON provider are implemented, but remote state is not supported
-until an implementation satisfies this specification and its conformance
-tests. The existing local JSON backend remains the only selectable provider
-and remains the default for single-user development.
+Proposed safety contract. The provider-neutral state boundary, local version 1
+JSON provider, strict provider configuration, and safe status command are
+implemented. PostgreSQL configuration is recognized but fails closed as
+unavailable; remote state is not operational until an implementation satisfies
+this specification and its conformance tests. Local JSON remains the only
+working provider and the compatibility default for single-user development.
 
 ## Scope
 
@@ -323,7 +324,7 @@ plus a best-effort lock file does not meet this contract.
 Use `deployment_state` to avoid confusion with Flink application state:
 
 ```yaml
-# streamt:skip — proposed configuration, not implemented yet
+# Recognized configuration; PostgreSQL execution is not available yet.
 deployment_state:
   backend: postgres
   namespace: platform
@@ -340,33 +341,52 @@ instead of embedding the DSN in parsed configuration. `dsn_env` must be a valid
 environment-variable name. Unknown fields and provider-shape mismatches fail
 strict validation.
 
+If the entire block is omitted, streamt selects `backend: local`. An explicit
+block must contain its `backend` discriminator; an empty block is invalid.
+PostgreSQL `namespace` is required and follows the canonical address contract:
+it is nonempty and slash-free. `lock_timeout_seconds` defaults to `30` and must
+be an integer from 1 through 300. `postgres.schema` defaults to `streamt` and
+must match `^[A-Za-z_][A-Za-z0-9_]*$`.
+
+In multi-environment mode, a root `deployment_state` block is inherited when
+the selected environment omits it. An environment block replaces the complete
+root provider block; provider fields are never deep-merged. This differs
+intentionally from root `runtime`, which remains ignored in multi-environment
+mode. A partial PostgreSQL environment override therefore fails instead of
+borrowing fields from the root. Environment sidecars may select either tagged
+provider without a command-line override.
+
+The parser validates only the `dsn_env` name. Its value is resolved after
+`.env`, `.env.<environment>`, and the real process environment have been
+applied, and only when an online command constructs the provider. Validation,
+compilation, and offline planning neither require nor read the DSN. Until the
+PostgreSQL provider lands, both a missing DSN and a present DSN fail with a
+sanitized backend-unavailable error and never fall back to local state.
+
 State backend selection belongs to effective environment configuration and
 cannot be overridden by `plan`, `apply`, or `adopt` flags. This prevents an
 operator from accidentally planning against one authority and applying against
 another. The reviewed state reference also detects endpoint changes through the
 remote store ID.
 
-Initial administrative commands are:
+The implemented read-only administrative command is:
 
 ```text
 streamt state status -p PATH -e ENV
-streamt state init -p PATH -e ENV
-streamt state migrate -p PATH -e ENV --from local --to configured
-streamt state recover -p PATH -e ENV --operation OPERATION_ID ...
-streamt state export -p PATH -e ENV --out FILE
 ```
 
 `status` is read-only and reports backend kind, store ID, address, serial,
-checksum, lock availability, and operation status without credentials. `init`,
-`migrate`, and `recover` require exact environment and state-address
-confirmation in non-interactive use. Normal commands never initialize or
-migrate a remote store implicitly.
+checksum, and operation status without credentials. Lock-availability probing,
+`init`, `migrate`, `recover`, and `export` remain deferred. Normal commands
+never initialize or migrate a remote store implicitly.
 
-An optional `safety.require_remote_state` policy should land with the backend.
-It fails mutating commands before runtime deployers are constructed when the
-effective backend is local. It is opt-in during the alpha compatibility window;
-making it implicit for protected environments requires a documented config
-migration and release notice.
+The environment-only `safety.require_remote_state` policy defaults to `false`.
+When enabled, it fails `apply` and `adopt` before confirmation, compilation,
+state access, or runtime deployer construction if the effective backend is
+local. It does not block read-only plan or state status. Reviewed-plan-required
+and offline-plan-invalid errors retain precedence, and `--force` cannot bypass
+the policy. Making remote state implicit for protected environments requires a
+documented config migration and release notice.
 
 ## Credentials and redaction
 
@@ -378,8 +398,10 @@ migration and release notice.
 - Map provider failures to stable sanitized errors. Detailed diagnostics, when
   explicitly enabled, still pass through central key, URL, authorization, and
   inline-value redaction.
-- Plan fingerprints include backend kind, namespace, state address, and remote
-  `store_id`, not credentials.
+- Reviewed plans bind backend kind, namespace through the state address, and
+  remote `store_id` through the existing `StateReference`, not through the
+  runtime environment fingerprint. Provider configuration and credentials are
+  not added to plan JSON.
 - Migration/export files contain ownership state and checksums only. They are
   still operationally sensitive because physical resource names are present,
   and must be created atomically with restrictive permissions.

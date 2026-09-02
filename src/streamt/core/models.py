@@ -16,6 +16,10 @@ from pydantic import (
 )
 
 from streamt.core.base import StreamtBaseModel as BaseModel
+from streamt.core.deployment_state import (
+    DeploymentStateConfig,
+    local_deployment_state_config,
+)
 
 # ============================================================================
 # Enums
@@ -234,6 +238,9 @@ class Project(BaseModel):
     api_version: ApiVersion = Field(default=CURRENT_API_VERSION, alias="apiVersion")
     project: ProjectInfo
     runtime: RuntimeConfig
+    deployment_state: DeploymentStateConfig = Field(
+        default_factory=local_deployment_state_config
+    )
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
 
@@ -1085,6 +1092,9 @@ class StreamtProject(BaseModel):
     api_version: ApiVersion = Field(default=CURRENT_API_VERSION, alias="apiVersion")
     project: ProjectInfo
     runtime: RuntimeConfig
+    deployment_state: DeploymentStateConfig = Field(
+        default_factory=local_deployment_state_config
+    )
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
     connections: dict[str, ConnectionConfig] = Field(default_factory=dict)

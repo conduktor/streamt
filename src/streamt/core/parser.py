@@ -11,6 +11,11 @@ import yaml
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError
 from pydantic import ValidationError
 
+from streamt.core.deployment_state import (
+    DeploymentStateConfig,
+    local_deployment_state_config,
+    validate_deployment_state_config,
+)
 from streamt.core.environment import (
     EnvironmentConfig,
     EnvironmentManager,
@@ -161,6 +166,7 @@ class ProjectParser:
         # Parse project info and runtime
         project_info = self._parse_project_info(project_data)
         runtime = self._parse_runtime(project_data)
+        deployment_state = self._parse_deployment_state(project_data)
         defaults = self._parse_defaults(project_data)
         rules = self._parse_rules(project_data)
 
@@ -177,6 +183,7 @@ class ProjectParser:
             apiVersion=api_version,
             project=project_info,
             runtime=runtime,
+            deployment_state=deployment_state,
             defaults=defaults,
             rules=rules,
             connections=connections,
@@ -187,6 +194,22 @@ class ProjectParser:
             udfs=udfs,
             project_path=self.project_path,
         )
+
+    def _parse_deployment_state(
+        self,
+        data: dict[str, object],
+    ) -> DeploymentStateConfig:
+        """Resolve the effective state provider using whole-block replacement."""
+        if self.env_config and self.env_config.deployment_state is not None:
+            return self.env_config.deployment_state
+        if "deployment_state" not in data:
+            return local_deployment_state_config()
+        try:
+            return validate_deployment_state_config(data["deployment_state"])
+        except ValidationError as error:
+            raise ParseError(
+                "Invalid deployment_state: " + _format_pydantic_error(error)
+            ) from error
 
     def _validate_top_level_keys(self, data: dict[str, object]) -> None:
         """Reject unknown root keys before parsing the project section-by-section."""

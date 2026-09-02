@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol, cast, runtime_checkable
 
+from streamt.core.deployment_state import DeploymentStateConfig
 from streamt.deployer.state import (
     LocalState,
     LocalStateOperationLock,
@@ -1165,8 +1166,19 @@ def make_deployment_state_service(
     *,
     project: str,
     environment: str,
+    config: DeploymentStateConfig,
 ) -> DeploymentStateService:
-    """Construct the only currently selectable backend: strict local JSON."""
+    """Construct the configured provider without fallback between authorities."""
+    if config.backend == "postgres":
+        dsn = os.environ.get(config.postgres.dsn_env)
+        if dsn is None or not dsn.strip():
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state credentials are unavailable"
+            )
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state is unavailable in this release"
+        )
+
     address = StateAddress(
         namespace=LOCAL_STATE_NAMESPACE,
         project=project,

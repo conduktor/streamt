@@ -12,6 +12,10 @@ import pytest
 import yaml
 
 from streamt.compiler import Compiler
+from streamt.core.deployment_state import (
+    local_deployment_state_config,
+    validate_deployment_state_config,
+)
 from streamt.core.parser import ProjectParser
 from streamt.deployer.state import (
     LocalState,
@@ -30,6 +34,7 @@ from streamt.deployer.state_backend import (
     DeploymentStateService,
     LocalDeploymentStateBackend,
     StateAddress,
+    StateBackendUnavailableError,
     StateObservation,
     StateRevision,
     StateStoreIdentity,
@@ -114,16 +119,66 @@ def test_absent_address_is_explicit_and_read_only(tmp_path: Path) -> None:
         )
 
 
-def test_factory_has_no_remote_selection_surface(tmp_path: Path) -> None:
+def test_factory_constructs_explicit_local_config(tmp_path: Path) -> None:
     service = make_deployment_state_service(
         tmp_path,
         project="payments",
         environment="prod",
+        config=local_deployment_state_config(),
     )
 
     assert isinstance(service.backend, LocalDeploymentStateBackend)
     assert service.store.backend == "local"
     assert service.address == _address()
+
+
+def test_factory_requires_explicit_provider_config(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="config"):
+        make_deployment_state_service(  # type: ignore[call-arg]
+            tmp_path,
+            project="payments",
+            environment="prod",
+        )
+
+
+@pytest.mark.parametrize("dsn", [None, "", "   ", "postgresql://u:p@db.internal/state"])
+def test_postgres_factory_is_sanitized_unavailable_and_never_falls_back_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dsn: str | None,
+) -> None:
+    config = validate_deployment_state_config(
+        {
+            "backend": "postgres",
+            "namespace": "platform",
+            "postgres": {"dsn_env": "SECRET_STATE_DSN"},
+        }
+    )
+    if dsn is None:
+        monkeypatch.delenv("SECRET_STATE_DSN", raising=False)
+    else:
+        monkeypatch.setenv("SECRET_STATE_DSN", dsn)
+
+    def fail_local(_project_path: Path) -> object:
+        raise AssertionError("PostgreSQL configuration fell back to local state")
+
+    monkeypatch.setattr(
+        "streamt.deployer.state_backend.LocalDeploymentStateBackend",
+        fail_local,
+    )
+
+    with pytest.raises(StateBackendUnavailableError) as raised:
+        make_deployment_state_service(
+            tmp_path,
+            project="payments",
+            environment="prod",
+            config=config,
+        )
+
+    message = str(raised.value)
+    assert "SECRET_STATE_DSN" not in message
+    assert "db.internal" not in message
+    assert "postgresql://" not in message
 
 
 def test_state_checksum_is_canonical_public_and_covers_complete_content(

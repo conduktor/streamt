@@ -16,6 +16,7 @@ from streamt.cli.helpers import (
 from streamt.core.errors import ErrorCode
 from streamt.deployer.state import StateError
 from streamt.deployer.state_backend import (
+    StateBackendUnavailableError,
     make_deployment_state_service,
     state_checksum,
 )
@@ -46,7 +47,7 @@ def state_status(
     project_dir: Optional[str],
     environment: Optional[str],
 ) -> None:
-    """Show safe local ownership and unfinished-operation status."""
+    """Show safe configured ownership and unfinished-operation status."""
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
 
@@ -73,6 +74,7 @@ def state_status(
             project_path,
             project=project.project.name,
             environment=effective_environment,
+            config=project.deployment_state,
         )
         observation = service.read()
         control = service.read_control()
@@ -111,6 +113,17 @@ def state_status(
         fmt.flush()
     except (EnvVarError, ParseError, EnvironmentError) as error:
         handle_parse_error(fmt, error, ErrorCode.PARSE_ERROR)
+    except StateBackendUnavailableError as error:
+        safe_message = redact_sensitive_text(error)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_BACKEND_UNAVAILABLE,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
     except StateError as error:
         safe_message = redact_sensitive_text(error)
         fmt.add_error(

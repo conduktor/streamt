@@ -77,6 +77,61 @@ project:
 | `version` | string | Yes | Semantic version |
 | `description` | string | No | Human-readable description |
 
+## Deployment Ownership State
+
+`deployment_state` selects the authority used by online plan, apply, adopt, and
+`state status`. Omitting the block preserves the existing local version 1 JSON
+provider:
+
+```yaml
+deployment_state:
+  backend: local
+```
+
+Local accepts no remote fields and stores ownership at
+`.streamt/state/<environment>.json`. It is intended for a single-user checkout,
+not shared or distributed runners.
+
+The strict PostgreSQL shape is recognized so projects can establish their
+future authority explicitly:
+
+```yaml
+deployment_state:
+  backend: postgres
+  namespace: platform
+  lock_timeout_seconds: 30
+  postgres:
+    dsn_env: STREAMT_STATE_POSTGRES_DSN
+    schema: streamt
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `local` or `postgres` | local when the block is omitted | Required discriminator in every explicit block |
+| `namespace` | string | - | Required, nonempty, slash-free PostgreSQL state-address namespace |
+| `lock_timeout_seconds` | integer | `30` | PostgreSQL lock wait, from 1 through 300 seconds |
+| `postgres.dsn_env` | string | - | Required environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `postgres.schema` | string | `streamt` | Unquoted schema name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
+
+Provider blocks reject unknown keys, mixed local/PostgreSQL fields, an omitted
+discriminator, and partial PostgreSQL shapes. The DSN itself must not appear in
+YAML. streamt resolves the named variable only when an online command constructs
+the provider, after `.env`, `.env.<environment>`, and the real environment have
+been applied. Validation, compilation, and offline plan do not read it.
+
+!!! warning "PostgreSQL provider not available yet"
+    This release validates PostgreSQL configuration but cannot use it. Online
+    plan, apply, adopt, and state status fail with
+    `E420_STATE_BACKEND_UNAVAILABLE`, whether the DSN is missing or present.
+    They never fall back to local state. `state init`, migration, recovery, and
+    lock-availability probing remain deferred.
+
+In multi-environment mode, a root `deployment_state` is inherited when the
+selected environment omits the block. An environment block replaces the whole
+root provider block; it is never deep-merged. Root `runtime` remains ignored in
+multi-environment mode, so these two sections intentionally have different
+precedence rules.
+
 ## Runtime
 
 ### Kafka
@@ -457,6 +512,7 @@ safety:
   confirm_apply: true          # Require --confirm in CI/CD
   allow_destructive: false     # Block topic deletions, etc.
   require_reviewed_plan: true  # Require apply --plan (also implied by protected)
+  require_remote_state: true   # Reject apply/adopt while effective state is local
 ```
 
 | Field | Type | Default | Description |
@@ -467,12 +523,16 @@ safety:
 | `safety.confirm_apply` | bool | value of `protected` | Require environment confirmation in CI |
 | `safety.allow_destructive` | bool | `false` | Allow destructive operations |
 | `safety.require_reviewed_plan` | bool | `false` | Require `apply --plan` for a shared or otherwise review-gated environment |
+| `safety.require_remote_state` | bool | `false` | Reject apply/adopt when effective deployment state is local |
 
 Protected environments always require a reviewed plan, even when
 `safety.require_reviewed_plan` is `false`. Set `require_reviewed_plan: true` on
 an unprotected environment to mark a shared workflow explicitly without relying
-on its name. Environment sidecars accept only `environment`, `runtime`, and
-`safety` at the top level. Policy values are strict booleans, and unknown or
+on its name. `require_remote_state` is environment-only, is not implied by
+`protected`, and cannot be bypassed with confirmation or `--force`. Read-only
+plan and state status remain available. Environment sidecars accept only
+`environment`, `runtime`, `safety`, and `deployment_state` at the top level.
+Policy values are strict booleans, and unknown or
 misspelled environment and safety fields are rejected.
 
 ---

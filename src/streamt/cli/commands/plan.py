@@ -19,6 +19,7 @@ from streamt.cli.helpers import (
     make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
+    redact_sensitive_text,
 )
 from streamt.core.errors import ErrorCode
 from streamt.deployer.plan_file import (
@@ -33,7 +34,10 @@ from streamt.deployer.state import (
     StateError,
     local_state_path,
 )
-from streamt.deployer.state_backend import make_deployment_state_service
+from streamt.deployer.state_backend import (
+    StateBackendUnavailableError,
+    make_deployment_state_service,
+)
 from streamt.output import StructuredError
 
 
@@ -116,6 +120,7 @@ def plan(
                 project_path,
                 project=project.project.name,
                 environment=effective_environment,
+                config=project.deployment_state,
             )
             state_observation = state_service.read()
             operation_status = state_service.read_control().safe_status()
@@ -225,9 +230,23 @@ def plan(
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)
+    except StateBackendUnavailableError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_BACKEND_UNAVAILABLE,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
     except StateError as e:
-        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=str(e)))
-        fmt.print_error(str(e))
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_INVALID, message=safe_message)
+        )
+        fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
     except KeyboardInterrupt:

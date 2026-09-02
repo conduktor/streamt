@@ -161,14 +161,21 @@ Acceptance:
 
 ### Slice 4: strict configuration and safe administrative CLI
 
+Progress: the strict tagged local/PostgreSQL configuration boundary, whole-block
+environment replacement, environment-only remote-state policy, central
+redaction coverage, and read-only `state status` are implemented. Local remains
+the only working provider. PostgreSQL configuration deliberately returns a
+sanitized unavailable error with no local fallback. `state init` and lock
+availability probing remain deferred until a conforming remote provider exists.
+
 1. Add strict `deployment_state` models to base and environment configuration.
 2. Support `local` and `postgres` tagged shapes. Local is the default. Reject
    mixed provider fields and unknown keys.
 3. Resolve only the configured DSN environment-variable name at construction.
 4. Add central redaction tests for provider exceptions, credential URLs,
    authorization text, and structured nested values.
-5. Add `streamt state status` and `streamt state init`. `status` is read-only;
-   `init` uses exact address/environment confirmation.
+5. Add `streamt state status`; it is read-only. Add `state init` with exact
+   address/environment confirmation only when the PostgreSQL provider lands.
 6. Add opt-in `safety.require_remote_state`, evaluated before constructing
    runtime deployers.
 

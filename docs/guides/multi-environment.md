@@ -13,6 +13,7 @@ In multi-environment mode, each environment has its own:
 
 - **Runtime configuration** (Kafka clusters, Flink clusters, Schema Registry)
 - **Safety settings** (protected environments, destructive operation controls)
+- **Deployment-state selection** (inherited from the project or fully replaced)
 - **Environment variables** (via `.env.{env}` files)
 
 ## Setup
@@ -88,6 +89,40 @@ safety:
   allow_destructive: false    # Block topic deletions, etc.
   require_reviewed_plan: true # Optional here: protected already implies it
 ```
+
+### Deployment-state precedence
+
+`deployment_state` is a strict tagged provider block. Omitting it everywhere
+uses the local development backend. In multi-environment mode, a block in
+`stream_project.yml` is inherited by every environment that omits an override:
+
+```yaml title="stream_project.yml"
+deployment_state:
+  backend: postgres
+  namespace: platform
+  postgres:
+    dsn_env: STREAMT_STATE_POSTGRES_DSN
+    schema: streamt
+```
+
+An environment may replace that complete block:
+
+```yaml title="environments/dev.yml"
+deployment_state:
+  backend: local
+```
+
+Replacement is whole-block, not a deep merge. A partial PostgreSQL override
+cannot borrow the root namespace or connection block and is rejected. This is
+intentionally different from root `runtime`, which is ignored whenever an
+`environments/` directory exists.
+
+The configuration contains only the DSN environment-variable name. Its value
+is read when an online command constructs the selected provider, after
+`.env`, `.env.<environment>`, and the real process environment are applied.
+Offline plan and validation do not read it. PostgreSQL execution is not yet
+available in this release, so online commands fail safely without falling back
+to local state.
 
 ## CLI Usage
 
@@ -227,6 +262,23 @@ safety:
 
 streamt does not infer policy from environment names. The explicit safety field
 is the supported way to gate an otherwise unprotected shared workflow.
+
+### Require remote ownership state
+
+For environments that must never mutate while local ownership state is
+selected, enable the environment-only policy:
+
+```yaml title="environments/staging.yml"
+safety:
+  require_remote_state: true
+```
+
+The default is `false`, including for protected environments. When enabled,
+`apply` and `adopt` fail with `E421_REMOTE_STATE_REQUIRED` before confirmation,
+compilation, state access, or runtime deployer construction if the effective
+backend is local. `--force` cannot bypass the policy. Read-only online plan and
+`state status` remain available for diagnosis, and reviewed-plan/offline-plan
+validation errors retain their existing precedence.
 
 ## Destructive Safety
 

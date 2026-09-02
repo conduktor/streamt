@@ -22,8 +22,13 @@ from streamt.cli.helpers import (
     make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
+    redact_sensitive_text,
 )
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
+from streamt.core.deployment_state import (
+    RemoteStateRequiredError,
+    enforce_remote_state_policy,
+)
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
@@ -41,6 +46,7 @@ from streamt.deployer.state_backend import (
     OperationProgress,
     RecoveryRecord,
     StateBackendRecoveryRequiredError,
+    StateBackendUnavailableError,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -226,6 +232,11 @@ def apply(
                 "create a fresh online plan with live infrastructure evidence"
             )
 
+        enforce_remote_state_policy(
+            project.deployment_state,
+            required=bool(env_config and env_config.requires_remote_state),
+        )
+
         # Explicit environment confirmation
         if env_config and env_config.requires_apply_confirmation:
             env_name = env_config.environment.name
@@ -309,6 +320,7 @@ def apply(
             project_path,
             project=project.project.name,
             environment=effective_environment,
+            config=project.deployment_state,
         )
         state_operation = operation_stack.enter_context(
             state_service.operation()
@@ -764,6 +776,28 @@ def apply(
         fmt.print_error(str(e))
         fmt.flush()
         sys.exit(1)
+    except RemoteStateRequiredError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.REMOTE_STATE_REQUIRED,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateBackendUnavailableError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_BACKEND_UNAVAILABLE,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
     except StateBackendRecoveryRequiredError as e:
         fmt.add_error(
             StructuredError(
@@ -775,8 +809,11 @@ def apply(
         fmt.flush()
         sys.exit(1)
     except StateError as e:
-        fmt.add_error(StructuredError(code=ErrorCode.STATE_INVALID, message=str(e)))
-        fmt.print_error(str(e))
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_INVALID, message=safe_message)
+        )
+        fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
     except KeyboardInterrupt:
@@ -784,10 +821,14 @@ def apply(
         fmt.flush()
         sys.exit(130)
     except Exception as e:
+        safe_message = redact_sensitive_text(e)
         fmt.add_error(
-            StructuredError(code=ErrorCode.CONNECTION_REFUSED, message=f"Cannot connect: {e}")
+            StructuredError(
+                code=ErrorCode.CONNECTION_REFUSED,
+                message=f"Cannot connect: {safe_message}",
+            )
         )
-        fmt.print_error(f"Cannot connect: {e}")
+        fmt.print_error(f"Cannot connect: {safe_message}")
         fmt.flush()
         sys.exit(1)
     finally:

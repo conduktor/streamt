@@ -11,6 +11,7 @@ import yaml
 from click.testing import CliRunner
 
 from streamt.cli import main
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
@@ -181,6 +182,7 @@ def test_unfinished_marker_is_read_only_and_text_directs_operator(
         tmp_path,
         project="status-test",
         environment="default",
+        config=local_deployment_state_config(),
     )
     with service.operation() as operation:
         ownership = operation.read().state

@@ -28,6 +28,10 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.core.deployment_state import (
+    RemoteStateRequiredError,
+    enforce_remote_state_policy,
+)
 from streamt.core.errors import ErrorCode
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.schema_registry import SchemaReference, SchemaState
@@ -47,6 +51,7 @@ from streamt.deployer.state_backend import (
     OperationProgress,
     RecoveryRecord,
     StateBackendRecoveryRequiredError,
+    StateBackendUnavailableError,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -639,6 +644,11 @@ def adopt(
                 f"{effective_environment!r}; use the effective environment explicitly",
             )
 
+        enforce_remote_state_policy(
+            project.deployment_state,
+            required=bool(parser.env_config and parser.env_config.requires_remote_state),
+        )
+
         validation = ProjectValidator(project).validate()
         if not validation.is_valid:
             message = "; ".join(error.message for error in validation.errors)
@@ -679,6 +689,7 @@ def adopt(
             project_path,
             project=project.project.name,
             environment=effective_environment,
+            config=project.deployment_state,
         )
         state_operation = operation_stack.enter_context(
             state_service.operation()
@@ -949,6 +960,28 @@ def adopt(
             fmt.set_data(data)
         safe_message = redact_sensitive_text(exc.message)
         fmt.add_error(StructuredError(code=exc.code, message=safe_message))
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except RemoteStateRequiredError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.REMOTE_STATE_REQUIRED,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        raise click.exceptions.Exit(1) from exc
+    except StateBackendUnavailableError as exc:
+        safe_message = redact_sensitive_text(exc)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_BACKEND_UNAVAILABLE,
+                message=safe_message,
+            )
+        )
         fmt.print_error(safe_message)
         fmt.flush()
         raise click.exceptions.Exit(1) from exc

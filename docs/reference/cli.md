@@ -523,9 +523,18 @@ state backend.
 After a successful non-dry-run apply, streamt atomically records resources it
 manages or has adopted in `.streamt/state/<environment>.json`. External,
 unowned, and ownership-blocked resources are never recorded. Local state is
-appropriate for a single-user development checkout only: shared CI needs a
-remote state backend with locking, which is not yet supported. Failed and
-rolled-back planner results do not advance ownership state before final commit.
+appropriate for a single-user development checkout only. Strict PostgreSQL
+configuration is recognized, but the provider is unavailable in this release;
+online commands return `E420_STATE_BACKEND_UNAVAILABLE` without reading local
+state. Shared CI still needs the later remote provider and distributed locking.
+Failed and rolled-back planner results do not advance ownership state before
+final commit.
+
+An environment may set `safety.require_remote_state: true` to reject `apply`
+and `adopt` with `E421_REMOTE_STATE_REQUIRED` while the effective provider is
+local. This check runs after reviewed/offline plan-file gates but before
+confirmation, compilation, state access, or runtime deployer construction.
+`--force` cannot bypass it. Read-only plan and state status are not blocked.
 
 For local apply/adopt, `.streamt/state/<environment>.control.json` records a
 versioned durable intent before mutation and safe ordered action progress. Both
@@ -768,7 +777,7 @@ orders_raw (source)
 
 ### state status
 
-Inspect safe local ownership-state and operation-control metadata without
+Inspect safe configured ownership-state and operation-control metadata without
 acquiring a mutation lock or connecting to runtime infrastructure.
 
 ```bash
@@ -780,7 +789,7 @@ streamt state status [OPTIONS]
 | `--project-dir PATH` | Project directory |
 | `--env ENV` | Target environment (multi-env mode) |
 
-Structured output contains the local backend kind, immutable store ID,
+For the working local provider, structured output contains its kind, immutable store ID,
 canonical state address, ownership presence/serial/checksum, and the same safe
 `operation_status` fields exposed by online plan. Provider revisions, resource
 contents, credentials, and raw provider errors are not emitted. A missing state
@@ -790,8 +799,10 @@ create `.streamt/`, ownership state, a control sidecar, or lock files.
 Both `in_progress` and `recovery_required` are shown without modification. The
 text output directs operators to retain the sidecar evidence because those
 markers still block apply/adopt indefinitely. `state status` cannot clear or
-recover them. Local state is the only supported backend; `state init`, recovery,
-migration, and remote backend selection are not implemented.
+recover them. Local is the only working backend. PostgreSQL configuration is
+recognized but status returns sanitized `E420_STATE_BACKEND_UNAVAILABLE` and
+never falls back to local state. `state init`, recovery, migration, remote lock
+availability probing, and the PostgreSQL provider are not implemented.
 
 ```bash
 streamt state status -p . -e prod
@@ -1363,7 +1374,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E408_PLAN_FILE_INVALID` | Reviewed plan is malformed or its integrity checksum fails |
 | `E409_PLAN_STALE` | Project, environment, ownership state, or live actions drifted after review |
 | `E410_OWNERSHIP_REQUIRED` | A live resource needs an explicit ownership decision or adoption |
-| `E411_STATE_INVALID` | Local ownership state is malformed or belongs to another context |
+| `E411_STATE_INVALID` | Ownership state is malformed or belongs to another context |
 | `E412_ADOPTION_TARGET_INVALID` | Adoption target is missing, ambiguous, or not explicitly declared adopted |
 | `E413_ADOPTION_LIVE_NOT_FOUND` | Declared physical topic does not exist in Kafka |
 | `E414_ADOPTION_CONFIRMATION_REQUIRED` | Exact resource and environment confirmation is absent or incorrect |
@@ -1372,6 +1383,8 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E417_SAFETY_BLOCKED` | Apply refused an unsupported partition, schema, or Flink migration before mutation |
 | `E418_REVIEWED_PLAN_REQUIRED` | Direct apply is disabled by protected/shared environment policy; create and apply a reviewed plan file |
 | `E419_STATE_RECOVERY_REQUIRED` | An unfinished local operation marker blocks apply/adopt pending explicit recovery |
+| `E420_STATE_BACKEND_UNAVAILABLE` | The configured deployment-state provider cannot be used; no fallback occurs |
+| `E421_REMOTE_STATE_REQUIRED` | Environment policy rejects apply/adopt while local deployment state is selected |
 
 **Parse Errors (E5xx):**
 

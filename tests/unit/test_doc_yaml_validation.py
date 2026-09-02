@@ -22,6 +22,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from streamt.core.deployment_state import validate_deployment_state_config
 from streamt.core.models import (
     CheckpointConfig,
     ColumnDefinition,
@@ -290,6 +291,12 @@ def _classify_single_key_dict(data: dict) -> tuple[str, list[str]]:
             )
             errors.extend(connection_errors)
         return "connections", errors
+    if key == "deployment_state":
+        try:
+            validate_deployment_state_config(val)
+            return "deployment_state", []
+        except ValidationError as error:
+            return "deployment_state", [str(item) for item in error.errors()]
 
     # Access config
     if key == "access" and isinstance(val, dict):

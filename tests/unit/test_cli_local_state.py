@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from streamt.cli import main
 from streamt.compiler.manifest import ArtifactOwnership, Manifest, TopicArtifact
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import ReviewedPlanFile, StateReference
 from streamt.deployer.state import (
@@ -296,6 +297,7 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
             tmp_path,
             project="plan-test",
             environment="default",
+            config=local_deployment_state_config(),
         )
         with service.operation() as delegate:
             try:
@@ -369,6 +371,7 @@ def test_runtime_base_exception_leaves_recovery_marker_and_blocks_successor(
         tmp_path,
         project="plan-test",
         environment="default",
+        config=local_deployment_state_config(),
     ).read_control()
     assert control.control.status == "recovery_required"
     assert control.control.recovery is not None
@@ -427,6 +430,7 @@ def test_controlled_apply_stops_after_first_failed_runtime_action(
         tmp_path,
         project="plan-test",
         environment="default",
+        config=local_deployment_state_config(),
     ).read_control().control
     assert control.status == "recovery_required"
     assert [
@@ -466,6 +470,7 @@ def test_ownership_save_failure_after_runtime_success_remains_recovery_required(
         tmp_path,
         project="plan-test",
         environment="default",
+        config=local_deployment_state_config(),
     ).read_control()
     assert control.control.status == "recovery_required"
     assert control.control.recovery is not None
@@ -500,6 +505,7 @@ def test_failure_before_first_runtime_action_clears_intent(tmp_path: Path) -> No
         tmp_path,
         project="plan-test",
         environment="default",
+        config=local_deployment_state_config(),
     ).read_control()
     assert control.control.status == "clear"
     assert local_control_path(tmp_path, environment="default").exists()
@@ -770,6 +776,7 @@ def test_online_plan_exposes_safe_recovery_status_without_mutating_it(
         tmp_path,
         project="plan-test",
         environment="default",
+        config=local_deployment_state_config(),
     )
     with service.operation() as operation:
         state = operation.read().state

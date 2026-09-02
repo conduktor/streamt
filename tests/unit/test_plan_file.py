@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from streamt.cli import main
 from streamt.compiler.manifest import Manifest, TopicArtifact
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.connect import ConnectorChange
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.plan_file import (
@@ -1038,6 +1039,7 @@ def test_cli_saved_plan_fails_closed_on_blocking_ownership_requirement(
                 tmp_path,
                 project=project.project.name,
                 environment="default",
+                config=local_deployment_state_config(),
             ).read()
         ),
     )

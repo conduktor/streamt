@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.state import LocalState, StateFormatError, local_state_path
 from streamt.deployer.state_backend import (
     OperationAction,
@@ -44,6 +45,7 @@ def _crash_after_mock_mutation(project_path: str, runtime_marker: str) -> None:
         Path(project_path),
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
     with service.operation() as operation:
         control = operation.read_control()
@@ -77,6 +79,7 @@ def test_control_lifecycle_is_strict_atomic_and_does_not_change_v1_state(
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
 
     with service.operation() as operation:
@@ -122,6 +125,7 @@ def test_recovery_record_is_sanitized_and_blocks_successor(tmp_path: Path) -> No
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
     with service.operation() as operation:
         state = operation.read().state
@@ -160,6 +164,7 @@ def test_control_parser_rejects_unknown_and_duplicate_fields(tmp_path: Path) -> 
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
     path = local_control_path(tmp_path, environment="dev")
     path.parent.mkdir(parents=True)
@@ -185,6 +190,7 @@ def test_atomic_control_failure_removes_temporary_file(
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
 
     def fail_replace(_source: object, _target: object) -> None:
@@ -212,6 +218,7 @@ def test_cleanup_failure_cannot_mask_sanitized_unknown_commit_error(
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
 
     def fail_replace(_source: object, _target: object) -> None:
@@ -250,6 +257,7 @@ def test_process_crash_after_first_mock_mutation_leaves_blocking_marker(
         tmp_path,
         project="payments",
         environment="dev",
+        config=local_deployment_state_config(),
     )
     with service.operation() as successor:
         observation = successor.read_control()

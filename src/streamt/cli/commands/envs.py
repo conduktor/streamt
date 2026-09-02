@@ -51,6 +51,7 @@ def envs_list(ctx: click.Context, project_dir: Optional[str]) -> None:
                 "description": env_config.environment.description,
                 "protected": env_config.environment.protected,
                 "reviewed_plan_required": env_config.requires_reviewed_plan,
+                "remote_state_required": env_config.requires_remote_state,
             }
             env_list.append(entry)
             desc = env_config.environment.description or ""
@@ -107,6 +108,7 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
                 "confirm_apply": env_config.safety.confirm_apply,
                 "allow_destructive": env_config.safety.allow_destructive,
                 "require_reviewed_plan": env_config.safety.require_reviewed_plan,
+                "require_remote_state": env_config.safety.require_remote_state,
             },
         }
         fmt.set_data(data)
@@ -128,6 +130,7 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
         fmt.print(
             f"  require_reviewed_plan: {env_config.safety.require_reviewed_plan}"
         )
+        fmt.print(f"  require_remote_state: {env_config.safety.require_remote_state}")
         fmt.flush()
 
     except EnvironmentError as e:
@@ -188,6 +191,7 @@ def envs_diff(ctx: click.Context, project_dir: Optional[str], env_a: str, env_b:
             ("confirm_apply", "safety.confirm_apply"),
             ("allow_destructive", "safety.allow_destructive"),
             ("require_reviewed_plan", "safety.require_reviewed_plan"),
+            ("require_remote_state", "safety.require_remote_state"),
         ]
         for attr, label in safety_fields:
             va = getattr(cfg_a.safety, attr)

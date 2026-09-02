@@ -121,6 +121,9 @@ Target: close the loop between declared intent and runtime evidence.
       local version 1 JSON format and operation-wide same-host locking.
 - [x] Add a strict local operation-control sidecar with intent-before-mutation,
       ordered progress, recovery blocking, and read-only plan status.
+- [x] Add strict local/PostgreSQL deployment-state configuration, whole-block
+      environment selection, sanitized no-fallback preflight, and an opt-in
+      remote-state safety policy. PostgreSQL execution remains unavailable.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is

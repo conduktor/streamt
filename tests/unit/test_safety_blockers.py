@@ -17,6 +17,7 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.core.deployment_state import local_deployment_state_config
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
 from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import (
@@ -417,6 +418,7 @@ class TestCliSafetyBlockers:
                         tmp_path,
                         project=project.project.name,
                         environment="default",
+                        config=local_deployment_state_config(),
                     ).read()
                 ),
             )
