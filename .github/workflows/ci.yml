@@ -127,6 +127,61 @@ jobs:
       - name: Run real PostgreSQL conformance tests
         run: python -m pytest tests/postgres -m postgres --tb=short
 
+      - name: Run PostgreSQL command tests from the installed wheel
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-postgres-wheel-XXXXXX")"
+          wheel_dir="${isolated_root}/dist"
+          venv_dir="${isolated_root}/venv"
+          test_root="${isolated_root}/tests-root"
+
+          python -m pip install build
+          python -m build --wheel --outdir "${wheel_dir}"
+          python -m venv "${venv_dir}"
+
+          wheels=("${wheel_dir}"/*.whl)
+          if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "Expected exactly one wheel in ${wheel_dir}" >&2
+            exit 1
+          fi
+          "${venv_dir}/bin/python" -m pip install "${wheels[0]}[postgres]" pytest
+
+          mkdir -p "${test_root}/tests/postgres"
+          cp tests/__init__.py "${test_root}/tests/__init__.py"
+          cp tests/postgres/__init__.py "${test_root}/tests/postgres/__init__.py"
+          cp tests/postgres/conftest.py "${test_root}/tests/postgres/conftest.py"
+          cp tests/postgres/test_postgres_state_commands_real.py \
+            "${test_root}/tests/postgres/test_postgres_state_commands_real.py"
+          cp tests/postgres/test_postgres_state_command_concurrency_real.py \
+            "${test_root}/tests/postgres/test_postgres_state_command_concurrency_real.py"
+          cp tests/postgres/test_postgres_state_command_failures_real.py \
+            "${test_root}/tests/postgres/test_postgres_state_command_failures_real.py"
+
+          cd "${test_root}"
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            "${venv_dir}/bin/python" -I - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          import streamt
+
+          checkout = Path(os.environ["STREAMT_CHECKOUT"]).resolve()
+          checkout_source = checkout / "src"
+          installed_module = Path(streamt.__file__).resolve()
+          import_roots = {Path(entry).resolve() for entry in sys.path if entry}
+          assert checkout_source not in import_roots, import_roots
+          assert checkout not in installed_module.parents, installed_module
+          PY
+          env -u PYTHONPATH "${venv_dir}/bin/python" -I -m pytest \
+            tests/postgres/test_postgres_state_commands_real.py \
+            tests/postgres/test_postgres_state_command_concurrency_real.py \
+            tests/postgres/test_postgres_state_command_failures_real.py \
+            -m postgres --tb=short
+
   package:
     runs-on: ubuntu-latest
 
