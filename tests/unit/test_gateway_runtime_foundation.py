@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import cast
+from dataclasses import FrozenInstanceError
+from typing import Any, cast
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -17,6 +18,7 @@ from streamt.deployer.gateway import (
     GatewayManagedObservationError,
     ManagedGatewayInterceptor,
     ManagedGatewayRuleObservation,
+    ManagedGatewaySnapshot,
     build_desired_gateway_rule,
     classify_gateway_interceptor_name,
     generate_gateway_interceptor_name,
@@ -542,6 +544,161 @@ def test_observer_uses_exact_two_fixed_gets_and_normalizes_provider_order() -> N
     ]
     alias_response.close.assert_called_once_with()
     interceptor_response.close.assert_called_once_with()
+
+
+def test_one_snapshot_extracts_multiple_overlapping_rules_with_only_two_gets() -> None:
+    deployer = _deployer()
+    _set_collections(
+        deployer,
+        [
+            _alias(
+                "orders.public",
+                physical_name="orders.v1",
+                virtual_cluster="production",
+            ),
+            _alias(
+                "orders-archive.public",
+                physical_name="orders-archive.v1",
+                virtual_cluster="production",
+            ),
+        ],
+        [
+            _interceptor(
+                "orders_archive_filter_0",
+                virtual_cluster="production",
+                config={"owner": "archive"},
+            ),
+            _interceptor(
+                "orders_filter_0",
+                virtual_cluster="production",
+                config={"owner": "orders"},
+            ),
+        ],
+    )
+
+    try:
+        snapshot = deployer.observe_managed_gateway_snapshot()
+        orders = snapshot.rule("orders", "orders.public")
+        archive = snapshot.rule("orders_archive", "orders-archive.public")
+    finally:
+        deployer.close()
+
+    assert isinstance(snapshot, ManagedGatewaySnapshot)
+    assert [item.name for item in orders.interceptors] == ["orders_filter_0"]
+    assert [item.name for item in archive.interceptors] == [
+        "orders_archive_filter_0"
+    ]
+    assert orders.physical_name == "orders.v1"
+    assert archive.physical_name == "orders-archive.v1"
+    assert deployer._session.request.call_count == 2  # type: ignore[attr-defined]
+
+
+def test_single_rule_observer_is_a_two_get_snapshot_compatibility_wrapper() -> None:
+    deployer = _deployer()
+    _set_collections(
+        deployer,
+        [_alias(virtual_cluster="production")],
+        [_interceptor("orders_filter_0", virtual_cluster="production")],
+    )
+
+    try:
+        observation = deployer.observe_managed_gateway_rule("orders", "orders.public")
+    finally:
+        deployer.close()
+
+    assert observation.exists is True
+    assert deployer._session.request.call_count == 2  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("duplicate_kind", ["alias", "interceptor"])
+def test_snapshot_rejects_global_duplicate_scoped_identities(
+    duplicate_kind: str,
+) -> None:
+    deployer = _deployer()
+    aliases = [_alias(name="unrelated", virtual_cluster="other")]
+    interceptors = [_interceptor("unrelated", virtual_cluster="other")]
+    if duplicate_kind == "alias":
+        aliases.append(_alias(name="unrelated", virtual_cluster="other"))
+    else:
+        interceptors.append(_interceptor("unrelated", virtual_cluster="other"))
+    _set_collections(deployer, aliases, interceptors)
+
+    try:
+        with pytest.raises(GatewayManagedObservationError, match="duplicate scoped identity"):
+            deployer.observe_managed_gateway_snapshot()
+    finally:
+        deployer.close()
+
+
+def test_snapshot_rejects_a_malformed_unrelated_global_entry() -> None:
+    deployer = _deployer()
+    malformed = _interceptor("unrelated", virtual_cluster="other")
+    cast(dict[str, object], malformed["spec"])["unexpected"] = True
+    _set_collections(
+        deployer,
+        [_alias(virtual_cluster="production")],
+        [malformed],
+    )
+
+    try:
+        with pytest.raises(GatewayManagedObservationError, match="malformed"):
+            deployer.observe_managed_gateway_snapshot()
+    finally:
+        deployer.close()
+
+
+def test_snapshot_is_deeply_immutable_and_hides_provider_config_from_repr() -> None:
+    deployer = _deployer()
+    _set_collections(
+        deployer,
+        [_alias(virtual_cluster="production")],
+        [
+            _interceptor(
+                "orders_filter_0",
+                virtual_cluster="production",
+                config={"password": "TOPSECRET", "roles": ["reader"]},
+            )
+        ],
+    )
+
+    try:
+        snapshot = deployer.observe_managed_gateway_snapshot()
+    finally:
+        deployer.close()
+
+    assert isinstance(snapshot.aliases, tuple)
+    assert isinstance(snapshot.interceptors, tuple)
+    assert isinstance(snapshot.interceptors[0].config_json, str)
+    assert "TOPSECRET" not in repr(snapshot)
+    assert "TOPSECRET" not in repr(snapshot.interceptors[0])
+    with pytest.raises(FrozenInstanceError):
+        snapshot.aliases = ()
+    with pytest.raises(FrozenInstanceError):
+        snapshot.aliases[0].physical_name = "mutated"
+
+
+@pytest.mark.parametrize(
+    ("binding", "aliases", "interceptors", "message"),
+    [
+        (object(), (), (), "backend binding"),
+        (_desired_binding(), [], (), "alias collection"),
+        (_desired_binding(), (object(),), (), "alias collection"),
+        (_desired_binding(), (), [], "interceptor collection"),
+        (_desired_binding(), (), (object(),), "interceptor collection"),
+    ],
+)
+def test_snapshot_constructor_rejects_non_exact_inputs(
+    binding: object,
+    aliases: object,
+    interceptors: object,
+    message: str,
+) -> None:
+    with pytest.raises(GatewayManagedObservationError, match=message):
+        ManagedGatewaySnapshot(
+            binding=cast(Any, binding),
+            aliases=cast(Any, aliases),
+            interceptors=cast(Any, interceptors),
+        )
 
 
 def test_observer_fingerprint_is_independent_of_provider_list_order() -> None:

@@ -691,6 +691,27 @@ class _ParsedAliasTopic:
     physical_name: str
     physical_cluster: str
 
+    def __post_init__(self) -> None:
+        try:
+            canonical_scope = _validate_virtual_cluster(self.scope)
+        except GatewayBindingError:
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot contains an invalid alias"
+            ) from None
+        if (
+            canonical_scope != self.scope
+            or not isinstance(self.name, str)
+            or not self.name
+            or _GATEWAY_RESOURCE_NAME.fullmatch(self.name) is None
+            or not isinstance(self.physical_name, str)
+            or not self.physical_name
+            or _GATEWAY_RESOURCE_NAME.fullmatch(self.physical_name) is None
+            or self.physical_cluster != "main"
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot contains an invalid alias"
+            )
+
 
 @dataclass(frozen=True)
 class _ParsedInterceptor:
@@ -699,6 +720,168 @@ class _ParsedInterceptor:
     plugin_class: str
     priority: int
     config_json: str = dataclass_field(repr=False)
+
+    def __post_init__(self) -> None:
+        try:
+            ManagedGatewayInterceptor(
+                name=self.name,
+                scope=self.scope,
+                plugin_class=self.plugin_class,
+                priority=self.priority,
+                config_json=self.config_json,
+            )
+        except GatewayManagedObservationError:
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot contains an invalid interceptor"
+            ) from None
+
+
+def _gateway_scope_sort_key(
+    scope: GatewayScope,
+) -> tuple[tuple[str, bool, str], ...]:
+    """Return a total ordering for canonical scopes containing nullable values."""
+    return tuple(
+        (key, value is not None, value if value is not None else "")
+        for key, value in scope
+    )
+
+
+def _validate_managed_gateway_rule_identity(
+    logical_name: object,
+    alias_name: object,
+) -> tuple[str, str]:
+    if (
+        not isinstance(logical_name, str)
+        or _GATEWAY_RESOURCE_NAME.fullmatch(logical_name) is None
+        or not isinstance(alias_name, str)
+        or _GATEWAY_RESOURCE_NAME.fullmatch(alias_name) is None
+    ):
+        raise GatewayManagedObservationError(
+            "Gateway managed observation requires valid rule identities"
+        )
+    return logical_name, alias_name
+
+
+@dataclass(frozen=True)
+class ManagedGatewaySnapshot:
+    """One complete immutable two-list Gateway provider snapshot."""
+
+    binding: GatewayBackendBinding
+    aliases: tuple[_ParsedAliasTopic, ...]
+    interceptors: tuple[_ParsedInterceptor, ...] = dataclass_field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not GatewayBackendBinding:
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot has an invalid backend binding"
+            )
+        if not isinstance(self.aliases, tuple) or any(
+            type(alias) is not _ParsedAliasTopic for alias in self.aliases
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot has an invalid alias collection"
+            )
+        if not isinstance(self.interceptors, tuple) or any(
+            type(interceptor) is not _ParsedInterceptor
+            for interceptor in self.interceptors
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot has an invalid interceptor collection"
+            )
+
+        sorted_aliases = tuple(
+            sorted(self.aliases, key=lambda alias: (alias.scope, alias.name))
+        )
+        if sorted_aliases != self.aliases or len(
+            {(alias.scope, alias.name) for alias in self.aliases}
+        ) != len(self.aliases):
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot has a noncanonical alias collection"
+            )
+
+        sorted_interceptors = tuple(
+            sorted(
+                self.interceptors,
+                key=lambda interceptor: (
+                    _gateway_scope_sort_key(interceptor.scope),
+                    interceptor.name,
+                ),
+            )
+        )
+        if sorted_interceptors != self.interceptors or len(
+            {(interceptor.scope, interceptor.name) for interceptor in self.interceptors}
+        ) != len(self.interceptors):
+            raise GatewayManagedObservationError(
+                "Gateway managed snapshot has a noncanonical interceptor collection"
+            )
+
+    def rule(
+        self,
+        logical_name: str,
+        alias_name: str,
+    ) -> ManagedGatewayRuleObservation:
+        """Derive one exact managed rule without further provider access."""
+        logical_name, alias_name = _validate_managed_gateway_rule_identity(
+            logical_name,
+            alias_name,
+        )
+        target_scope = _canonical_vcluster_scope(self.binding.virtual_cluster)
+        owned: list[_ParsedInterceptor] = []
+        for interceptor in self.interceptors:
+            if interceptor.scope != target_scope:
+                continue
+            try:
+                generated_name = classify_gateway_interceptor_name(
+                    logical_name,
+                    interceptor.name,
+                )
+            except _GeneratedGatewayInterceptorNameError:
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor ownership is ambiguous"
+                ) from None
+            if generated_name is not None:
+                owned.append(interceptor)
+
+        alias = next(
+            (
+                candidate
+                for candidate in self.aliases
+                if candidate.scope == self.binding.virtual_cluster
+                and candidate.name == alias_name
+            ),
+            None,
+        )
+        if alias is None:
+            if owned:
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation is partial: alias is absent with interceptors"
+                )
+            return ManagedGatewayRuleObservation(
+                binding=self.binding,
+                logical_name=logical_name,
+                alias_name=alias_name,
+                exists=False,
+            )
+
+        normalized_interceptors = tuple(
+            ManagedGatewayInterceptor(
+                name=interceptor.name,
+                scope=interceptor.scope,
+                plugin_class=interceptor.plugin_class,
+                priority=interceptor.priority,
+                config_json=interceptor.config_json,
+            )
+            for interceptor in sorted(owned, key=lambda interceptor: interceptor.name)
+        )
+        return ManagedGatewayRuleObservation(
+            binding=self.binding,
+            logical_name=logical_name,
+            alias_name=alias_name,
+            exists=True,
+            physical_name=alias.physical_name,
+            physical_cluster=alias.physical_cluster,
+            interceptors=normalized_interceptors,
+        )
 
 
 @dataclass
@@ -1103,32 +1286,8 @@ class GatewayDeployer:
             config_json=config_json,
         )
 
-    @staticmethod
-    def _classify_generated_interceptor_name(logical_name: str, name: str) -> str:
-        """Classify one exact generated key without broad owner-prefix matching."""
-        try:
-            parsed = classify_gateway_interceptor_name(logical_name, name)
-        except _GeneratedGatewayInterceptorNameError:
-            return "ambiguous"
-        if parsed is None:
-            return "other"
-        return "owned"
-
-    def observe_managed_gateway_rule(
-        self,
-        logical_name: str,
-        alias_name: str,
-    ) -> ManagedGatewayRuleObservation:
-        """Observe one complete scoped rule with exactly two collection GETs."""
-        if (
-            not isinstance(logical_name, str)
-            or not self._VALID_RESOURCE_NAME.fullmatch(logical_name)
-            or not isinstance(alias_name, str)
-            or not self._VALID_RESOURCE_NAME.fullmatch(alias_name)
-        ):
-            raise GatewayManagedObservationError(
-                "Gateway managed observation requires valid rule identities"
-            )
+    def observe_managed_gateway_snapshot(self) -> ManagedGatewaySnapshot:
+        """Fetch and parse one complete immutable two-list provider snapshot."""
         if self._closed:
             raise GatewayManagedObservationError("Gateway managed observation is closed")
 
@@ -1155,61 +1314,33 @@ class GatewayDeployer:
                 )
             interceptors[identity] = interceptor
 
-        binding = self.cluster_binding
-        target_scope: GatewayScope = tuple(
-            (
-                key,
-                binding.virtual_cluster if key == "vCluster" else None,
-            )
-            for key in _CANONICAL_INTERCEPTOR_SCOPE_KEYS
+        return ManagedGatewaySnapshot(
+            binding=self.cluster_binding,
+            aliases=tuple(
+                sorted(aliases.values(), key=lambda alias: (alias.scope, alias.name))
+            ),
+            interceptors=tuple(
+                sorted(
+                    interceptors.values(),
+                    key=lambda interceptor: (
+                        _gateway_scope_sort_key(interceptor.scope),
+                        interceptor.name,
+                    ),
+                )
+            ),
         )
-        owned: list[_ParsedInterceptor] = []
-        for interceptor in interceptors.values():
-            if interceptor.scope != target_scope:
-                continue
-            classification = self._classify_generated_interceptor_name(
-                logical_name,
-                interceptor.name,
-            )
-            if classification == "ambiguous":
-                raise GatewayManagedObservationError(
-                    "Gateway managed interceptor ownership is ambiguous"
-                )
-            if classification == "owned":
-                owned.append(interceptor)
-        owned.sort(key=lambda interceptor: interceptor.name)
-        alias = aliases.get((binding.virtual_cluster, alias_name))
-        if alias is None:
-            if owned:
-                raise GatewayManagedObservationError(
-                    "Gateway managed observation is partial: alias is absent with interceptors"
-                )
-            return ManagedGatewayRuleObservation(
-                binding=binding,
-                logical_name=logical_name,
-                alias_name=alias_name,
-                exists=False,
-            )
 
-        normalized_interceptors = tuple(
-            ManagedGatewayInterceptor(
-                name=interceptor.name,
-                scope=interceptor.scope,
-                plugin_class=interceptor.plugin_class,
-                priority=interceptor.priority,
-                config_json=interceptor.config_json,
-            )
-            for interceptor in owned
+    def observe_managed_gateway_rule(
+        self,
+        logical_name: str,
+        alias_name: str,
+    ) -> ManagedGatewayRuleObservation:
+        """Observe one complete scoped rule with exactly two collection GETs."""
+        logical_name, alias_name = _validate_managed_gateway_rule_identity(
+            logical_name,
+            alias_name,
         )
-        return ManagedGatewayRuleObservation(
-            binding=binding,
-            logical_name=logical_name,
-            alias_name=alias_name,
-            exists=True,
-            physical_name=alias.physical_name,
-            physical_cluster=alias.physical_cluster,
-            interceptors=normalized_interceptors,
-        )
+        return self.observe_managed_gateway_snapshot().rule(logical_name, alias_name)
 
     def _request(
         self,
