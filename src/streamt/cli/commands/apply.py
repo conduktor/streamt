@@ -162,7 +162,6 @@ def apply(
 ) -> None:
     """Deploy the project."""
     from streamt.compiler import Compiler
-    from streamt.core.dag import DAGBuilder
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
     from streamt.core.validator import ProjectValidator
@@ -346,7 +345,7 @@ def apply(
 
         # --target / --select filtering
         if target or select:
-            dag = DAGBuilder(project).build()
+            dag = compiler.dag
             all_model_names = {m.name for m in project.models}
             selected_models: set[str] = set()
 

@@ -8,15 +8,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import (
-    BaseLoader,
-    Environment,
-    FileSystemLoader,
-    StrictUndefined,
-    TemplateNotFound,
-    UndefinedError,
-)
-
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
@@ -26,9 +17,16 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.compiler.model_resolution import (
+    CompileError,
+    ResolvedModel,
+    ResolvedModels,
+    empty_resolved_models,
+    resolve_project_models,
+)
 from streamt.compiler.sql_generator import SQLGeneratorMixin
 from streamt.compiler.type_inference import TypeInferenceMixin
-from streamt.core.dag import DAGBuilder
+from streamt.core.dag import DAG, DAGBuilder
 from streamt.core.models import (
     DataTest,
     MaterializedType,
@@ -37,7 +35,6 @@ from streamt.core.models import (
     StreamtProject,
     TopicDefaults,
 )
-from streamt.core.parser import ProjectParser
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +62,6 @@ def _mask_policy_values(config: object) -> tuple[str, str, list[str]]:
     return column, method, roles
 
 
-class CompileError(Exception):
-    """Error during compilation."""
-
-    pass
-
-
 class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
     """Compiler for streamt projects."""
 
@@ -80,14 +71,11 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.output_dir = output_dir or (
             project.project_path / "generated" if project.project_path else Path("generated")
         )
-        self.parser = ProjectParser(project.project_path) if project.project_path else None
 
-        # Build DAG
-        dag_builder = DAGBuilder(project)
-        self.dag = dag_builder.build()
-
-        # Jinja environment
-        self.jinja_env = Environment(loader=BaseLoader())
+        # Resolution intentionally happens at compile().  Before the first
+        # successful compile there is no authoritative resolved DAG.
+        self.resolved_models: ResolvedModels = empty_resolved_models()
+        self.dag = DAG()
 
         self._topic_defaults = self._get_topic_defaults()
         self._udf_types: dict[str, str] = {
@@ -141,24 +129,53 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
     def compile(self, dry_run: bool = False) -> Manifest:
         """Compile the project."""
-        # Clear previous artifacts
+        self._reset_compilation_state()
+
+        resolved_models = resolve_project_models(self.project)
+        dag = DAGBuilder(self.project, resolved_models=resolved_models).build()
+        model_order = dag.get_models_only()
+        self.resolved_models = resolved_models
+        self.dag = dag
+
+        try:
+            return self._compile_resolved(
+                resolved_models,
+                model_order=model_order,
+                dry_run=dry_run,
+            )
+        except BaseException:
+            # A public snapshot describes only a fully successful compile.  Do
+            # not leave stale resolution or partially generated artifacts for
+            # a caller that catches the original exception.
+            self._reset_compilation_state()
+            raise
+
+    def _reset_compilation_state(self) -> None:
+        """Clear every public result owned by one compiler invocation."""
         self.schemas = []
         self.topics = []
         self.flink_jobs = []
         self.test_jobs = []
         self.connectors = []
         self.gateway_rules = []
+        self.resolved_models = empty_resolved_models()
+        self.dag = DAG()
 
+    def _compile_resolved(
+        self,
+        resolved_models: ResolvedModels,
+        *,
+        model_order: list[str],
+        dry_run: bool,
+    ) -> Manifest:
+        """Compile artifacts from one validated per-invocation model view."""
         # Compile schemas from sources with schema definitions
         for source in self.project.sources:
             self._compile_source_schema(source)
 
         # Compile models in topological order
-        model_order = self.dag.get_models_only()
         for model_name in model_order:
-            model = self.project.get_model(model_name)
-            if model:
-                self._compile_model(model)
+            self._compile_model(resolved_models[model_name])
 
         # Compile continuous tests as Flink jobs (DDL-style, backward compat)
         for test in self.project.tests:
@@ -275,61 +292,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             "fields": fields,
         }
 
-    def _render_macro_sql(self, model: Model) -> str:
-        """Render a Jinja2 macro template to SQL."""
-        macro_name = model.macro
-        project_path = self.project.project_path
-
-        if project_path is None:
-            raise CompileError(
-                f"Model '{model.name}': cannot load macro '{macro_name}' without a project path"
-            )
-
-        macros_dir = project_path / "macros"
-        if not macros_dir.exists():
-            raise CompileError(
-                f"Model '{model.name}': macro '{macro_name}' referenced but no macros/ directory found"
-            )
-
-        loader = FileSystemLoader(str(macros_dir))
-        env = Environment(loader=loader, undefined=StrictUndefined)
-
-        # source() and ref() produce Jinja2-style refs for downstream processing
-        def source_fn(name: str) -> str:
-            return f'{{{{ source("{name}") }}}}'
-
-        def ref_fn(name: str) -> str:
-            return f'{{{{ ref("{name}") }}}}'
-
-        try:
-            template = env.get_template(f"{macro_name}.sql.j2")
-        except TemplateNotFound:
-            raise CompileError(
-                f"Model '{model.name}': macro file '{macro_name}.sql.j2' not found in {macros_dir}"
-            ) from None
-
-        try:
-            return template.render(source=source_fn, ref=ref_fn, **model.params)
-        except UndefinedError as e:
-            raise CompileError(f"Model '{model.name}': macro template error: {e}") from e
-
-    def _compile_model(self, model: Model) -> None:
+    def _compile_model(self, resolved: ResolvedModel) -> None:
         """Compile a single model."""
-        # Resolve macro template to SQL before classification
-        if model.macro:
-            rendered_sql = self._render_macro_sql(model)
-            model = model.model_copy(update={"sql": rendered_sql, "macro": None, "params": {}})
-
-        materialized = model.get_materialized()
-
-        # Handle VIRTUAL_TOPIC fallback to FLINK when Gateway is not available
-        if materialized == MaterializedType.VIRTUAL_TOPIC:
-            has_gateway = self.project.runtime.conduktor and self.project.runtime.conduktor.gateway
-            is_explicit_virtual_topic = model.gateway and model.gateway.virtual_topic
-
-            if not has_gateway and not is_explicit_virtual_topic:
-                # Auto-detected stateless SQL but no Gateway → fallback to Flink
-                materialized = MaterializedType.FLINK
+        model = resolved.model
+        materialized = resolved.materialized
 
         if materialized == MaterializedType.TOPIC:
             self._compile_topic_model(model)
@@ -516,14 +482,16 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
 
     def _compile_continuous_test(self, test: DataTest) -> None:
         """Compile a continuous test as a Flink monitoring job."""
-        model = self.project.get_model(test.model)
-        if not model:
+        declaration = self.project.get_model(test.model)
+        if not declaration:
             source = self.project.get_source(test.model)
             if not source:
                 return
             topic_name = source.topic
             columns = [col.name for col in source.columns] if source.columns else []
         else:
+            resolved = self.resolved_models.get(declaration.name)
+            model = resolved.model if resolved is not None else declaration
             topic_config = model.get_topic_config()
             topic_name = topic_config.name if topic_config and topic_config.name else model.name
             columns = self._extract_select_columns(model.sql or "")
@@ -536,7 +504,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 sql=flink_sql,
                 cluster=test.flink_cluster,
                 ownership=self._ownership(
-                    "model" if model else "source",
+                    "model" if declaration else "source",
                     test.model,
                     mode="managed",
                 ),

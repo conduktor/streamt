@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 from streamt.compiler.flink_ddl import kafka_with_properties
 from streamt.compiler.masking import apply_masking_to_sql
+from streamt.compiler.model_resolution import direct_model_dependencies
 from streamt.core.models import (
     DataTest,
     EventTimeConfig,
@@ -17,15 +18,15 @@ from streamt.core.models import (
 )
 
 if TYPE_CHECKING:
+    from streamt.compiler.model_resolution import ResolvedModel
     from streamt.core.models import StreamtProject
-    from streamt.core.parser import ProjectParser
 
 
 class SQLGeneratorMixin:
     """Mixin providing SQL generation methods for the Compiler."""
 
     project: StreamtProject
-    parser: Optional[ProjectParser]
+    resolved_models: Mapping[str, ResolvedModel]
 
     def _get_type_cast_expression(self, user_type: str) -> str:
         """Map user-friendly type names to Flink SQL type expressions."""
@@ -186,7 +187,7 @@ WHERE {condition}""")
                 if source:
                     sql_parts.append(self._generate_source_table_ddl(source, dep_name))
             else:
-                dep_model = self.project.get_model(dep_name)
+                dep_model = self._get_resolved_model(dep_name)
                 if dep_model:
                     topic_name = self._model_topic_name(dep_model)
                     sql_parts.append(
@@ -456,7 +457,7 @@ WHERE {condition}""")
                         schema[col.name] = col_type
                         schema[f"{dep_name}.{col.name}"] = col_type
             else:
-                dep_model = self.project.get_model(dep_name)
+                dep_model = self._get_resolved_model(dep_name)
                 if dep_model and dep_model.sql:
                     upstream_schema = self._build_source_schema(dep_model)
                     dep_columns = self._extract_select_columns_with_types(  # type: ignore[attr-defined]
@@ -483,93 +484,50 @@ WHERE {condition}""")
 
     def _get_source_topic(self, model: Model) -> Optional[str]:
         """Get the source topic for a model."""
-        if model.sql and self.parser:
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            if sources:
-                source = self.project.get_source(sources[0])
+        dependencies = self._get_model_dependencies(model)
+        if dependencies:
+            dependency_name, dependency_type = dependencies[0]
+            if dependency_type == "source":
+                source = self.project.get_source(dependency_name)
                 if source:
                     return source.topic
-            if refs:
-                ref_model = self.project.get_model(refs[0])
+            else:
+                ref_model = self._get_resolved_model(dependency_name)
                 if ref_model:
                     return self._model_topic_name(ref_model)
-        elif model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    source = self.project.get_source(from_ref.source)
-                    if source:
-                        return source.topic
-                if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)
-                    if ref_model:
-                        return self._model_topic_name(ref_model)
         return None
 
     def _get_source_topics(self, model: Model) -> list[str]:
         """Get all source topics for a model."""
-        topics = []
-
-        if model.sql and self.parser:
-            sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            for source_name in sources:
-                source = self.project.get_source(source_name)
+        topics: list[str] = []
+        for dependency_name, dependency_type in self._get_model_dependencies(model):
+            if dependency_type == "source":
+                source = self.project.get_source(dependency_name)
                 if source:
                     topics.append(source.topic)
-            for ref_name in refs:
-                ref_model = self.project.get_model(ref_name)
+            else:
+                ref_model = self._get_resolved_model(dependency_name)
                 if ref_model:
                     topics.append(self._model_topic_name(ref_model))
-        elif model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    source = self.project.get_source(from_ref.source)
-                    if source:
-                        topics.append(source.topic)
-                if from_ref.ref:
-                    ref_model = self.project.get_model(from_ref.ref)
-                    if ref_model:
-                        topics.append(self._model_topic_name(ref_model))
-
         return topics
 
     def _get_model_dependencies(self, model: Model) -> list[tuple[str, str]]:
         """Get model dependencies as (name, type) tuples."""
-        dependencies = []
+        resolved = self.resolved_models.get(model.name)
+        dependencies = (
+            resolved.dependencies
+            if resolved is not None
+            else direct_model_dependencies(model)
+        )
+        return [
+            (dependency.name, dependency.kind)
+            for dependency in dependencies
+        ]
 
-        if model.sql:
-            if self.parser:
-                sources, refs = self.parser.extract_refs_from_sql(model.sql)
-            else:
-                sources, refs = self._extract_refs_from_sql(model.sql)
-
-            for source_name in sources:
-                dependencies.append((source_name, "source"))
-            for ref_name in refs:
-                dependencies.append((ref_name, "model"))
-
-        if model.from_:
-            for from_ref in model.from_:
-                if from_ref.source:
-                    dependencies.append((from_ref.source, "source"))
-                if from_ref.ref:
-                    dependencies.append((from_ref.ref, "model"))
-
-        return dependencies
-
-    def _extract_refs_from_sql(self, sql: str) -> tuple[list[str], list[str]]:
-        """Extract source and ref names from SQL using regex (fallback)."""
-        sources = []
-        refs = []
-
-        source_pattern = r"\{\{\s*source\s*\(\s*['\"](\w+)['\"]\s*\)\s*\}\}"
-        for match in re.finditer(source_pattern, sql):
-            sources.append(match.group(1))
-
-        ref_pattern = r"\{\{\s*ref\s*\(\s*['\"](\w+)['\"]\s*\)\s*\}\}"
-        for match in re.finditer(ref_pattern, sql):
-            refs.append(match.group(1))
-
-        return sources, refs
+    def _get_resolved_model(self, name: str) -> Optional[Model]:
+        """Return a model from the current immutable compiler snapshot."""
+        resolved = self.resolved_models.get(name)
+        return resolved.model if resolved is not None else self.project.get_model(name)
 
     def _extract_where_clause(self, sql: str) -> Optional[str]:
         """Extract WHERE clause from SQL."""

@@ -5,13 +5,15 @@ model can specify macro: + params: instead of sql:.
 """
 
 import tempfile
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
 import yaml
 
 from streamt.compiler.compiler import CompileError, Compiler
-from streamt.core.models import StreamtProject
+from streamt.compiler.model_resolution import ModelDependency
+from streamt.core.models import MaterializedType, Model, StreamtProject
 from streamt.core.parser import ProjectParser
 
 
@@ -251,3 +253,234 @@ class TestMacroCompilation:
                 for a in artifacts
             ]
             assert "orders_valid" in all_names
+
+    def test_macro_resolution_is_shared_and_preserves_declaration(self, monkeypatch):
+        """One rendered snapshot drives dependencies, DAG order, and artifacts."""
+        from streamt.compiler import model_resolution
+
+        with tempfile.TemporaryDirectory() as d:
+            _write_macro(
+                d,
+                "join_inputs",
+                "SELECT u.* FROM {{ ref(upstream) }} u "
+                "JOIN {{ source(extra_source) }} e ON u.id = e.id",
+            )
+            cfg = {
+                **BASE,
+                "models": [
+                    {
+                        "name": "a_consumer",
+                        "macro": "join_inputs",
+                        "params": {
+                            "upstream": "z_upstream",
+                            "extra_source": "customers",
+                        },
+                    },
+                    {
+                        "name": "z_upstream",
+                        "sql": 'SELECT * FROM {{ source("orders_raw") }}',
+                    },
+                ],
+            }
+            project = _parse(d, cfg)
+            original_render = model_resolution._render_macro_sql
+            rendered: list[str] = []
+            original_materialized = Model.get_materialized
+            classified: list[str] = []
+
+            def counted_render(project_arg: StreamtProject, model_arg):
+                rendered.append(model_arg.name)
+                return original_render(project_arg, model_arg)
+
+            def counted_materialized(model_arg: Model):
+                classified.append(model_arg.name)
+                return original_materialized(model_arg)
+
+            monkeypatch.setattr(model_resolution, "_render_macro_sql", counted_render)
+            monkeypatch.setattr(Model, "get_materialized", counted_materialized)
+
+            compiler = Compiler(project)
+            manifest = compiler.compile(dry_run=True)
+
+            assert rendered == ["a_consumer"]
+            assert classified == ["a_consumer", "z_upstream"]
+            resolved = compiler.resolved_models["a_consumer"]
+            assert resolved.dependencies == (
+                ModelDependency(name="customers", kind="source"),
+                ModelDependency(name="z_upstream", kind="model"),
+            )
+            assert resolved.model.macro is None
+            assert resolved.model.sql is not None
+            assert resolved.model is not project.get_model("a_consumer")
+            assert resolved.materialized == MaterializedType.FLINK
+            assert compiler.dag.nodes["a_consumer"].materialized == "flink"
+            with pytest.raises(TypeError):
+                compiler.resolved_models["other"] = resolved  # type: ignore[index]
+            with pytest.raises(FrozenInstanceError):
+                resolved.materialized = MaterializedType.TOPIC  # type: ignore[misc]
+            assert compiler.dag.get_models_only() == ["z_upstream", "a_consumer"]
+            assert compiler.dag.get_upstream("a_consumer") == {
+                "customers",
+                "orders_raw",
+                "z_upstream",
+            }
+            assert [topic["name"] for topic in manifest.artifacts["topics"]] == [
+                "z_upstream",
+                "a_consumer",
+            ]
+
+            declared = next(model for model in manifest.models if model["name"] == "a_consumer")
+            assert declared["macro"] == "join_inputs"
+            assert declared["sql"] is None
+            assert declared["params"] == {
+                "upstream": "z_upstream",
+                "extra_source": "customers",
+            }
+
+    def test_sql_dependencies_do_not_also_include_from(self):
+        """A SQL model's unused from declarations do not generate input DDL."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {
+                **BASE,
+                "models": [
+                    {
+                        "name": "orders_copy",
+                        "sql": 'SELECT * FROM {{ source("orders_raw") }}',
+                        "from": [{"source": "customers"}],
+                    }
+                ],
+            }
+            compiler = Compiler(_parse(d, cfg))
+            manifest = compiler.compile(dry_run=True)
+
+            assert compiler.resolved_models["orders_copy"].dependencies == (
+                ModelDependency(name="orders_raw", kind="source"),
+            )
+            job = manifest.artifacts["flink_jobs"][0]
+            assert "CREATE TABLE IF NOT EXISTS orders_raw" in job["sql"]
+            assert "CREATE TABLE IF NOT EXISTS customers" not in job["sql"]
+            assert "customers.v1" not in job["sql"]
+
+    @pytest.mark.parametrize(
+        ("models", "message"),
+        [
+            (
+                [{"name": "missing", "sql": 'SELECT * FROM {{ source("unknown") }}'}],
+                "source 'unknown' was not found",
+            ),
+            (
+                [{"name": "self_ref", "sql": 'SELECT * FROM {{ ref("self_ref") }}'}],
+                "cannot depend on itself",
+            ),
+            (
+                [{"name": "blank", "sql": 'SELECT * FROM {{ source("") }}'}],
+                "quoted non-blank literal",
+            ),
+            (
+                [{"name": "dynamic", "sql": "SELECT * FROM {{ ref(target) }}"}],
+                "quoted non-blank literal",
+            ),
+            (
+                [
+                    {
+                        "name": "ambiguous",
+                        "from": [{"source": "orders_raw", "ref": "upstream"}],
+                    },
+                    {"name": "upstream"},
+                ],
+                "must declare exactly one",
+            ),
+        ],
+    )
+    def test_resolved_dependency_errors_are_compile_errors(self, models, message):
+        """Dependency resolution fails deterministically at compile, not construction."""
+        with tempfile.TemporaryDirectory() as d:
+            project = _parse(d, {**BASE, "models": models})
+            compiler = Compiler(project)
+
+            with pytest.raises(CompileError, match=message):
+                compiler.compile(dry_run=True)
+
+    def test_macro_cycle_error_is_deterministic(self):
+        """Rendered ref cycles report one stable path before artifact generation."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_macro(d, "select_ref", "SELECT * FROM {{ ref(target) }}")
+            project = _parse(
+                d,
+                {
+                    **BASE,
+                    "models": [
+                        {"name": "b", "macro": "select_ref", "params": {"target": "a"}},
+                        {"name": "a", "macro": "select_ref", "params": {"target": "b"}},
+                    ],
+                },
+            )
+            compiler = Compiler(project)
+
+            with pytest.raises(
+                CompileError,
+                match=r"Model dependency cycle detected: a -> b -> a",
+            ):
+                compiler.compile(dry_run=True)
+
+    def test_failed_recompile_clears_resolved_snapshot_and_dag(self):
+        """A failed later resolution cannot expose a stale successful view."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_macro(d, "copy_source", "SELECT * FROM {{ source(source_name) }}")
+            project = _parse(
+                d,
+                {
+                    **BASE,
+                    "models": [
+                        {
+                            "name": "copy",
+                            "macro": "copy_source",
+                            "params": {"source_name": "orders_raw"},
+                        }
+                    ],
+                },
+            )
+            compiler = Compiler(project)
+            compiler.compile(dry_run=True)
+            assert compiler.resolved_models
+            assert compiler.dag.nodes
+
+            (Path(d) / "macros" / "copy_source.sql.j2").unlink()
+            with pytest.raises(CompileError, match="not found"):
+                compiler.compile(dry_run=True)
+
+            assert not compiler.resolved_models
+            assert compiler.dag.nodes == {}
+
+    def test_post_resolution_failure_clears_snapshot_and_partial_artifacts(self):
+        """Only a fully successful compile may publish its resolved view."""
+        with tempfile.TemporaryDirectory() as d:
+            project = _parse(
+                d,
+                {
+                    **BASE,
+                    "models": [
+                        {
+                            "name": "a_good",
+                            "sql": 'SELECT * FROM {{ source("orders_raw") }}',
+                        },
+                        {
+                            "name": "z_bad_sink",
+                            "from": [{"source": "orders_raw"}],
+                        },
+                    ],
+                },
+            )
+            compiler = Compiler(project)
+
+            with pytest.raises(CompileError, match="has no sink configuration"):
+                compiler.compile(dry_run=True)
+
+            assert not compiler.resolved_models
+            assert compiler.dag.nodes == {}
+            assert compiler.schemas == []
+            assert compiler.topics == []
+            assert compiler.flink_jobs == []
+            assert compiler.test_jobs == []
+            assert compiler.connectors == []
+            assert compiler.gateway_rules == []

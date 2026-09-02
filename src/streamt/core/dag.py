@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from streamt.core.models import Exposure, MaterializedType, Model, StreamtProject
 from streamt.core.parser import ProjectParser
+
+if TYPE_CHECKING:
+    from streamt.compiler.model_resolution import ResolvedModel
 
 
 class NodeType(str, Enum):
@@ -16,6 +20,10 @@ class NodeType(str, Enum):
     SOURCE = "source"
     MODEL = "model"
     EXPOSURE = "exposure"
+
+
+class DAGCycleError(ValueError):
+    """A dependency graph contains a cycle."""
 
 
 @dataclass
@@ -54,20 +62,30 @@ class DAG:
 
     def topological_sort(self) -> list[str]:
         """Return nodes in topological order (dependencies first)."""
-        visited: set[str] = set()
+        state: dict[str, int] = {}
+        stack: list[str] = []
         result: list[str] = []
 
         def visit(name: str) -> None:
-            if name in visited:
+            current_state = state.get(name, 0)
+            if current_state == 2:
                 return
-            visited.add(name)
+            if current_state == 1:
+                cycle_start = stack.index(name)
+                cycle = [*stack[cycle_start:], name]
+                raise DAGCycleError(f"DAG cycle detected: {' -> '.join(cycle)}")
+
+            state[name] = 1
+            stack.append(name)
             node = self.nodes.get(name)
             if node:
-                for upstream in node.upstream:
+                for upstream in sorted(node.upstream):
                     visit(upstream)
+            stack.pop()
+            state[name] = 2
             result.append(name)
 
-        for name in self.nodes:
+        for name in sorted(self.nodes):
             visit(name)
 
         return result
@@ -230,21 +248,22 @@ class DAG:
 
     def to_dict(self) -> dict[str, object]:
         """Convert DAG to dictionary for JSON serialization."""
+        self.topological_sort()
         return {
             "nodes": [
                 {
                     "name": node.name,
                     "type": node.type.value,
                     "materialized": node.materialized,
-                    "upstream": list(node.upstream),
-                    "downstream": list(node.downstream),
+                    "upstream": sorted(node.upstream),
+                    "downstream": sorted(node.downstream),
                 }
-                for node in self.nodes.values()
+                for _name, node in sorted(self.nodes.items())
             ],
             "edges": [
                 {"from": name, "to": downstream}
-                for name, node in self.nodes.items()
-                for downstream in node.downstream
+                for name, node in sorted(self.nodes.items())
+                for downstream in sorted(node.downstream)
             ],
         }
 
@@ -338,13 +357,27 @@ class ColumnLineageBuilder:
 class DAGBuilder:
     """Builder for DAG from streamt project."""
 
-    def __init__(self, project: StreamtProject) -> None:
+    def __init__(
+        self,
+        project: StreamtProject,
+        *,
+        resolved_models: Optional[Mapping[str, ResolvedModel]] = None,
+    ) -> None:
         """Initialize builder with project."""
         self.project = project
         self.parser = ProjectParser(project.project_path) if project.project_path else None
+        self.resolved_models = resolved_models
 
     def build(self) -> DAG:
         """Build the DAG from the project."""
+        if self.resolved_models is not None:
+            expected_names = {model.name for model in self.project.models}
+            resolved_names = set(self.resolved_models)
+            if resolved_names != expected_names:
+                raise ValueError(
+                    "resolved model mapping must exactly match project model names"
+                )
+
         dag = DAG()
 
         # Add source nodes
@@ -357,12 +390,21 @@ class DAGBuilder:
             )
 
         # Add model nodes
-        for model in self.project.models:
+        for declaration in self.project.models:
+            resolved = (
+                self.resolved_models.get(declaration.name)
+                if self.resolved_models is not None
+                else None
+            )
             dag.add_node(
                 DAGNode(
-                    name=model.name,
+                    name=declaration.name,
                     type=NodeType.MODEL,
-                    materialized=self._resolve_materialized(model).value,
+                    materialized=(
+                        resolved.materialized.value
+                        if resolved is not None
+                        else self._resolve_materialized(declaration).value
+                    ),
                 )
             )
 
@@ -376,8 +418,17 @@ class DAGBuilder:
             )
 
         # Build edges for models
-        for model in self.project.models:
-            self._build_model_edges(dag, model)
+        for declaration in self.project.models:
+            resolved = (
+                self.resolved_models.get(declaration.name)
+                if self.resolved_models is not None
+                else None
+            )
+            if resolved is not None:
+                for dependency in resolved.dependencies:
+                    dag.add_edge(dependency.name, declaration.name)
+            else:
+                self._build_model_edges(dag, declaration)
 
         # Build edges for exposures
         for exposure in self.project.exposures:

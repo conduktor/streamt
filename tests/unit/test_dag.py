@@ -3,9 +3,11 @@
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
-from streamt.core.dag import DAGBuilder, NodeType
+from streamt.compiler.model_resolution import resolve_project_models
+from streamt.core.dag import DAG, DAGBuilder, DAGCycleError, DAGNode, NodeType
 from streamt.core.models import StreamtProject
 from streamt.core.parser import ProjectParser
 
@@ -271,3 +273,79 @@ class TestDAGBuilder:
             assert "edges" in dag_dict
             assert len(dag_dict["nodes"]) == 2
             assert len(dag_dict["edges"]) == 1
+
+    def test_topological_sort_and_serialization_are_deterministic(self):
+        """Insertion and set order do not affect public DAG ordering."""
+        dag = DAG()
+        dag.add_node(DAGNode(name="consumer", type=NodeType.MODEL))
+        dag.add_node(DAGNode(name="beta", type=NodeType.SOURCE))
+        dag.add_node(DAGNode(name="alpha", type=NodeType.SOURCE))
+        dag.add_edge("beta", "consumer")
+        dag.add_edge("alpha", "consumer")
+
+        assert dag.topological_sort() == ["alpha", "beta", "consumer"]
+        assert dag.to_dict() == {
+            "nodes": [
+                {
+                    "name": "alpha",
+                    "type": "source",
+                    "materialized": None,
+                    "upstream": [],
+                    "downstream": ["consumer"],
+                },
+                {
+                    "name": "beta",
+                    "type": "source",
+                    "materialized": None,
+                    "upstream": [],
+                    "downstream": ["consumer"],
+                },
+                {
+                    "name": "consumer",
+                    "type": "model",
+                    "materialized": None,
+                    "upstream": ["alpha", "beta"],
+                    "downstream": [],
+                },
+            ],
+            "edges": [
+                {"from": "alpha", "to": "consumer"},
+                {"from": "beta", "to": "consumer"},
+            ],
+        }
+
+    def test_topological_sort_rejects_cycles_with_stable_path(self):
+        """Direct DAG consumers cannot silently accept a cycle."""
+        dag = DAG()
+        dag.add_node(DAGNode(name="b", type=NodeType.MODEL))
+        dag.add_node(DAGNode(name="a", type=NodeType.MODEL))
+        dag.add_edge("a", "b")
+        dag.add_edge("b", "a")
+
+        with pytest.raises(DAGCycleError, match=r"DAG cycle detected: a -> b -> a"):
+            dag.topological_sort()
+        with pytest.raises(DAGCycleError, match=r"DAG cycle detected: a -> b -> a"):
+            dag.to_dict()
+
+    def test_resolved_dag_rejects_partial_model_snapshot(self):
+        """A caller cannot accidentally build a hybrid resolved/legacy DAG."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = self._create_project(
+                tmpdir,
+                {
+                    "project": {"name": "test"},
+                    "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                    "sources": [{"name": "raw", "topic": "raw"}],
+                    "models": [
+                        {
+                            "name": "clean",
+                            "sql": 'SELECT * FROM {{ source("raw") }}',
+                        }
+                    ],
+                },
+            )
+            partial = dict(resolve_project_models(project))
+            partial.pop("clean")
+
+            with pytest.raises(ValueError, match="exactly match"):
+                DAGBuilder(project, resolved_models=partial).build()
