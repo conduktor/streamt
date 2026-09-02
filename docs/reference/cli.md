@@ -18,6 +18,7 @@ Complete reference for all streamt CLI commands.
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
+| Inspect ownership/recovery metadata | `state status` | No |
 | Claim an existing declared topic or schema subject | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
 
@@ -761,6 +762,40 @@ orders_raw (source)
             ├── order_metrics (flink)
             │       └── ops_dashboard (exposure)
             └── billing_service (exposure)
+```
+
+---
+
+### state status
+
+Inspect safe local ownership-state and operation-control metadata without
+acquiring a mutation lock or connecting to runtime infrastructure.
+
+```bash
+streamt state status [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment (multi-env mode) |
+
+Structured output contains the local backend kind, immutable store ID,
+canonical state address, ownership presence/serial/checksum, and the same safe
+`operation_status` fields exposed by online plan. Provider revisions, resource
+contents, credentials, and raw provider errors are not emitted. A missing state
+file is reported as `state_status: absent` with serial `0`; the command does not
+create `.streamt/`, ownership state, a control sidecar, or lock files.
+
+Both `in_progress` and `recovery_required` are shown without modification. The
+text output directs operators to retain the sidecar evidence because those
+markers still block apply/adopt indefinitely. `state status` cannot clear or
+recover them. Local state is the only supported backend; `state init`, recovery,
+migration, and remote backend selection are not implemented.
+
+```bash
+streamt state status -p . -e prod
+streamt -o json state status -p . -e prod
 ```
 
 ---

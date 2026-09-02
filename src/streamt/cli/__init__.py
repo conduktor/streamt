@@ -21,6 +21,7 @@ from .commands import (
     observe,
     plan,
     show,
+    state_cmd,
     status,
     test,
     validate,
@@ -66,6 +67,7 @@ main.add_command(test.test)
 main.add_command(lineage.lineage)
 main.add_command(observe.observe)
 main.add_command(status.status)
+main.add_command(state_cmd.state)
 main.add_command(list_cmd.list_resources, name="list")
 main.add_command(show.show_resource, name="show")
 main.add_command(docs.docs)
