@@ -10,6 +10,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Optional
@@ -73,6 +74,10 @@ class GatewayManagedObservationError(GatewayError):
 
 class GatewayDesiredAggregateError(ValueError):
     """A compiled Gateway rule cannot become exact supported provider state."""
+
+
+class GatewayChangeEvidenceError(ValueError):
+    """Gateway plan evidence is not one exact secret-neutral change shape."""
 
 
 class _GeneratedGatewayInterceptorNameError(ValueError):
@@ -904,16 +909,319 @@ class AliasTopicState:
     physical_topic: Optional[str] = None
 
 
+def _copy_strict_managed_gateway_observation(
+    observation: ManagedGatewayRuleObservation,
+) -> ManagedGatewayRuleObservation:
+    """Revalidate and detach one caller-owned managed observation value."""
+    binding = GatewayBackendBinding(
+        virtual_cluster=observation.binding.virtual_cluster,
+        endpoint_fingerprint=observation.binding.endpoint_fingerprint,
+        api_version=observation.binding.api_version,
+        version=observation.binding.version,
+    )
+    interceptors = tuple(
+        ManagedGatewayInterceptor(
+            name=interceptor.name,
+            scope=tuple(interceptor.scope),
+            plugin_class=interceptor.plugin_class,
+            priority=interceptor.priority,
+            config_json=interceptor.config_json,
+        )
+        for interceptor in observation.interceptors
+    )
+    return ManagedGatewayRuleObservation(
+        binding=binding,
+        logical_name=observation.logical_name,
+        alias_name=observation.alias_name,
+        exists=observation.exists,
+        physical_name=observation.physical_name,
+        physical_cluster=observation.physical_cluster,
+        interceptors=interceptors,
+    )
+
+
 @dataclass
 class GatewayRuleChange:
     """A change to apply to a gateway rule."""
 
     name: str
     action: str  # create, update, delete, none
-    current_alias: Optional[AliasTopicState] = None
-    current_interceptors: Optional[list[InterceptorState]] = None
-    desired: Optional[GatewayRuleArtifact] = None
-    changes: Optional[dict[str, object]] = None
+    current_alias: Optional[AliasTopicState] = dataclass_field(default=None, repr=False)
+    current_interceptors: Optional[list[InterceptorState]] = dataclass_field(
+        default=None,
+        repr=False,
+    )
+    desired: Optional[GatewayRuleArtifact] = dataclass_field(default=None, repr=False)
+    changes: Optional[dict[str, object]] = dataclass_field(default=None, repr=False)
+    current: ManagedGatewayRuleObservation | None = dataclass_field(
+        default=None,
+        repr=False,
+    )
+    desired_managed: ManagedGatewayRuleObservation | None = dataclass_field(
+        default=None,
+        repr=False,
+    )
+    backend_identity: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized = any(
+            value is not None
+            for value in (
+                self.current,
+                self.desired_managed,
+                self.backend_identity,
+            )
+        )
+        if not normalized:
+            # Temporary compatibility for legacy planner and direct construction.
+            # Secret-bearing legacy state and diffs stay out of repr.
+            return
+        if (
+            not isinstance(self.desired, GatewayRuleArtifact)
+            or not isinstance(self.current, ManagedGatewayRuleObservation)
+            or not isinstance(self.desired_managed, ManagedGatewayRuleObservation)
+            or not isinstance(self.backend_identity, str)
+            or not is_gateway_backend_identity(self.backend_identity)
+        ):
+            raise GatewayDesiredAggregateError(
+                "Normalized Gateway change requires a complete managed surface"
+            )
+
+        # These inputs are value objects in the normalized model. Copy them so
+        # mutation of caller-owned artifact or observation objects cannot alter
+        # the plan after its evidence has been computed.
+        desired = deepcopy(self.desired)
+        current = _copy_strict_managed_gateway_observation(self.current)
+        desired_managed = _copy_strict_managed_gateway_observation(self.desired_managed)
+        binding = desired_managed.binding
+        if (
+            not desired_managed.exists
+            or current.binding != binding
+            or self.backend_identity != binding.backend_identity
+            or self.name != desired.name
+            or self.name != desired_managed.logical_name
+            or current.logical_name != desired_managed.logical_name
+            or desired.virtual_topic != desired_managed.alias_name
+            or current.alias_name != desired_managed.alias_name
+        ):
+            raise GatewayDesiredAggregateError(
+                "Normalized Gateway change has mismatched managed identity"
+            )
+        reconstructed = build_desired_gateway_rule(desired, binding)
+        if reconstructed != desired_managed:
+            raise GatewayDesiredAggregateError(
+                "Normalized Gateway change does not match its desired artifact"
+            )
+
+        expected_action = (
+            "create" if not current.exists else "none" if current == desired_managed else "update"
+        )
+        if self.action != expected_action:
+            raise GatewayDesiredAggregateError("Normalized Gateway change has an incoherent action")
+        expected_changes = _managed_gateway_change_evidence(current, desired_managed)
+        if self.action == "none":
+            if self.changes not in (None, {}):
+                raise GatewayChangeEvidenceError(
+                    "No-op Gateway change must not contain drift evidence"
+                )
+            normalized_changes: dict[str, object] = {}
+        else:
+            normalized_changes = secret_neutral_gateway_changes(self.changes)
+            if normalized_changes != expected_changes:
+                raise GatewayChangeEvidenceError(
+                    "Gateway change evidence does not match its managed surfaces"
+                )
+
+        self.desired = desired
+        self.current = current
+        self.desired_managed = desired_managed
+        self.changes = normalized_changes
+
+
+_GATEWAY_DRIFT_CATEGORIES = frozenset(
+    {
+        "alias_mapping",
+        "configuration",
+        "interceptor_identities",
+        "physical_cluster",
+        "plugin_classes",
+        "presence",
+        "priorities",
+    }
+)
+_GATEWAY_CHANGE_EVIDENCE_KEYS = frozenset({"categories", "current", "desired"})
+_GATEWAY_SURFACE_EVIDENCE_KEYS = frozenset({"exists", "fingerprint", "managed_interceptor_count"})
+
+
+def _managed_gateway_drift_categories(
+    current: ManagedGatewayRuleObservation,
+    desired: ManagedGatewayRuleObservation,
+) -> list[str]:
+    categories: set[str] = set()
+    if current.exists != desired.exists:
+        categories.add("presence")
+    if not current.exists or not desired.exists:
+        return sorted(categories)
+    if (
+        current.alias_name,
+        current.physical_name,
+    ) != (
+        desired.alias_name,
+        desired.physical_name,
+    ):
+        categories.add("alias_mapping")
+    if current.physical_cluster != desired.physical_cluster:
+        categories.add("physical_cluster")
+    current_by_identity = {
+        (interceptor.scope, interceptor.name): interceptor for interceptor in current.interceptors
+    }
+    desired_by_identity = {
+        (interceptor.scope, interceptor.name): interceptor for interceptor in desired.interceptors
+    }
+    if current_by_identity.keys() != desired_by_identity.keys():
+        categories.add("interceptor_identities")
+    common_identities = current_by_identity.keys() & desired_by_identity.keys()
+    if any(
+        current_by_identity[identity].plugin_class != desired_by_identity[identity].plugin_class
+        for identity in common_identities
+    ):
+        categories.add("plugin_classes")
+    if any(
+        current_by_identity[identity].priority != desired_by_identity[identity].priority
+        for identity in common_identities
+    ):
+        categories.add("priorities")
+    if any(
+        current_by_identity[identity].config_json != desired_by_identity[identity].config_json
+        for identity in common_identities
+    ):
+        categories.add("configuration")
+    return sorted(categories)
+
+
+def _managed_gateway_surface_evidence(
+    observation: ManagedGatewayRuleObservation,
+) -> dict[str, object]:
+    return {
+        "exists": observation.exists,
+        "fingerprint": observation.fingerprint,
+        "managed_interceptor_count": len(observation.interceptors),
+    }
+
+
+def _managed_gateway_change_evidence(
+    current: ManagedGatewayRuleObservation,
+    desired: ManagedGatewayRuleObservation,
+) -> dict[str, object]:
+    return {
+        "categories": _managed_gateway_drift_categories(current, desired),
+        "current": _managed_gateway_surface_evidence(current),
+        "desired": _managed_gateway_surface_evidence(desired),
+    }
+
+
+def _normalize_gateway_surface_evidence(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _GATEWAY_SURFACE_EVIDENCE_KEYS:
+        raise GatewayChangeEvidenceError(
+            "Gateway change contains malformed managed-surface evidence"
+        )
+    exists = value.get("exists")
+    fingerprint = value.get("fingerprint")
+    count = value.get("managed_interceptor_count")
+    if (
+        type(exists) is not bool
+        or not _is_fingerprint(fingerprint)
+        or type(count) is not int
+        or count < 0
+        or (not exists and count != 0)
+    ):
+        raise GatewayChangeEvidenceError(
+            "Gateway change contains malformed managed-surface evidence"
+        )
+    return {
+        "exists": exists,
+        "fingerprint": fingerprint,
+        "managed_interceptor_count": count,
+    }
+
+
+def secret_neutral_gateway_changes(changes: object) -> dict[str, object]:
+    """Validate and copy one exact secret-neutral normalized Gateway diff."""
+    if changes is None or changes == {}:
+        return {}
+    if not isinstance(changes, Mapping) or set(changes) != _GATEWAY_CHANGE_EVIDENCE_KEYS:
+        raise GatewayChangeEvidenceError(
+            "Gateway change evidence is not the normalized exact shape"
+        )
+    categories = changes.get("categories")
+    if (
+        not isinstance(categories, list)
+        or not categories
+        or any(not isinstance(category, str) for category in categories)
+        or categories != sorted(categories)
+        or len(categories) != len(set(categories))
+        or not set(categories).issubset(_GATEWAY_DRIFT_CATEGORIES)
+    ):
+        raise GatewayChangeEvidenceError("Gateway change contains invalid drift categories")
+    current = _normalize_gateway_surface_evidence(changes.get("current"))
+    desired = _normalize_gateway_surface_evidence(changes.get("desired"))
+    if (
+        desired["exists"] is not True
+        or ("presence" in categories) != (current["exists"] != desired["exists"])
+        or (
+            current["managed_interceptor_count"] != desired["managed_interceptor_count"]
+            and "interceptor_identities" not in categories
+            and "presence" not in categories
+        )
+        or current["fingerprint"] == desired["fingerprint"]
+    ):
+        raise GatewayChangeEvidenceError(
+            "Gateway change evidence is inconsistent with its managed surfaces"
+        )
+    return {
+        "categories": list(categories),
+        "current": current,
+        "desired": desired,
+    }
+
+
+def plan_managed_gateway_rule(
+    artifact: GatewayRuleArtifact,
+    desired_managed: ManagedGatewayRuleObservation,
+    current: ManagedGatewayRuleObservation,
+) -> GatewayRuleChange:
+    """Purely plan one strict compiled rule against one complete observation."""
+    if (
+        not isinstance(artifact, GatewayRuleArtifact)
+        or not isinstance(desired_managed, ManagedGatewayRuleObservation)
+        or not isinstance(current, ManagedGatewayRuleObservation)
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway managed planning requires complete strict inputs"
+        )
+    if (
+        not desired_managed.exists
+        or current.binding != desired_managed.binding
+        or artifact.name != desired_managed.logical_name
+        or current.logical_name != desired_managed.logical_name
+        or artifact.virtual_topic != desired_managed.alias_name
+        or current.alias_name != desired_managed.alias_name
+        or build_desired_gateway_rule(artifact, desired_managed.binding) != desired_managed
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway managed planning inputs do not share one exact identity"
+        )
+    action = "create" if not current.exists else "none" if current == desired_managed else "update"
+    changes = _managed_gateway_change_evidence(current, desired_managed) if action != "none" else {}
+    return GatewayRuleChange(
+        name=artifact.name,
+        action=action,
+        desired=artifact,
+        changes=changes,
+        current=current,
+        desired_managed=desired_managed,
+        backend_identity=desired_managed.binding.backend_identity,
+    )
 
 
 # Mapping from streamt interceptor types to Gateway plugin classes
