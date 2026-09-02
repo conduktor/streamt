@@ -17,6 +17,7 @@ from streamt.core.errors import ErrorCode
 from streamt.deployer.postgres_state import (
     make_postgres_state_administration,
     make_postgres_state_initializer,
+    make_postgres_state_lock_probe,
 )
 from streamt.deployer.state import StateError
 from streamt.deployer.state_backend import (
@@ -127,6 +128,94 @@ def state_init(
     except (EnvVarError, ParseError, EnvironmentError) as error:
         handle_parse_error(fmt, error, ErrorCode.PARSE_ERROR)
     except (StateBackendUnavailableError, StateBackendUnknownCommitError) as error:
+        safe_message = redact_sensitive_text(error)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_BACKEND_UNAVAILABLE,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except StateError as error:
+        safe_message = redact_sensitive_text(error)
+        fmt.add_error(
+            StructuredError(
+                code=ErrorCode.STATE_INVALID,
+                message=safe_message,
+            )
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+
+
+@state.command("lock-status")
+@click.option(
+    "--project-dir",
+    "-p",
+    type=click.Path(exists=True, file_okay=False),
+    help="Path to project directory",
+)
+@click.option(
+    "--env",
+    "-e",
+    "environment",
+    help="Target environment (reads from STREAMT_ENV if not set)",
+)
+@click.pass_context
+def state_lock_status(
+    ctx: click.Context,
+    project_dir: Optional[str],
+    environment: Optional[str],
+) -> None:
+    """Probe the instantaneous PostgreSQL advisory-lock state."""
+    from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
+
+    fmt = make_formatter(ctx, "state lock-status")
+    project_path = get_project_path(project_dir)
+
+    try:
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=lambda message: fmt.print(message),
+        )
+        project = parser.parse()
+        parsed_environment = (
+            parser.env_config.environment.name if parser.env_config else None
+        )
+        effective_environment = (
+            parsed_environment
+            if isinstance(parsed_environment, str) and parsed_environment
+            else "default"
+        )
+        if project.deployment_state.backend != "postgres":
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state lock probing is not configured"
+            )
+
+        address = StateAddress(
+            namespace=project.deployment_state.namespace,
+            project=project.project.name,
+            environment=effective_environment,
+        )
+        probe = make_postgres_state_lock_probe(project.deployment_state)
+        result = probe.probe(address)
+        fmt.set_data(result.to_dict())
+
+        fmt.print("[cyan]PostgreSQL deployment state lock probe[/cyan]")
+        fmt.print(f"  Address: {address.uri}")
+        fmt.print(f"  Lock: {result.lock_status}")
+        fmt.print("  Observation: instantaneous and racy")
+        fmt.print("  Reservation: none")
+        fmt.print("  Durable operation status: use `streamt state status`")
+        fmt.flush()
+    except (EnvVarError, ParseError, EnvironmentError) as error:
+        handle_parse_error(fmt, error, ErrorCode.PARSE_ERROR)
+    except StateBackendUnavailableError as error:
         safe_message = redact_sensitive_text(error)
         fmt.add_error(
             StructuredError(

@@ -1,9 +1,9 @@
 """Narrow PostgreSQL deployment-state administration.
 
-This module is deliberately not a ``DeploymentStateBackend``.  It can inspect
-or explicitly initialize a store for ``streamt state status`` and
-``streamt state init``, but it cannot authorize an ordinary plan, apply, adopt,
-state mutation, or operation lock.
+This module is deliberately not a ``DeploymentStateBackend``.  It can inspect,
+transiently probe, or explicitly initialize a store for administrative state
+commands, but it cannot authorize an ordinary plan, apply, adopt, state
+mutation, or durable operation lock.
 
 Psycopg is an optional dependency and is imported only when an administrative
 operation opens a connection.  Provider exceptions are translated to fixed,
@@ -810,6 +810,7 @@ _SCHEMA_V1_DDL: tuple[tuple[str, str, str | None], ...] = (
 StoreStatus = Literal["uninitialized", "ready"]
 AddressStatus = Literal["unregistered", "registered"]
 OwnershipStatus = Literal["unregistered", "absent", "present"]
+LockAvailability = Literal["available", "busy", "unregistered"]
 
 
 @dataclass(frozen=True)
@@ -891,6 +892,25 @@ class PostgresStateInitialization:
             "address_status": "registered",
             "state_status": "absent",
             "operation_status": "clear",
+            "ordinary_state_authority": "disabled",
+        }
+
+
+@dataclass(frozen=True)
+class PostgresStateLockProbeResult:
+    """Instantaneous, non-reserving operation-lock availability."""
+
+    store_id: str | None
+    address: StateAddress
+    lock_status: LockAvailability
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "backend": "postgres",
+            "store_id": self.store_id,
+            "address": self.address.uri,
+            "lock_status": self.lock_status,
+            "reservation": "none",
             "ordinary_state_authority": "disabled",
         }
 
@@ -1118,6 +1138,44 @@ def _normalized_constraints(
 def _advisory_lock_key(address: StateAddress) -> int:
     digest = hashlib.sha256(f"streamt-postgres-state-address-v1\0{address.uri}".encode()).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def _registered_advisory_lock_key(
+    cursor: _Cursor,
+    sql_module: _SqlModule,
+    schema: str,
+    address: StateAddress,
+) -> int | None:
+    address_row = _one_or_none(
+        _rows(
+            cursor,
+            _query(
+                sql_module,
+                (
+                    "SELECT address_uri, advisory_lock_key FROM {} WHERE namespace = %s "
+                    "AND project = %s AND environment = %s LIMIT 2"
+                ),
+                schema,
+                "state_addresses",
+            ),
+            (address.namespace, address.project, address.environment),
+        ),
+        label="address",
+    )
+    if address_row is None:
+        return None
+    if (
+        len(address_row) != 2
+        or address_row[0] != address.uri
+        or type(address_row[1]) is not int
+        or address_row[1] < -(2**63)
+        or address_row[1] > 2**63 - 1
+        or address_row[1] != _advisory_lock_key(address)
+    ):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment state address is invalid"
+        )
+    return address_row[1]
 
 
 def _initialization_lock_key(schema: str) -> tuple[int, int]:
@@ -1508,23 +1566,13 @@ class PostgresStateAdministration:
                 "PostgreSQL deployment state migration ledger is invalid"
             )
 
-        address_row = _one_or_none(
-            _rows(
-                cursor,
-                _query(
-                    sql_module,
-                    (
-                        "SELECT address_uri, advisory_lock_key FROM {} WHERE namespace = %s "
-                        "AND project = %s AND environment = %s LIMIT 2"
-                    ),
-                    self._schema,
-                    "state_addresses",
-                ),
-                (address.namespace, address.project, address.environment),
-            ),
-            label="address",
+        lock_key = _registered_advisory_lock_key(
+            cursor,
+            sql_module,
+            self._schema,
+            address,
         )
-        if address_row is None:
+        if lock_key is None:
             return PostgresStateStatus(
                 store_status="ready",
                 store_id=identity.store_id,
@@ -1536,16 +1584,6 @@ class PostgresStateAdministration:
                 state_checksum=None,
                 operation_status=None,
             )
-        if (
-            len(address_row) != 2
-            or address_row[0] != address.uri
-            or type(address_row[1]) is not int
-            or address_row[1] < -(2**63)
-            or address_row[1] > 2**63 - 1
-            or address_row[1] != _advisory_lock_key(address)
-        ):
-            raise StateBackendInvalidStateError("PostgreSQL deployment state address is invalid")
-
         operation_status = self._read_control(cursor, sql_module, address)
         state_row = _one_or_none(
             _rows(
@@ -1700,6 +1738,149 @@ class PostgresStateAdministration:
         if state.serial != serial or state_checksum(state) != checksum:
             raise StateBackendInvalidStateError("PostgreSQL deployment ownership state is invalid")
         return state, checksum
+
+
+class PostgresStateLockProbe:
+    """Transient lock probe; deliberately not an ordinary state backend."""
+
+    __slots__ = ("_dsn", "_lock_timeout_seconds", "_schema")
+
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        schema: str,
+        lock_timeout_seconds: int,
+    ) -> None:
+        self._dsn = dsn
+        self._schema = schema
+        self._lock_timeout_seconds = lock_timeout_seconds
+
+    def probe(self, address: StateAddress) -> PostgresStateLockProbeResult:
+        """Observe instantaneous availability and release before returning."""
+        options = _dsn_tls_options(self._dsn)
+        bundle = _load_psycopg()
+        connection: _Connection | None = None
+        cursor: _Cursor | None = None
+        result: PostgresStateLockProbeResult | None = None
+        invalid = False
+        unavailable = False
+        try:
+            connection = bundle.driver.connect(
+                self._dsn,
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                **options,
+            )
+            cursor = connection.cursor()
+            cursor.execute(
+                "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)"
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
+                (f"{_STATEMENT_TIMEOUT_MILLISECONDS}ms",),
+            )
+            cursor.execute(
+                "SELECT pg_catalog.set_config('lock_timeout', %s, true)",
+                (f"{self._lock_timeout_seconds * 1000}ms",),
+            )
+            status = PostgresStateAdministration(
+                dsn=self._dsn,
+                schema=self._schema,
+                lock_timeout_seconds=self._lock_timeout_seconds,
+            )._read_status(cursor, bundle.sql, address)
+
+            try:
+                recovery_rows = _rows(
+                    cursor,
+                    "SELECT pg_catalog.pg_is_in_recovery()",
+                )
+            except StateBackendInvalidStateError:
+                raise StateBackendUnavailableError(
+                    "PostgreSQL deployment state lock probe is unavailable"
+                ) from None
+            if recovery_rows != [(False,)]:
+                raise StateBackendUnavailableError(
+                    "PostgreSQL deployment state lock probe requires a primary server"
+                )
+
+            if status.address_status == "unregistered":
+                result = PostgresStateLockProbeResult(
+                    store_id=status.store_id,
+                    address=address,
+                    lock_status="unregistered",
+                )
+            else:
+                lock_key = _registered_advisory_lock_key(
+                    cursor,
+                    bundle.sql,
+                    self._schema,
+                    address,
+                )
+                if lock_key is None:
+                    raise StateBackendInvalidStateError(
+                        "PostgreSQL deployment state address is invalid"
+                    )
+                try:
+                    probe_rows = _rows(
+                        cursor,
+                        "SELECT pg_catalog.pg_try_advisory_xact_lock(%s)",
+                        (lock_key,),
+                    )
+                except StateBackendInvalidStateError:
+                    raise StateBackendUnavailableError(
+                        "PostgreSQL deployment state lock probe is unavailable"
+                    ) from None
+                if probe_rows == [(True,)]:
+                    lock_status: LockAvailability = "available"
+                elif probe_rows == [(False,)]:
+                    lock_status = "busy"
+                else:
+                    raise StateBackendUnavailableError(
+                        "PostgreSQL deployment state lock probe is unavailable"
+                    )
+                result = PostgresStateLockProbeResult(
+                    store_id=status.store_id,
+                    address=address,
+                    lock_status=lock_status,
+                )
+        except StateBackendInvalidStateError:
+            invalid = True
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            unavailable = True
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    unavailable = True
+            if connection is not None:
+                try:
+                    # The probe lock is transaction-scoped. A result is valid
+                    # only after this rollback has released it, including when
+                    # a transaction-pooling endpoint pins one backend for the
+                    # explicit transaction.
+                    connection.rollback()
+                except Exception:
+                    unavailable = True
+                try:
+                    connection.close()
+                except Exception:
+                    unavailable = True
+
+        if invalid:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment state is invalid"
+            ) from None
+        if unavailable or result is None:
+            raise StateBackendUnavailableError(
+                "PostgreSQL deployment state lock probe is unavailable"
+            ) from None
+        return result
 
 
 class PostgresStateInitializer:
@@ -2104,6 +2285,26 @@ def make_postgres_state_administration(
             "PostgreSQL deployment state credentials are unavailable"
         )
     return PostgresStateAdministration(
+        dsn=dsn,
+        schema=config.postgres.schema_name,
+        lock_timeout_seconds=config.lock_timeout_seconds,
+    )
+
+
+def make_postgres_state_lock_probe(
+    config: DeploymentStateConfig,
+) -> PostgresStateLockProbe:
+    """Construct the separate transient PostgreSQL lock probe without fallback."""
+    if not isinstance(config, PostgresDeploymentStateConfig):
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state lock probing is not configured"
+        )
+    dsn = os.environ.get(config.postgres.dsn_env)
+    if dsn is None or not dsn.strip():
+        raise StateBackendUnavailableError(
+            "PostgreSQL deployment state credentials are unavailable"
+        )
+    return PostgresStateLockProbe(
         dsn=dsn,
         schema=config.postgres.schema_name,
         lock_timeout_seconds=config.lock_timeout_seconds,
