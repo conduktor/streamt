@@ -382,7 +382,6 @@ class TestConfirmEnvFlag:
                     tmpdir,
                     "--env",
                     "prod",
-                    "--offline",
                     "--out",
                     str(plan_path),
                 ],
