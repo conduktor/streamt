@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 import uuid
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, cast
+from typing import Literal, Optional, cast
 
 import click
 
@@ -58,7 +60,24 @@ from streamt.deployer.state_backend import (
     operation_timestamp,
     state_checksum,
 )
-from streamt.output import OutputFormatter, StructuredError
+from streamt.integrations.openlineage import (
+    JobIdentity,
+    OpenLineageConstructionError,
+    OpenLineageNamespaceError,
+    OpenLineageTransport,
+    OpenLineageTransportConfigurationError,
+    OpenLineageValidationError,
+    RunIdentity,
+    build_run_event,
+    command_job_name,
+    create_openlineage_transport,
+    load_openlineage_transport_config,
+    resolve_openlineage_namespaces,
+    standard_facet,
+    validate_event,
+    validate_event_sequence,
+)
+from streamt.output import OutputFormatter, StructuredError, StructuredWarning
 
 _SELECTABLE_ARTIFACT_KINDS = (
     "schemas",
@@ -69,6 +88,95 @@ _SELECTABLE_ARTIFACT_KINDS = (
     "gateway_rules",
     "gateway_vclusters",
 )
+
+_ApplyTerminalEventType = Literal["COMPLETE", "FAIL", "ABORT"]
+_APPLY_FAILURE_MESSAGE = "streamt apply command did not complete successfully"
+
+
+class _OpenLineageApplyPreflightError(ValueError):
+    """A fixed, secret-neutral OpenLineage apply preflight failure."""
+
+    def __init__(self, message: str, *, location: str) -> None:
+        super().__init__(message)
+        self.location = location
+
+
+@dataclass
+class _ApplyOpenLineageLifecycle:
+    """Best-effort delivery state for one already validated durable apply run."""
+
+    transport: OpenLineageTransport
+    formatter: OutputFormatter
+    start_event: dict[str, object]
+    run: RunIdentity
+    job: JobIdentity
+    job_facets: dict[str, dict[str, object]]
+    started: bool = False
+    terminal_attempted: bool = False
+    closed: bool = False
+
+    def start(self) -> None:
+        """Attempt START exactly once without changing deployment truth."""
+        self.started = True
+        try:
+            self.transport.emit(self.start_event)
+        except Exception:
+            _emit_openlineage_delivery_warning(
+                self.formatter,
+                "OpenLineage START event delivery failed",
+                location="openlineage.start",
+            )
+
+    def terminal(self, event_type: _ApplyTerminalEventType) -> None:
+        """Attempt one terminal event only after START was attempted."""
+        if not self.started or self.terminal_attempted:
+            return
+        self.terminal_attempted = True
+        try:
+            run_facets = (
+                {
+                    "errorMessage": standard_facet(
+                        "run",
+                        "errorMessage",
+                        {
+                            "message": _APPLY_FAILURE_MESSAGE,
+                            "programmingLanguage": "PYTHON",
+                        },
+                    )
+                }
+                if event_type == "FAIL"
+                else None
+            )
+            event = build_run_event(
+                event_time=operation_timestamp(),
+                event_type=event_type,
+                run=self.run,
+                job=self.job,
+                run_facets=run_facets,
+                job_facets=self.job_facets,
+            )
+            validate_event_sequence((self.start_event, event))
+            self.transport.emit(event)
+        except Exception:
+            _emit_openlineage_delivery_warning(
+                self.formatter,
+                "OpenLineage terminal event delivery failed",
+                location="openlineage.terminal",
+            )
+
+    def close(self) -> None:
+        """Close once without changing the command's durable outcome."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.transport.close()
+        except Exception:
+            _emit_openlineage_delivery_warning(
+                self.formatter,
+                "OpenLineage transport close failed",
+                location="openlineage.transport",
+            )
 
 
 def _artifact_is_selected(
@@ -115,6 +223,135 @@ def destructive_operations_allowed(
 ) -> bool:
     """Destructive behavior is opt-in, including in single-environment mode."""
     return force or bool(env_config and env_config.safety.allow_destructive)
+
+
+def _option_or_environment(option: str | None, environment_name: str) -> str | None:
+    """Apply exact option-over-environment precedence after project parsing."""
+    return option if option is not None else os.environ.get(environment_name)
+
+
+def _prepare_apply_openlineage(
+    *,
+    project_name: str,
+    kafka_bootstrap: str,
+    gateway_bootstrap: str | None,
+    operation_id: str,
+    started_at: str,
+    job_namespace: str | None,
+    kafka_namespace: str | None,
+    gateway_namespace: str | None,
+    formatter: OutputFormatter,
+) -> _ApplyOpenLineageLifecycle:
+    """Build, validate, and open telemetry before a durable operation begins."""
+    namespaces = resolve_openlineage_namespaces(
+        job_namespace=_option_or_environment(job_namespace, "OPENLINEAGE_NAMESPACE"),
+        kafka_namespace=_option_or_environment(
+            kafka_namespace,
+            "STREAMT_OPENLINEAGE_KAFKA_NAMESPACE",
+        ),
+        gateway_namespace=_option_or_environment(
+            gateway_namespace,
+            "STREAMT_OPENLINEAGE_GATEWAY_NAMESPACE",
+        ),
+        kafka_bootstrap=kafka_bootstrap,
+        gateway_bootstrap=gateway_bootstrap,
+        require_kafka=False,
+        require_gateway=False,
+    )
+    job = JobIdentity(namespaces.job, command_job_name(project_name, "apply"))
+    run = RunIdentity(operation_id)
+    job_facets = {
+        "jobType": standard_facet(
+            "job",
+            "jobType",
+            {
+                "processingType": "BATCH",
+                "integration": "STREAMT",
+                "jobType": "COMMAND",
+            },
+        )
+    }
+    start_event = build_run_event(
+        event_time=started_at,
+        event_type="START",
+        run=run,
+        job=job,
+        job_facets=job_facets,
+    )
+    validate_event(start_event)
+
+    failure_facet = {
+        "errorMessage": standard_facet(
+            "run",
+            "errorMessage",
+            {
+                "message": _APPLY_FAILURE_MESSAGE,
+                "programmingLanguage": "PYTHON",
+            },
+        )
+    }
+    for terminal_type in ("COMPLETE", "FAIL", "ABORT"):
+        candidate = build_run_event(
+            event_time=started_at,
+            event_type=terminal_type,
+            run=run,
+            job=job,
+            run_facets=failure_facet if terminal_type == "FAIL" else None,
+            job_facets=job_facets,
+        )
+        validate_event_sequence((start_event, candidate))
+
+    config = load_openlineage_transport_config(os.environ, emission_requested=True)
+    transport = create_openlineage_transport(config)
+    return _ApplyOpenLineageLifecycle(
+        transport=transport,
+        formatter=formatter,
+        start_event=start_event,
+        run=run,
+        job=job,
+        job_facets=job_facets,
+    )
+
+
+def _emit_openlineage_delivery_warning(
+    formatter: OutputFormatter,
+    message: str,
+    *,
+    location: str,
+) -> None:
+    """Record one fixed warning without exposing transport details."""
+    safe_message = redact_sensitive_text(message)[:512]
+    formatter.add_warning(
+        StructuredWarning(
+            code=ErrorCode.OPENLINEAGE_EMIT_FAILED,
+            message=safe_message,
+            location=location,
+        )
+    )
+    if formatter.format == "text" and not formatter.quiet:
+        formatter.stderr.print(f"[yellow]WARNING[/yellow]: {safe_message}")
+
+
+def _fail_openlineage_apply_preflight(
+    formatter: OutputFormatter,
+    error: Exception,
+    *,
+    location: str,
+) -> None:
+    """Fail safely before an apply operation can persist its intent."""
+    safe_message = redact_sensitive_text(error)[:1024].strip()
+    if not safe_message:
+        safe_message = "Could not prepare OpenLineage apply emission"
+    formatter.add_error(
+        StructuredError(
+            code=ErrorCode.OPENLINEAGE_INVALID,
+            message=safe_message,
+            location=location,
+        )
+    )
+    formatter.print_error(safe_message)
+    formatter.flush()
+    sys.exit(1)
 
 
 def _reviewed_plan_commands(
@@ -199,6 +436,20 @@ def _enforce_gateway_removal_apply_authorization(
 @click.option("--force", is_flag=True, help="Override safety checks (allow destructive operations)")
 @click.option("--dry-run", is_flag=True, help="Show what would change without applying")
 @click.option(
+    "--emit-openlineage",
+    is_flag=True,
+    help="Emit finite OpenLineage events for this apply run",
+)
+@click.option("--openlineage-job-namespace", help="OpenLineage job namespace")
+@click.option(
+    "--openlineage-kafka-namespace",
+    help="Kafka dataset namespace (kafka://host:port)",
+)
+@click.option(
+    "--openlineage-gateway-namespace",
+    help="Gateway dataset namespace (kafka://host:port)",
+)
+@click.option(
     "--plan",
     "reviewed_plan_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -215,6 +466,10 @@ def apply(
     confirm_env: Optional[str],
     force: bool,
     dry_run: bool,
+    emit_openlineage: bool,
+    openlineage_job_namespace: str | None,
+    openlineage_kafka_namespace: str | None,
+    openlineage_gateway_namespace: str | None,
     reviewed_plan_path: Optional[Path],
 ) -> None:
     """Deploy the project."""
@@ -239,6 +494,7 @@ def apply(
 
     operation_stack = ExitStack()
     verified_commit_data: dict[str, object] | None = None
+    lineage: _ApplyOpenLineageLifecycle | None = None
     try:
         parser = ProjectParser(
             project_path,
@@ -675,9 +931,68 @@ def apply(
                 deployment_plan,
                 managed_gateway_deletions=managed_gateway_deletions,
             )
-            active_snapshot: list[OperationSnapshot] = [
-                state_operation.begin_operation(intent_snapshot, intent)
-            ]
+            if emit_openlineage:
+                try:
+                    lineage = _prepare_apply_openlineage(
+                        project_name=project.project.name,
+                        kafka_bootstrap=project.runtime.kafka.bootstrap_servers,
+                        gateway_bootstrap=(
+                            project.runtime.conduktor.gateway.proxy_bootstrap
+                            if project.runtime.conduktor is not None
+                            and project.runtime.conduktor.gateway is not None
+                            else None
+                        ),
+                        operation_id=intent.operation_id,
+                        started_at=intent.started_at,
+                        job_namespace=openlineage_job_namespace,
+                        kafka_namespace=openlineage_kafka_namespace,
+                        gateway_namespace=openlineage_gateway_namespace,
+                        formatter=fmt,
+                    )
+                except OpenLineageNamespaceError as error:
+                    _fail_openlineage_apply_preflight(
+                        fmt,
+                        error,
+                        location=error.location,
+                    )
+                except OpenLineageTransportConfigurationError as error:
+                    _fail_openlineage_apply_preflight(
+                        fmt,
+                        error,
+                        location=error.location,
+                    )
+                except _OpenLineageApplyPreflightError as error:
+                    _fail_openlineage_apply_preflight(
+                        fmt,
+                        error,
+                        location=error.location,
+                    )
+                except (OpenLineageConstructionError, OpenLineageValidationError):
+                    _fail_openlineage_apply_preflight(
+                        fmt,
+                        _OpenLineageApplyPreflightError(
+                            "Could not construct validated OpenLineage apply events",
+                            location="openlineage.events",
+                        ),
+                        location="openlineage.events",
+                    )
+                except Exception:
+                    _fail_openlineage_apply_preflight(
+                        fmt,
+                        _OpenLineageApplyPreflightError(
+                            "Could not prepare OpenLineage apply emission",
+                            location="openlineage",
+                        ),
+                        location="openlineage",
+                    )
+            try:
+                active_snapshot: list[OperationSnapshot] = [
+                    state_operation.begin_operation(intent_snapshot, intent)
+                ]
+            except BaseException:
+                if lineage is not None:
+                    lineage.close()
+                raise
             mutation_started = False
             state_commit_attempted = False
             operation_finalized = False
@@ -761,6 +1076,8 @@ def apply(
                 operation_finalized = True
 
             try:
+                if lineage is not None:
+                    lineage.start()
                 results = planner.apply(
                     deployment_plan,
                     before_action=before_action,
@@ -816,6 +1133,9 @@ def apply(
                     for item in errors:
                         fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
                         fmt.print_error(item)
+                    if lineage is not None:
+                        lineage.terminal("FAIL")
+                        lineage.close()
                     fmt.flush()
                     sys.exit(1)
 
@@ -834,6 +1154,11 @@ def apply(
                         operation_id=operation_id,
                     ) from error
                 operation_finalized = True
+                if lineage is not None:
+                    # A returned finalizer has durably committed ownership and
+                    # cleared the operation marker. A later verified authority-
+                    # release error does not undo this COMPLETE boundary.
+                    lineage.terminal("COMPLETE")
                 if next_state is not None:
                     results["state_serial"] = next_state.serial
                     if project.deployment_state.backend == "local":
@@ -848,6 +1173,8 @@ def apply(
 
                 # Do not emit a success result while operation ownership is held.
                 operation_stack.close()
+                if lineage is not None:
+                    lineage.close()
                 if created:
                     fmt.print("\n[green]Created:[/green]")
                     for item in created:
@@ -862,7 +1189,7 @@ def apply(
                         fmt.print(f"  = {item}")
                 fmt.print("\n[green]Apply complete[/green]")
                 fmt.flush()
-            except BaseException:
+            except BaseException as error:
                 if not operation_finalized:
                     if mutation_started or state_commit_attempted:
                         try:
@@ -880,6 +1207,9 @@ def apply(
                         except BaseException:
                             # A failed clear preserves the conservative marker.
                             pass
+                if lineage is not None:
+                    lineage.terminal("ABORT" if isinstance(error, KeyboardInterrupt) else "FAIL")
+                    lineage.close()
                 raise
         finally:
             close_deployers(sr, kafka, flink, connect, gateway)
@@ -1002,4 +1332,8 @@ def apply(
         fmt.flush()
         sys.exit(1)
     finally:
-        operation_stack.close()
+        try:
+            operation_stack.close()
+        finally:
+            if lineage is not None:
+                lineage.close()
