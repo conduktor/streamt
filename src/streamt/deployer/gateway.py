@@ -16,7 +16,10 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 import requests
+import sqlglot
 from requests.auth import HTTPBasicAuth
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from streamt.compiler.manifest import GatewayRuleArtifact
 from streamt.deployer.ssl_utils import configure_session_ssl
@@ -36,7 +39,10 @@ _GATEWAY_BACKEND_IDENTITY = re.compile(
 )
 _GATEWAY_RESOURCE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 _GENERATED_INTERCEPTOR_INDEX = r"(?:0|[1-9][0-9]*)"
+_GENERATED_INTERCEPTOR_TYPES = frozenset({"filter", "mask", "encrypt", "readonly"})
 _KNOWN_INTERCEPTOR_SCOPE_KEYS = frozenset({"vCluster", "group", "username"})
+_FILTER_PLUGIN_CLASS = "io.conduktor.gateway.interceptor.VirtualSqlTopicPlugin"
+_MANAGED_INTERCEPTOR_PRIORITY = 100
 
 
 class GatewayError(Exception):
@@ -63,6 +69,14 @@ class GatewayBindingError(ValueError):
 
 class GatewayManagedObservationError(GatewayError):
     """A strict Gateway rule observation could not be proven complete."""
+
+
+class GatewayDesiredAggregateError(ValueError):
+    """A compiled Gateway rule cannot become exact supported provider state."""
+
+
+class _GeneratedGatewayInterceptorNameError(ValueError):
+    """Internal marker for an ambiguous generated interceptor namespace."""
 
 
 class _InvalidManagedGatewayJSONError(ValueError):
@@ -93,6 +107,84 @@ def _reject_duplicate_json_keys(
 
 def _reject_nonfinite_json_constant(_value: str) -> object:
     raise _InvalidManagedGatewayJSONError
+
+
+@dataclass(frozen=True)
+class GeneratedGatewayInterceptorName:
+    """One exact deterministic interceptor identity owned by a logical rule."""
+
+    logical_name: str
+    declaration_type: str
+    ordinal: int
+
+
+def generate_gateway_interceptor_name(
+    logical_name: str,
+    declaration_type: str,
+    ordinal: int,
+) -> str:
+    """Generate one canonical managed interceptor name."""
+    if (
+        not isinstance(logical_name, str)
+        or _GATEWAY_RESOURCE_NAME.fullmatch(logical_name) is None
+        or declaration_type not in _GENERATED_INTERCEPTOR_TYPES
+        or type(ordinal) is not int
+        or ordinal < 0
+    ):
+        raise _GeneratedGatewayInterceptorNameError(
+            "Gateway generated interceptor identity is invalid"
+        )
+    return f"{logical_name}_{declaration_type}_{ordinal}"
+
+
+def classify_gateway_interceptor_name(
+    logical_name: str,
+    candidate: str,
+) -> GeneratedGatewayInterceptorName | None:
+    """Classify one exact anchored generated name, or return unrelated.
+
+    A candidate with exactly the target rule prefix and two generated-name
+    components is target namespace evidence. Unsupported types and
+    non-canonical indexes are ambiguous rather than safely unrelated.
+    """
+    if (
+        not isinstance(logical_name, str)
+        or _GATEWAY_RESOURCE_NAME.fullmatch(logical_name) is None
+        or not isinstance(candidate, str)
+    ):
+        raise _GeneratedGatewayInterceptorNameError(
+            "Gateway generated interceptor identity is invalid"
+        )
+    match = re.fullmatch(
+        rf"{re.escape(logical_name)}_(?P<type>[^_]+)_(?P<ordinal>[^_]+)",
+        candidate,
+    )
+    if match is None:
+        return None
+    declaration_type = match.group("type")
+    raw_ordinal = match.group("ordinal")
+    if (
+        declaration_type not in _GENERATED_INTERCEPTOR_TYPES
+        or re.fullmatch(_GENERATED_INTERCEPTOR_INDEX, raw_ordinal) is None
+    ):
+        raise _GeneratedGatewayInterceptorNameError(
+            "Gateway generated interceptor namespace is ambiguous"
+        )
+    ordinal = int(raw_ordinal)
+    regenerated = generate_gateway_interceptor_name(
+        logical_name,
+        declaration_type,
+        ordinal,
+    )
+    if regenerated != candidate:
+        raise _GeneratedGatewayInterceptorNameError(
+            "Gateway generated interceptor namespace is ambiguous"
+        )
+    return GeneratedGatewayInterceptorName(
+        logical_name=logical_name,
+        declaration_type=declaration_type,
+        ordinal=ordinal,
+    )
 
 
 def _has_control_character(value: str) -> bool:
@@ -441,6 +533,157 @@ class ManagedGatewayRuleObservation:
         return _sha256(self._canonical_json())
 
 
+_FILTER_COMPARISON_TYPES = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+)
+
+
+def _is_supported_gateway_filter_expression(expression: exp.Expression) -> bool:
+    """Whether one parsed WHERE expression is in the proven Gateway subset."""
+    if isinstance(expression, exp.Paren):
+        nested = expression.this
+        return isinstance(nested, exp.Expression) and _is_supported_gateway_filter_expression(
+            nested
+        )
+    if isinstance(expression, exp.And):
+        left = expression.this
+        right = expression.expression
+        return (
+            isinstance(left, exp.Expression)
+            and isinstance(right, exp.Expression)
+            and _is_supported_gateway_filter_expression(left)
+            and _is_supported_gateway_filter_expression(right)
+        )
+    if isinstance(expression, _FILTER_COMPARISON_TYPES):
+        return isinstance(expression.this, exp.Column) and isinstance(
+            expression.expression, exp.Literal
+        )
+    if isinstance(expression, exp.RegexpLike):
+        return (
+            isinstance(expression.this, exp.Column)
+            and isinstance(expression.expression, exp.Literal)
+            and expression.expression.is_string
+        )
+    return False
+
+
+def _validate_gateway_filter_where(value: object) -> str:
+    """Validate and preserve one exact compiler-emitted filter expression."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(marker in value for marker in (";", "--", "/*", "*/"))
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway filter declaration is outside the supported expression subset"
+        )
+    try:
+        parsed = sqlglot.parse(value)
+    except (RecursionError, SqlglotError):
+        raise GatewayDesiredAggregateError(
+            "Gateway filter declaration is outside the supported expression subset"
+        ) from None
+    if (
+        len(parsed) != 1
+        or parsed[0] is None
+        or not _is_supported_gateway_filter_expression(parsed[0])
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway filter declaration is outside the supported expression subset"
+        )
+    return value
+
+
+def build_desired_gateway_rule(
+    artifact: GatewayRuleArtifact,
+    binding: GatewayBackendBinding,
+) -> ManagedGatewayRuleObservation:
+    """Build one complete immutable desired Gateway managed surface."""
+    if not isinstance(artifact, GatewayRuleArtifact) or not isinstance(
+        binding, GatewayBackendBinding
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway desired aggregate requires a strict artifact and binding"
+        )
+    if any(
+        not isinstance(name, str) or _GATEWAY_RESOURCE_NAME.fullmatch(name) is None
+        for name in (
+            artifact.name,
+            artifact.virtual_topic,
+            artifact.physical_topic,
+        )
+    ):
+        raise GatewayDesiredAggregateError(
+            "Gateway desired aggregate has an invalid resource identity"
+        )
+    if not isinstance(artifact.interceptors, list):
+        raise GatewayDesiredAggregateError(
+            "Gateway desired aggregate has unsupported interceptor declarations"
+        )
+
+    desired_interceptors: tuple[ManagedGatewayInterceptor, ...] = ()
+    if artifact.interceptors:
+        if len(artifact.interceptors) != 1:
+            raise GatewayDesiredAggregateError(
+                "Gateway desired aggregate has unsupported interceptor declarations"
+            )
+        declaration = artifact.interceptors[0]
+        if (
+            not isinstance(declaration, dict)
+            or set(declaration) != {"type", "config"}
+            or declaration.get("type") != "filter"
+        ):
+            raise GatewayDesiredAggregateError(
+                "Gateway desired aggregate has unsupported interceptor declarations"
+            )
+        config = declaration.get("config")
+        if not isinstance(config, dict) or set(config) != {"where"}:
+            raise GatewayDesiredAggregateError(
+                "Gateway desired aggregate has unsupported interceptor declarations"
+            )
+        where_clause = _validate_gateway_filter_where(config.get("where"))
+        provider_config = {
+            "virtualTopic": artifact.virtual_topic,
+            "statement": (f'SELECT * FROM "{artifact.physical_topic}" WHERE {where_clause}'),
+        }
+        config_json = json.dumps(
+            provider_config,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        desired_interceptors = (
+            ManagedGatewayInterceptor(
+                name=generate_gateway_interceptor_name(
+                    artifact.name,
+                    "filter",
+                    0,
+                ),
+                scope=_canonical_vcluster_scope(binding.virtual_cluster),
+                plugin_class=_FILTER_PLUGIN_CLASS,
+                priority=_MANAGED_INTERCEPTOR_PRIORITY,
+                config_json=config_json,
+            ),
+        )
+
+    return ManagedGatewayRuleObservation(
+        binding=binding,
+        logical_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        exists=True,
+        physical_name=artifact.physical_topic,
+        physical_cluster="main",
+        interceptors=desired_interceptors,
+    )
+
+
 @dataclass(frozen=True)
 class _ParsedAliasTopic:
     scope: str
@@ -492,7 +735,7 @@ class GatewayRuleChange:
 
 # Mapping from streamt interceptor types to Gateway plugin classes
 INTERCEPTOR_PLUGINS = {
-    "filter": "io.conduktor.gateway.interceptor.VirtualSqlTopicPlugin",
+    "filter": _FILTER_PLUGIN_CLASS,
     "mask": "io.conduktor.gateway.interceptor.safeguard.FieldLevelMaskingPlugin",
     "encrypt": "io.conduktor.gateway.interceptor.FieldLevelEncryptionPlugin",
     "readonly": "io.conduktor.gateway.interceptor.safeguard.ReadOnlyTopicPolicyPlugin",
@@ -863,18 +1106,13 @@ class GatewayDeployer:
     @staticmethod
     def _classify_generated_interceptor_name(logical_name: str, name: str) -> str:
         """Classify one exact generated key without broad owner-prefix matching."""
-        parts = name.rsplit("_", 2)
-        if len(parts) != 3:
+        try:
+            parsed = classify_gateway_interceptor_name(logical_name, name)
+        except _GeneratedGatewayInterceptorNameError:
+            return "ambiguous"
+        if parsed is None:
             return "other"
-        owner, interceptor_type, index = parts
-        if owner != logical_name:
-            return "other"
-        if (
-            interceptor_type in INTERCEPTOR_PLUGINS
-            and re.fullmatch(_GENERATED_INTERCEPTOR_INDEX, index) is not None
-        ):
-            return "owned"
-        return "ambiguous"
+        return "owned"
 
     def observe_managed_gateway_rule(
         self,

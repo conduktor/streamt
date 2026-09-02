@@ -8,13 +8,18 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+from streamt.compiler.manifest import GatewayRuleArtifact
 from streamt.deployer.gateway import (
     GatewayBackendBinding,
     GatewayBindingError,
     GatewayDeployer,
+    GatewayDesiredAggregateError,
     GatewayManagedObservationError,
     ManagedGatewayInterceptor,
     ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+    classify_gateway_interceptor_name,
+    generate_gateway_interceptor_name,
     is_gateway_backend_identity,
 )
 
@@ -69,6 +74,7 @@ def _interceptor(
     include_scope: bool | None = None,
     provider_filled_scope: bool = False,
     config: dict[str, object] | None = None,
+    plugin_class: str = "example.FilterPlugin",
 ) -> dict[str, object]:
     metadata: dict[str, object] = {"name": name}
     scope: dict[str, object] = (
@@ -87,7 +93,7 @@ def _interceptor(
         "apiVersion": "gateway/v2",
         "metadata": metadata,
         "spec": {
-            "pluginClass": "example.FilterPlugin",
+            "pluginClass": plugin_class,
             "priority": 100,
             "config": config or {"enabled": True},
             "comment": "provider comment",
@@ -212,6 +218,267 @@ def test_gateway_backend_identity_rejects_noncanonical_scope_tokens(
     candidate = f"conduktor-gateway:v1:{scope_token}:{binding.endpoint_fingerprint}"
 
     assert is_gateway_backend_identity(candidate) is False
+
+
+def _desired_artifact(
+    interceptors: list[dict[str, object]] | None = None,
+) -> GatewayRuleArtifact:
+    return GatewayRuleArtifact(
+        name="orders",
+        virtual_topic="orders.public",
+        physical_topic="orders.v1",
+        interceptors=interceptors or [],
+    )
+
+
+def _desired_binding(
+    virtual_cluster: str | None = "production",
+) -> GatewayBackendBinding:
+    return GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster=virtual_cluster,
+    )
+
+
+def test_desired_alias_only_uses_the_complete_immutable_observation_surface() -> None:
+    desired = build_desired_gateway_rule(_desired_artifact(), _desired_binding())
+
+    assert isinstance(desired, ManagedGatewayRuleObservation)
+    assert desired.exists is True
+    assert desired.logical_name == "orders"
+    assert desired.alias_name == "orders.public"
+    assert desired.physical_name == "orders.v1"
+    assert desired.physical_cluster == "main"
+    assert desired.interceptors == ()
+
+
+def test_desired_filter_has_exact_name_scope_plugin_priority_and_config() -> None:
+    desired = build_desired_gateway_rule(
+        _desired_artifact([{"type": "filter", "config": {"where": "amount > 100"}}]),
+        _desired_binding(),
+    )
+
+    assert len(desired.interceptors) == 1
+    interceptor = desired.interceptors[0]
+    assert interceptor.name == "orders_filter_0"
+    assert interceptor.scope == (
+        ("group", None),
+        ("username", None),
+        ("vCluster", "production"),
+    )
+    assert interceptor.plugin_class == "io.conduktor.gateway.interceptor.VirtualSqlTopicPlugin"
+    assert interceptor.priority == 100
+    assert json.loads(interceptor.config_json) == {
+        "statement": 'SELECT * FROM "orders.v1" WHERE amount > 100',
+        "virtualTopic": "orders.public",
+    }
+
+
+def test_desired_filter_roundtrips_to_the_strict_live_observation() -> None:
+    deployer = _deployer()
+    artifact = _desired_artifact(
+        [{"type": "filter", "config": {"where": "amount > 100"}}]
+    )
+    desired = build_desired_gateway_rule(artifact, deployer.cluster_binding)
+    expected_interceptor = desired.interceptors[0]
+    _set_collections(
+        deployer,
+        [_alias(virtual_cluster="production")],
+        [
+            _interceptor(
+                expected_interceptor.name,
+                virtual_cluster="production",
+                config=json.loads(expected_interceptor.config_json),
+                plugin_class=expected_interceptor.plugin_class,
+            )
+        ],
+    )
+
+    try:
+        observed = deployer.observe_managed_gateway_rule("orders", "orders.public")
+    finally:
+        deployer.close()
+
+    assert observed == desired
+    assert observed.fingerprint == desired.fingerprint
+
+
+def test_desired_default_scope_is_explicit_canonical_passthrough() -> None:
+    desired = build_desired_gateway_rule(
+        _desired_artifact([{"type": "filter", "config": {"where": "status = 'ready'"}}]),
+        _desired_binding(None),
+    )
+
+    assert desired.binding.virtual_cluster == "passthrough"
+    assert desired.interceptors[0].scope == (
+        ("group", None),
+        ("username", None),
+        ("vCluster", "passthrough"),
+    )
+
+
+def test_desired_aggregate_does_not_retain_mutable_artifact_configuration() -> None:
+    declaration: dict[str, object] = {
+        "type": "filter",
+        "config": {"where": "amount > 100"},
+    }
+    artifact = _desired_artifact([declaration])
+    desired = build_desired_gateway_rule(artifact, _desired_binding())
+
+    config = cast(dict[str, object], declaration["config"])
+    config["where"] = "password = 'MUTATED_SECRET'"
+    artifact.virtual_topic = "mutated.alias"
+
+    assert desired.alias_name == "orders.public"
+    assert "MUTATED_SECRET" not in desired.interceptors[0].config_json
+    assert json.loads(desired.interceptors[0].config_json)["statement"] == (
+        'SELECT * FROM "orders.v1" WHERE amount > 100'
+    )
+
+
+@pytest.mark.parametrize(
+    "where_clause",
+    [
+        "amount > 100",
+        "amount >= 100 AND amount <= 500",
+        "status = 'ready'",
+        "status <> 'deleted'",
+        "region REGEXP 'EU.*'",
+        "metadata.region = 'EU'",
+        "(amount > 100 AND status = 'ready')",
+    ],
+)
+def test_desired_filter_accepts_only_the_proven_expression_subset(
+    where_clause: str,
+) -> None:
+    desired = build_desired_gateway_rule(
+        _desired_artifact([{"type": "filter", "config": {"where": where_clause}}]),
+        _desired_binding(),
+    )
+
+    assert json.loads(desired.interceptors[0].config_json)["statement"] == (
+        f'SELECT * FROM "orders.v1" WHERE {where_clause}'
+    )
+
+
+@pytest.mark.parametrize(
+    "where_clause",
+    [
+        "status = 'ready' OR priority > 1",
+        "region IN ('EU', 'US')",
+        "email IS NULL",
+        "email IS NOT NULL",
+        "email LIKE '%@example.test'",
+        "amount BETWEEN 100 AND 500",
+        "LOWER(status) = 'ready'",
+        "amount > (SELECT MAX(amount) FROM orders)",
+        "amount = other_amount",
+        "100 < amount",
+        "NOT amount > 100",
+        "amount > 100 -- comment",
+        "amount > 100 /* comment */",
+        "amount > 100; SELECT 1",
+        "status = 'unterminated",
+        " amount > 100",
+        "amount > 100 ",
+    ],
+)
+def test_desired_filter_rejects_expressions_outside_the_proven_subset(
+    where_clause: str,
+) -> None:
+    with pytest.raises(GatewayDesiredAggregateError, match="supported expression subset"):
+        build_desired_gateway_rule(
+            _desired_artifact([{"type": "filter", "config": {"where": where_clause}}]),
+            _desired_binding(),
+        )
+
+
+def test_desired_filter_error_does_not_echo_expression_values() -> None:
+    with pytest.raises(GatewayDesiredAggregateError) as caught:
+        build_desired_gateway_rule(
+            _desired_artifact(
+                [
+                    {
+                        "type": "filter",
+                        "config": {"where": "password = 'TOPSECRET' OR allowed = 1"},
+                    }
+                ]
+            ),
+            _desired_binding(),
+        )
+
+    assert "TOPSECRET" not in str(caught.value)
+    assert "password" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["hash", "redact", "partial", "tokenize", "null", "MASK_ALL"],
+)
+@pytest.mark.parametrize("roles", [[], ["analyst"]])
+def test_desired_rejects_every_mask_declaration(
+    method: str,
+    roles: list[str],
+) -> None:
+    with pytest.raises(
+        GatewayDesiredAggregateError,
+        match="unsupported interceptor declarations",
+    ):
+        build_desired_gateway_rule(
+            _desired_artifact(
+                [
+                    {
+                        "type": "mask",
+                        "config": {
+                            "field": "email",
+                            "method": method,
+                            "forRoles": roles,
+                        },
+                    }
+                ]
+            ),
+            _desired_binding(),
+        )
+
+
+@pytest.mark.parametrize("declaration_type", ["encrypt", "readonly", "custom"])
+def test_desired_rejects_other_unsafe_interceptor_declarations(
+    declaration_type: str,
+) -> None:
+    with pytest.raises(GatewayDesiredAggregateError):
+        build_desired_gateway_rule(
+            _desired_artifact([{"type": declaration_type, "config": {}}]),
+            _desired_binding(),
+        )
+
+
+def test_desired_rejects_multiple_filter_declarations() -> None:
+    declaration = {"type": "filter", "config": {"where": "amount > 100"}}
+
+    with pytest.raises(GatewayDesiredAggregateError):
+        build_desired_gateway_rule(
+            _desired_artifact([declaration, dict(declaration)]),
+            _desired_binding(),
+        )
+
+
+def test_generated_name_generation_and_classification_are_exact_and_anchored() -> None:
+    generated = generate_gateway_interceptor_name("orders", "filter", 0)
+
+    assert generated == "orders_filter_0"
+    assert classify_gateway_interceptor_name("orders", generated) is not None
+    assert classify_gateway_interceptor_name("orders", "orders_archive_filter_0") is None
+    assert classify_gateway_interceptor_name("orders", "orders_filter_0_extra") is None
+    assert classify_gateway_interceptor_name("orders_archive", generated) is None
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    ["orders_custom_0", "orders_filter_01", "orders_filter_-1", "orders_FILTER_0"],
+)
+def test_generated_looking_invalid_names_are_ambiguous(candidate: str) -> None:
+    with pytest.raises(ValueError, match="ambiguous"):
+        classify_gateway_interceptor_name("orders", candidate)
 
 
 def test_observer_uses_exact_two_fixed_gets_and_normalizes_provider_order() -> None:
