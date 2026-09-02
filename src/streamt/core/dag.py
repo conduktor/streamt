@@ -228,7 +228,7 @@ class DAG:
         lines.append("}")
         return "\n".join(lines)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Convert DAG to dictionary for JSON serialization."""
         return {
             "nodes": [
