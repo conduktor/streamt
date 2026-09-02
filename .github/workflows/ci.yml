@@ -101,6 +101,7 @@ jobs:
           python -m venv /tmp/streamt-wheel-smoke
           /tmp/streamt-wheel-smoke/bin/pip install dist/*.whl
           /tmp/streamt-wheel-smoke/bin/streamt --help
+          /tmp/streamt-wheel-smoke/bin/python -c 'from streamt.docs.asyncapi import generate_asyncapi_document; from streamt.core.models import StreamtProject; project = StreamtProject.model_validate({"apiVersion": "streamt.dev/v1alpha1", "project": {"name": "wheel-smoke"}, "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}}, "sources": [{"name": "events", "topic": "events"}]}); assert generate_asyncapi_document(project)["asyncapi"] == "3.1.0"'
 
   docs:
     runs-on: ubuntu-latest

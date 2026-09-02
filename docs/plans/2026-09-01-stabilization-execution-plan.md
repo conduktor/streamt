@@ -35,6 +35,11 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
   live consumer groups with explicit evidence quality. Protected environments,
   plus shared environments that opt in explicitly, reject direct apply and
   require the integrity-checked reviewed-plan workflow.
+- Phase 2 now includes deterministic AsyncAPI 3.1 export for declared Kafka
+  source/model channels. The packaged exporter validates offline against the
+  pinned official 3.1 JSON Schema and then checks local reference and operation
+  message-subset semantics; the historical `docs openapi` name remains only as
+  an explicitly documented compatibility alias.
 
 ## Work order
 

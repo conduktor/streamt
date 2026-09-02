@@ -62,6 +62,19 @@ def docs_generate(
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
 
 
+@docs.command("asyncapi")
+@click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
+@click.option("--env", "-e", "environment", help="Target environment")
+@click.pass_context
+def docs_asyncapi(
+    ctx: click.Context,
+    project_dir: Optional[str],
+    environment: Optional[str],
+) -> None:
+    """Generate and validate an AsyncAPI 3.1 document for Kafka channels."""
+    _emit_asyncapi(ctx, project_dir, environment, "docs asyncapi")
+
+
 @docs.command("openapi")
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option("--env", "-e", "environment", help="Target environment")
@@ -71,97 +84,81 @@ def docs_openapi(
     project_dir: Optional[str],
     environment: Optional[str],
 ) -> None:
-    """Generate AsyncAPI/OpenAPI spec for exposed topics."""
+    """Deprecated alias for `docs asyncapi`; this does not emit OpenAPI."""
+    _emit_asyncapi(ctx, project_dir, environment, "docs openapi")
+
+
+def _emit_asyncapi(
+    ctx: click.Context,
+    project_dir: Optional[str],
+    environment: Optional[str],
+    command_name: str,
+) -> None:
+    """Generate the same AsyncAPI document for the canonical and alias commands."""
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
+    from streamt.docs.asyncapi import (
+        AsyncAPIGenerationError,
+        AsyncAPIValidationError,
+        generate_asyncapi_document,
+    )
 
-    fmt = make_formatter(ctx, "docs openapi")
+    fmt = make_formatter(ctx, command_name)
     project_path = get_project_path(project_dir)
+
+    def parser_warning(message: str) -> None:
+        """Keep warnings off the raw document stream while preserving JSON metadata."""
+        if fmt.format == "json":
+            fmt.print_warning(message)
+        elif not fmt.quiet:
+            fmt.stderr.print(f"[yellow]WARNING[/yellow]: {message}")
 
     try:
         parser = ProjectParser(
             project_path,
             environment=environment,
-            warn_callback=lambda msg: fmt.print(msg),
+            warn_callback=parser_warning,
         )
         project = parser.parse()
+        document = generate_asyncapi_document(project)
+        components = document["components"]
+        if not isinstance(components, dict):
+            raise AsyncAPIValidationError("Generated AsyncAPI components must be an object")
+        schemas = components.get("schemas")
+        if not isinstance(schemas, dict):
+            raise AsyncAPIValidationError("Generated AsyncAPI schemas must be an object")
+        channels = document["channels"]
+        operations = document["operations"]
+        if not isinstance(channels, dict) or not isinstance(operations, dict):
+            raise AsyncAPIValidationError("Generated AsyncAPI channels/operations must be objects")
 
-        channels: dict[str, object] = {}
-        schemas: dict[str, object] = {}
-
-        for src in project.sources:
-            props = {}
-            for col in src.columns:
-                props[col.name] = {"type": _flink_to_json_type(col.type or "STRING")}
-                if col.description:
-                    props[col.name]["description"] = col.description
-            schema_name = f"{src.name}_value"
-            schemas[schema_name] = {"type": "object", "properties": props}
-            channels[src.topic] = {
-                "description": src.description or f"Source: {src.name}",
-                "subscribe": {"message": {"$ref": f"#/components/schemas/{schema_name}"}},
+        if fmt.format == "text" and not fmt.quiet:
+            click.echo(json.dumps(document, indent=2, sort_keys=True))
+        fmt.set_data(
+            {
+                "asyncapi": document["asyncapi"],
+                "channels": len(channels),
+                "operations": len(operations),
+                "schemas": len(schemas),
+                "document": document,
             }
-
-        for mdl in project.models:
-            cols: list[tuple[str, Optional[str]]] = [
-                (col.name, col.type) for col in (mdl.columns or [])
-            ]
-            if mdl.contract and mdl.contract.columns:
-                cols = [(col.name, col.type) for col in mdl.contract.columns]
-            props = {}
-            for col_name, declared_type in cols:
-                col_type = declared_type or "STRING"
-                props[col_name] = {"type": _flink_to_json_type(col_type)}
-            if props:
-                schema_name = f"{mdl.name}_value"
-                schemas[schema_name] = {"type": "object", "properties": props}
-                tc = mdl.get_topic_config()
-                topic = tc.name if tc and tc.name else mdl.name
-                channels[topic] = {
-                    "description": mdl.description or f"Model: {mdl.name}",
-                    "subscribe": {"message": {"$ref": f"#/components/schemas/{schema_name}"}},
-                }
-
-        spec = {
-            "asyncapi": "2.6.0",
-            "info": {"title": project.project.name, "version": project.project.version or "1.0.0"},
-            "channels": channels,
-            "components": {"schemas": schemas},
-        }
-
-        fmt.print(json.dumps(spec, indent=2))
-        fmt.set_data({"channels": len(channels), "schemas": len(schemas)})
+        )
         fmt.flush()
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
+    except (AsyncAPIGenerationError, AsyncAPIValidationError) as e:
+        handle_parse_error(fmt, e, ErrorCode.ASYNCAPI_INVALID)
 
 
 def _flink_to_json_type(flink_type: str) -> str:
-    """Map Flink SQL type to JSON Schema type."""
-    base = flink_type.upper().split("(")[0].strip()
-    mapping = {
-        "STRING": "string",
-        "VARCHAR": "string",
-        "CHAR": "string",
-        "INT": "integer",
-        "INTEGER": "integer",
-        "SMALLINT": "integer",
-        "TINYINT": "integer",
-        "BIGINT": "integer",
-        "LONG": "integer",
-        "FLOAT": "number",
-        "DOUBLE": "number",
-        "DECIMAL": "number",
-        "NUMERIC": "number",
-        "BOOLEAN": "boolean",
-        "BOOL": "boolean",
-        "TIMESTAMP": "string",
-        "DATE": "string",
-        "TIME": "string",
-        "BYTES": "string",
-    }
-    return mapping.get(base, "string")
+    """Compatibility helper for callers that only need the JSON root type."""
+    from streamt.docs.asyncapi import flink_type_to_asyncapi_schema
+
+    json_type = flink_type_to_asyncapi_schema(flink_type).get("type")
+    if not isinstance(json_type, str):
+        raise ValueError(f"Flink type {flink_type!r} did not produce a JSON Schema type")
+    return json_type
 
 
 @docs.command("schema")

@@ -91,7 +91,9 @@ report naming every known downstream consumer and blocks apply by policy.
 Target: streamt becomes a portable authoring layer instead of a closed control
 plane.
 
-- [ ] Generate validated AsyncAPI 3.x documents.
+- [x] Generate validated AsyncAPI 3.x documents (3.1 documents validated
+      offline against the pinned official schema plus semantic reference
+      checks).
 - [ ] Generate Open Data Contract Standard documents.
 - [ ] Emit OpenLineage-compatible compile and runtime events.
 - [ ] Publish catalog metadata to Conduktor Console and support portable exports

@@ -1014,12 +1014,13 @@ streamt docs generate --env prod
 streamt docs generate --output ./public
 ```
 
-#### docs openapi
+#### docs asyncapi
 
-Generate AsyncAPI/OpenAPI spec for exposed topics.
+Generate a deterministic, offline-validated AsyncAPI 3.1 JSON document for
+declared Kafka source and model channels.
 
 ```bash
-streamt docs openapi [OPTIONS]
+streamt docs asyncapi [OPTIONS]
 ```
 
 **Options:**
@@ -1032,11 +1033,32 @@ streamt docs openapi [OPTIONS]
 **Examples:**
 
 ```bash
-# Generate AsyncAPI spec
-streamt docs openapi
+# Generate an AsyncAPI 3.1 document
+streamt docs asyncapi
 
 # Save to file
-streamt docs openapi > asyncapi.json
+streamt docs asyncapi > asyncapi.json
+
+# Return the document in the structured CLI envelope at data.document
+streamt --output json docs asyncapi
+```
+
+The export includes stable channel, message, schema, and operation identifiers,
+payload schemas from declared columns/contracts, and only the Kafka binding
+fields supported by explicit model topic metadata. It does not invent broker
+servers, credentials, serialization settings, or payload schemas for resources
+without declared columns. Unsupported or malformed Flink types and identifier
+collisions fail closed. See [AsyncAPI export](asyncapi.md) for the exact
+validation and representation boundary.
+
+#### docs openapi
+
+Deprecated compatibility alias for `streamt docs asyncapi`. It emits the exact
+same AsyncAPI 3.1 document; despite the historical command name, it does not
+emit an OpenAPI document. New automation should use `docs asyncapi`.
+
+```bash
+streamt docs openapi [OPTIONS]
 ```
 
 #### docs dictionary

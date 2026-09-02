@@ -408,26 +408,26 @@ class TestDocsOpenAPI:
         r = _invoke("docs", "openapi", project_dir=d)
         assert r.exit_code == 0
         spec = json.loads(r.output)
-        assert spec["asyncapi"] == "2.6.0"
+        assert spec["asyncapi"] == "3.1.0"
         assert spec["info"]["title"] == "mystream"
 
     def test_source_channel_exists(self, tmp_path: Path) -> None:
         d = self._make_project(str(tmp_path))
         spec = json.loads(_invoke("docs", "openapi", project_dir=d).output)
-        assert "raw.clicks" in spec["channels"]
+        assert spec["channels"]["source.clicks"]["address"] == "raw.clicks"
 
     def test_schema_properties(self, tmp_path: Path) -> None:
         d = self._make_project(str(tmp_path))
         spec = json.loads(_invoke("docs", "openapi", project_dir=d).output)
         assert (
-            spec["components"]["schemas"]["clicks_value"]["properties"]["user_id"]["type"]
+            spec["components"]["schemas"]["source.clicks.payload"]["properties"]["user_id"]["type"]
             == "string"
         )
 
     def test_model_channel_from_contract(self, tmp_path: Path) -> None:
         d = self._make_project(str(tmp_path))
         spec = json.loads(_invoke("docs", "openapi", project_dir=d).output)
-        assert "page_views_value" in spec["components"]["schemas"]
+        assert "model.page_views.payload" in spec["components"]["schemas"]
 
     def test_flink_type_mapping(self) -> None:
         from streamt.cli.commands.docs import _flink_to_json_type
