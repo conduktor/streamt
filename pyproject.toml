@@ -79,6 +79,7 @@ markers = [
     "flink: mark test as requiring Flink",
     "connect: mark test as requiring Kafka Connect",
     "schema_registry: mark test as requiring Schema Registry",
+    "postgres: mark test as requiring an explicit real PostgreSQL test server",
 ]
 
 [tool.black]

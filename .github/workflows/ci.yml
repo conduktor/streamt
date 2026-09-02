@@ -79,6 +79,54 @@ jobs:
       - name: Enforce mypy error ceiling
         run: python scripts/check_mypy_baseline.py
 
+  postgres-conformance:
+    name: PostgreSQL ${{ matrix.postgres-major }} conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-major: ['14', '18']
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-major }}
+        env:
+          POSTGRES_USER: streamt_ci_bootstrap
+          POSTGRES_PASSWORD: streamt-ci-bootstrap-only
+          POSTGRES_DB: streamt_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U streamt_ci_bootstrap -d streamt_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      STREAMT_TEST_POSTGRES_ADMIN_DSN: postgresql://streamt_ci_bootstrap:streamt-ci-bootstrap-only@127.0.0.1:5432/streamt_ci?sslmode=disable
+      STREAMT_TEST_POSTGRES_MAJOR: ${{ matrix.postgres-major }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,postgres]"
+
+      - name: Verify PostgreSQL readiness and major
+        run: python tests/postgres/check_server.py
+
+      - name: Run real PostgreSQL conformance tests
+        run: python -m pytest tests/postgres -m postgres --tb=short
+
   package:
     runs-on: ubuntu-latest
 
@@ -172,6 +220,26 @@ jobs:
           assert "offline.invalid" not in result.stdout
           validate_odcs_document(document)
           PY
+
+      - name: Smoke-test installed PostgreSQL extra
+        run: |
+          python -m venv /tmp/streamt-postgres-wheel-smoke
+          python - <<'PY'
+          import glob
+          import subprocess
+
+          wheels = glob.glob("dist/*.whl")
+          assert len(wheels) == 1, wheels
+          subprocess.check_call(
+              [
+                  "/tmp/streamt-postgres-wheel-smoke/bin/pip",
+                  "install",
+                  f"{wheels[0]}[postgres]",
+              ]
+          )
+          PY
+          cd /tmp
+          /tmp/streamt-postgres-wheel-smoke/bin/python -c 'import psycopg; from streamt.deployer.postgres_state import PostgresStateAdministration; assert psycopg.__version__'
 
   docs:
     runs-on: ubuntu-latest
