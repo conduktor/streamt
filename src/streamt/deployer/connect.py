@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 # Default timeouts (in seconds)
 DEFAULT_TIMEOUT = 30
 HEALTH_CHECK_TIMEOUT = 10
+_MAX_MANAGED_CONNECTOR_RESPONSE_BYTES = 1024 * 1024
+_MANAGED_CONNECTOR_CHUNK_BYTES = 64 * 1024
 _FINGERPRINT_PREFIX = "sha256:"
 _CONNECT_BINDING_VERSION = 1
 _CLUSTER_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CONNECT_BACKEND_IDENTITY = re.compile(
     r"^kafka-connect:v1:[A-Za-z0-9][A-Za-z0-9._-]{0,127}:sha256:[0-9a-f]{64}$"
 )
+_PRESENTABLE_CONFIG_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ConnectClusterBindingError(ValueError):
@@ -38,8 +41,36 @@ class ConnectManagedObservationError(RuntimeError):
     """A strict managed-connector observation could not be proven complete."""
 
 
+class _InvalidManagedConnectorJSONError(ValueError):
+    """Internal marker for non-canonical managed-observation JSON."""
+
+
 def _sha256(value: str) -> str:
     return f"{_FINGERPRINT_PREFIX}{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _is_fingerprint(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith(_FINGERPRINT_PREFIX):
+        return False
+    digest = value.removeprefix(_FINGERPRINT_PREFIX)
+    return len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _InvalidManagedConnectorJSONError
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json_constant(_value: str) -> object:
+    raise _InvalidManagedConnectorJSONError
 
 
 def _normalize_rest_endpoint(rest_url: str) -> str:
@@ -256,34 +287,10 @@ class ManagedConnectorObservation:
         return dict(self.config)
 
 
-def _config_value_fingerprint(value: object) -> str:
-    """Return deterministic evidence for a config value without exposing it."""
-    try:
-        canonical = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    except (TypeError, ValueError):
-        # Connect configuration is expected to be JSON-compatible. Keep this
-        # fail-safe branch secret-neutral without making plan rendering fail.
-        canonical = json.dumps(
-            {"type": f"{type(value).__module__}.{type(value).__qualname__}"},
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"{_FINGERPRINT_PREFIX}{digest}"
-
-
 def _config_change_evidence(
     *,
     from_present: bool,
-    from_value: object,
     to_present: bool,
-    to_value: object,
 ) -> dict[str, object]:
     if not from_present and to_present:
         direction = "added"
@@ -292,49 +299,42 @@ def _config_change_evidence(
     else:
         direction = "changed"
 
-    evidence: dict[str, object] = {
+    return {
         "change": direction,
         "from_present": from_present,
         "to_present": to_present,
     }
-    if from_present:
-        evidence["from_fingerprint"] = _config_value_fingerprint(from_value)
-    if to_present:
-        evidence["to_fingerprint"] = _config_value_fingerprint(to_value)
-    return evidence
 
 
-def _is_fingerprint(value: object) -> bool:
-    if not isinstance(value, str) or not value.startswith(_FINGERPRINT_PREFIX):
-        return False
-    digest = value.removeprefix(_FINGERPRINT_PREFIX)
-    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
-
-
-def _is_secret_neutral_change(value: object) -> bool:
+def _secret_neutral_change(value: object) -> dict[str, object] | None:
     if not isinstance(value, Mapping):
-        return False
-    allowed_keys = {
-        "change",
-        "from_present",
-        "to_present",
-        "from_fingerprint",
-        "to_fingerprint",
-    }
-    if not set(value).issubset(allowed_keys):
-        return False
-    if value.get("change") not in {"added", "changed", "removed"}:
-        return False
-    if not isinstance(value.get("from_present"), bool) or not isinstance(
-        value.get("to_present"), bool
+        return None
+    change = value.get("change")
+    from_present = value.get("from_present")
+    to_present = value.get("to_present")
+    if (
+        change not in {"added", "changed", "removed"}
+        or type(from_present) is not bool
+        or type(to_present) is not bool
     ):
-        return False
-    for side in ("from", "to"):
-        present = value[f"{side}_present"]
-        fingerprint = value.get(f"{side}_fingerprint")
-        if present != _is_fingerprint(fingerprint):
-            return False
-    return True
+        return None
+    return {
+        "change": change,
+        "from_present": from_present,
+        "to_present": to_present,
+    }
+
+
+def _presented_config_keys(keys: set[str]) -> list[tuple[str, str]]:
+    presented: list[tuple[str, str]] = []
+    unsafe_ordinal = 0
+    for key in sorted(keys):
+        if _PRESENTABLE_CONFIG_KEY.fullmatch(key):
+            presented.append((key, key))
+            continue
+        unsafe_ordinal += 1
+        presented.append((key, f"<unsafe-config-key-{unsafe_ordinal}>"))
+    return presented
 
 
 def secret_neutral_connector_changes(changes: object) -> dict[str, dict[str, object]]:
@@ -342,11 +342,13 @@ def secret_neutral_connector_changes(changes: object) -> dict[str, dict[str, obj
     if not isinstance(changes, Mapping):
         return {}
 
+    keys = {key for key in changes if isinstance(key, str)}
     neutral: dict[str, dict[str, object]] = {}
-    for key in sorted(key for key in changes if isinstance(key, str)):
+    for key, presented_key in _presented_config_keys(keys):
         delta = changes[key]
-        if _is_secret_neutral_change(delta):
-            neutral[key] = dict(delta)
+        normalized = _secret_neutral_change(delta)
+        if normalized is not None:
+            neutral[presented_key] = normalized
             continue
         if isinstance(delta, Mapping) and "from" in delta and "to" in delta:
             from_value = delta["from"]
@@ -355,17 +357,15 @@ def secret_neutral_connector_changes(changes: object) -> dict[str, dict[str, obj
             to_present = to_value is not None
             if from_value is None and to_value is None:
                 from_present = to_present = True
-            neutral[key] = _config_change_evidence(
+            neutral[presented_key] = _config_change_evidence(
                 from_present=from_present,
-                from_value=from_value,
                 to_present=to_present,
-                to_value=to_value,
             )
             continue
 
         # Unknown legacy evidence is never passed through. Its key still tells
         # the reviewer what changed without serializing an arbitrary value.
-        neutral[key] = {
+        neutral[presented_key] = {
             "change": "changed",
             "from_present": False,
             "to_present": False,
@@ -378,8 +378,13 @@ def secret_neutral_connector_config_diff(
     desired_config: Mapping[str, object],
 ) -> dict[str, dict[str, object]]:
     """Return an exact typed config diff containing no raw values."""
+    keys = set(current_config) | set(desired_config)
+    if any(not isinstance(key, str) for key in keys):
+        raise ConnectManagedObservationError(
+            "Kafka Connect managed config evidence has an invalid key"
+        )
     changes: dict[str, dict[str, object]] = {}
-    for key in sorted(set(current_config) | set(desired_config)):
+    for key, presented_key in _presented_config_keys(keys):
         current_present = key in current_config
         desired_present = key in desired_config
         current_value = current_config.get(key)
@@ -391,11 +396,9 @@ def secret_neutral_connector_config_diff(
             and current_value == desired_value
         ):
             continue
-        changes[key] = _config_change_evidence(
+        changes[presented_key] = _config_change_evidence(
             from_present=current_present,
-            from_value=current_value,
             to_present=desired_present,
-            to_value=desired_value,
         )
     return changes
 
@@ -593,6 +596,68 @@ class ConnectDeployer:
             )
         return tuple(sorted(normalized))
 
+    @staticmethod
+    def _read_managed_observation_body(response: object) -> bytes:
+        """Read one response body with a hard decoded-byte ceiling."""
+        headers = getattr(response, "headers", None)
+        declared_length: object = None
+        if isinstance(headers, Mapping):
+            declared_length = headers.get("Content-Length")
+        if declared_length is not None:
+            try:
+                parsed_length = int(declared_length)
+            except (TypeError, ValueError):
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation response has invalid size metadata"
+                ) from None
+            if parsed_length < 0 or parsed_length > _MAX_MANAGED_CONNECTOR_RESPONSE_BYTES:
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation response is oversized"
+                )
+
+        iter_content = getattr(response, "iter_content", None)
+        if not callable(iter_content):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response body is unavailable"
+            )
+        body = bytearray()
+        try:
+            chunks = iter_content(chunk_size=_MANAGED_CONNECTOR_CHUNK_BYTES)
+            for chunk in chunks:
+                if not isinstance(chunk, bytes):
+                    raise ConnectManagedObservationError(
+                        "Kafka Connect managed observation response body is malformed"
+                    )
+                if len(body) + len(chunk) > _MAX_MANAGED_CONNECTOR_RESPONSE_BYTES:
+                    raise ConnectManagedObservationError(
+                        "Kafka Connect managed observation response is oversized"
+                    )
+                body.extend(chunk)
+        except ConnectManagedObservationError:
+            raise
+        except Exception:
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response body could not be read"
+            ) from None
+        return bytes(body)
+
+    @staticmethod
+    def _decode_managed_observation(body: bytes) -> object:
+        try:
+            return json.loads(
+                body.decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_nonfinite_json_constant,
+            )
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            _InvalidManagedConnectorJSONError,
+        ):
+            raise ConnectManagedObservationError(
+                "Kafka Connect managed observation response is not canonical JSON"
+            ) from None
+
     def observe_managed_connector(self, connector_name: str) -> ManagedConnectorObservation:
         """Strictly observe one connector with one immutable, identity-bound GET."""
         binding = self.cluster_binding
@@ -613,33 +678,35 @@ class ConnectDeployer:
                 "GET",
                 f"{self.rest_url}{endpoint}",
                 timeout=DEFAULT_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
             )
         except Exception:
             raise ConnectManagedObservationError(
                 "Kafka Connect managed observation request failed"
             ) from None
-
-        status_code = getattr(response, "status_code", None)
-        if status_code == 404:
-            return ManagedConnectorObservation(
-                binding=binding,
-                name=connector_name,
-                exists=False,
-            )
-        if status_code in {401, 403}:
-            raise ConnectManagedObservationError(
-                "Kafka Connect managed observation authorization failed"
-            )
-        if not isinstance(status_code, int) or not 200 <= status_code < 300:
-            raise ConnectManagedObservationError(
-                "Kafka Connect managed observation request returned an invalid status"
-            )
         try:
-            data = response.json()
-        except Exception:
-            raise ConnectManagedObservationError(
-                "Kafka Connect managed observation response is not valid JSON"
-            ) from None
+            status_code = getattr(response, "status_code", None)
+            if status_code == 404:
+                return ManagedConnectorObservation(
+                    binding=binding,
+                    name=connector_name,
+                    exists=False,
+                )
+            if status_code in {401, 403}:
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation authorization failed"
+                )
+            if not isinstance(status_code, int) or not 200 <= status_code < 300:
+                raise ConnectManagedObservationError(
+                    "Kafka Connect managed observation request returned an invalid status"
+                )
+            data = self._decode_managed_observation(self._read_managed_observation_body(response))
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
         if not isinstance(data, dict):
             raise ConnectManagedObservationError(
                 "Kafka Connect managed observation response is not an object"

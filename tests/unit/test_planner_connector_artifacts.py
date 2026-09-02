@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from copy import deepcopy
 from unittest.mock import MagicMock
@@ -161,11 +162,17 @@ def test_live_planner_uses_one_strict_observation_with_exact_config_types() -> N
     current_config["enabled"] = 1
     response = MagicMock()
     response.status_code = 200
-    response.json.return_value = {
-        "name": artifact.name,
-        "config": current_config,
-        "tasks": [{"connector": artifact.name, "task": 0}],
-    }
+    response.headers = {}
+    response.iter_content.return_value = [
+        json.dumps(
+            {
+                "name": artifact.name,
+                "config": current_config,
+                "tasks": [{"connector": artifact.name, "task": 0}],
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ]
     deployer = ConnectDeployer(_ENDPOINT, cluster_alias="production")
     request = MagicMock(return_value=response)
     deployer._http_session.request = request  # type: ignore[method-assign]
@@ -184,10 +191,11 @@ def test_live_planner_uses_one_strict_observation_with_exact_config_types() -> N
     assert change.desired is not None
     assert change.desired.cluster == "production"
     assert set(change.changes) == {"enabled"}
-    assert change.changes["enabled"]["change"] == "changed"
-    assert change.changes["enabled"]["from_fingerprint"] != (
-        change.changes["enabled"]["to_fingerprint"]
-    )
+    assert change.changes["enabled"] == {
+        "change": "changed",
+        "from_present": True,
+        "to_present": True,
+    }
     assert plan.ownership_requirements[0].observed_action == "update"
     request.assert_called_once()
     deployer.get_connector_state.assert_not_called()

@@ -23,13 +23,28 @@ from streamt.deployer.connect import (
     bind_connector_artifact,
     is_connect_backend_identity,
     resolve_connector_artifact,
+    secret_neutral_connector_changes,
+    secret_neutral_connector_config_diff,
 )
 
 
 def _response(status_code: int, payload: object) -> MagicMock:
+    return _raw_response(
+        status_code,
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+    )
+
+
+def _raw_response(
+    status_code: int,
+    body: bytes,
+    *,
+    headers: dict[str, str] | None = None,
+) -> MagicMock:
     response = MagicMock()
     response.status_code = status_code
-    response.json.return_value = payload
+    response.headers = headers or {}
+    response.iter_content.return_value = [body]
     return response
 
 
@@ -277,7 +292,11 @@ def test_strict_observation_uses_one_encoded_get_and_exact_config() -> None:
         "GET",
         "https://connect.example.test:8443/api/connectors/team%2Forders%20sink%3F%23",
         timeout=30,
+        allow_redirects=False,
+        stream=True,
     )
+    response.iter_content.assert_called_once_with(chunk_size=64 * 1024)
+    response.close.assert_called_once_with()
     assert observation.exists is True
     assert observation.name == connector_name
     assert observation.binding.cluster_alias == "production"
@@ -359,8 +378,16 @@ def test_bound_plan_exactly_detects_type_and_case_changes_without_raw_values() -
     assert change.desired.cluster == "production"
     assert change.backend_identity == change.current.binding.backend_identity
     assert set(change.changes) == {"mode", "tasks.max"}
-    assert change.changes["mode"]["change"] == "changed"
-    assert change.changes["tasks.max"]["change"] == "changed"
+    assert change.changes["mode"] == {
+        "change": "changed",
+        "from_present": True,
+        "to_present": True,
+    }
+    assert change.changes["tasks.max"] == {
+        "change": "changed",
+        "from_present": True,
+        "to_present": True,
+    }
     rendered = json.dumps(change.changes, sort_keys=True)
     assert "COPY" not in rendered
     assert "copy" not in rendered
@@ -634,8 +661,10 @@ def test_strict_observation_rejects_partial_or_malformed_payloads_without_values
 
 def test_strict_observation_rejects_invalid_json_without_response_text() -> None:
     deployer = _bound_deployer()
-    response = _response(200, {})
-    response.json.side_effect = ValueError("password=json-secret")
+    response = _raw_response(
+        200,
+        b'{"name":"orders-sink","password":"json-secret"',
+    )
     deployer._http_session.request = MagicMock(  # type: ignore[method-assign]
         return_value=response
     )
@@ -647,6 +676,163 @@ def test_strict_observation_rejects_invalid_json_without_response_text() -> None
         deployer.close()
 
     assert "json-secret" not in str(caught.value)
+    response.json.assert_not_called()
+
+
+def test_strict_observation_rejects_redirect_without_following_or_reading_body() -> None:
+    deployer = _bound_deployer()
+    response = _raw_response(
+        302,
+        b'{"password":"redirect-body-secret"}',
+        headers={
+            "Location": "https://alice:redirect-secret@other.example.test/connectors/orders-sink"
+        },
+    )
+    request = MagicMock(return_value=response)
+    deployer._http_session.request = request  # type: ignore[method-assign]
+
+    try:
+        with pytest.raises(ConnectManagedObservationError) as caught:
+            deployer.observe_managed_connector("orders-sink")
+    finally:
+        deployer.close()
+
+    rendered = str(caught.value)
+    assert "redirect-secret" not in rendered
+    assert "redirect-body-secret" not in rendered
+    request.assert_called_once_with(
+        "GET",
+        "https://connect.example.test:8443/api/connectors/orders-sink",
+        timeout=30,
+        allow_redirects=False,
+        stream=True,
+    )
+    response.iter_content.assert_not_called()
+    response.json.assert_not_called()
+    response.close.assert_called_once_with()
+
+
+def test_strict_observation_rejects_duplicate_json_keys_without_values() -> None:
+    deployer = _bound_deployer()
+    response = _raw_response(
+        200,
+        (
+            b'{"name":"orders-sink","config":{"name":"orders-sink",'
+            b'"password":"first-secret","password":"duplicate-secret"}}'
+        ),
+    )
+    deployer._http_session.request = MagicMock(  # type: ignore[method-assign]
+        return_value=response
+    )
+
+    try:
+        with pytest.raises(ConnectManagedObservationError) as caught:
+            deployer.observe_managed_connector("orders-sink")
+    finally:
+        deployer.close()
+
+    rendered = str(caught.value)
+    assert "first-secret" not in rendered
+    assert "duplicate-secret" not in rendered
+    assert "canonical JSON" in rendered
+    deployer._http_session.request.assert_called_once()
+    response.iter_content.assert_called_once_with(chunk_size=64 * 1024)
+    response.json.assert_not_called()
+
+
+def test_strict_observation_rejects_oversized_body_before_json_decode() -> None:
+    deployer = _bound_deployer()
+    response = _raw_response(
+        200,
+        b"oversized-secret=" + b"x" * (1024 * 1024),
+    )
+    deployer._http_session.request = MagicMock(  # type: ignore[method-assign]
+        return_value=response
+    )
+
+    try:
+        with pytest.raises(ConnectManagedObservationError) as caught:
+            deployer.observe_managed_connector("orders-sink")
+    finally:
+        deployer.close()
+
+    rendered = str(caught.value)
+    assert "oversized" in rendered
+    assert "oversized-secret" not in rendered
+    deployer._http_session.request.assert_called_once()
+    response.iter_content.assert_called_once_with(chunk_size=64 * 1024)
+    response.json.assert_not_called()
+
+
+def test_connector_change_evidence_omits_values_and_sanitizes_unsafe_keys() -> None:
+    current = {
+        "safe.key": "current-secret",
+        "https://user:password@host/path": "url-key-secret",
+        "assignment=secret": True,
+        "control\nsecret": 1,
+        "x" * 129: "long-key-secret",
+    }
+    desired = {
+        "safe.key": "desired-secret",
+        "https://user:password@host/path": "changed-url-key-secret",
+        "assignment=secret": False,
+        "control\nsecret": 2,
+        "x" * 129: "changed-long-key-secret",
+    }
+
+    changes = secret_neutral_connector_config_diff(current, desired)
+
+    assert changes == {
+        "safe.key": {
+            "change": "changed",
+            "from_present": True,
+            "to_present": True,
+        },
+        "<unsafe-config-key-1>": {
+            "change": "changed",
+            "from_present": True,
+            "to_present": True,
+        },
+        "<unsafe-config-key-2>": {
+            "change": "changed",
+            "from_present": True,
+            "to_present": True,
+        },
+        "<unsafe-config-key-3>": {
+            "change": "changed",
+            "from_present": True,
+            "to_present": True,
+        },
+        "<unsafe-config-key-4>": {
+            "change": "changed",
+            "from_present": True,
+            "to_present": True,
+        },
+    }
+    rendered = json.dumps(changes, sort_keys=True)
+    for secret in (
+        "current-secret",
+        "desired-secret",
+        "url-key-secret",
+        "password@host",
+        "assignment=secret",
+        "control\\nsecret",
+        "long-key-secret",
+    ):
+        assert secret not in rendered
+
+    legacy = secret_neutral_connector_changes(
+        {
+            "safe.key": {
+                "change": "changed",
+                "from_present": True,
+                "to_present": True,
+                "from_fingerprint": "sha256:" + "a" * 64,
+                "to_fingerprint": "sha256:" + "b" * 64,
+            }
+        }
+    )
+    assert legacy == {"safe.key": changes["safe.key"]}
 
 
 def test_legacy_unbound_crud_works_but_strict_observation_requires_binding() -> None:

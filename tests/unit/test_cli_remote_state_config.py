@@ -219,8 +219,10 @@ def test_require_remote_state_blocks_apply_before_confirmation_compile_or_state(
     assert "confirmation" not in result.output.lower()
 
 
+@pytest.mark.parametrize("kind", ["topic", "connector"])
 def test_require_remote_state_blocks_adopt_before_compile_state_or_runtime(
     tmp_path: Path,
+    kind: str,
 ) -> None:
     _write_policy_project(tmp_path)
     with (
@@ -236,6 +238,10 @@ def test_require_remote_state_blocks_adopt_before_compile_state_or_runtime(
             "streamt.cli.commands.adopt.make_kafka_deployer",
             side_effect=AssertionError("runtime deployer constructed before policy"),
         ),
+        patch(
+            "streamt.cli.commands.adopt.make_connect_deployer",
+            side_effect=AssertionError("Connect deployer constructed before policy"),
+        ),
     ):
         result = CliRunner().invoke(
             main,
@@ -248,7 +254,7 @@ def test_require_remote_state_blocks_adopt_before_compile_state_or_runtime(
                 "-e",
                 "dev",
                 "--kind",
-                "topic",
+                kind,
                 "--name",
                 "anything",
             ],

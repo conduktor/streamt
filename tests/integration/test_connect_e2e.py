@@ -115,6 +115,54 @@ class TestConnectorCreation:
                 pass
             kafka_helper.delete_topic(topic_name)
 
+    def test_strict_managed_observation_parses_real_connector_document(
+        self,
+        docker_services,
+        kafka_helper: KafkaHelper,
+    ):
+        """The identity-bound observer accepts the real Connect resource shape."""
+        deployer = ConnectDeployer(
+            INFRA_CONFIG.connect_url,
+            cluster_alias="integration",
+        )
+        topic_name = f"strict_observation_{uuid.uuid4().hex[:8]}"
+        connector_name = f"strict_observation_{uuid.uuid4().hex[:8]}"
+        artifact = ConnectorArtifact(
+            name=connector_name,
+            connector_class="io.confluent.kafka.connect.datagen.DatagenConnector",
+            topics=[topic_name],
+            config={
+                "kafka.topic": topic_name,
+                "quickstart": "users",
+                "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+                "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+                "value.converter.schemas.enable": "false",
+                "max.interval": "1000",
+                "iterations": "1",
+                "tasks.max": "1",
+            },
+        )
+
+        try:
+            kafka_helper.create_topic(topic_name, partitions=1)
+            assert deployer.apply_connector(artifact) == "created"
+            observation = deployer.observe_managed_connector(connector_name)
+
+            assert observation.exists is True
+            assert observation.name == connector_name
+            assert observation.binding == deployer.require_cluster_binding()
+            assert observation.config_dict()["name"] == connector_name
+            assert observation.config_dict()["connector.class"] == (
+                artifact.connector_class
+            )
+        finally:
+            try:
+                deployer.delete_connector(connector_name)
+            except Exception:
+                pass
+            deployer.close()
+            kafka_helper.delete_topic(topic_name)
+
 
 @pytest.mark.integration
 @pytest.mark.connect

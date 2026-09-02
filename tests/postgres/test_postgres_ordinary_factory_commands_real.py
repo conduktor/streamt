@@ -19,7 +19,17 @@ import yaml
 from click.testing import CliRunner, Result
 
 from streamt.cli import main
-from streamt.compiler.manifest import TopicArtifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    ConnectorArtifact,
+    Manifest,
+    TopicArtifact,
+)
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ManagedConnectorObservation,
+    bind_connector_artifact,
+)
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.postgres_state import (
     PostgresStateInitializer,
@@ -54,6 +64,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 _ADMIN_DSN_ENV = "STREAMT_ORDINARY_FACTORY_ADMIN_DSN"
 _WRITER_DSN_ENV = "STREAMT_ORDINARY_FACTORY_WRITER_DSN"
 _BASE_WHEEL_GATE_ENV = "STREAMT_EXPECT_POSTGRES_EXTRA_MISSING"
+_CONNECT_ALIAS = "production"
+_CONNECT_ENDPOINT = "https://connect.example.test:8443/api"
+_CONNECTOR = "payments-sink"
+_LOGICAL_CONNECTOR = "payments_sink"
 
 
 def _write_project(
@@ -61,6 +75,7 @@ def _write_project(
     case: PostgresCase,
     *,
     writer_binding: bool = True,
+    connect_runtime: bool = False,
 ) -> None:
     postgres: dict[str, object] = {
         "dsn_env": _ADMIN_DSN_ENV,
@@ -68,14 +83,26 @@ def _write_project(
     }
     if writer_binding:
         postgres["writer_dsn_env"] = _WRITER_DSN_ENV
+    runtime: dict[str, object] = {
+        "kafka": {"bootstrap_servers": "broker.invalid:9092"}
+    }
+    if connect_runtime:
+        runtime["connect"] = {
+            "default": _CONNECT_ALIAS,
+            "clusters": {
+                _CONNECT_ALIAS: {
+                    "rest_url": _CONNECT_ENDPOINT,
+                    "username": "runtime-connect-user",
+                    "password": "runtime-connect-password",
+                }
+            },
+        }
     (path / "stream_project.yml").write_text(
         yaml.safe_dump(
             {
                 "apiVersion": "streamt.dev/v1alpha1",
                 "project": {"name": _PROJECT},
-                "runtime": {
-                    "kafka": {"bootstrap_servers": "broker.invalid:9092"}
-                },
+                "runtime": runtime,
                 "deployment_state": {
                     "backend": "postgres",
                     "namespace": _NAMESPACE,
@@ -85,6 +112,67 @@ def _write_project(
             }
         ),
         encoding="utf-8",
+    )
+
+
+def _connector_binding() -> ConnectClusterBinding:
+    return ConnectClusterBinding.from_endpoint(_CONNECT_ALIAS, _CONNECT_ENDPOINT)
+
+
+def _connector() -> ConnectorArtifact:
+    return ConnectorArtifact(
+        name=_CONNECTOR,
+        connector_class="io.desired.SecretSinkConnector",
+        topics=["payments.desired.secret.v1"],
+        config={
+            "connection.url": (
+                "https://desired-user:desired-url-password@warehouse.example.test/"
+                "sink?token=desired-query-secret"
+            ),
+            "password": "desired-config-password",
+            "sasl.jaas.config": (
+                "org.example.Login required username=desired-jaas-user "
+                'password="desired-jaas-password";'
+            ),
+        },
+        ownership=ArtifactOwnership(
+            project=_PROJECT,
+            owner_type="model",
+            owner_name=_LOGICAL_CONNECTOR,
+            mode="adopted",
+        ),
+    )
+
+
+def _connector_manifest(connector: ConnectorArtifact) -> Manifest:
+    return Manifest(
+        version="1.0",
+        project_name=_PROJECT,
+        artifacts={"connectors": [connector.to_dict()]},
+    )
+
+
+def _connector_observation() -> ManagedConnectorObservation:
+    config: dict[str, str | int] = {
+        "name": _CONNECTOR,
+        "connector.class": "io.live.SecretSourceConnector",
+        "topics": "payments.live.secret.v1",
+        "connection.url": (
+            "https://live-user:live-url-password@warehouse.example.test/"
+            "source?token=live-query-secret"
+        ),
+        "password": "live-config-password",
+        "sasl.jaas.config": (
+            "org.example.Login required username=live-jaas-user "
+            'password="live-jaas-password";'
+        ),
+        "tasks.max": 1,
+    }
+    return ManagedConnectorObservation(
+        binding=_connector_binding(),
+        name=_CONNECTOR,
+        exists=True,
+        config=tuple(sorted(config.items())),
     )
 
 
@@ -418,6 +506,155 @@ def test_adopt_uses_production_factory_without_runtime_mutation(
         postgres_case,
         _verification_service(postgres_case, postgres_writer),
         _expected_state(topic),
+        kind="adopt",
+        reviewed_plan_checksum=None,
+    )
+    _assert_no_local_state(tmp_path)
+
+
+def test_connector_adopt_uses_production_v2_writer_and_secret_neutral_evidence(
+    tmp_path: Path,
+    postgres_case: PostgresCase,
+    postgres_writer: WriterIdentity,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project(tmp_path, postgres_case, connect_runtime=True)
+    _initialize_v2(postgres_case, postgres_writer)
+    _bind_writer_only(monkeypatch, dsn=postgres_writer.dsn)
+    connector = _connector()
+    resolved = bind_connector_artifact(connector, _connector_binding())
+    observed = _connector_observation()
+    connect = MagicMock()
+    connect.require_cluster_binding.return_value = _connector_binding()
+    connect.observe_managed_connector.side_effect = [observed, observed]
+    identity = resource_id(
+        _PROJECT,
+        _ENVIRONMENT,
+        "connector",
+        _LOGICAL_CONNECTOR,
+    )
+
+    with (
+        patch(
+            "streamt.compiler.Compiler.compile",
+            return_value=_connector_manifest(connector),
+        ),
+        patch(
+            "streamt.cli.commands.adopt.make_connect_deployer",
+            return_value=connect,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "adopt",
+                "-p",
+                str(tmp_path),
+                "-e",
+                _ENVIRONMENT,
+                "--kind",
+                "connector",
+                "--name",
+                _LOGICAL_CONNECTOR,
+                "--confirm-resource",
+                identity,
+                "--confirm-env",
+                _ENVIRONMENT,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    data = _data(result)
+    assert data["adopted"] is True
+    assert data["resource_id"] == identity
+    assert data["cluster_alias"] == _CONNECT_ALIAS
+    assert data["endpoint_fingerprint"] == _connector_binding().endpoint_fingerprint
+    assert data["observation_fingerprint"] == observed.fingerprint
+    pending_diffs = data["pending_diffs"]
+    changed_keys = data["changed_keys"]
+    observed_data = data["observed"]
+    desired_data = data["desired_managed_attributes"]
+    assert isinstance(pending_diffs, dict)
+    assert isinstance(changed_keys, list)
+    assert isinstance(observed_data, dict)
+    assert isinstance(desired_data, dict)
+    assert changed_keys == sorted(pending_diffs)
+    assert set(observed_data) == {"name", "config_checksum"}
+    assert set(desired_data) == {
+        "name",
+        "cluster_alias",
+        "config_checksum",
+        "artifact_checksum",
+    }
+    assert connect.observe_managed_connector.call_args_list == [
+        ((_CONNECTOR,), {}),
+        ((_CONNECTOR,), {}),
+    ]
+    connect.require_cluster_binding.assert_called_once_with()
+    connect.close.assert_called_once_with()
+    for method in (
+        "list_connectors",
+        "get_connector_state",
+        "get_connector_status",
+        "create_connector",
+        "update_connector",
+        "delete_connector",
+        "restart_connector",
+        "pause_connector",
+        "resume_connector",
+        "plan_connector",
+        "apply_change",
+    ):
+        getattr(connect, method).assert_not_called()
+
+    serialized = json.dumps(_payload(result), sort_keys=True)
+    for forbidden in (
+        "runtime-connect-user",
+        "runtime-connect-password",
+        _CONNECT_ENDPOINT,
+        "SecretSinkConnector",
+        "SecretSourceConnector",
+        "payments.desired.secret.v1",
+        "payments.live.secret.v1",
+        "desired-user",
+        "desired-url-password",
+        "desired-query-secret",
+        "desired-config-password",
+        "desired-jaas-user",
+        "desired-jaas-password",
+        "live-user",
+        "live-url-password",
+        "live-query-secret",
+        "live-config-password",
+        "live-jaas-user",
+        "live-jaas-password",
+        postgres_case.schema,
+        postgres_case.owner_role,
+        postgres_writer.role,
+        postgres_case.owner_dsn,
+        postgres_writer.dsn,
+    ):
+        assert forbidden not in serialized
+
+    expected = LocalState(
+        project=_PROJECT,
+        environment=_ENVIRONMENT,
+        serial=1,
+        resources={
+            identity: ManagedResourceRecord(
+                physical_name=_CONNECTOR,
+                ownership="adopted",
+                artifact_checksum=artifact_checksum(resolved.to_dict()),
+                backend=_connector_binding().backend_identity,
+            )
+        },
+    )
+    _assert_finalized(
+        postgres_case,
+        _verification_service(postgres_case, postgres_writer),
+        expected,
         kind="adopt",
         reviewed_plan_checksum=None,
     )

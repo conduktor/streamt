@@ -17,14 +17,18 @@ from streamt.cli.helpers import (
     close_deployers,
     get_project_path,
     handle_parse_error,
+    make_connect_deployer,
     make_formatter,
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
     state_operation_error_details,
 )
+from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
 from streamt.compiler.manifest import (
     ArtifactOwnership,
+    ConnectorArtifact,
+    ConnectorArtifactFormatError,
     Manifest,
     SchemaArtifact,
     TopicArtifact,
@@ -34,12 +38,22 @@ from streamt.core.deployment_state import (
     enforce_remote_state_policy,
 )
 from streamt.core.errors import ErrorCode
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectClusterBindingError,
+    ConnectDeployer,
+    ConnectManagedObservationError,
+    ManagedConnectorObservation,
+    bind_connector_artifact,
+    secret_neutral_connector_config_diff,
+)
 from streamt.deployer.kafka import TopicState
 from streamt.deployer.schema_registry import SchemaReference, SchemaState
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     LocalState,
     ManagedResourceRecord,
+    ResourceIdentity,
     StateConflictError,
     StateError,
     artifact_checksum,
@@ -264,6 +278,109 @@ def _resolve_schema_artifact(
     return artifact
 
 
+def _resolve_connector_artifact(
+    manifest: Manifest,
+    *,
+    project: str,
+    logical_name: str,
+    binding: ConnectClusterBinding,
+) -> ConnectorArtifact:
+    """Parse, bind, and resolve exactly one explicitly adopted connector."""
+    resolved: list[ConnectorArtifact] = []
+    provider_names: set[str] = set()
+    logical_owners: set[str] = set()
+    try:
+        for raw_artifact in manifest.artifacts.get("connectors", []):
+            parsed = parse_compiled_connector_artifact(raw_artifact)
+            artifact = bind_connector_artifact(parsed, binding)
+            if artifact.name in provider_names:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled connector artifacts contain a provider identity collision",
+                )
+            provider_names.add(artifact.name)
+            ownership = ArtifactOwnership.from_dict(artifact.ownership)
+            logical_owner = ownership.owner_name if ownership is not None else artifact.name
+            if logical_owner in logical_owners:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled connector artifacts contain a logical ownership collision",
+                )
+            logical_owners.add(logical_owner)
+            resolved.append(artifact)
+    except AdoptionError:
+        raise
+    except (ConnectorArtifactFormatError, ConnectClusterBindingError, TypeError, ValueError):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Compiled connector artifacts are malformed or target a non-default cluster",
+        ) from None
+
+    matches = []
+    for artifact in resolved:
+        ownership = ArtifactOwnership.from_dict(artifact.ownership)
+        if ownership is not None and ownership.owner_name == logical_name:
+            matches.append(artifact)
+    if not matches:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            f"No compiled connector is owned by logical name {logical_name!r}",
+        )
+    if len(matches) != 1:
+        # The global logical-owner collision check should make this unreachable,
+        # but retain a local fail-closed assertion at the adoption boundary.
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            f"Logical name {logical_name!r} resolves to multiple connectors",
+        )
+
+    artifact = matches[0]
+    ownership = ArtifactOwnership.from_dict(artifact.ownership)
+    if ownership is None or ownership.project != project:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Compiled connector has no matching stable project ownership metadata",
+        )
+    if ownership.mode != "adopted":
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Compiled connector ownership mode must be explicitly 'adopted'",
+        )
+    return artifact
+
+
+def _connect_binding_from_project(project: object) -> ConnectClusterBinding:
+    """Resolve the effective default Connect binding without exposing its endpoint."""
+    runtime = getattr(project, "runtime", None)
+    connect = getattr(runtime, "connect", None)
+    default = getattr(connect, "default", None)
+    clusters = getattr(connect, "clusters", None)
+    if (
+        not isinstance(default, str)
+        or not default
+        or not isinstance(clusters, dict)
+        or default not in clusters
+    ):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Connector adoption requires an effective default Connect cluster",
+        )
+    cluster = clusters[default]
+    rest_url = getattr(cluster, "rest_url", None)
+    if not isinstance(rest_url, str):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Connector adoption requires a valid default Connect cluster",
+        )
+    try:
+        return ConnectClusterBinding.from_endpoint(default, rest_url)
+    except ConnectClusterBindingError:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Connector adoption requires a valid default Connect cluster binding",
+        ) from None
+
+
 def _pending_topic_diffs(
     current: TopicState,
     desired: TopicArtifact,
@@ -378,6 +495,52 @@ def _validate_live_schema_state(current: SchemaState, *, subject: str) -> None:
         raise AdoptionError(
             ErrorCode.ADOPTION_FAILED,
             f"Schema Registry returned malformed schema content for subject {subject!r}",
+        ) from exc
+
+
+def _validate_live_connector_observation(
+    current: object,
+    *,
+    artifact: ConnectorArtifact,
+    binding: ConnectClusterBinding,
+) -> ManagedConnectorObservation:
+    """Require exact strict evidence for the configured connector binding."""
+    if not isinstance(current, ManagedConnectorObservation):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Kafka Connect returned a partial managed observation",
+        )
+    if current.binding != binding:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Kafka Connect returned an observation for a different cluster binding",
+        )
+    if current.name != artifact.name:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Kafka Connect returned an observation for a different connector",
+        )
+    if not current.exists:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_LIVE_NOT_FOUND,
+            "The live connector does not exist; adoption never creates it",
+        )
+    return current
+
+
+def _connector_config_checksum(config: object) -> str:
+    """Hash one strict connector configuration without serializing its values."""
+    if not isinstance(config, dict):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Connector config evidence is incomplete",
+        )
+    try:
+        return artifact_checksum(config)
+    except StateError as exc:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Connector config evidence is malformed",
         ) from exc
 
 
@@ -648,6 +811,54 @@ def _schema_adoption_data(
     return data
 
 
+def _connector_adoption_data(
+    *,
+    resource_uri: str,
+    artifact: ConnectorArtifact,
+    current: ManagedConnectorObservation,
+    binding: ConnectClusterBinding,
+    state_path: Path | None,
+    state_serial: int,
+) -> dict[str, object]:
+    """Build review evidence without carrying any raw connector config value."""
+    serialized_artifact = artifact.to_dict()
+    desired_config = serialized_artifact.get("config")
+    if not isinstance(desired_config, dict):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Compiled connector config evidence is incomplete",
+        )
+    current_config = current.config_dict()
+    pending_diffs = secret_neutral_connector_config_diff(
+        current_config,
+        desired_config,
+    )
+    data: dict[str, object] = {
+        "resource_id": resource_uri,
+        "kind": "connector",
+        "physical_name": artifact.name,
+        "cluster_alias": binding.cluster_alias,
+        "endpoint_fingerprint": binding.endpoint_fingerprint,
+        "observed": {
+            "name": current.name,
+            "config_checksum": _connector_config_checksum(current_config),
+        },
+        "desired_managed_attributes": {
+            "name": artifact.name,
+            "cluster_alias": binding.cluster_alias,
+            "config_checksum": _connector_config_checksum(desired_config),
+            "artifact_checksum": artifact_checksum(serialized_artifact),
+        },
+        "changed_keys": sorted(pending_diffs),
+        "has_pending_changes": bool(pending_diffs),
+        "pending_diffs": pending_diffs,
+        "state_serial": state_serial,
+    }
+    if state_path is not None:
+        data["state_file"] = str(state_path)
+    return data
+
+
 @click.command()
 @click.option(
     "--project-dir",
@@ -665,7 +876,7 @@ def _schema_adoption_data(
 )
 @click.option(
     "--kind",
-    type=click.Choice(["topic", "schema"]),
+    type=click.Choice(["topic", "schema", "connector"]),
     required=True,
     help="Runtime resource kind",
 )
@@ -704,6 +915,7 @@ def adopt(
     project_path = get_project_path(project_dir)
     kafka = None
     schema_registry = None
+    connect: ConnectDeployer | None = None
     data: dict[str, object] = {}
     operation_stack = ExitStack()
 
@@ -745,6 +957,8 @@ def adopt(
         manifest = Compiler(project).compile(dry_run=True)
         topic_artifact: TopicArtifact | None = None
         schema_artifact: SchemaArtifact | None = None
+        connector_artifact: ConnectorArtifact | None = None
+        connector_binding: ConnectClusterBinding | None = None
         if kind == "topic":
             topic_artifact = _resolve_topic_artifact(
                 manifest,
@@ -754,7 +968,7 @@ def adopt(
             physical_name = topic_artifact.name
             backend = "direct-kafka"
             artifact_data = topic_artifact.to_dict()
-        else:
+        elif kind == "schema":
             schema_artifact = _resolve_schema_artifact(
                 manifest,
                 project=project.project.name,
@@ -763,6 +977,17 @@ def adopt(
             physical_name = schema_artifact.subject
             backend = "schema-registry"
             artifact_data = schema_artifact.to_dict()
+        else:
+            connector_binding = _connect_binding_from_project(project)
+            connector_artifact = _resolve_connector_artifact(
+                manifest,
+                project=project.project.name,
+                logical_name=logical_name,
+                binding=connector_binding,
+            )
+            physical_name = connector_artifact.name
+            backend = connector_binding.backend_identity
+            artifact_data = connector_artifact.to_dict()
         resource_uri = resource_id(
             project.project.name,
             effective_environment,
@@ -812,9 +1037,19 @@ def adopt(
                 f"State already contains a different ownership record for {resource_uri}",
             )
         for other_uri, other_record in prior_state.resources.items():
+            other_is_connector = False
+            if kind == "connector":
+                try:
+                    other_is_connector = ResourceIdentity.parse(other_uri).kind == "connector"
+                except StateError:
+                    # LocalState validation normally makes this unreachable.
+                    other_is_connector = True
             if (
                 other_uri != resource_uri
-                and other_record.backend == desired_record.backend
+                and (
+                    other_record.backend == desired_record.backend
+                    or (other_is_connector and other_record.backend == "kafka-connect")
+                )
                 and other_record.physical_name == desired_record.physical_name
             ):
                 raise AdoptionError(
@@ -852,12 +1087,7 @@ def adopt(
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = _topic_observation_fingerprint(current_topic)
-        else:
-            if schema_artifact is None:
-                raise AdoptionError(
-                    ErrorCode.ADOPTION_TARGET_INVALID,
-                    "Compiled adoption target is missing",
-                )
+        elif schema_artifact is not None:
             schema_registry = make_sr_deployer(project, fmt)
             if schema_registry is None:
                 raise AdoptionError(
@@ -886,6 +1116,52 @@ def adopt(
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = _schema_observation_fingerprint(current_schema)
+        else:
+            if connector_artifact is None or connector_binding is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled connector adoption target is missing",
+                )
+            connect = make_connect_deployer(project, fmt)
+            if connect is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Kafka Connect is not configured or reachable; adoption requires "
+                    "strict live observation",
+                )
+            try:
+                factory_binding = connect.require_cluster_binding()
+            except ConnectClusterBindingError:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Kafka Connect deployer has no valid cluster binding",
+                ) from None
+            if factory_binding != connector_binding:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Kafka Connect deployer binding does not match project configuration",
+                )
+            try:
+                current_connector = connect.observe_managed_connector(connector_artifact.name)
+            except (ConnectManagedObservationError, ConnectClusterBindingError) as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not strictly observe connector: {_redact(str(exc))}",
+                ) from exc
+            current_connector = _validate_live_connector_observation(
+                current_connector,
+                artifact=connector_artifact,
+                binding=connector_binding,
+            )
+            data = _connector_adoption_data(
+                resource_uri=resource_uri,
+                artifact=connector_artifact,
+                current=current_connector,
+                binding=connector_binding,
+                state_path=state_path if local_state_output else None,
+                state_serial=prior_state.serial,
+            )
+            confirmed_fingerprint = current_connector.fingerprint
         data["observation_fingerprint"] = confirmed_fingerprint
         fmt.set_data(data)
         fmt.print(f"[cyan]Adoption candidate:[/cyan] {resource_uri}")
@@ -902,6 +1178,9 @@ def adopt(
             data["adopted"] = False
             data["already_owned"] = True
             operation_stack.close()
+            if connect is not None:
+                close_deployers(connect)
+                connect = None
             fmt.print(f"[green]{kind.title()} already has an identical ownership record.[/green]")
             fmt.flush()
             return
@@ -938,8 +1217,8 @@ def adopt(
                 topic=topic_artifact.name,
             )
             current_fingerprint = _topic_observation_fingerprint(confirmed_topic)
-        else:
-            if schema_artifact is None or schema_registry is None:
+        elif schema_artifact is not None:
+            if schema_registry is None:
                 raise AdoptionError(
                     ErrorCode.ADOPTION_TARGET_INVALID,
                     "Compiled adoption target is missing",
@@ -957,6 +1236,36 @@ def adopt(
                 subject=schema_artifact.subject,
             )
             current_fingerprint = _schema_observation_fingerprint(confirmed_schema)
+        else:
+            if connector_artifact is None or connector_binding is None or connect is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled connector adoption target is missing",
+                )
+            try:
+                confirmed_connector = connect.observe_managed_connector(
+                    connector_artifact.name
+                )
+            except (ConnectManagedObservationError, ConnectClusterBindingError) as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not strictly re-observe connector: {_redact(str(exc))}",
+                ) from exc
+            if (
+                isinstance(confirmed_connector, ManagedConnectorObservation)
+                and confirmed_connector.binding != connector_binding
+            ):
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_CONFIRMATION_REQUIRED,
+                    "Live connector cluster binding changed after confirmation; "
+                    "rerun adoption",
+                )
+            confirmed_connector = _validate_live_connector_observation(
+                confirmed_connector,
+                artifact=connector_artifact,
+                binding=connector_binding,
+            )
+            current_fingerprint = confirmed_connector.fingerprint
         _require_unchanged_observation(
             kind=kind,
             confirmed_fingerprint=confirmed_fingerprint,
@@ -1121,7 +1430,15 @@ def adopt(
         # succeeded.
         operation_stack.close()
 
-        backend_name = "Kafka" if kind == "topic" else "Schema Registry"
+        if connect is not None:
+            close_deployers(connect)
+            connect = None
+
+        backend_name = {
+            "topic": "Kafka",
+            "schema": "Schema Registry",
+            "connector": "Kafka Connect",
+        }[kind]
         fmt.print(f"[green]Ownership adopted. {backend_name} was not modified.[/green]")
         fmt.print("Run a fresh reviewed plan before any apply.")
         fmt.flush()
@@ -1243,6 +1560,6 @@ def adopt(
         raise click.exceptions.Exit(1) from exc
     finally:
         try:
-            close_deployers(schema_registry, kafka)
+            close_deployers(schema_registry, kafka, connect)
         finally:
             operation_stack.close()

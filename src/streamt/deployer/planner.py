@@ -877,8 +877,12 @@ class DeploymentPlan:
                 for key, evidence in secret_neutral_connector_changes(
                     change.changes
                 ).items():
-                    from_evidence = evidence.get("from_fingerprint", "absent")
-                    to_evidence = evidence.get("to_fingerprint", "absent")
+                    from_evidence = (
+                        "present" if evidence.get("from_present") is True else "absent"
+                    )
+                    to_evidence = (
+                        "present" if evidence.get("to_present") is True else "absent"
+                    )
                     lines.append(
                         f"    {key}: {evidence['change']} "
                         f"({from_evidence} -> {to_evidence})"

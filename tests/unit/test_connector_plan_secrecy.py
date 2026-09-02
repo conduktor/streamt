@@ -47,7 +47,7 @@ def _planned_secret_change() -> ConnectorChange:
         deployer.close()
 
 
-def test_connector_plan_keeps_only_changed_keys_and_fingerprint_evidence() -> None:
+def test_connector_plan_keeps_only_changed_keys_and_presence_evidence() -> None:
     first = _planned_secret_change()
     second = _planned_secret_change()
 
@@ -58,8 +58,11 @@ def test_connector_plan_keeps_only_changed_keys_and_fingerprint_evidence() -> No
     assert first.changes["removed.option"]["change"] == "removed"
     assert first.changes["added.option"]["from_present"] is False
     assert first.changes["removed.option"]["to_present"] is False
-    assert first.changes["mode"]["from_fingerprint"].startswith("sha256:")
-    assert first.changes["mode"]["to_fingerprint"].startswith("sha256:")
+    assert first.changes["mode"] == {
+        "change": "changed",
+        "from_present": True,
+        "to_present": True,
+    }
 
     rendered = json.dumps(first.changes, sort_keys=True)
     for raw_value in (
@@ -106,11 +109,11 @@ def test_connector_plan_text_and_json_resanitize_legacy_raw_diffs(tmp_path: Path
     reviewed_plan.save(reviewed_plan_path)
     saved_plan = reviewed_plan_path.read_text()
 
+    assert "present -> present" in text_plan
     for output in (text_plan, json_plan, saved_plan):
         assert "password" in output
         assert "endpoint" in output
         assert "mode" in output
-        assert "sha256:" in output
         for raw_value in (
             "legacy-old-secret",
             "legacy-new-secret",
@@ -132,7 +135,7 @@ def test_connector_change_repr_excludes_current_and_desired_configs() -> None:
     assert "old-password" not in rendered
     assert "new-password" not in rendered
     assert "new-url-secret" not in rendered
-    assert "sha256:" in rendered
+    assert "from_present" in rendered
 
 
 def test_removed_connector_config_key_keeps_destructive_risk_flag() -> None:
