@@ -40,11 +40,12 @@ from streamt.deployer.state import (
     updated_local_state,
 )
 from streamt.deployer.state_backend import (
-    ControlObservation,
     OperationAction,
     OperationIntent,
     OperationProgress,
+    OperationSnapshot,
     RecoveryRecord,
+    StateBackendConflictError,
     StateBackendRecoveryRequiredError,
     StateBackendUnavailableError,
     make_deployment_state_service,
@@ -324,12 +325,12 @@ def apply(
         state_operation = operation_stack.enter_context(
             state_service.operation()
         )
-        # This is the authoritative state read.  The operation lock remains
+        # This is the planning state/control pair.  The operation lock remains
         # held through live re-planning, runtime mutation, and state commit.
-        prior_observation = state_operation.read()
+        planning_snapshot = state_operation.observe()
+        state_operation.ensure_ready(planning_snapshot)
+        prior_observation = planning_snapshot.state
         prior_state = prior_observation.state
-        control_observation = state_operation.read_control()
-        state_operation.ensure_ready(control_observation)
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -448,15 +449,12 @@ def apply(
                 environment=effective_environment,
             )
             deployment_plan = planner.plan()
-            commit_observation = prior_observation
-            if reviewed_plan:
-                # Re-read immediately after live planning.  The reviewed state
-                # must still be exact before any runtime mutation starts, and
-                # the fresh opaque revision becomes the final CAS authority.
-                commit_observation = state_operation.read()
+            if reviewed_plan is not None:
+                reviewed_snapshot = state_operation.observe()
+                state_operation.ensure_ready(reviewed_snapshot)
                 reviewed_plan.verify_current_plan(
                     deployment_plan,
-                    state_observation=commit_observation,
+                    state_observation=reviewed_snapshot.state,
                 )
 
             if deployment_plan.is_apply_blocked is True:
@@ -526,6 +524,7 @@ def apply(
                     fmt.print_warning(f"--force used, allowing destructive ops on '{env_name}'")
 
             if dry_run:
+                operation_stack.close()
                 fmt.print("[yellow]Dry run — no changes applied[/yellow]")
                 fmt.print(deployment_plan.details())
                 fmt.set_data(
@@ -544,29 +543,54 @@ def apply(
                 return
 
             next_state = updated_local_state(prior_state, deployment_plan)
-            ordered_actions = planner.operation_actions(deployment_plan)
+            ordered_actions = planner.planned_actions(deployment_plan)
+
+            # Bind the durable intent to a fresh state/control pair immediately
+            # before it is written.  Direct applies get the same final drift
+            # check as reviewed plans rather than relying on a later state CAS.
+            intent_snapshot = state_operation.observe()
+            state_operation.ensure_ready(intent_snapshot)
+            if reviewed_plan is not None:
+                reviewed_plan.verify_current_plan(
+                    deployment_plan,
+                    state_observation=intent_snapshot.state,
+                )
+            if (
+                intent_snapshot.state.store != prior_observation.store
+                or intent_snapshot.state.revision != prior_observation.revision
+                or intent_snapshot.state.state != prior_state
+                or intent_snapshot.control.revision
+                != planning_snapshot.control.revision
+                or intent_snapshot.control.control
+                != planning_snapshot.control.control
+            ):
+                raise StateBackendConflictError(
+                    "deployment state or operation control changed during live "
+                    "planning; reload state and produce a fresh plan"
+                )
+
             operation_id = str(uuid.uuid4())
             intent = OperationIntent(
                 operation_id=operation_id,
                 kind="apply",
                 started_at=operation_timestamp(),
                 actor="local-cli",
-                prior_state_serial=prior_state.serial,
-                prior_state_checksum=state_checksum(prior_state),
+                prior_state_serial=intent_snapshot.state.state.serial,
+                prior_state_checksum=state_checksum(intent_snapshot.state.state),
                 reviewed_plan_checksum=(
                     reviewed_plan.checksum if reviewed_plan is not None else None
                 ),
                 actions=tuple(
                     OperationAction(
                         index=index,
-                        resource_id=label,
-                        action=action,
+                        resource_id=planned_action.resource_id,
+                        action=planned_action.action,
                     )
-                    for index, (label, action) in enumerate(ordered_actions)
+                    for index, planned_action in enumerate(ordered_actions)
                 ),
             )
-            active_control: list[ControlObservation] = [
-                state_operation.begin_operation(control_observation, intent)
+            active_snapshot: list[OperationSnapshot] = [
+                state_operation.begin_operation(intent_snapshot, intent)
             ]
             mutation_started = False
             state_commit_attempted = False
@@ -576,16 +600,21 @@ def apply(
                 nonlocal mutation_started
                 state_operation.check_lock()
                 action = intent.actions[index]
-                if action.resource_id != label:
+                planned_action = ordered_actions[index]
+                if (
+                    planned_action.runtime_label != label
+                    or action.resource_id != planned_action.resource_id
+                    or action.action != planned_action.action
+                ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"
                     )
-                active_control[0] = state_operation.record_progress(
-                    active_control[0],
+                active_snapshot[0] = state_operation.record_progress(
+                    active_snapshot[0],
                     OperationProgress(
                         operation_id=operation_id,
                         action_index=index,
-                        resource_id=label,
+                        resource_id=action.resource_id,
                         action=action.action,
                         status="started",
                         succeeded=None,
@@ -598,16 +627,21 @@ def apply(
             def after_action(label: str, index: int, succeeded: bool) -> None:
                 state_operation.check_lock()
                 action = intent.actions[index]
-                if action.resource_id != label:
+                planned_action = ordered_actions[index]
+                if (
+                    planned_action.runtime_label != label
+                    or action.resource_id != planned_action.resource_id
+                    or action.action != planned_action.action
+                ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"
                     )
-                active_control[0] = state_operation.record_progress(
-                    active_control[0],
+                active_snapshot[0] = state_operation.record_progress(
+                    active_snapshot[0],
                     OperationProgress(
                         operation_id=operation_id,
                         action_index=index,
-                        resource_id=label,
+                        resource_id=action.resource_id,
                         action=action.action,
                         status="completed",
                         succeeded=succeeded,
@@ -619,12 +653,12 @@ def apply(
                 nonlocal operation_finalized
                 completed = [
                     progress.action_index
-                    for progress in active_control[0].control.progress
+                    for progress in active_snapshot[0].control.control.progress
                     if progress.status == "completed"
                     and progress.succeeded is True
                 ]
-                active_control[0] = state_operation.mark_recovery_required(
-                    active_control[0],
+                active_snapshot[0] = state_operation.mark_recovery_required(
+                    active_snapshot[0],
                     RecoveryRecord(
                         operation_id=operation_id,
                         failure_code=failure_code,
@@ -636,10 +670,10 @@ def apply(
                 )
                 operation_finalized = True
 
-            def clear_operation() -> None:
+            def clear_before_mutation() -> None:
                 nonlocal operation_finalized
-                active_control[0] = state_operation.clear_operation(
-                    active_control[0]
+                active_snapshot[0] = state_operation.clear_before_mutation(
+                    active_snapshot[0]
                 )
                 operation_finalized = True
 
@@ -653,8 +687,6 @@ def apply(
                 if reviewed_plan and reviewed_plan_path:
                     results["plan_checksum"] = reviewed_plan.checksum
                     results["plan_file"] = str(reviewed_plan_path.resolve())
-                fmt.set_data(results)
-
                 created = cast(list[str], results["created"])
                 updated = cast(list[str], results["updated"])
                 unchanged = cast(list[str], results["unchanged"])
@@ -664,18 +696,6 @@ def apply(
                     results.get("rollback_candidates", []),
                 )
 
-                if created:
-                    fmt.print("\n[green]Created:[/green]")
-                    for item in created:
-                        fmt.print(f"  + {item}")
-                if updated:
-                    fmt.print("\n[yellow]Updated:[/yellow]")
-                    for item in updated:
-                        fmt.print(f"  ~ {item}")
-                if unchanged:
-                    fmt.print("\n[dim]Unchanged:[/dim]")
-                    for item in unchanged:
-                        fmt.print(f"  = {item}")
                 rollback_failed = False
                 if errors and rollback_candidates:
                     fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
@@ -708,7 +728,8 @@ def apply(
                             else "runtime_action_failed"
                         )
                     else:
-                        clear_operation()
+                        clear_before_mutation()
+                    fmt.set_data(results)
                     fmt.set_status("error")
                     fmt.print("\n[red]Errors:[/red]")
                     for item in errors:
@@ -720,25 +741,41 @@ def apply(
                     sys.exit(1)
 
                 state_operation.check_lock()
+                # Any finalizer attempt can have an ambiguous outcome, even
+                # when it only clears a zero-action/no-state-change intent.
+                state_commit_attempted = True
+                try:
+                    active_snapshot[0] = state_operation.commit_operation(
+                        active_snapshot[0],
+                        next_state,
+                    )
+                except OSError as error:
+                    raise StateFormatError(
+                        "deployment succeeded but ownership state commit "
+                        "could not be confirmed"
+                    ) from error
+                operation_finalized = True
                 if next_state is not None:
-                    state_commit_attempted = True
-                    try:
-                        state_operation.compare_and_swap(
-                            commit_observation,
-                            next_state,
-                        )
-                    except OSError as error:
-                        raise StateFormatError(
-                            "deployment succeeded but ownership state commit "
-                            "could not be confirmed"
-                        ) from error
                     results["state_serial"] = next_state.serial
                     results["state_file"] = str(state_path)
                 else:
                     results["state_serial"] = prior_state.serial
 
-                # Ownership is authoritative before the durable intent is cleared.
-                clear_operation()
+                # Do not emit a success result while operation ownership is held.
+                operation_stack.close()
+                fmt.set_data(results)
+                if created:
+                    fmt.print("\n[green]Created:[/green]")
+                    for item in created:
+                        fmt.print(f"  + {item}")
+                if updated:
+                    fmt.print("\n[yellow]Updated:[/yellow]")
+                    for item in updated:
+                        fmt.print(f"  ~ {item}")
+                if unchanged:
+                    fmt.print("\n[dim]Unchanged:[/dim]")
+                    for item in unchanged:
+                        fmt.print(f"  = {item}")
                 fmt.print("\n[green]Apply complete[/green]")
                 fmt.flush()
             except BaseException:
@@ -755,7 +792,7 @@ def apply(
                             pass
                     else:
                         try:
-                            clear_operation()
+                            clear_before_mutation()
                         except BaseException:
                             # A failed clear preserves the conservative marker.
                             pass

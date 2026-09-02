@@ -32,6 +32,7 @@ from streamt.deployer.state_backend import (
     OperationControlState,
     OperationIntent,
     OperationProgress,
+    OperationSnapshot,
     RecoveryRecord,
     StateAddress,
     StateObservation,
@@ -42,6 +43,7 @@ from streamt.deployer.state_backend import (
     operation_timestamp,
     state_checksum,
 )
+from streamt.output import OutputFormatter
 
 
 class _RecordingStateOperation:
@@ -61,7 +63,11 @@ class _RecordingStateOperation:
         self._events.append("control-read")
         return self._delegate.read_control()
 
-    def ensure_ready(self, observation: ControlObservation) -> None:
+    def observe(self) -> OperationSnapshot:
+        self._events.append("snapshot-observe")
+        return self._delegate.observe()
+
+    def ensure_ready(self, observation: OperationSnapshot) -> None:
         self._events.append("control-ready")
         self._delegate.ensure_ready(observation)
 
@@ -71,34 +77,49 @@ class _RecordingStateOperation:
 
     def begin_operation(
         self,
-        observation: ControlObservation,
+        observation: OperationSnapshot,
         intent: OperationIntent,
-    ) -> ControlObservation:
+    ) -> OperationSnapshot:
         self._events.append("control-begin")
         return self._delegate.begin_operation(observation, intent)
 
     def record_progress(
         self,
-        observation: ControlObservation,
+        observation: OperationSnapshot,
         progress: OperationProgress,
-    ) -> ControlObservation:
+    ) -> OperationSnapshot:
         self._events.append(f"progress-{progress.status}")
         return self._delegate.record_progress(observation, progress)
 
     def mark_recovery_required(
         self,
-        observation: ControlObservation,
+        observation: OperationSnapshot,
         recovery: RecoveryRecord,
-    ) -> ControlObservation:
+    ) -> OperationSnapshot:
         self._events.append("control-recovery")
         return self._delegate.mark_recovery_required(observation, recovery)
 
     def clear_operation(
         self,
-        observation: ControlObservation,
-    ) -> ControlObservation:
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot:
         self._events.append("control-clear")
         return self._delegate.clear_operation(observation)
+
+    def commit_operation(
+        self,
+        observation: OperationSnapshot,
+        state: LocalState | None,
+    ) -> OperationSnapshot:
+        self._events.append("operation-commit")
+        return self._delegate.commit_operation(observation, state)
+
+    def clear_before_mutation(
+        self,
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot:
+        self._events.append("control-clear-before-mutation")
+        return self._delegate.clear_before_mutation(observation)
 
     def compare_and_swap(
         self,
@@ -310,6 +331,12 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
 
     kafka.plan_topic.side_effect = plan_topic
     kafka.apply_topic.side_effect = apply_topic
+    original_flush = OutputFormatter.flush
+
+    def flush(formatter: OutputFormatter) -> None:
+        events.append("flush")
+        original_flush(formatter)
+
     with (
         patch("streamt.compiler.Compiler.compile", return_value=manifest),
         patch(
@@ -320,6 +347,7 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
             "streamt.cli.commands.apply.make_deployment_state_service",
             return_value=state_service,
         ),
+        patch("streamt.output.OutputFormatter.flush", new=flush),
     ):
         result = CliRunner().invoke(
             main,
@@ -329,10 +357,11 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
     assert result.exit_code == 0, result.output
     assert events == [
         "lock-enter",
-        "state-read",
-        "control-read",
+        "snapshot-observe",
         "control-ready",
         "live-plan",
+        "snapshot-observe",
+        "control-ready",
         "control-begin",
         "lock-check",
         "progress-started",
@@ -340,10 +369,12 @@ def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_s
         "lock-check",
         "progress-completed",
         "lock-check",
-        "state-save",
-        "control-clear",
+        "operation-commit",
         "lock-exit",
+        "flush",
     ]
+    assert "state-save" not in events
+    assert "control-clear" not in events
 
 
 def test_runtime_base_exception_leaves_recovery_marker_and_blocks_successor(
@@ -377,6 +408,15 @@ def test_runtime_base_exception_leaves_recovery_marker_and_blocks_successor(
     assert control.control.recovery is not None
     assert control.control.recovery.failure_code == "operation_interrupted"
     assert control.control.progress[-1].status == "started"
+    expected_resource_id = resource_id(
+        "plan-test",
+        "default",
+        "topic",
+        "payments_clean",
+    )
+    assert control.control.intent is not None
+    assert control.control.intent.actions[0].resource_id == expected_resource_id
+    assert control.control.progress[-1].resource_id == expected_resource_id
 
     deployer_factory = MagicMock()
     with (
@@ -476,6 +516,42 @@ def test_ownership_save_failure_after_runtime_success_remains_recovery_required(
     assert control.control.recovery is not None
     assert control.control.recovery.failure_code == "state_commit_uncertain"
     assert not local_state_path(tmp_path, environment="default").exists()
+
+
+def test_uncertain_zero_action_finalizer_is_not_cleared_as_pre_mutation_failure(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    manifest = _manifest()
+
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=_kafka(exists=False),
+        ),
+        patch(
+            "streamt.deployer.state_backend._LocalDeploymentStateOperation.commit_operation",
+            side_effect=OSError("uncertain final clear"),
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 1
+    control = make_deployment_state_service(
+        tmp_path,
+        project="plan-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    ).read_control().control
+    assert control.status == "recovery_required"
+    assert control.intent is not None
+    assert control.intent.actions == ()
+    assert control.recovery is not None
+    assert control.recovery.failure_code == "state_commit_uncertain"
 
 
 def test_failure_before_first_runtime_action_clears_intent(tmp_path: Path) -> None:
@@ -685,6 +761,105 @@ def test_apply_cas_rejects_concurrent_state_and_preserves_newer_snapshot(
     assert result.exit_code == 1
     assert _json(result)["errors"][0]["code"] == "E411_STATE_INVALID"
     assert LocalState.load(state_path) == concurrent
+
+
+def test_direct_apply_rejects_state_drift_on_final_pre_intent_observation(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    manifest = _manifest(_topic("payments.clean.v1", owner="payments_clean"))
+    state_path = local_state_path(tmp_path, environment="default")
+    other_uri = resource_id("plan-test", "default", "topic", "other")
+    concurrent = LocalState(
+        project="plan-test",
+        environment="default",
+        serial=1,
+        resources={
+            other_uri: ManagedResourceRecord(
+                physical_name="other.v1",
+                ownership="managed",
+                artifact_checksum=artifact_checksum({"name": "other.v1"}),
+                backend="direct-kafka",
+            )
+        },
+    )
+    kafka = _kafka(exists=False)
+    original_plan_topic = kafka.plan_topic.side_effect
+
+    def plan_after_concurrent_write(artifact: TopicArtifact) -> TopicChange:
+        change = original_plan_topic(artifact)
+        concurrent.save(state_path)
+        return change
+
+    kafka.plan_topic.side_effect = plan_after_concurrent_write
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=kafka,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 1
+    assert _json(result)["errors"][0]["code"] == "E411_STATE_INVALID"
+    assert "changed during live planning" in _json(result)["errors"][0]["message"]
+    kafka.apply_topic.assert_not_called()
+    assert LocalState.load(state_path) == concurrent
+    control = make_deployment_state_service(
+        tmp_path,
+        project="plan-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    ).read_control()
+    assert control.control.status == "clear"
+
+
+def test_direct_apply_rejects_clear_control_revision_drift_before_intent(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    manifest = _manifest(_topic("payments.clean.v1", owner="payments_clean"))
+    kafka = _kafka(exists=False)
+    original_plan_topic = kafka.plan_topic.side_effect
+    service = make_deployment_state_service(
+        tmp_path,
+        project="plan-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    )
+    control_path = local_control_path(tmp_path, environment="default")
+
+    def plan_after_control_churn(artifact: TopicArtifact) -> TopicChange:
+        change = original_plan_topic(artifact)
+        control_path.parent.mkdir(parents=True, exist_ok=True)
+        control_path.write_text(
+            json.dumps(OperationControlState.clear(service.address).to_dict())
+        )
+        return change
+
+    kafka.plan_topic.side_effect = plan_after_control_churn
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=kafka,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 1
+    payload = _json(result)
+    assert payload["errors"][0]["code"] == "E411_STATE_INVALID"
+    assert "operation control changed" in payload["errors"][0]["message"]
+    kafka.apply_topic.assert_not_called()
+    assert service.read_control().control.status == "clear"
 
 
 def test_offline_plan_does_not_read_or_create_local_state(tmp_path: Path) -> None:
