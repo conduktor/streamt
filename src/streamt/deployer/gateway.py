@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import re
 import time
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -18,6 +25,18 @@ logger = logging.getLogger(__name__)
 
 # Default timeouts (in seconds)
 DEFAULT_TIMEOUT = 10
+_MAX_MANAGED_GATEWAY_RESPONSE_BYTES = 1024 * 1024
+_MANAGED_GATEWAY_CHUNK_BYTES = 64 * 1024
+_GATEWAY_BINDING_VERSION = 1
+_GATEWAY_API_VERSION = "v2"
+_FINGERPRINT_PREFIX = "sha256:"
+_GATEWAY_BACKEND_IDENTITY = re.compile(
+    r"^conduktor-gateway:v1:(?P<scope>p|v-[A-Za-z0-9_-]+):"
+    r"(?P<endpoint>sha256:[0-9a-f]{64})$"
+)
+_GATEWAY_RESOURCE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+_GENERATED_INTERCEPTOR_INDEX = r"(?:0|[1-9][0-9]*)"
+_KNOWN_INTERCEPTOR_SCOPE_KEYS = frozenset({"vCluster", "group", "username"})
 
 
 class GatewayError(Exception):
@@ -36,6 +55,407 @@ class GatewayAuthenticationError(GatewayError):
     """Gateway authentication failed."""
 
     pass
+
+
+class GatewayBindingError(ValueError):
+    """A Gateway runtime cannot be bound to one canonical provider identity."""
+
+
+class GatewayManagedObservationError(GatewayError):
+    """A strict Gateway rule observation could not be proven complete."""
+
+
+class _InvalidManagedGatewayJSONError(ValueError):
+    """Internal marker for non-canonical managed-observation JSON."""
+
+
+def _sha256(value: str) -> str:
+    return f"{_FINGERPRINT_PREFIX}{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _is_fingerprint(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith(_FINGERPRINT_PREFIX):
+        return False
+    digest = value.removeprefix(_FINGERPRINT_PREFIX)
+    return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _InvalidManagedGatewayJSONError
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json_constant(_value: str) -> object:
+    raise _InvalidManagedGatewayJSONError
+
+
+def _has_control_character(value: str) -> bool:
+    return any(unicodedata.category(character) == "Cc" for character in value)
+
+
+def _normalize_gateway_admin_url(admin_url: str) -> str:
+    """Normalize the configured admin endpoint without echoing it in errors."""
+    if not isinstance(admin_url, str) or not admin_url or admin_url != admin_url.strip():
+        raise GatewayBindingError("Invalid Gateway admin URL: endpoint is malformed")
+    if any(character.isspace() for character in admin_url) or _has_control_character(admin_url):
+        raise GatewayBindingError("Invalid Gateway admin URL: endpoint is malformed")
+    if "?" in admin_url or "#" in admin_url:
+        raise GatewayBindingError(
+            "Invalid Gateway admin URL: query strings and fragments are not allowed"
+        )
+    try:
+        parsed = urlsplit(admin_url)
+        port = parsed.port
+    except ValueError:
+        raise GatewayBindingError("Invalid Gateway admin URL: endpoint is malformed") from None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        raise GatewayBindingError(
+            "Invalid Gateway admin URL: endpoint must start with http:// or https://"
+        )
+    if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
+        raise GatewayBindingError(
+            "Invalid Gateway admin URL: endpoint user information is not allowed"
+        )
+    try:
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        raise GatewayBindingError("Invalid Gateway admin URL: hostname is malformed") from None
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    default_port = 80 if scheme == "http" else 443
+    authority = hostname if port in (None, default_port) else f"{hostname}:{port}"
+    path = parsed.path.rstrip("/")
+    return f"{scheme}://{authority}{path}"
+
+
+def _validate_virtual_cluster(value: object) -> str:
+    if value is None:
+        return "passthrough"
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > 256
+        or _has_control_character(value)
+        or _GATEWAY_RESOURCE_NAME.fullmatch(value) is None
+    ):
+        raise GatewayBindingError("Invalid Gateway virtual cluster scope")
+    return value
+
+
+def _scope_token(virtual_cluster: str) -> str:
+    if virtual_cluster == "passthrough":
+        return "p"
+    encoded = base64.urlsafe_b64encode(virtual_cluster.encode("utf-8")).decode("ascii")
+    return f"v-{encoded.rstrip('=')}"
+
+
+@dataclass(frozen=True)
+class GatewayBackendBinding:
+    """Versioned, endpoint-free identity for one Gateway vCluster scope."""
+
+    virtual_cluster: str
+    endpoint_fingerprint: str
+    api_version: str = _GATEWAY_API_VERSION
+    version: int = _GATEWAY_BINDING_VERSION
+
+    def __post_init__(self) -> None:
+        if type(self.version) is not int or self.version != _GATEWAY_BINDING_VERSION:
+            raise GatewayBindingError("Unsupported Gateway binding version")
+        if self.api_version != _GATEWAY_API_VERSION:
+            raise GatewayBindingError("Unsupported Gateway API version")
+        canonical_scope = _validate_virtual_cluster(self.virtual_cluster)
+        object.__setattr__(self, "virtual_cluster", canonical_scope)
+        if not _is_fingerprint(self.endpoint_fingerprint):
+            raise GatewayBindingError("Invalid Gateway endpoint fingerprint")
+
+    @classmethod
+    def from_endpoint(
+        cls,
+        admin_url: str,
+        *,
+        virtual_cluster: str | None = None,
+        api_version: str = _GATEWAY_API_VERSION,
+    ) -> GatewayBackendBinding:
+        """Bind an exact scope to the normalized v2 collection API endpoint."""
+        if api_version != _GATEWAY_API_VERSION:
+            raise GatewayBindingError("Unsupported Gateway API version")
+        normalized = _normalize_gateway_admin_url(admin_url)
+        scope = _validate_virtual_cluster(virtual_cluster)
+        return cls(
+            virtual_cluster=scope,
+            endpoint_fingerprint=_sha256(f"{normalized}/gateway/{api_version}"),
+            api_version=api_version,
+        )
+
+    @property
+    def scope_name(self) -> str:
+        """Return the exact provider scope, including its explicit default."""
+        return self.virtual_cluster
+
+    @property
+    def backend_identity(self) -> str:
+        """Return the canonical identity without an endpoint or credentials."""
+        return (
+            f"conduktor-gateway:v{self.version}:{_scope_token(self.virtual_cluster)}:"
+            f"{self.endpoint_fingerprint}"
+        )
+
+
+def is_gateway_backend_identity(value: object) -> bool:
+    """Whether a value is one exact canonical Gateway backend identity."""
+    if not isinstance(value, str):
+        return False
+    match = _GATEWAY_BACKEND_IDENTITY.fullmatch(value)
+    if match is None:
+        return False
+    token = match.group("scope")
+    if token == "p":
+        return True
+    payload = token.removeprefix("v-")
+    padded = payload + "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.b64decode(
+            padded.encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        ).decode("utf-8")
+        canonical = _validate_virtual_cluster(decoded)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return canonical != "passthrough" and _scope_token(canonical) == token
+
+
+GatewayScope = tuple[tuple[str, str | None], ...]
+_CANONICAL_INTERCEPTOR_SCOPE_KEYS = tuple(sorted(_KNOWN_INTERCEPTOR_SCOPE_KEYS))
+
+
+def _canonical_vcluster_scope(virtual_cluster: str) -> GatewayScope:
+    return tuple(
+        (
+            key,
+            virtual_cluster if key == "vCluster" else None,
+        )
+        for key in _CANONICAL_INTERCEPTOR_SCOPE_KEYS
+    )
+
+
+@dataclass(frozen=True)
+class ManagedGatewayInterceptor:
+    """One immutable interceptor managed surface within a Gateway rule."""
+
+    name: str
+    scope: GatewayScope
+    plugin_class: str
+    priority: int
+    config_json: str = dataclass_field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name or _has_control_character(self.name):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has an invalid identity"
+            )
+        if (
+            not isinstance(self.scope, tuple)
+            or tuple(sorted(self.scope)) != self.scope
+            or len({key for key, _value in self.scope}) != len(self.scope)
+            or (
+                self.scope
+                and tuple(key for key, _value in self.scope) != _CANONICAL_INTERCEPTOR_SCOPE_KEYS
+            )
+        ):
+            raise GatewayManagedObservationError("Gateway managed interceptor has an invalid scope")
+        for key, value in self.scope:
+            if key not in _KNOWN_INTERCEPTOR_SCOPE_KEYS or (
+                value is not None
+                and (
+                    not isinstance(value, str)
+                    or not value
+                    or value != value.strip()
+                    or _has_control_character(value)
+                )
+            ):
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor has an invalid scope"
+                )
+        scope = dict(self.scope)
+        if scope.get("group") is not None and scope.get("username") is not None:
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has an invalid scope combination"
+            )
+        virtual_cluster = scope.get("vCluster")
+        if virtual_cluster is None and any(
+            scope.get(key) is not None for key in ("group", "username")
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has a noncanonical scope"
+            )
+        if virtual_cluster is not None:
+            try:
+                _validate_virtual_cluster(virtual_cluster)
+            except GatewayBindingError:
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor has an invalid virtual cluster scope"
+                ) from None
+        if not isinstance(self.plugin_class, str) or not self.plugin_class:
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has an invalid plugin class"
+            )
+        if type(self.priority) is not int:
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has an invalid priority"
+            )
+        try:
+            config = json.loads(
+                self.config_json,
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_nonfinite_json_constant,
+            )
+        except (TypeError, json.JSONDecodeError, _InvalidManagedGatewayJSONError):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has invalid canonical config"
+            ) from None
+        if (
+            not isinstance(config, dict)
+            or json.dumps(
+                config,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            != self.config_json
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor has invalid canonical config"
+            )
+
+
+@dataclass(frozen=True, eq=False)
+class ManagedGatewayRuleObservation:
+    """Complete immutable alias and rule-owned interceptor observation."""
+
+    binding: GatewayBackendBinding
+    logical_name: str
+    alias_name: str
+    exists: bool
+    physical_name: str | None = None
+    physical_cluster: str | None = None
+    interceptors: tuple[ManagedGatewayInterceptor, ...] = dataclass_field(
+        default_factory=tuple,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, GatewayBackendBinding):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation has an invalid backend binding"
+            )
+        if (
+            not isinstance(self.logical_name, str)
+            or not GatewayDeployer._VALID_RESOURCE_NAME.fullmatch(self.logical_name)
+            or not isinstance(self.alias_name, str)
+            or not GatewayDeployer._VALID_RESOURCE_NAME.fullmatch(self.alias_name)
+            or type(self.exists) is not bool
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation has an invalid rule identity"
+            )
+        if not isinstance(self.interceptors, tuple) or not all(
+            isinstance(item, ManagedGatewayInterceptor) for item in self.interceptors
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation has an invalid interceptor surface"
+            )
+        target_scope = _canonical_vcluster_scope(self.binding.virtual_cluster)
+        if any(item.scope != target_scope for item in self.interceptors):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation has a mismatched interceptor scope"
+            )
+        if not self.exists:
+            if (
+                self.physical_name is not None
+                or self.physical_cluster is not None
+                or self.interceptors
+            ):
+                raise GatewayManagedObservationError(
+                    "Absent Gateway managed observation contains provider state"
+                )
+            return
+        if (
+            not isinstance(self.physical_name, str)
+            or not self.physical_name
+            or _GATEWAY_RESOURCE_NAME.fullmatch(self.physical_name) is None
+            or self.physical_cluster != "main"
+            or tuple(sorted(self.interceptors, key=lambda item: item.name)) != self.interceptors
+            or len({item.name for item in self.interceptors}) != len(self.interceptors)
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation has an invalid managed surface"
+            )
+
+    def _canonical_json(self) -> str:
+        return json.dumps(
+            {
+                "alias_name": self.alias_name,
+                "backend_identity": self.binding.backend_identity,
+                "exists": self.exists,
+                "interceptors": [
+                    {
+                        "config": interceptor.config_json,
+                        "name": interceptor.name,
+                        "plugin_class": interceptor.plugin_class,
+                        "priority": interceptor.priority,
+                        "scope": interceptor.scope,
+                    }
+                    for interceptor in self.interceptors
+                ],
+                "logical_name": self.logical_name,
+                "physical_cluster": self.physical_cluster,
+                "physical_name": self.physical_name,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ManagedGatewayRuleObservation):
+            return NotImplemented
+        return self._canonical_json() == other._canonical_json()
+
+    def __hash__(self) -> int:
+        return hash(self._canonical_json())
+
+    @property
+    def fingerprint(self) -> str:
+        """Fingerprint the binding and exact complete provider managed surface."""
+        return _sha256(self._canonical_json())
+
+
+@dataclass(frozen=True)
+class _ParsedAliasTopic:
+    scope: str
+    name: str
+    physical_name: str
+    physical_cluster: str
+
+
+@dataclass(frozen=True)
+class _ParsedInterceptor:
+    scope: GatewayScope
+    name: str
+    plugin_class: str
+    priority: int
+    config_json: str = dataclass_field(repr=False)
 
 
 @dataclass
@@ -109,11 +529,16 @@ class GatewayDeployer:
         api_version: str = "v2",
     ) -> None:
         """Initialize Gateway deployer."""
-        if not admin_url or not admin_url.startswith(("http://", "https://")):
-            raise ValueError(f"Invalid Gateway admin URL: {admin_url!r} — must start with http:// or https://")
-        self.admin_url = admin_url.rstrip("/")
-        self._api_base = f"/gateway/{api_version}"
+        self.admin_url = _normalize_gateway_admin_url(admin_url)
+        self.cluster_binding = GatewayBackendBinding.from_endpoint(
+            self.admin_url,
+            virtual_cluster=virtual_cluster,
+            api_version=api_version,
+        )
+        self._api_base = f"/gateway/{_GATEWAY_API_VERSION}"
         self.auth = HTTPBasicAuth(username, password) if username and password else None
+        # Preserve legacy CRUD payload behavior: an omitted scope stays omitted on
+        # writes even though strict observation binds it to provider `passthrough`.
         self.virtual_cluster = virtual_cluster
         self._session = requests.Session()
         self._session.auth = self.auth
@@ -138,6 +563,415 @@ class GatewayDeployer:
         """Close the deployer and clean up resources."""
         self._closed = True
         self._session.close()
+
+    @property
+    def backend_identity(self) -> str:
+        """Return the canonical identity of the configured Gateway scope."""
+        return self.cluster_binding.backend_identity
+
+    @staticmethod
+    def _read_managed_observation_body(response: object) -> bytes:
+        """Read one strict observation response under a decoded-byte ceiling."""
+        headers = getattr(response, "headers", None)
+        declared_length: object = None
+        if isinstance(headers, Mapping):
+            declared_length = headers.get("Content-Length")
+        if declared_length is not None:
+            try:
+                parsed_length = int(declared_length)
+            except (TypeError, ValueError):
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation response has invalid size metadata"
+                ) from None
+            if parsed_length < 0 or parsed_length > _MAX_MANAGED_GATEWAY_RESPONSE_BYTES:
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation response is oversized"
+                )
+
+        iter_content = getattr(response, "iter_content", None)
+        if not callable(iter_content):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation response body is unavailable"
+            )
+        body = bytearray()
+        try:
+            for chunk in iter_content(chunk_size=_MANAGED_GATEWAY_CHUNK_BYTES):
+                if not isinstance(chunk, bytes):
+                    raise GatewayManagedObservationError(
+                        "Gateway managed observation response body is malformed"
+                    )
+                if len(body) + len(chunk) > _MAX_MANAGED_GATEWAY_RESPONSE_BYTES:
+                    raise GatewayManagedObservationError(
+                        "Gateway managed observation response is oversized"
+                    )
+                body.extend(chunk)
+        except GatewayManagedObservationError:
+            raise
+        except Exception:
+            raise GatewayManagedObservationError(
+                "Gateway managed observation response body could not be read"
+            ) from None
+        return bytes(body)
+
+    @staticmethod
+    def _decode_managed_observation(body: bytes) -> object:
+        try:
+            return json.loads(
+                body.decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_nonfinite_json_constant,
+            )
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            _InvalidManagedGatewayJSONError,
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation response is not canonical JSON"
+            ) from None
+
+    def _observe_managed_collection(self, endpoint: str) -> list[object]:
+        """Perform one non-retried, non-redirected strict collection GET."""
+        try:
+            response = self._session.request(
+                "GET",
+                f"{self.admin_url}{self._api_base}{endpoint}",
+                timeout=DEFAULT_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
+            )
+        except Exception:
+            raise GatewayManagedObservationError(
+                "Gateway managed observation request failed"
+            ) from None
+        try:
+            status_code = getattr(response, "status_code", None)
+            if status_code in {401, 403}:
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation authorization failed"
+                )
+            if type(status_code) is not int or status_code != 200:
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation request returned an invalid status"
+                )
+            data = self._decode_managed_observation(self._read_managed_observation_body(response))
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if not isinstance(data, list):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation response is not an array"
+            )
+        return data
+
+    @staticmethod
+    def _require_exact_object(
+        value: object,
+        *,
+        required: frozenset[str],
+        optional: frozenset[str] = frozenset(),
+    ) -> dict[str, object]:
+        if not isinstance(value, dict):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation resource is malformed"
+            )
+        keys = set(value)
+        if not required.issubset(keys) or not keys.issubset(required | optional):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation resource is malformed"
+            )
+        return value
+
+    @staticmethod
+    def _parse_alias_topic(value: object) -> _ParsedAliasTopic:
+        resource = GatewayDeployer._require_exact_object(
+            value,
+            required=frozenset({"kind", "apiVersion", "metadata", "spec"}),
+        )
+        if resource["kind"] != "AliasTopic" or resource["apiVersion"] != "gateway/v2":
+            raise GatewayManagedObservationError(
+                "Gateway managed alias observation resource is malformed"
+            )
+        metadata = GatewayDeployer._require_exact_object(
+            resource["metadata"],
+            required=frozenset({"name"}),
+            optional=frozenset({"vCluster"}),
+        )
+        spec = GatewayDeployer._require_exact_object(
+            resource["spec"],
+            required=frozenset({"physicalName"}),
+            optional=frozenset({"physicalCluster"}),
+        )
+        name = metadata["name"]
+        physical_name = spec["physicalName"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or _has_control_character(name)
+            or _GATEWAY_RESOURCE_NAME.fullmatch(name) is None
+            or not isinstance(physical_name, str)
+            or not physical_name
+            or _GATEWAY_RESOURCE_NAME.fullmatch(physical_name) is None
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed alias observation resource is malformed"
+            )
+        scope_value = metadata.get("vCluster")
+        if "vCluster" in metadata and scope_value is None:
+            raise GatewayManagedObservationError(
+                "Gateway managed alias observation resource has invalid scope"
+            )
+        try:
+            scope = _validate_virtual_cluster(scope_value)
+        except GatewayBindingError:
+            raise GatewayManagedObservationError(
+                "Gateway managed alias observation resource has invalid scope"
+            ) from None
+        physical_cluster = spec.get("physicalCluster", "main")
+        if physical_cluster != "main":
+            raise GatewayManagedObservationError(
+                "Gateway managed alias observation uses an unsupported physical cluster"
+            )
+        return _ParsedAliasTopic(
+            scope=scope,
+            name=name,
+            physical_name=physical_name,
+            physical_cluster="main",
+        )
+
+    @staticmethod
+    def _parse_interceptor_scope(metadata: dict[str, object]) -> GatewayScope:
+        if "scope" not in metadata:
+            return ()
+        raw_scope = GatewayDeployer._require_exact_object(
+            metadata["scope"],
+            required=frozenset(),
+            optional=_KNOWN_INTERCEPTOR_SCOPE_KEYS,
+        )
+        if not raw_scope:
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor observation resource has invalid scope"
+            )
+
+        normalized: dict[str, str | None] = {}
+        for key in ("group", "username"):
+            value = raw_scope.get(key)
+            if value is not None and (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                or _has_control_character(value)
+            ):
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor observation resource has invalid scope"
+                )
+            normalized[key] = value
+
+        if normalized["group"] is not None and normalized["username"] is not None:
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor observation resource has invalid scope combination"
+            )
+
+        if "vCluster" not in raw_scope:
+            if normalized["group"] is None and normalized["username"] is None:
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor observation resource has invalid scope"
+                )
+            normalized["vCluster"] = "passthrough"
+        else:
+            virtual_cluster = raw_scope["vCluster"]
+            if virtual_cluster is None:
+                if (
+                    set(raw_scope) != _KNOWN_INTERCEPTOR_SCOPE_KEYS
+                    or normalized["group"] is not None
+                    or normalized["username"] is not None
+                ):
+                    raise GatewayManagedObservationError(
+                        "Gateway managed interceptor observation resource has invalid scope"
+                    )
+                normalized["vCluster"] = None
+            else:
+                try:
+                    normalized["vCluster"] = _validate_virtual_cluster(virtual_cluster)
+                except GatewayBindingError:
+                    raise GatewayManagedObservationError(
+                        "Gateway managed interceptor observation resource has invalid scope"
+                    ) from None
+        return tuple((key, normalized[key]) for key in _CANONICAL_INTERCEPTOR_SCOPE_KEYS)
+
+    @staticmethod
+    def _parse_interceptor(value: object) -> _ParsedInterceptor:
+        resource = GatewayDeployer._require_exact_object(
+            value,
+            required=frozenset({"kind", "apiVersion", "metadata", "spec"}),
+        )
+        if resource["kind"] != "Interceptor" or resource["apiVersion"] != "gateway/v2":
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor observation resource is malformed"
+            )
+        metadata = GatewayDeployer._require_exact_object(
+            resource["metadata"],
+            required=frozenset({"name"}),
+            optional=frozenset({"scope"}),
+        )
+        spec = GatewayDeployer._require_exact_object(
+            resource["spec"],
+            required=frozenset({"pluginClass", "priority", "config"}),
+            optional=frozenset({"comment"}),
+        )
+        name = metadata["name"]
+        plugin_class = spec["pluginClass"]
+        priority = spec["priority"]
+        config = spec["config"]
+        comment = spec.get("comment")
+        if (
+            not isinstance(name, str)
+            or not name
+            or _has_control_character(name)
+            or not isinstance(plugin_class, str)
+            or not plugin_class
+            or type(priority) is not int
+            or not isinstance(config, dict)
+            or (comment is not None and not isinstance(comment, str))
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor observation resource is malformed"
+            )
+        try:
+            config_json = json.dumps(
+                config,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError):
+            raise GatewayManagedObservationError(
+                "Gateway managed interceptor observation config is not canonical JSON"
+            ) from None
+        return _ParsedInterceptor(
+            scope=GatewayDeployer._parse_interceptor_scope(metadata),
+            name=name,
+            plugin_class=plugin_class,
+            priority=priority,
+            config_json=config_json,
+        )
+
+    @staticmethod
+    def _classify_generated_interceptor_name(logical_name: str, name: str) -> str:
+        """Classify one exact generated key without broad owner-prefix matching."""
+        parts = name.rsplit("_", 2)
+        if len(parts) != 3:
+            return "other"
+        owner, interceptor_type, index = parts
+        if owner != logical_name:
+            return "other"
+        if (
+            interceptor_type in INTERCEPTOR_PLUGINS
+            and re.fullmatch(_GENERATED_INTERCEPTOR_INDEX, index) is not None
+        ):
+            return "owned"
+        return "ambiguous"
+
+    def observe_managed_gateway_rule(
+        self,
+        logical_name: str,
+        alias_name: str,
+    ) -> ManagedGatewayRuleObservation:
+        """Observe one complete scoped rule with exactly two collection GETs."""
+        if (
+            not isinstance(logical_name, str)
+            or not self._VALID_RESOURCE_NAME.fullmatch(logical_name)
+            or not isinstance(alias_name, str)
+            or not self._VALID_RESOURCE_NAME.fullmatch(alias_name)
+        ):
+            raise GatewayManagedObservationError(
+                "Gateway managed observation requires valid rule identities"
+            )
+        if self._closed:
+            raise GatewayManagedObservationError("Gateway managed observation is closed")
+
+        raw_aliases = self._observe_managed_collection("/alias-topic")
+        raw_interceptors = self._observe_managed_collection("/interceptor")
+
+        aliases: dict[tuple[str, str], _ParsedAliasTopic] = {}
+        for raw_alias in raw_aliases:
+            alias = self._parse_alias_topic(raw_alias)
+            identity = (alias.scope, alias.name)
+            if identity in aliases:
+                raise GatewayManagedObservationError(
+                    "Gateway managed alias observation contains a duplicate scoped identity"
+                )
+            aliases[identity] = alias
+
+        interceptors: dict[tuple[GatewayScope, str], _ParsedInterceptor] = {}
+        for raw_interceptor in raw_interceptors:
+            interceptor = self._parse_interceptor(raw_interceptor)
+            identity = (interceptor.scope, interceptor.name)
+            if identity in interceptors:
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor observation contains a duplicate scoped identity"
+                )
+            interceptors[identity] = interceptor
+
+        binding = self.cluster_binding
+        target_scope: GatewayScope = tuple(
+            (
+                key,
+                binding.virtual_cluster if key == "vCluster" else None,
+            )
+            for key in _CANONICAL_INTERCEPTOR_SCOPE_KEYS
+        )
+        owned: list[_ParsedInterceptor] = []
+        for interceptor in interceptors.values():
+            if interceptor.scope != target_scope:
+                continue
+            classification = self._classify_generated_interceptor_name(
+                logical_name,
+                interceptor.name,
+            )
+            if classification == "ambiguous":
+                raise GatewayManagedObservationError(
+                    "Gateway managed interceptor ownership is ambiguous"
+                )
+            if classification == "owned":
+                owned.append(interceptor)
+        owned.sort(key=lambda interceptor: interceptor.name)
+        alias = aliases.get((binding.virtual_cluster, alias_name))
+        if alias is None:
+            if owned:
+                raise GatewayManagedObservationError(
+                    "Gateway managed observation is partial: alias is absent with interceptors"
+                )
+            return ManagedGatewayRuleObservation(
+                binding=binding,
+                logical_name=logical_name,
+                alias_name=alias_name,
+                exists=False,
+            )
+
+        normalized_interceptors = tuple(
+            ManagedGatewayInterceptor(
+                name=interceptor.name,
+                scope=interceptor.scope,
+                plugin_class=interceptor.plugin_class,
+                priority=interceptor.priority,
+                config_json=interceptor.config_json,
+            )
+            for interceptor in owned
+        )
+        return ManagedGatewayRuleObservation(
+            binding=binding,
+            logical_name=logical_name,
+            alias_name=alias_name,
+            exists=True,
+            physical_name=alias.physical_name,
+            physical_cluster=alias.physical_cluster,
+            interceptors=normalized_interceptors,
+        )
 
     def _request(
         self,
@@ -355,7 +1189,7 @@ class GatewayDeployer:
     # Gateway Rules (combined alias + interceptors)
     # -------------------------------------------------------------------------
 
-    _VALID_RESOURCE_NAME = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+    _VALID_RESOURCE_NAME = _GATEWAY_RESOURCE_NAME
 
     def apply(self, artifact: GatewayRuleArtifact) -> str:
         """Deploy a gateway rule (alias topic + interceptors).
