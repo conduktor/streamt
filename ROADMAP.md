@@ -74,7 +74,9 @@ to deploy anything.
         the frozen
         [Gateway implementation specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md),
         then enable only exact alias-only rules with zero interceptors. The
-        foundation is in progress; Gateway adoption remains unsupported.
+        strict parser, binding, immutable two-list observer, and pure desired
+        transformation foundations are complete; planner and state integration
+        are next, and Gateway adoption remains unsupported.
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.

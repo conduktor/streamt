@@ -2,8 +2,14 @@
 
 ## Status and release boundary
 
-Status: foundation in progress. This specification freezes the implementation
-contract for Package 6 of the
+Status: Package 6 remains in progress. The strict compiled-artifact parser,
+versioned Gateway binding, and strict two-list GET-only immutable observer are
+complete as shipped foundation components. Pure desired-aggregate construction
+is complete as a shipped foundation component. Planner, status, state, mutation,
+recovery, and adoption are not yet integrated with the aggregate, so Gateway
+adoption remains unsupported.
+
+This specification freezes the implementation contract for Package 6 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
 Package 6 is not complete, and Gateway adoption remains unsupported.
 
@@ -12,6 +18,15 @@ include `gateway_rule` until the normalized aggregate is used by planning,
 status, state projection, exact mutation and rollback, and reviewed recovery,
 and the alias-only release gates in this document pass. A partial observer or a
 working happy-path command is not enough to cross that boundary.
+
+| Package 6 component | Status | Boundary |
+| --- | --- | --- |
+| Strict compiled-artifact parser | Complete foundation | Strict construction is shipped; downstream lifecycle integration remains gated. |
+| Versioned endpoint and vCluster binding | Complete foundation | Canonical `passthrough` scope and endpoint-free backend identity are shipped. |
+| Strict two-list observer and immutable live aggregate | Complete foundation | Exact GET-only transport, parsing, scope normalization, managed fields, and fingerprint are shipped. |
+| Pure desired aggregate | Complete foundation | Initial managed transformation is restricted to zero interceptors or one compiler-emitted filter. |
+| Planner, status, state, mutation, and recovery integration | Planned | Existing lifecycle paths do not yet establish Package 6 completion. |
+| Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
 resources. A streamt Gateway rule is a compound provider resource, never an
@@ -47,6 +62,9 @@ list.
 
 ## Stage 1: strict compiled-artifact parser
 
+Component status: complete as a shipped foundation. Its use by every lifecycle
+consumer remains an integration exit gate.
+
 Add one strict constructor for every entry in `manifest.artifacts.gateway_rules`.
 Both offline and live planning, desired-state construction, recovery, and later
 adoption use it.
@@ -67,15 +85,20 @@ unsupported interceptor types, and declaration fields that cannot survive the
 provider translation fail closed. No entry is dropped with a warning.
 
 Only compiler-emitted declarations with a proven, exact provider transformation
-may pass strict desired construction. Each accepted transformer must consume its
-complete declaration. The unsafe legacy `encrypt` and `readonly` transforms are
-rejected rather than accepted from hand-written or older manifests. Masking may
-not silently discard `forRoles`: a nonempty `forRoles` value is rejected until
-exact Gateway scope and round-trip semantics are implemented. The alias-only
-adoption stage rejects all nonempty interceptor lists regardless of whether
-their types are otherwise supported.
+may pass strict desired construction. The initial managed transformation accepts
+zero interceptors or exactly one compiler-emitted `filter`. Every `mask`
+declaration is rejected for now, including a mask with missing or empty
+`forRoles`: current DSL masking methods, Gateway plugin behavior, topic and
+Schema Registry representation, and role semantics are not round-trip exact.
+The unsafe legacy `encrypt` and `readonly` transforms are also rejected rather
+than accepted from hand-written or older manifests. The alias-only adoption
+stage rejects all nonempty interceptor lists regardless of whether their types
+are otherwise supported.
 
 ## Stage 2: versioned Gateway binding
+
+Component status: complete as a shipped foundation. State and lifecycle
+consumers have not yet completed migration to the binding.
 
 Introduce an immutable version-1 Gateway binding derived from:
 
@@ -125,6 +148,14 @@ The effective default vCluster is the literal, case-sensitive string
   distinct provider object. It neither satisfies nor conflicts with the target
   scope unless a separate compiled artifact is explicitly bound there.
 
+The strict observer also preserves a live Gateway 3.15 compatibility boundary.
+An Interceptor scope containing an exact `username` but omitting `vCluster` and
+`group` normalizes to the canonical tuple `(group=None, username=<exact>,
+vCluster=passthrough)`. The provider's null-filled equivalent normalizes to the
+same identity. This principal-scoped object is distinct from the vCluster-only
+managed target `(group=None, username=None, vCluster=passthrough)` and cannot be
+claimed by it.
+
 The project currently selects one Gateway runtime. Every rule compiled for that
 runtime is bound to its resolved effective scope before desired checksums and
 collision checks are computed.
@@ -151,6 +182,9 @@ identity collide even if they would otherwise name different physical clusters.
 
 ## Stage 3: pure desired aggregate
 
+Component status: complete as a shipped foundation. Its planner, state, status,
+mutation, and recovery consumers remain integration exit gates.
+
 Add one side-effect-free function that accepts a strict artifact plus the exact
 Gateway binding and returns a complete immutable desired aggregate. It must not
 read configuration, environment variables, state, or the provider.
@@ -171,6 +205,12 @@ Each desired interceptor contains:
 - complete provider-transformed configuration; and
 - its declaration type and ordinal only where needed to prove deterministic
   generation, never as a substitute for provider fields.
+
+For the first managed implementation, the only nonempty accepted set is one
+compiler-emitted filter at ordinal zero. Multiple filters, every mask, and legacy
+encrypt or readonly declarations fail before provider access. Additional
+transformations require their own exact DSL-to-provider-to-observer round-trip
+contract and tests before this boundary can expand.
 
 Configuration equality preserves JSON types, string case, nested object keys,
 array order, explicit null, and negative zero. Non-finite numbers are rejected.
@@ -193,6 +233,8 @@ index is ambiguous evidence and fails closed when it matches the target rule's
 anchored namespace.
 
 ## Stage 4: strict two-list GET-only observer
+
+Component status: complete as a shipped foundation.
 
 Create a dedicated Gateway snapshot API whose transport can issue GET only. One
 snapshot performs exactly these requests once each:
@@ -242,6 +284,8 @@ generated interceptor belonging to the rule is inconsistent orphan evidence,
 not a clean absence.
 
 ## Stage 5: immutable managed observation and fingerprint
+
+Component status: complete as part of the shipped strict-observer foundation.
 
 The live rule observation is a frozen value object. It carries the exact
 binding, effective scope, requested alias key, alias presence, physical topic
@@ -343,6 +387,12 @@ scope, and exact interceptor identities for provider mutation. It never deletes
 an alias under the logical name and never scans by prefix. HTTP 200, 204, and
 documented absence are distinguished correctly.
 
+Live Gateway 3.15 probing established an additional mutation contract: scoped
+deletion requires a request body carrying the exact resource identity and scope.
+The mutation stage must not use a name-only delete path or omit canonical null
+fillers where the provider requires the scoped body. This is provider evidence
+for Stage 8, not a claim that exact delete or rollback is already integrated.
+
 Rollback records exact resources successfully created by the current apply and
 reverses only those resources. It cannot rediscover rollback candidates through
 a prefix scan. Partial rollback reports each exact unresolved identity without
@@ -409,10 +459,10 @@ equivalence for every supported plugin.
 | Gate | Minimum evidence | Primary locations |
 | --- | --- | --- |
 | Strict parser and binding | Exact artifact shapes; endpoint normalization; `passthrough` equivalence; other scopes distinct; missing/exact-`main` physical-cluster normalization; invalid/secret-bearing endpoints rejected without echo | `tests/unit/test_gateway_runtime_foundation.py` |
-| Desired aggregate | Deterministic alias/interceptor output including `physicalCluster: main`; exact types and case; anchored generated-name parsing; only compiler-emitted proven transforms accepted; legacy encrypt/readonly and nonempty masking roles rejected; input immutability | `tests/unit/test_gateway_runtime_foundation.py` |
-| Strict live snapshot | Exactly two GETs; no redirect/retry/mutation; bounded duplicate-safe JSON; exact scope/name; missing/exact-`main` equivalence; non-`main`, duplicate, malformed, orphan, and wrong-scope failures; stable order-independent fingerprint | `tests/unit/test_gateway_runtime_foundation.py` |
+| Desired aggregate | Deterministic alias/interceptor output including `physicalCluster: main`; exact types and case; anchored generated-name parsing; only zero interceptors or one compiler-emitted filter accepted; every mask plus legacy encrypt/readonly rejected; input immutability | `tests/unit/test_gateway_runtime_foundation.py` |
+| Strict live snapshot | Exactly two GETs; no redirect/retry/mutation; bounded duplicate-safe JSON; exact scope/name; username-only Gateway 3.15 scope normalization with null fillers; missing/exact-`main` equivalence; non-`main`, duplicate, malformed, orphan, and wrong-scope failures; stable order-independent fingerprint | `tests/unit/test_gateway_runtime_foundation.py` |
 | Collision and planning | Duplicate owner, alias, interceptor, and generated namespace rejection before provider access; physical cluster cannot split alias identity; exact create/update/no-op; secret-neutral reviewed plans | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_planner_ownership.py`, `tests/unit/test_deployment_state.py` |
-| Status and mutation | Status uses one strict snapshot; observed mapping is reported; no-op writes nothing; logical name differs from alias; overlapping names cannot cross-delete; exact rollback | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_gaps.py`, `tests/unit/test_planner_gaps.py` |
+| Status and mutation | Status uses one strict snapshot; observed mapping is reported; no-op writes nothing; logical name differs from alias; overlapping names cannot cross-delete; scoped delete uses an exact request body; exact rollback | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_gaps.py`, `tests/unit/test_planner_gaps.py` |
 | Recovery | Exact prior, exact candidate, allowed absence, legacy backend, endpoint/scope drift, physical-cluster drift/rejection, malformed/extra evidence, and operation/control conflicts | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
 | Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit Gateway readiness | `tests/integration/test_gateway_e2e.py`, `tests/integration/helpers/gateway.py`, `tests/integration/helpers/docker.py` |
@@ -425,7 +475,9 @@ Gateway service. Kafka health alone is not Gateway readiness.
 
 ## Completion checklist
 
-Package 6 remains in progress until all of these are checked:
+Package 6 remains in progress until all of these end-to-end integration gates
+are checked. Shipped foundation-component status above does not by itself check
+an integration gate:
 
 - [ ] Strict artifact parsing is shared by offline and live paths.
 - [ ] Versioned endpoint and effective-vCluster binding is persisted everywhere.

@@ -269,8 +269,11 @@ writer and operation history.
 
 ## Package 6: normalized scoped Gateway aggregate
 
-Status: foundation in progress; adoption remains unsupported. The frozen staged
-contract and release gates are in the
+Status: in progress; adoption remains unsupported. The strict artifact parser,
+versioned endpoint/vCluster binding, and strict two-list immutable observer are
+complete foundation components. Pure desired-aggregate construction is complete
+as a foundation. Planner, status, state, mutation, and recovery integration
+remain. The frozen staged contract and release gates are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
@@ -313,9 +316,10 @@ Required changes:
    They must not delete an alias under the logical name or capture another
    rule's interceptors by prefix.
 7. Allow only compiler-emitted declarations with proven exact provider
-   transformations. Reject unknown types, unsafe legacy `encrypt` and `readonly`
-   transforms, and nonempty masking `forRoles` until exact Gateway scope and
-   round-trip semantics exist.
+   transformations. The initial nonempty managed surface accepts one
+   compiler-emitted filter. Reject every mask, including empty `forRoles`, until
+   DSL method, plugin, topic, Schema Registry, and role semantics are round-trip
+   exact. Also reject unsafe legacy `encrypt` and `readonly` transforms.
 8. Populate complete current alias and interceptor evidence in normal plans;
    synthetic test-only state is not sufficient.
 
@@ -323,6 +327,13 @@ The canonical live fingerprint includes provider binding, vCluster, alias key,
 physical topic, canonical physical cluster, and the sorted complete interceptor
 managed surface. It rejects unsupported physical clusters and extra as well as
 missing interceptors.
+
+The shipped Gateway 3.15 observer foundation normalizes an Interceptor scope
+containing only `username` to exact `vCluster: passthrough` with canonical null
+fillers for absent scope axes; that principal scope remains distinct from the
+vCluster-only managed scope. Live probing also established that scoped deletion
+requires a request body carrying exact identity and scope. The latter is frozen
+mutation-stage evidence, not completed mutation integration.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that
