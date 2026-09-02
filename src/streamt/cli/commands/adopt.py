@@ -19,6 +19,7 @@ from streamt.cli.helpers import (
     handle_parse_error,
     make_connect_deployer,
     make_formatter,
+    make_gateway_deployer,
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
@@ -38,6 +39,7 @@ from streamt.core.deployment_state import (
     enforce_remote_state_policy,
 )
 from streamt.core.errors import ErrorCode
+from streamt.core.models import StreamtProject
 from streamt.deployer.connect import (
     ConnectClusterBinding,
     ConnectClusterBindingError,
@@ -47,7 +49,19 @@ from streamt.deployer.connect import (
     bind_connector_artifact,
     secret_neutral_connector_config_diff,
 )
+from streamt.deployer.gateway import GatewayDeployer, ManagedGatewayRuleObservation
+from streamt.deployer.gateway_adoption import (
+    GatewayAdoptionDriftError,
+    GatewayAdoptionError,
+    GatewayAdoptionLiveNotFoundError,
+    GatewayAdoptionTarget,
+    build_gateway_adoption_action_evidence,
+    build_gateway_adoption_review,
+    require_unchanged_gateway_adoption_observation,
+    resolve_gateway_adoption_target,
+)
 from streamt.deployer.kafka import TopicState
+from streamt.deployer.planner import resolve_gateway_planning_targets
 from streamt.deployer.schema_registry import SchemaReference, SchemaState
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
@@ -96,6 +110,51 @@ _COMPATIBILITY_LEVELS = frozenset(
         "FULL_TRANSITIVE",
     }
 )
+
+
+def _resolve_provider_free_gateway_adoption_target(
+    manifest: Manifest,
+    project: StreamtProject,
+    *,
+    environment: str,
+    logical_name: str,
+) -> GatewayAdoptionTarget:
+    """Resolve one exact Gateway target before state or provider construction."""
+    try:
+        targets = resolve_gateway_planning_targets(
+            manifest,
+            project,
+            environment=environment,
+            prior_state=None,
+            require_authoritative_state=False,
+        )
+        matches = tuple(
+            rule for rule in targets.desired_rules if rule.logical_owner == logical_name
+        )
+        if len(matches) != 1:
+            raise GatewayAdoptionError(
+                "Gateway adoption requires exactly one compiled rule for the logical owner"
+            )
+        rule = matches[0]
+        return GatewayAdoptionTarget(
+            resource_id=resource_id(
+                manifest.project_name,
+                environment,
+                "gateway_rule",
+                logical_name,
+            ),
+            logical_owner=logical_name,
+            binding=targets.binding,
+            artifact=rule.artifact,
+            desired=rule.desired,
+            desired_artifact_checksum=artifact_checksum(rule.artifact.to_dict()),
+            existing_record=None,
+        )
+    except (GatewayAdoptionError, StateError, TypeError, ValueError):
+        raise AdoptionError(
+            ErrorCode.ADOPTION_TARGET_INVALID,
+            "Gateway adoption target preflight rejected the manifest or runtime",
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -876,7 +935,7 @@ def _connector_adoption_data(
 )
 @click.option(
     "--kind",
-    type=click.Choice(["topic", "schema", "connector"]),
+    type=click.Choice(["topic", "schema", "connector", "gateway_rule"]),
     required=True,
     help="Runtime resource kind",
 )
@@ -916,6 +975,7 @@ def adopt(
     kafka = None
     schema_registry = None
     connect: ConnectDeployer | None = None
+    gateway: GatewayDeployer | None = None
     data: dict[str, object] = {}
     operation_stack = ExitStack()
 
@@ -959,6 +1019,9 @@ def adopt(
         schema_artifact: SchemaArtifact | None = None
         connector_artifact: ConnectorArtifact | None = None
         connector_binding: ConnectClusterBinding | None = None
+        gateway_target: GatewayAdoptionTarget | None = None
+        current_gateway: ManagedGatewayRuleObservation | None = None
+        confirmed_gateway_observation: ManagedGatewayRuleObservation | None = None
         if kind == "topic":
             topic_artifact = _resolve_topic_artifact(
                 manifest,
@@ -977,7 +1040,7 @@ def adopt(
             physical_name = schema_artifact.subject
             backend = "schema-registry"
             artifact_data = schema_artifact.to_dict()
-        else:
+        elif kind == "connector":
             connector_binding = _connect_binding_from_project(project)
             connector_artifact = _resolve_connector_artifact(
                 manifest,
@@ -988,6 +1051,16 @@ def adopt(
             physical_name = connector_artifact.name
             backend = connector_binding.backend_identity
             artifact_data = connector_artifact.to_dict()
+        else:
+            gateway_target = _resolve_provider_free_gateway_adoption_target(
+                manifest,
+                project,
+                environment=effective_environment,
+                logical_name=logical_name,
+            )
+            physical_name = gateway_target.alias_name
+            backend = gateway_target.binding.backend_identity
+            artifact_data = gateway_target.artifact.to_dict()
         resource_uri = resource_id(
             project.project.name,
             effective_environment,
@@ -1020,12 +1093,46 @@ def adopt(
                 code=ErrorCode.LOCAL_STATE_ONLY,
             )
 
-        desired_record = ManagedResourceRecord(
-            physical_name=physical_name,
-            ownership="adopted",
-            artifact_checksum=artifact_checksum(artifact_data),
-            backend=backend,
-        )
+        if gateway_target is not None:
+            try:
+                locked_gateway_target = resolve_gateway_adoption_target(
+                    manifest,
+                    project,
+                    environment=effective_environment,
+                    logical_name=logical_name,
+                    prior_state=prior_state,
+                )
+            except GatewayAdoptionError as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_STATE_CONFLICT,
+                    str(exc),
+                ) from None
+            if (
+                locked_gateway_target.resource_id != gateway_target.resource_id
+                or locked_gateway_target.binding != gateway_target.binding
+                or locked_gateway_target.rule_name != gateway_target.rule_name
+                or locked_gateway_target.alias_name != gateway_target.alias_name
+                or locked_gateway_target.desired != gateway_target.desired
+                or locked_gateway_target.desired_artifact_checksum
+                != gateway_target.desired_artifact_checksum
+                or locked_gateway_target.artifact.to_dict() != gateway_target.artifact.to_dict()
+            ):
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_STATE_CONFLICT,
+                    "Gateway adoption target changed during authoritative state preflight",
+                )
+            gateway_target = locked_gateway_target
+            physical_name = gateway_target.alias_name
+            backend = gateway_target.binding.backend_identity
+            artifact_data = gateway_target.artifact.to_dict()
+            desired_record = gateway_target.desired_record
+        else:
+            desired_record = ManagedResourceRecord(
+                physical_name=physical_name,
+                ownership="adopted",
+                artifact_checksum=artifact_checksum(artifact_data),
+                backend=backend,
+            )
 
         existing = prior_state.resources.get(resource_uri)
         if existing is not None and not _records_match_for_idempotency(
@@ -1038,17 +1145,25 @@ def adopt(
             )
         for other_uri, other_record in prior_state.resources.items():
             other_is_connector = False
+            other_is_gateway = False
             if kind == "connector":
                 try:
                     other_is_connector = ResourceIdentity.parse(other_uri).kind == "connector"
                 except StateError:
                     # LocalState validation normally makes this unreachable.
                     other_is_connector = True
+            elif kind == "gateway_rule":
+                try:
+                    other_is_gateway = ResourceIdentity.parse(other_uri).kind == "gateway_rule"
+                except StateError:
+                    # LocalState validation normally makes this unreachable.
+                    other_is_gateway = True
             if (
                 other_uri != resource_uri
                 and (
                     other_record.backend == desired_record.backend
                     or (other_is_connector and other_record.backend == "kafka-connect")
+                    or (other_is_gateway and other_record.backend == "conduktor-gateway")
                 )
                 and other_record.physical_name == desired_record.physical_name
             ):
@@ -1116,7 +1231,7 @@ def adopt(
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = _schema_observation_fingerprint(current_schema)
-        else:
+        elif connector_artifact is not None:
             if connector_artifact is None or connector_binding is None:
                 raise AdoptionError(
                     ErrorCode.ADOPTION_TARGET_INVALID,
@@ -1162,17 +1277,85 @@ def adopt(
                 state_serial=prior_state.serial,
             )
             confirmed_fingerprint = current_connector.fingerprint
+        else:
+            if gateway_target is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled Gateway adoption target is missing",
+                )
+            gateway = make_gateway_deployer(project, fmt)
+            if gateway is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Conduktor Gateway is not configured or reachable; adoption "
+                    "requires strict live observation",
+                )
+            try:
+                gateway_factory_binding = gateway.cluster_binding
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Conduktor Gateway deployer has no valid binding: {_redact(str(exc))}",
+                ) from exc
+            if gateway_factory_binding != gateway_target.binding:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Conduktor Gateway deployer binding does not match project configuration",
+                )
+            try:
+                current_gateway = gateway.observe_managed_gateway_snapshot().rule(
+                    gateway_target.rule_name,
+                    gateway_target.alias_name,
+                )
+                review = build_gateway_adoption_review(
+                    gateway_target,
+                    current_gateway,
+                )
+            except GatewayAdoptionLiveNotFoundError as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_LIVE_NOT_FOUND,
+                    str(exc),
+                ) from None
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not strictly observe Gateway alias: {_redact(str(exc))}",
+                ) from exc
+            data = {
+                **review.to_dict(),
+                "kind": "gateway_rule",
+                "has_pending_changes": bool(review.pending_change_categories),
+                "observation_fingerprint": review.observed_aggregate_fingerprint,
+                "state_serial": prior_state.serial,
+            }
+            if local_state_output:
+                data["state_file"] = str(state_path)
+            confirmed_fingerprint = review.observed_aggregate_fingerprint
         data["observation_fingerprint"] = confirmed_fingerprint
         fmt.set_data(data)
         fmt.print(f"[cyan]Adoption candidate:[/cyan] {resource_uri}")
-        fmt.print(f"  Physical {kind}: {_redact(physical_name)}")
-        fmt.print(f"  Observed: {json.dumps(data['observed'], sort_keys=True)}")
-        fmt.print(f"  Observation fingerprint: {confirmed_fingerprint}")
-        fmt.print(
-            "  Desired managed attributes: "
-            f"{json.dumps(data['desired_managed_attributes'], sort_keys=True)}"
-        )
-        fmt.print(f"  Pending diffs: {json.dumps(data['pending_diffs'], sort_keys=True)}")
+        if gateway_target is not None:
+            fmt.print(f"  Alias key: {_redact(gateway_target.alias_name)}")
+            fmt.print(f"  Effective vCluster: {gateway_target.binding.virtual_cluster}")
+            fmt.print(f"  Endpoint fingerprint: {data['endpoint_fingerprint']}")
+            fmt.print("  Physical cluster: main")
+            fmt.print(f"  Observed mapping checksum: {data['observed_mapping_checksum']}")
+            fmt.print(f"  Desired mapping checksum: {data['desired_mapping_checksum']}")
+            fmt.print(f"  Desired artifact checksum: {data['desired_artifact_checksum']}")
+            fmt.print(f"  Observation fingerprint: {confirmed_fingerprint}")
+            fmt.print(
+                "  Pending change categories: "
+                f"{json.dumps(data['pending_change_categories'], sort_keys=True)}"
+            )
+        else:
+            fmt.print(f"  Physical {kind}: {_redact(physical_name)}")
+            fmt.print(f"  Observed: {json.dumps(data['observed'], sort_keys=True)}")
+            fmt.print(f"  Observation fingerprint: {confirmed_fingerprint}")
+            fmt.print(
+                "  Desired managed attributes: "
+                f"{json.dumps(data['desired_managed_attributes'], sort_keys=True)}"
+            )
+            fmt.print(f"  Pending diffs: {json.dumps(data['pending_diffs'], sort_keys=True)}")
 
         if existing is not None:
             data["adopted"] = False
@@ -1181,6 +1364,9 @@ def adopt(
             if connect is not None:
                 close_deployers(connect)
                 connect = None
+            if gateway is not None:
+                close_deployers(gateway)
+                gateway = None
             fmt.print(f"[green]{kind.title()} already has an identical ownership record.[/green]")
             fmt.flush()
             return
@@ -1236,7 +1422,7 @@ def adopt(
                 subject=schema_artifact.subject,
             )
             current_fingerprint = _schema_observation_fingerprint(confirmed_schema)
-        else:
+        elif connector_artifact is not None:
             if connector_artifact is None or connector_binding is None or connect is None:
                 raise AdoptionError(
                     ErrorCode.ADOPTION_TARGET_INVALID,
@@ -1266,11 +1452,40 @@ def adopt(
                 binding=connector_binding,
             )
             current_fingerprint = confirmed_connector.fingerprint
-        _require_unchanged_observation(
-            kind=kind,
-            confirmed_fingerprint=confirmed_fingerprint,
-            current_fingerprint=current_fingerprint,
-        )
+        else:
+            if gateway_target is None or gateway is None or current_gateway is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled Gateway adoption target is missing",
+                )
+            try:
+                reobserved_gateway = gateway.observe_managed_gateway_snapshot().rule(
+                    gateway_target.rule_name,
+                    gateway_target.alias_name,
+                )
+                confirmed_gateway_observation = require_unchanged_gateway_adoption_observation(
+                    gateway_target,
+                    current_gateway,
+                    reobserved_gateway,
+                )
+            except GatewayAdoptionDriftError as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_CONFIRMATION_REQUIRED,
+                    str(exc),
+                ) from None
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not strictly re-observe Gateway alias: {_redact(str(exc))}",
+                ) from exc
+            current_fingerprint = confirmed_gateway_observation.fingerprint
+
+        if gateway_target is None:
+            _require_unchanged_observation(
+                kind=kind,
+                confirmed_fingerprint=confirmed_fingerprint,
+                current_fingerprint=current_fingerprint,
+            )
 
         # Bind the exact state and control revisions immediately before intent.
         # Any state/control drift requires a fresh observation and confirmation.
@@ -1296,6 +1511,23 @@ def adopt(
             serial=final_state.serial + 1,
             resources=resources,
         )
+        gateway_evidence = None
+        if gateway_target is not None:
+            if confirmed_gateway_observation is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Confirmed Gateway adoption evidence is missing",
+                )
+            try:
+                gateway_evidence = build_gateway_adoption_action_evidence(
+                    gateway_target,
+                    confirmed_gateway_observation,
+                )
+            except GatewayAdoptionError as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    str(exc),
+                ) from None
         operation_id = str(uuid.uuid4())
         intent = OperationIntent(
             operation_id=operation_id,
@@ -1310,6 +1542,7 @@ def adopt(
                     index=0,
                     resource_id=resource_uri,
                     action="adopt",
+                    gateway_evidence=gateway_evidence,
                 ),
             ),
         )
@@ -1433,11 +1666,15 @@ def adopt(
         if connect is not None:
             close_deployers(connect)
             connect = None
+        if gateway is not None:
+            close_deployers(gateway)
+            gateway = None
 
         backend_name = {
             "topic": "Kafka",
             "schema": "Schema Registry",
             "connector": "Kafka Connect",
+            "gateway_rule": "Conduktor Gateway",
         }[kind]
         fmt.print(f"[green]Ownership adopted. {backend_name} was not modified.[/green]")
         fmt.print("Run a fresh reviewed plan before any apply.")
@@ -1560,6 +1797,6 @@ def adopt(
         raise click.exceptions.Exit(1) from exc
     finally:
         try:
-            close_deployers(schema_registry, kafka, connect)
+            close_deployers(schema_registry, kafka, connect, gateway)
         finally:
             operation_stack.close()
