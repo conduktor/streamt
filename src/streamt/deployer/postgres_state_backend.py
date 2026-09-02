@@ -331,6 +331,9 @@ def _begin_snapshot(cursor: _Cursor, lock_timeout_seconds: int) -> None:
 
 def _begin_mutation(cursor: _Cursor, lock_timeout_seconds: int) -> None:
     cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE")
+    cursor.execute(
+        "SELECT pg_catalog.set_config('synchronous_commit', 'on', true)"
+    )
     cursor.execute("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)")
     cursor.execute(
         "SELECT pg_catalog.set_config('statement_timeout', %s, true)",

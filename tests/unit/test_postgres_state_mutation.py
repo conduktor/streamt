@@ -423,6 +423,64 @@ def _completed(
     )
 
 
+def test_begin_mutation_enables_transaction_local_durable_commit_first() -> None:
+    database = _Database(_address())
+    connection = _Connection(database, pid=701)
+    cursor = connection.cursor_value
+
+    postgres_backend._begin_mutation(cursor, 3)
+
+    assert cursor.calls == [
+        ("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE", None),
+        (
+            "SELECT pg_catalog.set_config('synchronous_commit', 'on', true)",
+            None,
+        ),
+        (
+            "SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)",
+            None,
+        ),
+        (
+            "SELECT pg_catalog.set_config('statement_timeout', %s, true)",
+            ("30000ms",),
+        ),
+        (
+            "SELECT pg_catalog.set_config('lock_timeout', %s, true)",
+            ("3000ms",),
+        ),
+    ]
+
+
+def test_every_no_op_mutation_transaction_enables_durable_commit_before_dml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation, _database, owner, _driver = _operation(monkeypatch)
+    initial = operation.observe()
+    intent = _intent(initial, actions=False)
+
+    active = operation.begin_operation(initial, intent)
+    operation.commit_operation(active, None)
+
+    calls = owner.cursor_value.calls
+    mutation_starts = [
+        index
+        for index, (query, _params) in enumerate(calls)
+        if query == "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ WRITE"
+    ]
+    assert len(mutation_starts) == 2
+    for start in mutation_starts:
+        assert calls[start + 1] == (
+            "SELECT pg_catalog.set_config('synchronous_commit', 'on', true)",
+            None,
+        )
+        first_dml = next(
+            index
+            for index in range(start + 1, len(calls))
+            if calls[index][0].startswith(("INSERT ", "UPDATE ", "DELETE "))
+        )
+        assert start + 1 < first_dml
+
+
 def test_changed_commit_is_one_atomic_transaction_with_exact_histories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
