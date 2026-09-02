@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TypeVar
 
 import click
 from rich.console import Console
 from rich.table import Table
+
+_ItemT = TypeVar("_ItemT")
 
 
 @dataclass
@@ -155,7 +157,7 @@ class OutputFormatter:
         else:
             self.console.print(message)
 
-    def progress_bar(self, items: list, label: str = "Processing") -> list:
+    def progress_bar(self, items: list[_ItemT], label: str = "Processing") -> list[_ItemT]:
         """Wrap iterable with a Rich progress bar. Returns list of results.
 
         Falls back to plain iteration in JSON/quiet mode.
@@ -164,7 +166,7 @@ class OutputFormatter:
             return items
         from rich.progress import Progress
 
-        results: list = []
+        results: list[_ItemT] = []
         with Progress(console=self.stderr, transient=True) as progress:
             task = progress.add_task(label, total=len(items))
             for item in items:
@@ -201,6 +203,9 @@ def get_output_format_from_context(ctx: click.Context) -> str:
     root = ctx
     while root.parent is not None:
         root = root.parent
-    if root.obj and isinstance(root.obj, dict) and "output" in root.obj:
-        return root.obj["output"]
-    return root.params.get("output", "text") or "text"
+    if root.obj and isinstance(root.obj, dict):
+        configured = root.obj.get("output")
+        if isinstance(configured, str) and configured:
+            return configured
+    fallback = root.params.get("output", "text")
+    return fallback if isinstance(fallback, str) and fallback else "text"
