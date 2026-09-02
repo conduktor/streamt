@@ -282,8 +282,10 @@ the exact creates recorded by the reviewed plan. Reviewed recovery now proves
 converged creates and updates plus an absent rolled-back create. It remains fail
 closed for a rolled-back update because prior state does not retain the prior
 provider-surface fingerprint, and normalized delete recovery is not yet
-representable. Package 6 and adoption therefore remain incomplete. The frozen
-staged contract and release gates are in the
+representable. The audited fix is versioned, secret-neutral current/desired
+surface evidence on each durable pre-mutation action intent, not on ownership
+state. Package 6 and adoption therefore remain incomplete. The frozen staged
+contract and release gates are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
@@ -332,6 +334,13 @@ Required changes:
    exact. Also reject unsafe legacy `encrypt` and `readonly` transforms.
 8. Populate complete current alias and interceptor evidence in normal plans;
    synthetic test-only state is not sufficient.
+9. Persist versioned, secret-neutral current and desired Gateway surface
+   evidence on each durable `OperationAction` before mutation. Do not add that
+   transaction preimage to `ManagedResourceRecord`.
+10. During recovery, validate all desired and explicitly removed Gateway action
+    targets first, then derive them from one shared two-list snapshot. Ownership
+    state is removed only for an explicit durable `delete` action whose desired
+    absent surface is proven, never because a rule is absent from the manifest.
 
 The canonical live fingerprint includes provider binding, vCluster, alias key,
 physical topic, canonical physical cluster, and the sorted complete interceptor
@@ -370,6 +379,44 @@ exact alias and owned interceptor identities with fingerprint-only change
 evidence. It does not infer deletion from an absent manifest entry or rediscover
 targets from a logical name, prefix, or legacy state record. Reviewed recovery
 also does not pretend that this delete surface is reconstructable yet.
+
+### Frozen durable recovery-evidence extension
+
+The audited recovery extension stores Gateway action preimages on the durable
+operation intent, not on ownership state. The canonical action `resource_id`
+continues to carry the logical owner. Version 1 Gateway provider evidence carries
+only the exact versioned backend identity, exact alias key, and current and
+desired surfaces expressed as `exists`, aggregate `fingerprint`, and managed
+interceptor count. It is constructed from the canonical reviewed change and
+written with the intent before the first provider mutation. It never contains a
+Gateway endpoint, raw AliasTopic or Interceptor object, transformed plugin
+configuration, SQL expression, or credential.
+
+`ManagedResourceRecord.artifact_checksum` proves the compiled desired artifact
+accepted by the last successful state transition. It cannot prove a provider
+preimage seen immediately before a later update: the checksum is one-way, the
+prior artifact body is not stored, and a drifted live aggregate may differ from
+both that prior intent and the new candidate. Adding a live fingerprint to
+ownership state would also conflate durable authority with per-operation
+evidence. `OperationAction` is the correct boundary because it already binds the
+canonical target and ordered action to the reviewed plan, is durably recorded
+before mutation, and survives precisely when an interrupted operation needs
+reconciliation.
+
+Existing control-version-1 payloads and recovery plans remain readable in their
+exact legacy action shape. New Gateway mutation intents always emit the
+versioned evidence shape. Legacy payloads re-emit without an injected null field
+so existing control and recovery-plan checksums remain stable. A legacy or new
+Gateway action whose required evidence is missing, malformed, mismatched, or of
+an unknown version fails closed for the recovery outcome that needs it.
+
+Recovery resolves the union of desired manifest-backed targets and explicitly
+removed targets from the durable actions, validates their canonical identities
+and bindings, and makes one strict two-list Gateway snapshot for the whole
+union. A delete candidate can remove its ownership record only when the action
+is explicitly `delete` and the fresh aggregate matches the recorded desired
+absent evidence. Manifest absence alone never creates a delete, authorizes a
+provider mutation, or removes ownership state.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that

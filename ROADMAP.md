@@ -79,8 +79,10 @@ to deploy anything.
         secret-neutral reviewed-plan presentation, shared-snapshot status, and
         exact managed mutation routing are complete. Recovery proves converged
         creates/updates and rolled-back creates, but rolled-back updates and
-        normalized deletes still fail closed; Gateway adoption remains
-        unsupported.
+        normalized deletes still fail closed. The audited next step is
+        versioned, secret-neutral current/desired Gateway evidence on each
+        durable pre-mutation action intent, with old-control compatibility and
+        one recovery snapshot. Gateway adoption remains unsupported.
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.

@@ -13,8 +13,11 @@ apply/delete/rollback routing are also complete, with rollback routing limited
 to exact creates from the reviewed plan. Stage 9 recovery proves converged
 creates and updates and an absent rolled-back create, but deliberately fails
 closed for rolled-back updates and normalized deletes that current state cannot
-prove. Package 6 is therefore not complete, and Gateway adoption remains
-unsupported.
+prove. The audited design for closing those gaps is now frozen: versioned
+current/desired aggregate evidence belongs on the durable pre-mutation
+`OperationAction`, not the ownership record. Its implementation and release
+gates remain pending. Package 6 is therefore not complete, and Gateway adoption
+remains unsupported.
 
 This specification freezes the implementation contract for Package 6 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
@@ -36,7 +39,7 @@ working happy-path command is not enough to cross that boundary.
 | Planner, state, and reviewed-plan presentation | Complete | Online/offline planning, one reusable online snapshot, canonical state projection, and secret-neutral CLI rendering are shipped. |
 | Status and health | Complete | All selected rules derive normalized status and health from one reusable strict snapshot with secret-neutral drift evidence. |
 | Exact apply, delete, and rollback | Complete bounded slice | The managed mutation core and planner routing require canonical aggregate evidence; rollback is limited to exact reviewed creates, and normalized deletion is representable only from a complete present surface, not broad discovery. |
-| Reviewed recovery | Partial, fail closed | Converged create/update and absent rolled-back create are provable; rolled-back update lacks a persisted prior-surface fingerprint, and normalized delete recovery is unrepresentable. |
+| Reviewed recovery | Partial; extension frozen | Converged create/update and absent rolled-back create are provable today. Versioned action-intent evidence is specified for rolled-back update and normalized delete recovery; implementation remains fail closed until every gate passes. |
 | Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
@@ -70,6 +73,9 @@ list.
 10. Errors, logs, plans, history, and CLI output do not serialize raw provider
     configuration. Redaction remains defense in depth rather than permission to
     carry arbitrary response content into presentation objects.
+11. Transaction recovery evidence is written on the durable pre-mutation action
+    intent. Ownership state does not double as a provider-surface journal, and
+    manifest absence never implies deletion or state removal.
 
 ## Stage 1: strict compiled-artifact parser
 
@@ -385,6 +391,10 @@ Desired-state projection persists:
 - canonical versioned Gateway backend including effective vCluster; and
 - the checksum of the same strict bound artifact used by normal planning.
 
+This ownership record deliberately does not persist the provider aggregate
+preimage for a future mutation. The reviewed action intent owns that
+transaction-specific evidence, as specified in Stage 9.
+
 An existing generic `conduktor-gateway` record is legacy and unbound. Planner,
 apply, recovery, and later adoption fail with a state mismatch until a separate
 exact migration or explicit re-adoption path replaces it. They never rewrite it
@@ -461,13 +471,112 @@ and complete absence can prove a rolled-back create. Rolled-back update cannot
 be proven because current ownership state stores the compiled artifact checksum
 but not the prior provider-surface fingerprint. Normalized delete recovery is
 currently unrepresentable. Those cases fail closed instead of inferring an
-outcome from legacy, status-only, or partial evidence.
+outcome from legacy, status-only, or partial evidence. The audited extension
+below is frozen but not yet implemented.
 
-Reviewed recovery replans through the strict snapshot and uses the immutable
-aggregate. It can finalize a started create or update only when the fresh
-binding, scope, alias identity, and complete managed content prove the exact
-prior or candidate bound artifact checksum. Allowed absence must also come from
-a complete two-list snapshot.
+### Durable action-evidence boundary
+
+The recovery preimage belongs to the durable `OperationAction` embedded in the
+operation intent, not to `ManagedResourceRecord`. The action's canonical
+`resource_id` remains the only logical-owner field. It must not be duplicated or
+replaced by the rule name, alias, runtime label, or provider display name.
+
+New Gateway mutation actions emit this exact additional member before the first
+provider mutation:
+
+```json
+{
+  "index": 0,
+  "resource_id": "streamt://project/environment/gateway_rule/logical-owner",
+  "action": "update",
+  "gateway_evidence": {
+    "version": 1,
+    "backend_identity": "conduktor-gateway:v1:...:sha256:...",
+    "alias_name": "orders.public",
+    "current": {
+      "exists": true,
+      "fingerprint": "sha256:...",
+      "managed_interceptor_count": 1
+    },
+    "desired": {
+      "exists": true,
+      "fingerprint": "sha256:...",
+      "managed_interceptor_count": 1
+    }
+  }
+}
+```
+
+`gateway_evidence` version 1 has exactly the keys shown. Both surfaces are
+always present, including absence: an absent aggregate has `exists: false`, its
+canonical absence fingerprint, and count zero. Fingerprints use the immutable
+aggregate fingerprint contract from Stage 5. Counts are non-negative integers,
+never booleans. Backend identity and alias are exact and case-sensitive. Create
+requires absent-to-present evidence, update requires two distinct present
+fingerprints, and delete requires present-to-absent evidence. The action,
+resource kind, current and desired normalized changes, binding, and alias must
+all agree before the intent write.
+
+The evidence is derived only from the canonical reviewed `GatewayRuleChange`.
+For a normalized delete, intent construction creates the canonical absent
+desired aggregate from the exact current binding, logical identity, and alias;
+it does not rediscover anything. The durable value contains no raw provider
+configuration, physical topic, SQL expression, endpoint, response object,
+credential, or per-field diff. The versioned backend identity contains only the
+already approved endpoint fingerprint and effective vCluster encoding.
+
+### Why ownership state is not the evidence store
+
+`ManagedResourceRecord.artifact_checksum` answers which compiled desired
+artifact the last successful ownership transition accepted. It does not answer
+which complete provider surface a later reviewed plan observed immediately
+before mutation. The checksum is one-way, the prior artifact body is not stored,
+and provider transformation cannot be inverted from that digest. If the live
+aggregate was already drifted before an update, the ownership checksum proves
+neither that drifted preimage nor the new candidate, so it cannot prove a
+rolled-back update.
+
+Persisting a current live fingerprint on the ownership record would conflate
+long-lived mutation authority with one transaction's preimage and would still
+not naturally represent a delete after candidate state removes that record. The
+operation intent is the correct boundary: it binds the canonical resource and
+ordered action to the reviewed plan, is persisted before mutation, remains
+immutable throughout the attempt, and is retained precisely when recovery must
+choose between its recorded current and desired surfaces.
+
+### Compatibility and one-snapshot recovery
+
+Readers accept both exact legacy three-field actions and exact actions carrying
+`gateway_evidence`. Old control-version-1 payloads and existing recovery plans
+must parse and re-emit their legacy action shape without injecting
+`gateway_evidence: null`; otherwise their canonical control and recovery-plan
+checksums would change. New Gateway mutation intents always emit evidence
+version 1. Unknown evidence versions, extra or missing evidence keys, malformed
+fingerprints/counts, identity mismatch, or action/surface incoherence fail
+before mutation or recovery. A legacy Gateway action without this evidence may
+still be inspected and may use `abandoned_before_mutation` when no action
+started, but any recovery decision requiring a provider preimage fails closed.
+Existing non-Gateway recovery behavior remains unchanged.
+
+Recovery first resolves the union of manifest-backed desired targets and
+explicitly removed targets present in the durable action list. For every Gateway
+target it validates the logical owner from `resource_id`, exact backend, alias,
+and evidence before provider access. All targets bound to the configured Gateway
+are then derived from one strict two-list snapshot, not one snapshot per action.
+The fresh observed fingerprint, existence, and managed count must match exactly
+one recorded surface appropriate to the requested resolution.
+
+An observed desired surface advances create or update ownership state. An
+observed desired-absent surface removes ownership state only when the durable
+action is exactly `delete`. An observed current surface preserves prior state
+for rollback. A missing manifest rule is never itself a delete instruction and
+never removes state. Recovery is read-only toward Gateway and cannot create a
+delete action that was not durably recorded before mutation.
+
+Until this extension ships, reviewed recovery continues to use the currently
+supported normalized slice: exact desired aggregate equality and its
+fingerprint establish a converged create or update, while complete absence can
+establish an unapplied or rolled-back create.
 
 Recovery fails closed for:
 
@@ -480,13 +589,41 @@ Recovery fails closed for:
 - content that cannot reconstruct the exact prior or candidate checksum; and
 - operation, state, or control conflicts.
 
-For the currently shipped recovery slice, exact desired aggregate equality and
-its fingerprint establish a converged create or update. Exact complete absence
-establishes that a create was not applied or was rolled back. A rolled-back
-update requires a separately persisted prior provider-surface fingerprint before
-it can be distinguished from drift, and a normalized delete change does not yet
-carry the desired aggregate shape used by the recovery mapper. Neither outcome
-is accepted today.
+For the currently shipped recovery slice, a rolled-back update still lacks the
+durable current-surface fingerprint needed to distinguish the exact prior
+preimage from drift, and a normalized delete still lacks the durable desired
+absence evidence needed by the recovery mapper. Neither outcome is accepted
+today.
+
+### Staged implementation and test gates
+
+These gates remain unchecked until the implementation and its end-to-end
+evidence land:
+
+1. **Strict model and compatibility:** add the immutable version-1 Gateway
+   evidence value and optional `OperationAction.gateway_evidence`; accept only
+   the exact legacy and extended action shapes; preserve byte-stable canonical
+   checksums for legacy control and recovery-plan fixtures; reject every unknown
+   field, version, type, boolean count, and malformed checksum.
+2. **Pre-mutation emission:** derive evidence from canonical reviewed Gateway
+   changes in direct and reviewed apply; prove create/update/delete coherence;
+   persist it in local and PostgreSQL v2 intent before `started` progress or any
+   Gateway request; reject tampering and assert endpoint, configuration, SQL,
+   and credentials never enter control, history, plans, output, or errors.
+3. **One-snapshot target resolution:** combine desired and explicit removed
+   Gateway actions, reject duplicate/colliding owner/backend/alias claims before
+   provider access, and prove exactly two list GETs for any positive number of
+   targets. A target absent from the manifest is eligible only through its
+   explicit durable delete evidence.
+4. **Recovery decisions and state projection:** cover exact current and desired
+   outcomes for create, update, and delete; drift and ambiguous matches;
+   rolled-back update; completed and rolled-back delete; explicit-delete-only
+   record removal; and proof that manifest absence alone leaves every ownership
+   record untouched.
+5. **Durable workflow gates:** pass local and PostgreSQL v2 interrupted-operation
+   recovery, old-control and old-recovery-plan compatibility, reviewed recovery
+   plan integrity, installed-wheel command coverage, focused real Gateway
+   observation, lint, typing, unit, and strict documentation checks.
 
 Local and PostgreSQL v2 reviewed-recovery gates must pass for the alias-only
 surface before Gateway adoption is added to `_SUPPORTED_ACTIONS` or the CLI.
@@ -535,6 +672,7 @@ equivalence for every supported plugin.
 | Collision and planning | Duplicate owner, alias, interceptor, and generated namespace rejection before provider access; physical cluster cannot split alias identity; exact create/update/no-op; secret-neutral reviewed plans | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_planner_ownership.py`, `tests/unit/test_deployment_state.py` |
 | Status and bounded mutation | Status and health use one strict snapshot; observed mapping is reported; no-op writes nothing; exact create/update/delete results; canonical present-surface delete; logical name differs from alias; overlapping names cannot cross-delete; scoped delete uses an exact request body; rollback routes only exact reviewed creates | `tests/unit/test_status_command.py`, `tests/unit/test_gateway_managed_mutation.py`, `tests/unit/test_planner_gateway_mutation.py` |
 | Recovery | Converged create/update candidate; absent unapplied or rolled-back create; legacy backend, endpoint/scope drift, malformed/extra evidence, and operation/control conflicts; explicit fail-closed rolled-back update without prior-surface fingerprint and unrepresentable normalized delete | `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py` |
+| Durable recovery evidence extension | Exact legacy/new action serialization; legacy checksum stability; strict v1 evidence and action coherence; pre-mutation local/PostgreSQL intent persistence; one snapshot across desired/removed targets; rolled-back update; completed/rolled-back delete; explicit-delete-only state removal; secret scan | `tests/unit/test_operation_control.py`, `tests/unit/test_recovery_models.py`, `tests/unit/test_recovery_plan.py`, `tests/unit/test_recovery_observer.py`, `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_postgres_state_mutation.py` |
 | Local alias-only command | Exact selection; nonempty desired rejection; canonical `main` proof; two observations; zero mutation; drift; idempotency; state collision/CAS; planner-record equality; secret-neutral output | `tests/unit/test_cli_adopt_gateway.py` |
 | Real Gateway | Gateway 3.15 list shapes; exact default-scope alias observation; real missing/explicit physical-cluster shape; two GET-only snapshots; absence; no mutation; explicit Gateway readiness | `tests/integration/test_gateway_e2e.py`, `tests/integration/helpers/gateway.py`, `tests/integration/helpers/docker.py` |
 | PostgreSQL v2 | Production factory and writer; finalized `adopt` history; no local state; exact Gateway backend; two observations; exact reviewed recovery | `tests/postgres/test_postgres_ordinary_factory_commands_real.py`, `tests/postgres/test_postgres_recovery_commands_real.py` |
@@ -562,6 +700,12 @@ an integration gate:
 - [ ] Planner and status use complete aggregate evidence.
 - [ ] State projection rejects legacy unbound authority.
 - [ ] Apply, delete, and rollback use exact alias and interceptor identities.
+- [ ] Versioned Gateway action evidence is written before mutation, dual-reads
+      old control/recovery payloads, and remains secret-neutral.
+- [ ] Recovery observes desired and explicitly removed Gateway targets through
+      one shared snapshot and rejects missing or mismatched action evidence.
+- [ ] Only an explicit durable delete action can remove Gateway ownership state;
+      manifest absence alone never does.
 - [ ] Local and PostgreSQL v2 recovery use the same aggregate and pass.
 - [ ] Unit, typing, lint, strict docs, and focused real Gateway gates pass.
 
