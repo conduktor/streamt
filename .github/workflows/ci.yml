@@ -79,6 +79,79 @@ jobs:
       - name: Enforce mypy error ceiling
         run: python scripts/check_mypy_baseline.py
 
+  gateway-strict-observer:
+    name: Conduktor Gateway 3.15 strict observer
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Start Kafka and Conduktor Gateway
+        run: |
+          docker compose pull kafka conduktor-gateway
+          docker compose up -d kafka conduktor-gateway
+
+      - name: Wait for Conduktor Gateway readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 120))
+          until curl --fail --silent http://127.0.0.1:8888/health >/dev/null \
+            && curl --fail --silent --user admin:conduktor \
+              http://127.0.0.1:8888/gateway/v2/alias-topic >/dev/null; do
+            if (( SECONDS >= deadline )); then
+              docker compose ps
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run strict managed-observer gate
+        env:
+          STREAMT_TEST_GATEWAY_STRICT_OBSERVER: '1'
+          STREAMT_TEST_GATEWAY_ADMIN_URL: http://127.0.0.1:8888
+          STREAMT_TEST_GATEWAY_ADMIN_USER: admin
+          STREAMT_TEST_GATEWAY_ADMIN_PASSWORD: conduktor
+          STREAMT_TEST_KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+        run: >-
+          python -m pytest
+          tests/integration/test_gateway_strict_observer_real.py::test_gateway_315_strict_snapshot_observes_default_scope_exactly_once
+          --tb=short
+
+      - name: Collect Gateway service logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p gateway-strict-observer-artifacts
+          docker compose ps \
+            > gateway-strict-observer-artifacts/compose-status.txt 2>&1 || true
+          docker compose logs --no-color kafka conduktor-gateway \
+            > gateway-strict-observer-artifacts/compose.log 2>&1 || true
+
+      - name: Upload Gateway service logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gateway-strict-observer-logs
+          path: gateway-strict-observer-artifacts/
+          if-no-files-found: warn
+
+      - name: Stop Gateway services
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
   postgres-conformance:
     name: PostgreSQL ${{ matrix.postgres-major }} conformance
     runs-on: ubuntu-latest
