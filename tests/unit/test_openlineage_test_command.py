@@ -59,6 +59,10 @@ class _FakeTransport:
 @pytest.fixture(autouse=True)
 def _clear_openlineage_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (*_NAMESPACE_ENVIRONMENT, *_TRANSPORT_ENVIRONMENT):
+        # Record absent variables in MonkeyPatch's undo stack too. Project
+        # dotenv loading writes directly to os.environ, so a bare delenv() on
+        # an already absent key would not clean up the value after the test.
+        monkeypatch.setenv(name, "streamt-test-unset-sentinel")
         monkeypatch.delenv(name, raising=False)
 
 
