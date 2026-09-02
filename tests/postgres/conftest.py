@@ -36,6 +36,14 @@ class PostgresCase:
     conninfo: ModuleType
 
 
+@dataclass(frozen=True)
+class WriterIdentity:
+    """Externally provisioned least-privilege writer for one isolated case."""
+
+    role: str
+    dsn: str
+
+
 @pytest.fixture(autouse=True)
 def clear_libpq_endpoint_environment(
     monkeypatch: pytest.MonkeyPatch,
@@ -164,5 +172,68 @@ def postgres_case(
             connection.execute(
                 sql_module.SQL("DROP ROLE IF EXISTS {}").format(
                     sql_module.Identifier(owner_role)
+                )
+            )
+
+
+@pytest.fixture
+def postgres_writer(
+    postgres_case: PostgresCase,
+) -> Generator[WriterIdentity, None, None]:
+    """Create a safe login role; streamt may bind but never create it."""
+    suffix = uuid.uuid4().hex[:16]
+    role = f"streamt_writer_{suffix}"
+    password = f"writer-ci-{suffix}"
+    with postgres_case.psycopg.connect(
+        postgres_case.admin_dsn,
+        autocommit=True,
+    ) as connection:
+        database = connection.execute("SELECT current_database()").fetchone()[0]
+        connection.execute(
+            postgres_case.sql.SQL(
+                "CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB "
+                "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
+            ).format(
+                postgres_case.sql.Identifier(role),
+                postgres_case.sql.Literal(password),
+            )
+        )
+        connection.execute(
+            postgres_case.sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                postgres_case.sql.Identifier(database),
+                postgres_case.sql.Identifier(role),
+            )
+        )
+    writer = WriterIdentity(
+        role=role,
+        dsn=postgres_case.conninfo.make_conninfo(
+            postgres_case.admin_dsn,
+            user=role,
+            password=password,
+        ),
+    )
+    try:
+        yield writer
+    finally:
+        with postgres_case.psycopg.connect(
+            postgres_case.admin_dsn,
+            autocommit=True,
+        ) as connection:
+            connection.execute(
+                postgres_case.sql.SQL("DROP OWNED BY {}").format(
+                    postgres_case.sql.Identifier(role)
+                )
+            )
+            connection.execute(
+                postgres_case.sql.SQL(
+                    "REVOKE ALL PRIVILEGES ON DATABASE {} FROM {}"
+                ).format(
+                    postgres_case.sql.Identifier(database),
+                    postgres_case.sql.Identifier(role),
+                )
+            )
+            connection.execute(
+                postgres_case.sql.SQL("DROP ROLE {}").format(
+                    postgres_case.sql.Identifier(role)
                 )
             )

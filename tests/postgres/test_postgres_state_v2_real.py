@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +41,7 @@ from streamt.deployer.state_backend import (
     operation_timestamp,
     state_checksum,
 )
+from tests.postgres.conftest import WriterIdentity
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -100,14 +101,6 @@ _EXPECTED_COLUMN_ACL = {
 }
 
 
-@dataclass(frozen=True)
-class WriterIdentity:
-    """Externally provisioned ordinary role used by one isolated test."""
-
-    role: str
-    dsn: str
-
-
 class CommitAckLossConnection:
     """Delegate a real connection but lose the one commit acknowledgement."""
 
@@ -155,62 +148,6 @@ class CommitAckLossDriver:
                 commit_on_server=self._commit_on_server,
             )
         return connection
-
-
-@pytest.fixture
-def postgres_writer(postgres_case: object) -> Generator[WriterIdentity, None, None]:
-    """Create a safe login role; streamt must only bind it, never create it."""
-    suffix = uuid.uuid4().hex[:16]
-    role = f"streamt_writer_{suffix}"
-    password = f"writer-ci-{suffix}"
-    with postgres_case.psycopg.connect(postgres_case.admin_dsn, autocommit=True) as connection:
-        database = connection.execute("SELECT current_database()").fetchone()[0]
-        connection.execute(
-            postgres_case.sql.SQL(
-                "CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB "
-                "NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-            ).format(
-                postgres_case.sql.Identifier(role),
-                postgres_case.sql.Literal(password),
-            )
-        )
-        connection.execute(
-            postgres_case.sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
-                postgres_case.sql.Identifier(database),
-                postgres_case.sql.Identifier(role),
-            )
-        )
-    writer = WriterIdentity(
-        role=role,
-        dsn=postgres_case.conninfo.make_conninfo(
-            postgres_case.admin_dsn,
-            user=role,
-            password=password,
-        ),
-    )
-    try:
-        yield writer
-    finally:
-        with postgres_case.psycopg.connect(
-            postgres_case.admin_dsn,
-            autocommit=True,
-        ) as connection:
-            connection.execute(
-                postgres_case.sql.SQL("DROP OWNED BY {}").format(
-                    postgres_case.sql.Identifier(role)
-                )
-            )
-            connection.execute(
-                postgres_case.sql.SQL("REVOKE ALL PRIVILEGES ON DATABASE {} FROM {}").format(
-                    postgres_case.sql.Identifier(database),
-                    postgres_case.sql.Identifier(role),
-                )
-            )
-            connection.execute(
-                postgres_case.sql.SQL("DROP ROLE {}").format(
-                    postgres_case.sql.Identifier(role)
-                )
-            )
 
 
 def _address(*, project: str = "payments") -> StateAddress:
