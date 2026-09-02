@@ -363,6 +363,18 @@ jobs:
           validate_odcs_document(document)
           PY
 
+      - name: Smoke-test installed Gateway removal workflow
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-gateway-wheel-XXXXXX")"
+          cp tests/package/gateway_removal_wheel_smoke.py "${isolated_root}/"
+          cd "${isolated_root}"
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            /tmp/streamt-wheel-smoke/bin/python -I gateway_removal_wheel_smoke.py
+
       - name: Smoke-test installed PostgreSQL extra
         run: |
           python -m venv /tmp/streamt-postgres-wheel-smoke
