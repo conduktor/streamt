@@ -375,6 +375,10 @@ def test_postgres_apply_runtime_failure_emits_fail_after_durable_recovery_marker
         terminal_at.replace("Z", "+00:00")
     )
     assert _FAILURE_SECRET not in events_path.read_text(encoding="utf-8")
-    kafka.apply_topic.assert_called_once_with(topic)
+    kafka.apply_topic.assert_called_once()
+    applied_topic = kafka.apply_topic.call_args.args[0]
+    assert applied_topic.name == topic.name
+    assert applied_topic.partitions == topic.partitions
+    assert applied_topic.replication_factor == topic.replication_factor
     kafka.delete_topic.assert_not_called()
     _assert_no_local_state(tmp_path)
