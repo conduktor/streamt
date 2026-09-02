@@ -3,11 +3,14 @@
 ## Status and release boundary
 
 Status: Package 6 remains in progress. The strict compiled-artifact parser,
-versioned Gateway binding, and strict two-list GET-only immutable observer are
-complete as shipped foundation components. Pure desired-aggregate construction
-is complete as a shipped foundation component. Planner, status, state, mutation,
-recovery, and adoption are not yet integrated with the aggregate, so Gateway
-adoption remains unsupported.
+versioned Gateway binding, pure desired aggregate, reusable strict two-list
+snapshot, immutable observations and fingerprints, normalized change model,
+desired/prior collision gates, online/offline planner integration, canonical
+state projection, and secret-neutral reviewed-plan/CLI presentation are shipped.
+Shared-snapshot status integration and Stage 9 reviewed recovery remain pending.
+The Stage 8 exact managed mutation core is in progress, but planner
+apply/delete/rollback routing is not complete. Gateway adoption remains
+unsupported.
 
 This specification freezes the implementation contract for Package 6 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
@@ -25,7 +28,11 @@ working happy-path command is not enough to cross that boundary.
 | Versioned endpoint and vCluster binding | Complete foundation | Canonical `passthrough` scope and endpoint-free backend identity are shipped. |
 | Strict two-list observer and immutable live aggregate | Complete foundation | Exact GET-only transport, parsing, scope normalization, managed fields, and fingerprint are shipped. |
 | Pure desired aggregate | Complete foundation | Initial managed transformation is restricted to zero interceptors or one compiler-emitted filter. |
-| Planner, status, state, mutation, and recovery integration | Planned | Existing lifecycle paths do not yet establish Package 6 completion. |
+| Normalized change model and collision gates | Complete | Fingerprint-only evidence plus desired and prior-state collision rejection are shipped. |
+| Planner, state, and reviewed-plan presentation | Complete | Online/offline planning, one reusable online snapshot, canonical state projection, and secret-neutral CLI rendering are shipped. |
+| Status shared-snapshot integration | Pending | Status has not yet been migrated to the reusable strict snapshot. |
+| Exact apply, delete, and rollback | In progress | The managed mutation core is being implemented; planner routing and complete rollback integration remain pending. |
+| Reviewed recovery | Pending, fail closed | Normalized Gateway recovery is not implemented and explicitly refuses to infer success from legacy or partial evidence. |
 | Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
@@ -315,6 +322,9 @@ change the aggregate.
 
 ## Stage 6: collision gates
 
+Component status: complete. Desired artifacts and prior state are checked before
+provider access by the online and offline planning paths.
+
 Before any provider request, parse and bind every compiled Gateway artifact and
 reject:
 
@@ -336,17 +346,24 @@ target.
 
 ## Stage 7: planner, status, and state projection
 
-Online planning obtains one strict snapshot, derives the exact current aggregate
-for each rule, and compares it with the pure desired aggregate. It returns:
+Component status: planner integration, canonical state projection, normalized
+change evidence, and reviewed-plan/CLI presentation are complete. Status still
+requires migration to the shared strict snapshot.
+
+Online planning obtains one reusable strict snapshot for the complete Gateway
+rule set, derives the exact current aggregate for each rule, and compares it
+with the pure desired aggregate. Offline planning uses the same desired and
+collision boundaries without provider access. Planning returns:
 
 - `create` only for a cleanly absent alias with no orphaned exact interceptors;
 - `none` only for exact managed equality; or
 - `update` with secret-neutral categories and whole-surface checksums for every
   other complete observation.
 
-Partial or ambiguous evidence raises an error. Normal plans always carry the
-complete immutable current aggregate; synthetic `AliasTopicState` plus a
-separate optional interceptor list is not sufficient.
+Partial or ambiguous evidence raises an error. Normal plans carry the normalized
+change model and fingerprint-only current/desired evidence; reviewed plans and
+CLI presentation do not serialize raw provider configuration. Synthetic
+`AliasTopicState` plus a separate optional interceptor list is not sufficient.
 
 Status consumes the same snapshot and reports observed alias mapping, scope,
 canonical physical cluster, binding fingerprint, managed interceptor count, and
@@ -368,6 +385,10 @@ automatically.
 
 ## Stage 8: exact apply, delete, and rollback
 
+Component status: in progress. The exact managed mutation core is the active
+work item. Planner apply/delete/rollback routing and complete rollback behavior
+remain pending, so this stage is not complete.
+
 Mutation APIs accept the exact desired/current aggregate or an equally strict
 locator object. A bare logical rule name is not enough to mutate Gateway.
 
@@ -387,11 +408,29 @@ scope, and exact interceptor identities for provider mutation. It never deletes
 an alias under the logical name and never scans by prefix. HTTP 200, 204, and
 documented absence are distinguished correctly.
 
-Live Gateway 3.15 probing established an additional mutation contract: scoped
-deletion requires a request body carrying the exact resource identity and scope.
-The mutation stage must not use a name-only delete path or omit canonical null
-fillers where the provider requires the scoped body. This is provider evidence
-for Stage 8, not a claim that exact delete or rollback is already integrated.
+### Gateway 3.15 provider evidence
+
+Live mutation probes established the following exact provider behavior. This is
+frozen evidence for Stage 8, not a claim that exact mutation, planner routing,
+or rollback is complete:
+
+- `PUT` returns HTTP 200 and the exact object `{resource, upsertResult}`;
+  `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
+- A passthrough AliasTopic response omits `metadata.vCluster` and includes
+  `spec.physicalCluster: main`.
+- An Interceptor response null-fills its scope and adds an empty comment.
+- Interceptor deletion with the exact full null-filled passthrough scope body
+  returned 204, then 404 when repeated. A name-only request is not an adequate
+  scoped delete contract.
+- AliasTopic deletion with explicit `vCluster: passthrough` returned 204, then
+  404 when repeated.
+- Both provider collections were empty after cleanup; no probe residue remained.
+
+Sent writes require an exact result match: `NotChanged`, or any other
+`upsertResult` inconsistent with the planned operation, is not success. A 404
+while deleting a target that the reviewed snapshot proved present is
+concurrency drift, not silent idempotent success. Mutation must not blindly
+retry either case.
 
 Rollback records exact resources successfully created by the current apply and
 reverses only those resources. It cannot rediscover rollback candidates through
@@ -399,6 +438,10 @@ a prefix scan. Partial rollback reports each exact unresolved identity without
 provider configuration or credentials.
 
 ## Stage 9: reviewed recovery
+
+Component status: pending and explicitly fail closed. Until this stage consumes
+the normalized snapshot and aggregate, Gateway recovery refuses to finalize an
+operation from legacy, status-only, or partial evidence.
 
 Reviewed recovery replans through the strict snapshot and uses the immutable
 aggregate. It can finalize a started create or update only when the fresh

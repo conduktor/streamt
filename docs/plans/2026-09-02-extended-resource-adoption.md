@@ -19,7 +19,8 @@ of resource identity. Delivery is deliberately ordered:
 This plan also records the implemented boundary; it is not by itself a broad
 production-readiness claim. Packages 1 through 5 are complete and the public
 `adopt` command accepts `topic`, `schema`, and the deliberately narrow
-`connector` slice. Package 6 onward remains planned.
+`connector` slice. Package 6 is in progress; Package 7 and Gateway adoption
+remain planned.
 
 ## Current boundary
 
@@ -270,10 +271,14 @@ writer and operation history.
 ## Package 6: normalized scoped Gateway aggregate
 
 Status: in progress; adoption remains unsupported. The strict artifact parser,
-versioned endpoint/vCluster binding, and strict two-list immutable observer are
-complete foundation components. Pure desired-aggregate construction is complete
-as a foundation. Planner, status, state, mutation, and recovery integration
-remain. The frozen staged contract and release gates are in the
+versioned endpoint/vCluster binding, pure desired aggregate, reusable strict
+two-list snapshot, immutable observations and fingerprints, normalized change
+model, desired/prior collision gates, online/offline planner integration,
+canonical state projection, and secret-neutral reviewed-plan/CLI presentation
+are complete. Status still needs shared-snapshot integration. The exact managed
+mutation core is in progress, while planner apply/delete/rollback routing and
+reviewed recovery remain pending. The frozen staged contract and release gates
+are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
@@ -331,9 +336,27 @@ missing interceptors.
 The shipped Gateway 3.15 observer foundation normalizes an Interceptor scope
 containing only `username` to exact `vCluster: passthrough` with canonical null
 fillers for absent scope axes; that principal scope remains distinct from the
-vCluster-only managed scope. Live probing also established that scoped deletion
-requires a request body carrying exact identity and scope. The latter is frozen
-mutation-stage evidence, not completed mutation integration.
+vCluster-only managed scope.
+
+Live Gateway 3.15 provider probes additionally established the following
+mutation contract; this is evidence for the in-progress mutation stage, not a
+claim that planner mutation routing or rollback is complete:
+
+- `PUT` returns HTTP 200 with the exact object shape `{resource, upsertResult}`,
+  where `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
+- A passthrough AliasTopic response omits `metadata.vCluster` and includes
+  `spec.physicalCluster: main`.
+- An Interceptor response null-fills the scope axes and adds an empty comment.
+- Interceptor deletion with the exact full null-filled passthrough scope body
+  returned 204, then 404 on the same repeated deletion. AliasTopic deletion
+  with explicit `vCluster: passthrough` likewise returned 204, then 404.
+- Both provider collections were empty after cleanup; the probes left no
+  residue.
+
+The strict mutation implementation must match the planned operation to the
+provider result. A sent write cannot treat `NotChanged`, or another unexpected
+`upsertResult`, as success. A 404 while deleting a target that the reviewed
+snapshot proved present is concurrency drift, not an idempotent success.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that
