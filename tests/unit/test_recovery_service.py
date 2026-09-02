@@ -153,6 +153,7 @@ def _snapshot(
     store: StateStoreIdentity | None = None,
     address: StateAddress | None = None,
     revision: str = "state-r1",
+    control_revision: str = "control-r1",
 ) -> OperationSnapshot:
     state = state or _state()
     address = address or _address()
@@ -165,7 +166,7 @@ def _snapshot(
         ),
         control=ControlObservation(
             control=control or _control(),
-            revision=StateRevision("control-r1"),
+            revision=StateRevision(control_revision),
         ),
     )
 
@@ -873,19 +874,83 @@ def test_execute_abandoned_never_calls_supplied_observer_or_context() -> None:
     assert "context" not in backend.log
 
 
-def test_execute_does_not_pre_reject_backend_owned_resume_state_drift() -> None:
+def test_execute_allows_blocked_partial_finalization_at_exact_candidate_state() -> None:
     plan = _plan()
     candidate = cast(LocalState, plan.candidate_state)
     backend = _FakeBackend(_snapshot(state=candidate, revision="state-after-intent"))
+    observer = _Observer(backend.log, _live("observed"))
+    context = _ContextReader(backend.log)
 
-    _execute(
+    result = _execute(
         _service(backend),
         plan,
-        observer=_Observer(backend.log, _live("observed")),
+        observer=observer,
+        context_reader=context,
+    )
+
+    assert result.control.control.status == "clear"
+    assert observer.calls == [("observed", plan.snapshot)]
+    assert backend.finalize_calls[0][0].state.state == candidate
+
+
+def test_execute_rejects_unreviewed_blocked_state_drift_before_live_reads() -> None:
+    plan = _plan()
+    backend = _FakeBackend(_snapshot(state=_state(serial=2, partitions=9)))
+    observer = _Observer(backend.log, _live("observed"))
+    context = _ContextReader(backend.log)
+
+    with pytest.raises(RecoveryServiceError, match="changed after recovery evidence"):
+        _execute(
+            _service(backend),
+            plan,
+            observer=observer,
+            context_reader=context,
+        )
+
+    assert backend.log == ["enter", "observe", "exit"]
+    assert observer.calls == []
+    assert backend.finalize_calls == []
+
+
+def test_execute_rejects_blocked_control_drift_before_live_reads() -> None:
+    plan = _plan()
+    backend = _FakeBackend(
+        _snapshot(control=_control(status="recovery_required"))
+    )
+    observer = _Observer(backend.log, _live("observed"))
+    context = _ContextReader(backend.log)
+
+    with pytest.raises(RecoveryServiceError, match="changed after recovery evidence"):
+        _execute(
+            _service(backend),
+            plan,
+            observer=observer,
+            context_reader=context,
+        )
+
+    assert backend.log == ["enter", "observe", "exit"]
+    assert observer.calls == []
+    assert backend.finalize_calls == []
+
+
+def test_execute_accepts_revision_only_drift() -> None:
+    plan = _plan("rolled_back")
+    backend = _FakeBackend(
+        _snapshot(
+            revision="state-new-revision",
+            control_revision="control-new-revision",
+        )
+    )
+
+    result = _execute(
+        _service(backend),
+        plan,
+        observer=_Observer(backend.log, _live("rolled_back")),
         context_reader=_ContextReader(backend.log),
     )
 
-    assert backend.finalize_calls[0][0].state.state == candidate
+    assert result.control.control.status == "clear"
+    assert len(backend.finalize_calls) == 1
 
 
 def test_execute_allows_backend_to_verify_an_already_completed_clear_plan() -> None:
@@ -898,16 +963,28 @@ def test_execute_allows_backend_to_verify_an_already_completed_clear_plan() -> N
             revision="state-complete",
         )
     )
+    observer = _Observer(
+        backend.log,
+        _live("observed"),
+        error=AssertionError("must not observe completed recovery targets"),
+    )
+    context = _ContextReader(
+        backend.log,
+        error=AssertionError("must not read completed recovery context"),
+    )
 
     result = _execute(
         _service(backend),
         plan,
-        observer=_Observer(backend.log, _live("observed")),
-        context_reader=_ContextReader(backend.log),
+        observer=observer,
+        context_reader=context,
     )
 
     assert result.control.control.status == "clear"
     assert backend.finalize_calls[0][0].control.control.status == "clear"
+    assert observer.calls == []
+    assert "context" not in backend.log
+    assert "targets" not in backend.log
 
 
 def test_execute_verifies_backend_result_before_releasing_lock() -> None:

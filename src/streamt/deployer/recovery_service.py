@@ -150,21 +150,45 @@ class RecoveryService:
         with self.state.operation() as operation:
             current = operation.observe()
             self._require_snapshot_identity(current)
-
-            if plan.resolution == "abandoned_before_mutation":
-                live = RecoveryLiveObservation(targets=(), candidate_state=None)
-            else:
-                context = self._read_context(context_reader)
-                self._require_context_matches_plan(context, plan)
-                live = self._observe_targets(observer, plan.resolution, plan.snapshot)
-                if self._read_context(context_reader) != context:
-                    raise RecoveryServiceError(
-                        "Project inputs changed while recovery targets were observed"
-                    )
-            if live.targets != plan.targets or live.candidate_state != plan.candidate_state:
-                raise RecoveryServiceError(
-                    "Live targets changed after recovery evidence was reviewed"
+            expected_state = plan.candidate_state or plan.snapshot.state
+            partial_candidate = (
+                plan.resolution == "observed"
+                and plan.candidate_state is not None
+                and plan.candidate_state.resources != plan.snapshot.state.resources
+                and current.state.state == plan.candidate_state
+            )
+            blocked_retry = (
+                current.control.control == plan.snapshot.control
+                and (
+                    current.state.state == plan.snapshot.state
+                    or partial_candidate
                 )
+            )
+            already_completed = (
+                current.state.state == expected_state
+                and current.control.control
+                == OperationControlState.clear(self.state.address)
+            )
+            if not blocked_retry and not already_completed:
+                raise RecoveryServiceError(
+                    "State or operation control changed after recovery evidence was reviewed"
+                )
+
+            if not already_completed:
+                if plan.resolution == "abandoned_before_mutation":
+                    live = RecoveryLiveObservation(targets=(), candidate_state=None)
+                else:
+                    context = self._read_context(context_reader)
+                    self._require_context_matches_plan(context, plan)
+                    live = self._observe_targets(observer, plan.resolution, plan.snapshot)
+                    if self._read_context(context_reader) != context:
+                        raise RecoveryServiceError(
+                            "Project inputs changed while recovery targets were observed"
+                        )
+                if live.targets != plan.targets or live.candidate_state != plan.candidate_state:
+                    raise RecoveryServiceError(
+                        "Live targets changed after recovery evidence was reviewed"
+                    )
 
             operation.check_lock()
             record = plan.make_resolution_record(resolved_at=self.resolved_at_factory())

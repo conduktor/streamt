@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    managed_gateway_absence_fingerprint,
+)
 from streamt.deployer.recovery import (
     RecoveryResolutionRecord,
     RecoverySnapshotEvidence,
@@ -21,6 +26,8 @@ from streamt.deployer.state import (
 )
 from streamt.deployer.state_backend import (
     ControlObservation,
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
     OperationAction,
     OperationControlState,
     OperationIntent,
@@ -134,6 +141,67 @@ def test_target_evidence_is_strict_and_round_trips() -> None:
         )
 
 
+def test_gateway_target_evidence_is_bound_to_the_accepted_surface() -> None:
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster="payments-prod",
+    )
+    absent_fingerprint = managed_gateway_absence_fingerprint(
+        binding.backend_identity,
+        "orders_rule",
+        "orders.public",
+    )
+    desired_fingerprint = "sha256:" + "b" * 64
+    action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "orders_owner",
+        ),
+        action="create",
+        gateway_evidence=GatewayActionEvidence(
+            version=1,
+            backend_identity=binding.backend_identity,
+            rule_name="orders_rule",
+            alias_name="orders.public",
+            current=GatewayActionSurfaceEvidence(
+                exists=False,
+                fingerprint=absent_fingerprint,
+                managed_interceptor_count=0,
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=True,
+                fingerprint=desired_fingerprint,
+                managed_interceptor_count=1,
+            ),
+        ),
+    )
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="candidate",
+        fingerprint=desired_fingerprint,
+    )
+
+    assert RecoveryTargetEvidence.from_dict(target.to_dict()) == target
+    with pytest.raises(StateFormatError, match="presence does not match"):
+        RecoveryTargetEvidence(
+            action=action,
+            presence="absent",
+            accepted_as="candidate",
+            fingerprint=desired_fingerprint,
+        )
+    with pytest.raises(StateFormatError, match="fingerprint does not match"):
+        RecoveryTargetEvidence(
+            action=action,
+            presence="present",
+            accepted_as="candidate",
+            fingerprint="sha256:" + "c" * 64,
+        )
+
+
 def test_snapshot_evidence_is_exact_but_excludes_provider_revisions() -> None:
     evidence = RecoverySnapshotEvidence.from_operation_snapshot(_snapshot())
     serialized = json.dumps(evidence.to_dict())
@@ -161,6 +229,36 @@ def test_snapshot_rejects_tampered_content_and_credentials() -> None:
         RecoverySnapshotEvidence.from_operation_snapshot(
             _snapshot(actor="password=operator-secret")
         )
+
+
+@pytest.mark.parametrize("mismatch", ["serial", "checksum"])
+def test_snapshot_binds_blocked_intent_to_exact_prior_state(mismatch: str) -> None:
+    snapshot = _snapshot()
+    intent = snapshot.control.control.intent
+    assert intent is not None
+    changed_intent = replace(
+        intent,
+        prior_state_serial=(
+            intent.prior_state_serial + 1
+            if mismatch == "serial"
+            else intent.prior_state_serial
+        ),
+        prior_state_checksum=(
+            "sha256:" + "f" * 64
+            if mismatch == "checksum"
+            else intent.prior_state_checksum
+        ),
+    )
+    changed = replace(
+        snapshot,
+        control=replace(
+            snapshot.control,
+            control=replace(snapshot.control.control, intent=changed_intent),
+        ),
+    )
+
+    with pytest.raises(StateFormatError, match="intent does not match"):
+        RecoverySnapshotEvidence.from_operation_snapshot(changed)
 
 
 def test_resolution_record_enforces_monotonic_state_semantics() -> None:

@@ -21,7 +21,7 @@ from streamt.deployer.recovery import (
     RecoveryTargetEvidence,
     _reject_unsafe_text,
 )
-from streamt.deployer.state import LocalState, StateError
+from streamt.deployer.state import LocalState, ManagedResourceRecord, StateError
 from streamt.deployer.state_backend import OperationAction, state_checksum
 
 RECOVERY_PLAN_FILE_KIND = "streamt.recovery-plan"
@@ -225,6 +225,16 @@ class RecoveryPlanFile:
                     raise RecoveryPlanError(
                         "Rolled-back recovery targets must all be accepted as prior state"
                     )
+                if target.action.gateway_evidence is not None:
+                    # Gateway provider presence is an exact aggregate surface and
+                    # may differ from ownership-record presence during recreate.
+                    # RecoveryTargetEvidence already binds it to the accepted
+                    # durable current surface and fingerprint.
+                    self._validate_gateway_prior_ownership(
+                        target,
+                        self.snapshot.state.resources.get(target.action.resource_id),
+                    )
+                    continue
                 expected_presence = (
                     "present"
                     if target.action.resource_id in self.snapshot.state.resources
@@ -241,6 +251,52 @@ class RecoveryPlanFile:
     def _validate_project_fingerprints(self) -> None:
         _require_checksum(self.environment_fingerprint, "environment_fingerprint")
         _require_checksum(self.manifest_checksum, "manifest_checksum")
+
+    @staticmethod
+    def _validate_gateway_prior_ownership(
+        target: RecoveryTargetEvidence,
+        prior_record: object | None,
+    ) -> None:
+        """Bind a Gateway mutation to the exact reviewed prior ownership locator."""
+        gateway_evidence = target.action.gateway_evidence
+        if gateway_evidence is None:  # pragma: no cover - caller narrows this
+            return
+        exact_prior = isinstance(prior_record, ManagedResourceRecord) and (
+            prior_record.backend == gateway_evidence.backend_identity
+            and prior_record.physical_name == gateway_evidence.alias_name
+        )
+        if target.action.action == "create":
+            if prior_record is not None and not exact_prior:
+                raise RecoveryPlanError(
+                    "Gateway recovery create has mismatched prior ownership evidence"
+                )
+        elif not exact_prior:
+            raise RecoveryPlanError(
+                "Gateway recovery mutation requires exact prior ownership evidence"
+            )
+
+    @staticmethod
+    def _validate_gateway_candidate_ownership(
+        target: RecoveryTargetEvidence,
+        candidate_record: object | None,
+    ) -> None:
+        """Bind an accepted desired Gateway surface to candidate ownership."""
+        gateway_evidence = target.action.gateway_evidence
+        if gateway_evidence is None:  # pragma: no cover - caller narrows this
+            return
+        if not gateway_evidence.desired.exists:
+            if candidate_record is not None:
+                raise RecoveryPlanError(
+                    "Gateway recovery deletion candidate must remove its ownership record"
+                )
+            return
+        if not isinstance(candidate_record, ManagedResourceRecord) or (
+            candidate_record.backend != gateway_evidence.backend_identity
+            or candidate_record.physical_name != gateway_evidence.alias_name
+        ):
+            raise RecoveryPlanError(
+                "Gateway recovery candidate requires exact desired ownership evidence"
+            )
 
     def _validate_prior_state(self, serial: int, checksum: str) -> None:
         if self.snapshot.state.serial != serial or self.snapshot.state_checksum != checksum:
@@ -306,9 +362,9 @@ class RecoveryPlanFile:
             )
         for target in self.targets:
             resource_id = target.action.resource_id
+            prior_record = prior.resources.get(resource_id)
+            candidate_record = candidate.resources.get(resource_id)
             if target.accepted_as == "prior":
-                prior_record = prior.resources.get(resource_id)
-                candidate_record = candidate.resources.get(resource_id)
                 if candidate_record != prior_record:
                     raise RecoveryPlanError(
                         "Observed recovery target accepted as prior must retain its "
@@ -319,6 +375,16 @@ class RecoveryPlanFile:
                 expected_presence = (
                     "present" if resource_id in candidate.resources else "absent"
                 )
+            if target.action.gateway_evidence is not None:
+                # Ownership membership remains authoritative for candidate-state
+                # validation, but not for the separately attested provider surface.
+                self._validate_gateway_prior_ownership(target, prior_record)
+                if target.accepted_as == "candidate":
+                    self._validate_gateway_candidate_ownership(
+                        target,
+                        candidate_record,
+                    )
+                continue
             if target.presence != expected_presence:
                 raise RecoveryPlanError(
                     "Observed recovery target presence does not match its accepted state"

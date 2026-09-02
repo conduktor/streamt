@@ -44,7 +44,10 @@ from streamt.deployer.state import (
     desired_managed_records,
     resource_id,
 )
-from streamt.deployer.state_backend import OperationAction
+from streamt.deployer.state_backend import (
+    GatewayActionSurfaceEvidence,
+    OperationAction,
+)
 
 
 class RecoveryObservationError(ValueError):
@@ -52,6 +55,7 @@ class RecoveryObservationError(ValueError):
 
 
 _Kind = Literal["schema", "topic", "flink_job", "connector", "gateway_rule"]
+_GenericKind = Literal["schema", "topic", "flink_job", "connector"]
 _BACKENDS: dict[_Kind, str] = {
     "schema": "schema-registry",
     "topic": "direct-kafka",
@@ -70,13 +74,12 @@ _DELETE_ACTIONS = frozenset({"delete", "cancel"})
 
 @dataclass(frozen=True)
 class _MappedChange:
-    kind: _Kind
+    kind: _GenericKind
     change: object = field(repr=False)
     current: object | None = field(repr=False)
     desired: object | None = field(repr=False)
     physical_name: str
     backend_identity: str | None
-    normalized_gateway: bool = False
 
 
 def _target_error(action: OperationAction, reason: str) -> RecoveryObservationError:
@@ -105,23 +108,15 @@ def _ownership(desired: object | None) -> ArtifactOwnership | None:
     return ArtifactOwnership.from_dict(getattr(desired, "ownership", None))
 
 
-def _physical_name(kind: _Kind, change: object) -> str | None:
+def _physical_name(kind: _GenericKind, change: object) -> str | None:
     if kind == "schema":
         value = getattr(change, "subject", None)
     elif kind == "topic":
         value = getattr(change, "topic", None)
     elif kind == "flink_job":
         value = getattr(change, "job_name", None)
-    elif kind == "connector":
-        value = getattr(change, "connector_name", None)
     else:
-        desired = getattr(change, "desired", None)
-        alias = getattr(change, "current_alias", None)
-        value = (
-            getattr(desired, "virtual_topic", None)
-            or getattr(alias, "name", None)
-            or getattr(change, "name", None)
-        )
+        value = getattr(change, "connector_name", None)
     return value if isinstance(value, str) and value else None
 
 
@@ -196,27 +191,78 @@ def _normalized_gateway_change(
     return current, desired_managed, backend_identity
 
 
-def _current(kind: _Kind, change: object) -> object | None:
-    return (
-        getattr(change, "current_alias", None)
-        if kind == "gateway_rule"
-        else getattr(change, "current", None)
-    )
+def _current(change: object) -> object | None:
+    return getattr(change, "current", None)
 
 
-def _iter_changes(plan: DeploymentPlan) -> list[tuple[_Kind, object]]:
+def _iter_changes(plan: DeploymentPlan) -> list[tuple[_GenericKind, object]]:
     return [
         *(("schema", change) for change in plan.schema_changes),
         *(("topic", change) for change in plan.topic_changes),
         *(("flink_job", change) for change in plan.flink_changes),
         *(("connector", change) for change in plan.connector_changes),
-        *(("gateway_rule", change) for change in plan.gateway_changes),
     ]
+
+
+def preflight_recovery_intent(
+    snapshot: RecoverySnapshotEvidence,
+) -> tuple[OperationAction, ...]:
+    """Validate the complete blocked intent before any provider observation.
+
+    This check deliberately depends only on durable recovery evidence.  Callers can
+    therefore reject malformed, cross-address, duplicate, or legacy Gateway targets
+    before constructing a fresh plan or reading any provider.
+    """
+    intent = snapshot.control.intent
+    if intent is None:  # pragma: no cover - RecoverySnapshotEvidence rejects this
+        raise RecoveryObservationError("Recovery snapshot has no blocked operation intent")
+    if (
+        intent.prior_state_serial != snapshot.state.serial
+        or intent.prior_state_checksum != snapshot.state_checksum
+    ):
+        raise RecoveryObservationError(
+            "Recovery intent prior state evidence does not match the recovery snapshot"
+        )
+
+    action_ids: set[str] = set()
+    for action in intent.actions:
+        try:
+            identity = ResourceIdentity.parse(action.resource_id)
+        except StateError:
+            raise _target_error(action, "has invalid canonical identity") from None
+        if (
+            identity.project != snapshot.address.project
+            or identity.environment != snapshot.address.environment
+        ):
+            raise _target_error(action, "belongs to another state address")
+        if action.resource_id in action_ids:
+            raise _target_error(action, "is duplicated in the blocked intent")
+        action_ids.add(action.resource_id)
+        if identity.kind not in _SUPPORTED_ACTIONS:
+            raise _target_error(action, "has an unsupported resource kind")
+        kind = cast(_Kind, identity.kind)
+        if action.action not in _SUPPORTED_ACTIONS[kind]:
+            raise _target_error(
+                action,
+                "has an action incompatible with its resource kind",
+            )
+        if intent.kind == "adopt":
+            if action.action != "adopt" or kind not in (
+                "schema",
+                "topic",
+                "connector",
+            ):
+                raise _target_error(action, "is not a representable adoption target")
+        elif action.action == "adopt":
+            raise _target_error(action, "is not part of an adoption intent")
+        if kind == "gateway_rule" and action.gateway_evidence is None:
+            raise _target_error(action, "has no version 2 Gateway action evidence")
+    return intent.actions
 
 
 def _identity_for_change(
     *,
-    kind: _Kind,
+    kind: _GenericKind,
     desired: object | None,
     physical_name: str,
     backend_identity: str | None,
@@ -251,10 +297,7 @@ def _identity_for_change(
         if (
             identity.kind == kind
             and record.physical_name == physical_name
-            and (
-                kind not in ("connector", "gateway_rule")
-                or record.backend == backend_identity
-            )
+            and (kind != "connector" or record.backend == backend_identity)
         ):
             matches.append(prior_id)
     if len(matches) > 1:
@@ -270,25 +313,11 @@ def _mapped_changes(
 ) -> dict[str, _MappedChange]:
     result: dict[str, _MappedChange] = {}
     for kind, change in _iter_changes(plan):
-        current: object | None
-        backend_identity: str | None
-        physical_name: str | None
-        normalized_gateway = (
-            _normalized_gateway_change(change)
-            if kind == "gateway_rule"
-            else None
+        current = _current(change)
+        backend_identity = (
+            getattr(change, "backend_identity", None) if kind == "connector" else _BACKENDS[kind]
         )
-        if normalized_gateway is not None:
-            current, desired_managed, backend_identity = normalized_gateway
-            physical_name = desired_managed.alias_name
-        else:
-            current = _current(kind, change)
-            backend_identity = (
-                getattr(change, "backend_identity", None)
-                if kind == "connector"
-                else _BACKENDS[kind]
-            )
-            physical_name = _physical_name(kind, change)
+        physical_name = _physical_name(kind, change)
         if physical_name is None:
             continue
         desired = getattr(change, "desired", None)
@@ -315,7 +344,6 @@ def _mapped_changes(
             desired=desired,
             physical_name=physical_name,
             backend_identity=backend_identity,
-            normalized_gateway=normalized_gateway is not None,
         )
     return result
 
@@ -324,13 +352,6 @@ def _expected_backend(mapped: _MappedChange) -> str:
     backend = mapped.backend_identity
     if not isinstance(backend, str) or (
         mapped.kind == "connector" and not is_connect_backend_identity(backend)
-    ) or (
-        mapped.kind == "gateway_rule"
-        and (
-            not is_gateway_backend_identity(backend)
-            if mapped.normalized_gateway
-            else backend != _BACKENDS["gateway_rule"]
-        )
     ):
         raise RecoveryObservationError(
             "Fresh recovery observation has no canonical backend identity"
@@ -487,89 +508,6 @@ def _normalize_connector(mapped: _MappedChange) -> tuple[str, dict[str, object]]
     return "present", normalized
 
 
-def _normalize_gateway(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
-    if mapped.normalized_gateway:
-        current = mapped.current
-        desired_managed = getattr(mapped.change, "desired_managed", None)
-        if not isinstance(current, ManagedGatewayRuleObservation) or not isinstance(
-            desired_managed,
-            ManagedGatewayRuleObservation,
-        ):
-            raise RecoveryObservationError("Fresh recovery observation is partial")
-        backend_identity = _expected_backend(mapped)
-        if (
-            current.binding.backend_identity != backend_identity
-            or desired_managed.binding.backend_identity != backend_identity
-            or current.alias_name != mapped.physical_name
-            or desired_managed.alias_name != mapped.physical_name
-            or current.logical_name != desired_managed.logical_name
-        ):
-            raise RecoveryObservationError(
-                "Fresh recovery observation has mismatched identity"
-            )
-        normalized: dict[str, object] = {
-            "kind": "gateway_rule",
-            "presence": "present" if current.exists else "absent",
-            "backend_identity": backend_identity,
-            "alias_name": current.alias_name,
-            "aggregate_fingerprint": current.fingerprint,
-            "managed_interceptor_count": len(current.interceptors),
-        }
-        return ("present" if current.exists else "absent"), normalized
-
-    interceptors = getattr(mapped.change, "current_interceptors", None)
-    alias = mapped.current
-    if alias is None:
-        if interceptors != []:
-            raise RecoveryObservationError("Fresh recovery observation is partial")
-        return "absent", {"kind": "gateway_rule", "presence": "absent"}
-    exists = _require_bool(getattr(alias, "exists", None))
-    name = getattr(alias, "name", None)
-    if not isinstance(name, str) or name != mapped.physical_name:
-        raise RecoveryObservationError("Fresh recovery observation has mismatched identity")
-    if not exists:
-        if interceptors != []:
-            raise RecoveryObservationError("Fresh recovery observation is partial")
-        return "absent", {"kind": "gateway_rule", "presence": "absent"}
-    physical_topic = getattr(alias, "physical_topic", None)
-    if not isinstance(physical_topic, str) or not isinstance(interceptors, list):
-        raise RecoveryObservationError("Fresh recovery observation is partial")
-    normalized_interceptors: list[dict[str, object]] = []
-    seen_names: set[str] = set()
-    for interceptor in interceptors:
-        interceptor_name = getattr(interceptor, "name", None)
-        plugin_class = getattr(interceptor, "plugin_class", None)
-        config = getattr(interceptor, "config", None)
-        scope = getattr(interceptor, "scope", None)
-        if (
-            not isinstance(interceptor_name, str)
-            or not interceptor_name
-            or interceptor_name in seen_names
-            or not isinstance(plugin_class, str)
-            or not plugin_class
-            or not isinstance(config, dict)
-            or not isinstance(scope, dict)
-        ):
-            raise RecoveryObservationError("Fresh recovery observation is partial")
-        seen_names.add(interceptor_name)
-        normalized_interceptors.append(
-            {
-                "name": interceptor_name,
-                "plugin_class": plugin_class,
-                "config": config,
-                "scope": scope,
-            }
-        )
-    normalized_interceptors.sort(key=lambda item: str(item["name"]))
-    return "present", {
-        "kind": "gateway_rule",
-        "presence": "present",
-        "name": name,
-        "physical_topic": physical_topic,
-        "interceptors": normalized_interceptors,
-    }
-
-
 def _normalize_live(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
     if mapped.kind == "schema":
         return _normalize_schema(mapped)
@@ -577,9 +515,7 @@ def _normalize_live(mapped: _MappedChange) -> tuple[str, dict[str, object]]:
         return _normalize_topic(mapped)
     if mapped.kind == "flink_job":
         return _normalize_flink(mapped)
-    if mapped.kind == "connector":
-        return _normalize_connector(mapped)
-    return _normalize_gateway(mapped)
+    return _normalize_connector(mapped)
 
 
 def _effective_fresh_action(
@@ -701,9 +637,7 @@ def _prior_artifact_checksum(
             "ownership": ownership_dict,
         }
     else:
-        # Flink does not expose content. Gateway ownership state contains the
-        # compiler artifact checksum, but no prior provider-surface fingerprint;
-        # a current aggregate therefore cannot prove a rolled-back update.
+        # Flink does not expose content.
         return None
     try:
         if mapped.kind == "connector":
@@ -738,31 +672,220 @@ def _live_matches_desired(
         )
     if mapped.kind == "flink_job":
         return False
-    if mapped.kind == "connector":
-        raw = mapped.desired.to_dict() if hasattr(mapped.desired, "to_dict") else None
-        return (
-            getattr(mapped.desired, "name", None) == mapped.physical_name
-            and normalized.get("cluster") == getattr(mapped.desired, "cluster", None)
-            and isinstance(raw, dict)
-            and normalized.get("config") == raw.get("config")
-        )
-    if mapped.normalized_gateway:
-        desired_managed = getattr(mapped.change, "desired_managed", None)
-        return (
-            isinstance(mapped.current, ManagedGatewayRuleObservation)
-            and isinstance(desired_managed, ManagedGatewayRuleObservation)
-            and mapped.current == desired_managed
-            and normalized.get("aggregate_fingerprint")
-            == desired_managed.fingerprint
-        )
-    desired_interceptors = getattr(mapped.desired, "interceptors", None)
+    raw = mapped.desired.to_dict() if hasattr(mapped.desired, "to_dict") else None
     return (
-        getattr(mapped.desired, "virtual_topic", None) == mapped.physical_name
-        and normalized.get("physical_topic") == getattr(mapped.desired, "physical_topic", None)
-        # Current gateway planning discards transformed interceptor content.  An
-        # empty set is the only complete representation we can prove exactly.
-        and desired_interceptors == []
-        and normalized.get("interceptors") == []
+        getattr(mapped.desired, "name", None) == mapped.physical_name
+        and normalized.get("cluster") == getattr(mapped.desired, "cluster", None)
+        and isinstance(raw, dict)
+        and normalized.get("config") == raw.get("config")
+    )
+
+
+def _gateway_surface(
+    observation: ManagedGatewayRuleObservation,
+) -> GatewayActionSurfaceEvidence:
+    return GatewayActionSurfaceEvidence(
+        exists=observation.exists,
+        fingerprint=observation.fingerprint,
+        managed_interceptor_count=len(observation.interceptors),
+    )
+
+
+def _gateway_observation_map(
+    plan: DeploymentPlan,
+    actions: tuple[OperationAction, ...],
+) -> dict[str, ManagedGatewayRuleObservation]:
+    gateway_action_ids = {
+        action.resource_id
+        for action in actions
+        if ResourceIdentity.parse(action.resource_id).kind == "gateway_rule"
+    }
+    raw_observations = getattr(plan, "gateway_recovery_observations", ())
+    if not isinstance(raw_observations, tuple):
+        raise RecoveryObservationError("Fresh Gateway recovery observations must be an exact tuple")
+
+    observations: dict[str, ManagedGatewayRuleObservation] = {}
+    for entry in raw_observations:
+        identity = getattr(entry, "resource_id", None)
+        observation = getattr(entry, "observation", None)
+        if not isinstance(identity, str) or type(observation) is not ManagedGatewayRuleObservation:
+            raise RecoveryObservationError("Fresh Gateway recovery observations are partial")
+        if identity in observations:
+            raise RecoveryObservationError(
+                "Fresh Gateway recovery observations contain a duplicate target"
+            )
+        observations[identity] = observation
+
+    extras = set(observations) - gateway_action_ids
+    if extras:
+        raise RecoveryObservationError(
+            "Fresh Gateway recovery observations contain an unrelated target"
+        )
+    missing = gateway_action_ids - set(observations)
+    if missing:
+        missing_action = next(action for action in actions if action.resource_id in missing)
+        raise _target_error(missing_action, "has no matching fresh Gateway observation")
+    return observations
+
+
+def _gateway_manifest_changes(
+    plan: DeploymentPlan,
+    state: LocalState,
+) -> dict[str, object]:
+    """Index only rules still present in the current manifest by logical owner."""
+    result: dict[str, object] = {}
+    for change in plan.gateway_changes:
+        desired = getattr(change, "desired", None)
+        if desired is None:
+            continue
+        if not isinstance(desired, GatewayRuleArtifact):
+            raise RecoveryObservationError("Fresh Gateway manifest evidence is partial")
+        ownership = ArtifactOwnership.from_dict(desired.ownership)
+        if ownership is None or ownership.project != state.project:
+            raise RecoveryObservationError("Fresh Gateway manifest ownership evidence is invalid")
+        try:
+            identity = resource_id(
+                state.project,
+                state.environment,
+                "gateway_rule",
+                ownership.owner_name,
+            )
+        except StateError as error:
+            raise RecoveryObservationError(
+                "Fresh Gateway manifest ownership identity is invalid"
+            ) from error
+        if identity in result:
+            raise RecoveryObservationError(
+                "Fresh Gateway manifest contains duplicate canonical ownership"
+            )
+        result[identity] = change
+    return result
+
+
+def _gateway_desired_record(
+    *,
+    action: OperationAction,
+    change: object,
+    observation: ManagedGatewayRuleObservation,
+    state: LocalState,
+) -> ManagedResourceRecord:
+    evidence = action.gateway_evidence
+    if evidence is None:  # pragma: no cover - preflight rejects this
+        raise _target_error(action, "has no version 2 Gateway action evidence")
+    desired = getattr(change, "desired", None)
+    ownership = ArtifactOwnership.from_dict(getattr(desired, "ownership", None))
+    if not isinstance(desired, GatewayRuleArtifact) or ownership is None:
+        raise _target_error(action, "has no exact current Gateway manifest artifact")
+    identity = ResourceIdentity.parse(action.resource_id)
+    if (
+        ownership.project != state.project
+        or ownership.owner_name != identity.logical_name
+        or ownership.mode not in ("managed", "adopted")
+        or desired.name != evidence.rule_name
+        or desired.virtual_topic != evidence.alias_name
+        or observation.logical_name != evidence.rule_name
+        or observation.alias_name != evidence.alias_name
+        or observation.binding.backend_identity != evidence.backend_identity
+    ):
+        raise _target_error(action, "has mismatched current Gateway manifest identity")
+
+    try:
+        normalized = _normalized_gateway_change(change)
+        rebuilt = build_desired_gateway_rule(desired, observation.binding)
+    except (RecoveryObservationError, ValueError):
+        raise _target_error(action, "has incoherent current Gateway manifest evidence") from None
+    if normalized is None:
+        raise _target_error(action, "has legacy current Gateway manifest evidence")
+    planned_current, planned_desired, backend_identity = normalized
+    if (
+        backend_identity != evidence.backend_identity
+        or planned_current != observation
+        or planned_desired != rebuilt
+        or _gateway_surface(rebuilt) != evidence.desired
+    ):
+        raise _target_error(action, "has mismatched current Gateway manifest evidence")
+    try:
+        return ManagedResourceRecord(
+            physical_name=evidence.alias_name,
+            ownership=ownership.mode,  # type: ignore[arg-type]
+            artifact_checksum=artifact_checksum(desired.to_dict()),
+            backend=evidence.backend_identity,
+        )
+    except (StateError, TypeError, ValueError):
+        raise _target_error(action, "has malformed current Gateway manifest evidence") from None
+
+
+def _observe_gateway_target(
+    *,
+    action: OperationAction,
+    resolution: RecoveryResolution,
+    observation: ManagedGatewayRuleObservation,
+    manifest_changes: dict[str, object],
+    prior_state: LocalState,
+    candidate_resources: dict[str, ManagedResourceRecord],
+) -> RecoveryTargetEvidence:
+    evidence = action.gateway_evidence
+    if evidence is None:  # pragma: no cover - preflight rejects this
+        raise _target_error(action, "has no version 2 Gateway action evidence")
+    if (
+        observation.binding.backend_identity != evidence.backend_identity
+        or observation.logical_name != evidence.rule_name
+        or observation.alias_name != evidence.alias_name
+    ):
+        raise _target_error(action, "has mismatched fresh Gateway observation identity")
+
+    current_surface = _gateway_surface(observation)
+    if current_surface == evidence.current:
+        accepted_as: Literal["prior", "candidate"] = "prior"
+    elif current_surface == evidence.desired:
+        if resolution == "rolled_back":
+            raise _target_error(action, "does not exactly match prior Gateway surface")
+        accepted_as = "candidate"
+    else:
+        raise _target_error(
+            action,
+            "matches neither exact current nor desired Gateway surface",
+        )
+
+    prior_record = prior_state.resources.get(action.resource_id)
+    if action.action in ("update", "delete") and prior_record is None:
+        raise _target_error(action, "has no exact prior Gateway ownership record")
+    if prior_record is not None and (
+        prior_record.backend != evidence.backend_identity
+        or prior_record.physical_name != evidence.alias_name
+    ):
+        raise _target_error(action, "has mismatched prior Gateway ownership evidence")
+    if any(
+        other_resource_id != action.resource_id
+        and record.backend == evidence.backend_identity
+        and record.physical_name == evidence.alias_name
+        for other_resource_id, record in prior_state.resources.items()
+    ):
+        raise _target_error(action, "has ambiguous prior Gateway alias ownership")
+
+    manifest_change = manifest_changes.get(action.resource_id)
+    if action.action == "delete":
+        if manifest_change is not None:
+            raise _target_error(action, "is still present in the current Gateway manifest")
+        if accepted_as == "candidate":
+            candidate_resources.pop(action.resource_id, None)
+    else:
+        if manifest_change is None:
+            raise _target_error(action, "has no exact current Gateway manifest artifact")
+        desired_record = _gateway_desired_record(
+            action=action,
+            change=manifest_change,
+            observation=observation,
+            state=prior_state,
+        )
+        if accepted_as == "candidate":
+            candidate_resources[action.resource_id] = desired_record
+
+    return RecoveryTargetEvidence(
+        action=action,
+        presence="present" if current_surface.exists else "absent",
+        accepted_as=accepted_as,
+        fingerprint=current_surface.fingerprint,
     )
 
 
@@ -788,6 +911,7 @@ class DeploymentPlanRecoveryObserver:
                 "Abandoned-before-mutation recovery must not observe provider targets"
             )
         prior_state = snapshot.state
+        actions = preflight_recovery_intent(snapshot)
         if (
             self.planner.project_name != prior_state.project
             or self.planner.environment != prior_state.environment
@@ -796,26 +920,9 @@ class DeploymentPlanRecoveryObserver:
             raise RecoveryObservationError(
                 "Fresh recovery plan was not built against the recovery state snapshot"
             )
-        intent = snapshot.control.intent
-        if intent is None:  # pragma: no cover - RecoverySnapshotEvidence rejects this
-            raise RecoveryObservationError("Recovery snapshot has no blocked operation intent")
-
-        action_ids: set[str] = set()
-        for action in intent.actions:
-            try:
-                identity = ResourceIdentity.parse(action.resource_id)
-            except StateError:
-                raise _target_error(action, "has invalid canonical identity") from None
-            if (
-                identity.project != prior_state.project
-                or identity.environment != prior_state.environment
-            ):
-                raise _target_error(action, "belongs to another state address")
-            if action.resource_id in action_ids:
-                raise _target_error(action, "is duplicated in the blocked intent")
-            action_ids.add(action.resource_id)
-
         mapped_changes = _mapped_changes(self.plan, prior_state)
+        gateway_observations = _gateway_observation_map(self.plan, actions)
+        gateway_manifest_changes = _gateway_manifest_changes(self.plan, prior_state)
         try:
             managed_records = desired_managed_records(
                 self.plan,
@@ -829,17 +936,21 @@ class DeploymentPlanRecoveryObserver:
 
         evidence: list[RecoveryTargetEvidence] = []
         candidate_resources = dict(prior_state.resources)
-        for action in intent.actions:
+        for action in actions:
             identity = ResourceIdentity.parse(action.resource_id)
-            if identity.kind not in _SUPPORTED_ACTIONS:
-                raise _target_error(action, "has an unsupported resource kind")
             kind = cast(_Kind, identity.kind)
-            if action.action not in _SUPPORTED_ACTIONS[kind]:
-                raise _target_error(action, "has an action incompatible with its resource kind")
-            if intent.kind == "adopt" and (
-                action.action != "adopt" or kind not in ("schema", "topic", "connector")
-            ):
-                raise _target_error(action, "is not a representable adoption target")
+            if kind == "gateway_rule":
+                evidence.append(
+                    _observe_gateway_target(
+                        action=action,
+                        resolution=resolution,
+                        observation=gateway_observations[action.resource_id],
+                        manifest_changes=gateway_manifest_changes,
+                        prior_state=prior_state,
+                        candidate_resources=candidate_resources,
+                    )
+                )
+                continue
 
             mapped = mapped_changes.get(action.resource_id)
             if mapped is None:
@@ -861,22 +972,13 @@ class DeploymentPlanRecoveryObserver:
             prior_record = prior_state.resources.get(action.resource_id)
             expected_backend = _expected_backend(mapped)
             if (
-                kind in ("connector", "gateway_rule")
+                kind == "connector"
                 and prior_record is not None
                 and prior_record.backend != expected_backend
             ):
                 raise _target_error(
                     action,
                     "has legacy or mismatched prior backend evidence",
-                )
-            if (
-                kind == "gateway_rule"
-                and prior_record is not None
-                and prior_record.physical_name != mapped.physical_name
-            ):
-                raise _target_error(
-                    action,
-                    "has mismatched prior alias evidence",
                 )
             prior_matches = (
                 presence == "absent"

@@ -188,7 +188,11 @@ class _RecoveryRuntime:
             make_sr_deployer,
         )
         from streamt.deployer.planner import DeploymentPlanner
-        from streamt.deployer.recovery_observer import DeploymentPlanRecoveryObserver
+        from streamt.deployer.recovery_observer import (
+            DeploymentPlanRecoveryObserver,
+            preflight_recovery_intent,
+        )
+        from streamt.deployer.state import ResourceIdentity
         from streamt.output import OutputFormatter
 
         if resolution == "abandoned_before_mutation":
@@ -200,6 +204,17 @@ class _RecoveryRuntime:
             or effective_environment != evidence.address.environment
         ):
             raise ValueError("Current recovery project identity changed")
+
+        # Validate the durable action envelope before constructing any deployer.
+        # In particular, legacy Gateway actions do not carry enough evidence to
+        # authorize a live read during observed/rolled-back recovery.
+        recovery_actions = preflight_recovery_intent(evidence)
+        gateway_recovery_actions = tuple(
+            action
+            for action in recovery_actions
+            if ResourceIdentity.parse(action.resource_id).kind == "gateway_rule"
+            and action.action in {"create", "update", "delete"}
+        )
 
         # Deployer construction failures are intentionally accumulated in a private,
         # quiet formatter.  RecoveryService exposes one generic sanitized evidence
@@ -238,7 +253,9 @@ class _RecoveryRuntime:
                 project_name=project.project.name,
                 environment=effective_environment,
             )
-            plan = planner.plan()
+            plan = planner.plan(
+                gateway_recovery_actions=gateway_recovery_actions,
+            )
             return DeploymentPlanRecoveryObserver(
                 planner=planner,
                 plan=plan,

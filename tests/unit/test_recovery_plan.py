@@ -135,32 +135,68 @@ def _snapshot(
     )
 
 
-def _gateway_snapshot() -> RecoverySnapshotEvidence:
-    state = LocalState(project="payments", environment="prod")
+def _gateway_snapshot(
+    *,
+    with_prior_ownership: bool = False,
+    action_name: str = "create",
+) -> RecoverySnapshotEvidence:
     backend_identity = "conduktor-gateway:v1:p:sha256:" + "1" * 64
+    gateway_resource = "streamt://payments/prod/gateway_rule/orders_owner"
+    prior_resources = (
+        {
+            gateway_resource: ManagedResourceRecord(
+                physical_name="orders.public",
+                ownership="managed",
+                artifact_checksum=CHECKSUM,
+                backend=backend_identity,
+            )
+        }
+        if with_prior_ownership
+        else {}
+    )
+    state = LocalState(
+        project="payments",
+        environment="prod",
+        resources=prior_resources,
+    )
+    absent = GatewayActionSurfaceEvidence(
+        exists=False,
+        fingerprint=managed_gateway_absence_fingerprint(
+            backend_identity,
+            "orders_rule",
+            "orders.public",
+        ),
+        managed_interceptor_count=0,
+    )
+    current = (
+        absent
+        if action_name == "create"
+        else GatewayActionSurfaceEvidence(
+            exists=True,
+            fingerprint="sha256:" + "2" * 64,
+            managed_interceptor_count=1,
+        )
+    )
+    desired = (
+        absent
+        if action_name == "delete"
+        else GatewayActionSurfaceEvidence(
+            exists=True,
+            fingerprint="sha256:" + "3" * 64,
+            managed_interceptor_count=1,
+        )
+    )
     action = OperationAction(
         index=0,
-        resource_id="streamt://payments/prod/gateway_rule/orders_owner",
-        action="create",
+        resource_id=gateway_resource,
+        action=action_name,
         gateway_evidence=GatewayActionEvidence(
             version=1,
             backend_identity=backend_identity,
             rule_name="orders_rule",
             alias_name="orders.public",
-            current=GatewayActionSurfaceEvidence(
-                exists=False,
-                fingerprint=managed_gateway_absence_fingerprint(
-                    backend_identity,
-                    "orders_rule",
-                    "orders.public",
-                ),
-                managed_interceptor_count=0,
-            ),
-            desired=GatewayActionSurfaceEvidence(
-                exists=True,
-                fingerprint="sha256:" + "3" * 64,
-                managed_interceptor_count=1,
-            ),
+            current=current,
+            desired=desired,
         ),
     )
     intent = OperationIntent(
@@ -168,7 +204,7 @@ def _gateway_snapshot() -> RecoverySnapshotEvidence:
         kind="apply",
         started_at="2026-09-02T12:00:00Z",
         actor="operator",
-        prior_state_serial=0,
+        prior_state_serial=state.serial,
         prior_state_checksum=state_checksum(state),
         reviewed_plan_checksum=None,
         actions=(action,),
@@ -380,6 +416,34 @@ def test_rolled_back_requires_prior_classification_and_no_candidate() -> None:
         )
 
 
+def test_rolled_back_gateway_recreate_accepts_absent_current_with_prior_ownership() -> None:
+    snapshot = _gateway_snapshot(with_prior_ownership=True)
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="absent",
+        accepted_as="prior",
+        fingerprint=gateway_evidence.current.fingerprint,
+    )
+
+    plan = RecoveryPlanFile.create(
+        resolution="rolled_back",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(target,),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert action.resource_id in plan.snapshot.state.resources
+    assert plan.targets[0].presence == "absent"
+    assert plan.candidate_state is None
+
+
 def test_observed_candidate_is_authoritative_and_preserves_unrelated_state() -> None:
     plan = _observed_plan()
 
@@ -434,6 +498,115 @@ def test_observed_candidate_is_authoritative_and_preserves_unrelated_state() -> 
                     ),
                 },
             ),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_observed_gateway_prior_retains_ownership_while_provider_is_absent() -> None:
+    snapshot = _gateway_snapshot(with_prior_ownership=True)
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="absent",
+        accepted_as="prior",
+        fingerprint=gateway_evidence.current.fingerprint,
+    )
+
+    plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(target,),
+        candidate_state=snapshot.state,
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert plan.candidate_state == snapshot.state
+    assert action.resource_id in plan.candidate_state.resources
+    assert plan.targets[0].presence == "absent"
+
+
+def test_observed_gateway_candidate_requires_exact_desired_ownership() -> None:
+    snapshot = _gateway_snapshot()
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="candidate",
+        fingerprint=gateway_evidence.desired.fingerprint,
+    )
+
+    with pytest.raises(RecoveryPlanError, match="exact desired ownership"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=snapshot,
+            targets=(target,),
+            candidate_state=snapshot.state,
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_gateway_update_requires_exact_prior_ownership_in_reviewed_plan() -> None:
+    snapshot = _gateway_snapshot(action_name="update")
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="prior",
+        fingerprint=gateway_evidence.current.fingerprint,
+    )
+
+    with pytest.raises(RecoveryPlanError, match="exact prior ownership"):
+        RecoveryPlanFile.create(
+            resolution="rolled_back",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=snapshot,
+            targets=(target,),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_observed_gateway_delete_candidate_must_remove_ownership() -> None:
+    snapshot = _gateway_snapshot(
+        with_prior_ownership=True,
+        action_name="delete",
+    )
+    intent = snapshot.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    gateway_evidence = action.gateway_evidence
+    assert gateway_evidence is not None
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="absent",
+        accepted_as="candidate",
+        fingerprint=gateway_evidence.desired.fingerprint,
+    )
+
+    with pytest.raises(RecoveryPlanError, match="must remove"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=snapshot,
+            targets=(target,),
+            candidate_state=snapshot.state,
             environment_fingerprint=CHECKSUM,
             manifest_checksum=CHECKSUM,
         )

@@ -48,12 +48,14 @@ from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
     ResourceIdentity,
+    StateError,
     StateIdentityError,
     resource_id,
 )
 from streamt.deployer.state_backend import (
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
+    OperationAction,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,25 @@ class PlannedAction:
             GatewayActionEvidence,
         ):
             raise StateIdentityError("planned action Gateway evidence is invalid")
+
+
+@dataclass(frozen=True)
+class GatewayRecoveryObservation:
+    """One exact live Gateway observation bound to a durable action identity."""
+
+    resource_id: str
+    observation: ManagedGatewayRuleObservation = field(repr=False)
+
+    def __post_init__(self) -> None:
+        identity = ResourceIdentity.parse(self.resource_id)
+        if identity.kind != "gateway_rule":
+            raise StateIdentityError(
+                "Gateway recovery observation requires a gateway_rule identity"
+            )
+        if type(self.observation) is not ManagedGatewayRuleObservation:
+            raise StateIdentityError(
+                "Gateway recovery observation requires an exact managed surface"
+            )
 
 
 _SENSITIVE_KV = re.compile(
@@ -262,12 +283,25 @@ class DeploymentPlan:
     flink_changes: list[FlinkJobChange] = field(default_factory=list)
     connector_changes: list[ConnectorChange] = field(default_factory=list)
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
+    gateway_recovery_observations: tuple[GatewayRecoveryObservation, ...] = field(
+        default_factory=tuple,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
     impact_radius: list[ImpactEntry] = field(default_factory=list)
     ownership_requirements: list[OwnershipRequirement] = field(default_factory=list)
     safety_blockers: list[SafetyBlocker] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Derive blockers for plans constructed with their changes up front."""
+        if not isinstance(self.gateway_recovery_observations, tuple) or any(
+            type(observation) is not GatewayRecoveryObservation
+            for observation in self.gateway_recovery_observations
+        ):
+            raise StateIdentityError(
+                "deployment plan Gateway recovery observations are invalid"
+            )
         if not self.safety_blockers:
             self.refresh_safety_blockers()
 
@@ -1299,6 +1333,167 @@ class DeploymentPlanner:
                     )
         return resolved
 
+    def _validated_gateway_recovery_actions(
+        self,
+        *,
+        actions: tuple[OperationAction, ...],
+        binding: GatewayBackendBinding,
+        rules: tuple[ResolvedManagedGatewayRule, ...],
+    ) -> tuple[OperationAction, ...]:
+        """Validate durable Gateway targets before any provider can be read."""
+        if not isinstance(actions, tuple) or any(
+            type(action) is not OperationAction for action in actions
+        ):
+            raise StateIdentityError(
+                "Gateway recovery actions must be an exact immutable action tuple"
+            )
+
+        rules_by_owner = {rule.logical_owner: rule for rule in rules}
+        resource_claims: dict[str, tuple[str, str, str]] = {}
+        rule_claims: dict[tuple[str, str], str] = {}
+        alias_claims: dict[tuple[str, str], str] = {}
+
+        def claim(
+            *,
+            target_resource_id: str,
+            backend_identity: str,
+            rule_name: str,
+            alias_name: str,
+        ) -> None:
+            provider_identity = (backend_identity, rule_name, alias_name)
+            previous_resource = resource_claims.get(target_resource_id)
+            if previous_resource is not None and previous_resource != provider_identity:
+                raise StateIdentityError(
+                    "Gateway recovery target collides on canonical resource identity"
+                )
+            resource_claims[target_resource_id] = provider_identity
+            for claims, locator, label in (
+                (rule_claims, (backend_identity, rule_name), "rule name"),
+                (alias_claims, (backend_identity, alias_name), "alias"),
+            ):
+                previous = claims.get(locator)
+                if previous is not None and previous != target_resource_id:
+                    raise StateIdentityError(
+                        f"Gateway recovery target collides on canonical {label} locator"
+                    )
+                claims[locator] = target_resource_id
+
+        for rule in rules:
+            desired = rule.desired
+            claim(
+                target_resource_id=resource_id(
+                    self.project_name,
+                    self.environment,
+                    "gateway_rule",
+                    rule.logical_owner,
+                ),
+                backend_identity=desired.binding.backend_identity,
+                rule_name=desired.logical_name,
+                alias_name=desired.alias_name,
+            )
+
+        if not actions:
+            return actions
+        prior_gateway_records = self._prior_gateway_records()
+        action_resources: set[str] = set()
+        for action in actions:
+            try:
+                identity = ResourceIdentity.parse(action.resource_id)
+            except StateError as error:
+                raise StateIdentityError(
+                    "Gateway recovery action has an invalid canonical resource identity"
+                ) from error
+            if (
+                identity.project != self.project_name
+                or identity.environment != self.environment
+                or identity.kind != "gateway_rule"
+            ):
+                raise StateIdentityError(
+                    "Gateway recovery action belongs to another resource address"
+                )
+            if action.resource_id in action_resources:
+                raise StateIdentityError(
+                    "Gateway recovery actions contain a duplicate canonical resource"
+                )
+            action_resources.add(action.resource_id)
+            if action.action not in ("create", "update", "delete"):
+                raise StateIdentityError(
+                    "Gateway recovery action has an unsupported mutation verb"
+                )
+            evidence = action.gateway_evidence
+            if type(evidence) is not GatewayActionEvidence:
+                raise StateIdentityError(
+                    "Gateway recovery action requires exact durable evidence"
+                )
+            if evidence.backend_identity != binding.backend_identity:
+                raise StateIdentityError(
+                    "Gateway recovery action belongs to another provider binding"
+                )
+
+            prior_record = (
+                self.prior_state.resources.get(action.resource_id)
+                if self.prior_state is not None
+                else None
+            )
+            exact_prior = prior_record is not None and (
+                prior_record.backend == evidence.backend_identity
+                and prior_record.physical_name == evidence.alias_name
+            )
+            if action.action == "create":
+                if prior_record is not None and not exact_prior:
+                    raise StateIdentityError(
+                        "Gateway recovery create has mismatched prior ownership evidence"
+                    )
+            elif not exact_prior:
+                raise StateIdentityError(
+                    "Gateway recovery mutation requires exact prior ownership evidence"
+                )
+
+            if action.action == "delete" and any(
+                prior_identity.uri != action.resource_id
+                and record.physical_name == evidence.alias_name
+                and record.backend
+                in (binding.backend_identity, "conduktor-gateway")
+                for prior_identity, record in prior_gateway_records
+            ):
+                raise StateIdentityError(
+                    "Gateway recovery delete alias is claimed by another logical record"
+                )
+
+            desired_rule = rules_by_owner.get(identity.logical_name)
+            if action.action in ("create", "update"):
+                if desired_rule is None:
+                    raise StateIdentityError(
+                        "Gateway recovery upsert has no exact desired manifest rule"
+                    )
+                desired = desired_rule.desired
+                expected_surface = GatewayActionSurfaceEvidence(
+                    exists=True,
+                    fingerprint=desired.fingerprint,
+                    managed_interceptor_count=len(desired.interceptors),
+                )
+                if (
+                    evidence.rule_name != desired.logical_name
+                    or evidence.alias_name != desired.alias_name
+                    or evidence.backend_identity != desired.binding.backend_identity
+                    or evidence.desired != expected_surface
+                ):
+                    raise StateIdentityError(
+                        "Gateway recovery upsert differs from its exact desired rule"
+                    )
+            elif desired_rule is not None:
+                raise StateIdentityError(
+                    "Gateway recovery delete target is still present in the manifest"
+                )
+
+            claim(
+                target_resource_id=action.resource_id,
+                backend_identity=evidence.backend_identity,
+                rule_name=evidence.rule_name,
+                alias_name=evidence.alias_name,
+            )
+        return actions
+
     @staticmethod
     def _absent_gateway_rule(
         rule: ResolvedManagedGatewayRule,
@@ -1452,16 +1647,26 @@ class DeploymentPlanner:
         self._compute_impact_radius(plan)
         return plan
 
-    def plan(self) -> DeploymentPlan:
+    def plan(
+        self,
+        *,
+        gateway_recovery_actions: tuple[OperationAction, ...] = (),
+    ) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()
 
         # Gateway identities are a whole-manifest preflight. Complete strict
         # parsing, binding, and collision checks before any provider is read.
+        if not isinstance(gateway_recovery_actions, tuple):
+            raise StateIdentityError(
+                "Gateway recovery actions must be an exact immutable action tuple"
+            )
         gateway_rules: tuple[ResolvedManagedGatewayRule, ...] = ()
+        validated_gateway_recovery_actions: tuple[OperationAction, ...] = ()
         gateway_deployer = self.gateway_deployer
         gateway_data = self.manifest.artifacts.get("gateway_rules", [])
-        if gateway_data:
+        configured_gateway_binding: GatewayBackendBinding | None = None
+        if gateway_data or gateway_recovery_actions:
             configured_gateway_binding = self._gateway_binding_from_project()
             if gateway_deployer is None:
                 raise GatewayBindingError(
@@ -1473,6 +1678,13 @@ class DeploymentPlanner:
                 )
             gateway_rules = self._gateway_rules_with_prior_state_checks(
                 configured_gateway_binding
+            )
+            validated_gateway_recovery_actions = (
+                self._validated_gateway_recovery_actions(
+                    actions=gateway_recovery_actions,
+                    binding=configured_gateway_binding,
+                    rules=gateway_rules,
+                )
             )
 
         # Plan schemas first (before topics that may depend on them)
@@ -1588,22 +1800,58 @@ class DeploymentPlanner:
                 plan.connector_changes.append(change)
 
         # Plan all Gateway rules from one exact, complete two-list snapshot.
-        if gateway_rules:
+        if gateway_rules or validated_gateway_recovery_actions:
             if gateway_deployer is None:  # pragma: no cover - preflight narrows this
                 raise GatewayBindingError(
                     "Live Gateway planning requires a bound Gateway deployer"
                 )
             snapshot = gateway_deployer.observe_managed_gateway_snapshot()
+            if configured_gateway_binding is None:  # pragma: no cover - preflight narrows this
+                raise GatewayBindingError(
+                    "Gateway planning requires a configured project runtime"
+                )
             if snapshot.binding != configured_gateway_binding:
                 raise GatewayBindingError(
                     "Gateway observation does not match project runtime configuration"
                 )
+            observations: dict[
+                tuple[str, str], ManagedGatewayRuleObservation
+            ] = {}
+
+            def observe(
+                rule_name: str,
+                alias_name: str,
+            ) -> ManagedGatewayRuleObservation:
+                locator = (rule_name, alias_name)
+                current = observations.get(locator)
+                if current is None:
+                    current = snapshot.rule(rule_name, alias_name)
+                    observations[locator] = current
+                return current
+
             for rule in gateway_rules:
-                current = snapshot.rule(
+                current = observe(
                     rule.artifact.name,
                     rule.artifact.virtual_topic,
                 )
                 self._append_planned_gateway_rule(plan, rule, current)
+            recovery_observations: list[GatewayRecoveryObservation] = []
+            for action in validated_gateway_recovery_actions:
+                evidence = action.gateway_evidence
+                if evidence is None:  # pragma: no cover - strict preflight narrows this
+                    raise StateIdentityError(
+                        "Gateway recovery action requires exact durable evidence"
+                    )
+                recovery_observations.append(
+                    GatewayRecoveryObservation(
+                        resource_id=action.resource_id,
+                        observation=observe(
+                            evidence.rule_name,
+                            evidence.alias_name,
+                        ),
+                    )
+                )
+            plan.gateway_recovery_observations = tuple(recovery_observations)
 
         # Compute impact radius for planned changes
         plan.refresh_safety_blockers()

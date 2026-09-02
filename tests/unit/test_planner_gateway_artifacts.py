@@ -29,17 +29,29 @@ from streamt.deployer.gateway import (
     GatewayDeployer,
     GatewayDesiredAggregateError,
     GatewayRuleChange,
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
 )
 from streamt.deployer.plan_file import deployment_plan_payload
-from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
+from streamt.deployer.planner import (
+    DeploymentPlan,
+    DeploymentPlanner,
+    GatewayRecoveryObservation,
+)
 from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
+    ResourceIdentity,
     StateFormatError,
     StateIdentityError,
     artifact_checksum,
     desired_managed_records,
     resource_id,
+)
+from streamt.deployer.state_backend import (
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
+    OperationAction,
 )
 
 _ENDPOINT = "https://gateway.example.test:8443/admin"
@@ -81,7 +93,7 @@ def _manifest(*rules: object) -> Manifest:
     return Manifest(
         version="1.0",
         project_name="payments",
-        artifacts={"gateway_rules": list(rules)},  # type: ignore[list-item]
+        artifacts={"gateway_rules": list(rules)},  # type: ignore[arg-type]
     )
 
 
@@ -245,6 +257,85 @@ def _prior_state(
         project="payments",
         environment="prod",
         resources=resources,
+    )
+
+
+def _recovery_action(
+    rule: dict[str, object],
+    action: str,
+    *,
+    index: int = 0,
+    binding: GatewayBackendBinding | None = None,
+    environment: str = "prod",
+    owner_name: str | None = None,
+) -> OperationAction:
+    selected_binding = binding or _binding()
+    artifact = parse_compiled_gateway_rule_artifact(rule)
+    ownership = ArtifactOwnership.from_dict(rule["ownership"])
+    assert ownership is not None
+    desired = build_desired_gateway_rule(artifact, selected_binding)
+    if action == "create":
+        current = ManagedGatewayRuleObservation(
+            binding=selected_binding,
+            logical_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            exists=False,
+        )
+        candidate = desired
+    elif action == "update":
+        current = ManagedGatewayRuleObservation(
+            binding=selected_binding,
+            logical_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            exists=True,
+            physical_name=f"{artifact.physical_topic}.old",
+            physical_cluster="main",
+        )
+        candidate = desired
+    elif action == "delete":
+        current = desired
+        candidate = ManagedGatewayRuleObservation(
+            binding=selected_binding,
+            logical_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            exists=False,
+        )
+    else:
+        return OperationAction(
+            index=index,
+            resource_id=resource_id(
+                "payments",
+                environment,
+                "gateway_rule",
+                owner_name or ownership.owner_name,
+            ),
+            action=action,
+        )
+    return OperationAction(
+        index=index,
+        resource_id=resource_id(
+            "payments",
+            environment,
+            "gateway_rule",
+            owner_name or ownership.owner_name,
+        ),
+        action=action,
+        gateway_evidence=GatewayActionEvidence(
+            version=1,
+            backend_identity=selected_binding.backend_identity,
+            rule_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            current=GatewayActionSurfaceEvidence(
+                exists=current.exists,
+                fingerprint=current.fingerprint,
+                managed_interceptor_count=len(current.interceptors),
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=candidate.exists,
+                fingerprint=candidate.fingerprint,
+                managed_interceptor_count=len(candidate.interceptors),
+            ),
+        ),
     )
 
 
@@ -450,6 +541,304 @@ def test_two_rules_share_one_snapshot_and_plan_exact_absent_creates() -> None:
 
         assert [change.action for change in plan.gateway_changes] == ["create", "create"]
         _assert_exact_two_list_gets(request)
+
+
+def test_gateway_recovery_actions_share_one_snapshot_with_manifest_planning() -> None:
+    desired = _rule(
+        name="desired_provider_rule",
+        alias="orders.desired",
+        owner_name="desired_logical_owner",
+    )
+    removed_first = _rule(
+        name="removed_provider_rule",
+        alias="orders.removed",
+        owner_name="removed_logical_owner",
+    )
+    removed_second = _rule(
+        name="archive_provider_rule",
+        alias="orders.archive",
+        owner_name="archive_logical_owner",
+    )
+    actions = (
+        _recovery_action(desired, "create", index=0),
+        _recovery_action(removed_first, "delete", index=1),
+        _recovery_action(removed_second, "delete", index=2),
+    )
+    with _mocked_gateway(
+        aliases=[
+            _alias_resource(removed_first),
+            _alias_resource(removed_second),
+        ]
+    ) as (deployer, request):
+        observe_snapshot = MagicMock(
+            wraps=deployer.observe_managed_gateway_snapshot
+        )
+        deployer.observe_managed_gateway_snapshot = observe_snapshot  # type: ignore[method-assign]
+        plan = DeploymentPlanner(
+            _manifest(desired),
+            project=_project(),
+            gateway_deployer=deployer,
+            prior_state=_prior_state(removed_first, removed_second),
+            environment="prod",
+        ).plan(gateway_recovery_actions=actions)
+
+        assert observe_snapshot.call_count == 1
+        assert [
+            observation.resource_id
+            for observation in plan.gateway_recovery_observations
+        ] == [action.resource_id for action in actions]
+        assert (
+            plan.gateway_changes[0].current
+            == plan.gateway_recovery_observations[0].observation
+        )
+        assert [
+            observation.observation.logical_name
+            for observation in plan.gateway_recovery_observations
+        ] == [
+            "desired_provider_rule",
+            "removed_provider_rule",
+            "archive_provider_rule",
+        ]
+        assert all(
+            ResourceIdentity.parse(observation.resource_id).logical_name
+            != observation.observation.logical_name
+            for observation in plan.gateway_recovery_observations
+        )
+        _assert_exact_two_list_gets(request)
+
+
+def test_gateway_recovery_create_allows_exact_prior_record_for_provider_recreate() -> None:
+    desired = _rule(
+        name="provider_recreate_rule",
+        alias="orders.recreate",
+        owner_name="logical_recreate_owner",
+    )
+    action = _recovery_action(desired, "create")
+    with _mocked_gateway() as (deployer, request):
+        plan = DeploymentPlanner(
+            _manifest(desired),
+            project=_project(),
+            gateway_deployer=deployer,
+            prior_state=_prior_state(desired),
+            environment="prod",
+        ).plan(gateway_recovery_actions=(action,))
+
+        assert plan.gateway_changes[0].action == "create"
+        assert plan.ownership_requirements == []
+        assert plan.gateway_recovery_observations[0].observation.exists is False
+        _assert_exact_two_list_gets(request)
+
+
+def test_gateway_recovery_observations_are_hidden_from_plan_identity_and_payload() -> None:
+    observation = ManagedGatewayRuleObservation(
+        binding=_binding(),
+        logical_name="provider_rule",
+        alias_name="orders.provider",
+        exists=False,
+    )
+    recovery_observation = GatewayRecoveryObservation(
+        resource_id=resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "logical_owner",
+        ),
+        observation=observation,
+    )
+    plan = DeploymentPlan(
+        gateway_recovery_observations=(recovery_observation,)
+    )
+
+    assert plan == DeploymentPlan()
+    assert "provider_rule" not in repr(plan)
+    assert deployment_plan_payload(plan) == deployment_plan_payload(DeploymentPlan())
+
+
+@pytest.mark.parametrize(
+    ("actions", "prior_state", "message"),
+    [
+        (
+            (_recovery_action(_rule(), "replace"),),
+            None,
+            "unsupported mutation verb",
+        ),
+        (
+            (
+                OperationAction(
+                    index=0,
+                    resource_id=resource_id(
+                        "payments",
+                        "prod",
+                        "gateway_rule",
+                        "orders_model",
+                    ),
+                    action="create",
+                ),
+            ),
+            None,
+            "exact durable evidence",
+        ),
+        (
+            (_recovery_action(_rule(), "update"),),
+            None,
+            "prior ownership",
+        ),
+        (
+            (_recovery_action(_rule(), "create", environment="staging"),),
+            None,
+            "another resource address",
+        ),
+        (
+            (_recovery_action(_rule(), "create", owner_name="other_owner"),),
+            None,
+            "no exact desired manifest rule",
+        ),
+        (
+            (
+                _recovery_action(_rule(), "create"),
+                _recovery_action(_rule(), "create", index=1),
+            ),
+            None,
+            "duplicate canonical resource",
+        ),
+        (
+            (_recovery_action(_rule(), "delete"),),
+            _prior_state(_rule()),
+            "still present in the manifest",
+        ),
+        (
+            (
+                _recovery_action(
+                    _rule(where="region = 'eu-west'"),
+                    "create",
+                ),
+            ),
+            None,
+            "differs from its exact desired rule",
+        ),
+        (
+            (
+                _recovery_action(
+                    _rule(),
+                    "create",
+                    binding=_binding(
+                        endpoint="https://other-gateway.example.test"
+                    ),
+                ),
+            ),
+            None,
+            "another provider binding",
+        ),
+    ],
+    ids=[
+        "verb",
+        "missing-evidence",
+        "missing-prior-update",
+        "address",
+        "desired-owner",
+        "duplicate-resource",
+        "delete-still-desired",
+        "desired-fingerprint",
+        "backend",
+    ],
+)
+def test_gateway_recovery_preflight_rejects_invalid_targets_without_provider_reads(
+    actions: tuple[OperationAction, ...],
+    prior_state: LocalState | None,
+    message: str,
+) -> None:
+    desired = _rule()
+    with _mocked_gateway() as (deployer, request):
+        with pytest.raises(StateIdentityError, match=message):
+            DeploymentPlanner(
+                _manifest(desired),
+                project=_project(),
+                gateway_deployer=deployer,
+                prior_state=prior_state,
+                environment="prod",
+            ).plan(gateway_recovery_actions=actions)
+
+        request.assert_not_called()
+
+
+@pytest.mark.parametrize("collision", ["rule_name", "alias"])
+def test_removed_gateway_recovery_target_cannot_collide_with_desired_manifest(
+    collision: str,
+) -> None:
+    desired = _rule(
+        name="desired_rule",
+        alias="orders.desired",
+        owner_name="desired_owner",
+    )
+    removed = _rule(
+        name="removed_rule",
+        alias="orders.removed",
+        owner_name="removed_owner",
+    )
+    if collision == "rule_name":
+        removed["name"] = desired["name"]
+    else:
+        removed["virtualTopic"] = desired["virtualTopic"]
+
+    with _mocked_gateway() as (deployer, request):
+        with pytest.raises(StateIdentityError, match="Gateway"):
+            DeploymentPlanner(
+                _manifest(desired),
+                project=_project(),
+                gateway_deployer=deployer,
+                prior_state=_prior_state(removed),
+                environment="prod",
+            ).plan(
+                gateway_recovery_actions=(
+                    _recovery_action(removed, "delete"),
+                )
+            )
+
+        request.assert_not_called()
+
+
+def test_removed_gateway_recovery_alias_rejects_legacy_prior_claim() -> None:
+    removed = _rule(
+        name="removed_rule",
+        alias="orders.shared",
+        owner_name="removed_owner",
+    )
+    target_state = _prior_state(removed)
+    target_record = next(iter(target_state.resources.values()))
+    prior_state = LocalState(
+        project="payments",
+        environment="prod",
+        resources={
+            **target_state.resources,
+            resource_id(
+                "payments",
+                "prod",
+                "gateway_rule",
+                "legacy_owner",
+            ): ManagedResourceRecord(
+                physical_name="orders.shared",
+                ownership="managed",
+                artifact_checksum=target_record.artifact_checksum,
+                backend="conduktor-gateway",
+            ),
+        },
+    )
+
+    with _mocked_gateway() as (deployer, request):
+        with pytest.raises(StateIdentityError, match="claimed by another"):
+            DeploymentPlanner(
+                _manifest(),
+                project=_project(),
+                gateway_deployer=deployer,
+                prior_state=prior_state,
+                environment="prod",
+            ).plan(
+                gateway_recovery_actions=(
+                    _recovery_action(removed, "delete"),
+                )
+            )
+
+        request.assert_not_called()
 
 
 def test_two_rules_share_one_snapshot_and_exact_desired_live_is_noop() -> None:

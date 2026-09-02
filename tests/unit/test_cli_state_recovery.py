@@ -6,11 +6,12 @@ import json
 import stat
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import SecretStr
 
 from streamt.cli import main
 from streamt.cli.commands.state_cmd import (
@@ -18,8 +19,27 @@ from streamt.cli.commands.state_cmd import (
     _RecoveryRuntime,
     _StrictRecoveryKafkaDeployer,
 )
-from streamt.compiler.manifest import ArtifactOwnership, TopicArtifact
+from streamt.compiler.manifest import (
+    ArtifactOwnership,
+    GatewayRuleArtifact,
+    Manifest,
+    TopicArtifact,
+)
 from streamt.core.deployment_state import local_deployment_state_config
+from streamt.core.models import ProjectInfo, StreamtProject
+from streamt.core.runtime import (
+    ConduktorConfig,
+    GatewayConfig,
+    KafkaConfig,
+    RuntimeConfig,
+)
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    GatewayDeployer,
+    ManagedGatewayRuleObservation,
+    ManagedGatewaySnapshot,
+    build_desired_gateway_rule,
+)
 from streamt.deployer.kafka import KafkaDeployer, TopicState
 from streamt.deployer.recovery import (
     RecoveryResolution,
@@ -38,10 +58,16 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ControlObservation,
     DeploymentStateService,
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
     OperationAction,
+    OperationControlState,
     OperationIntent,
     OperationProgress,
+    OperationSnapshot,
+    StateAddress,
     StateBackendConflictError,
     StateBackendInvalidStateError,
     StateBackendLockLostError,
@@ -50,6 +76,9 @@ from streamt.deployer.state_backend import (
     StateBackendReleaseAfterCommitError,
     StateBackendUnavailableError,
     StateBackendUnknownCommitError,
+    StateObservation,
+    StateRevision,
+    StateStoreIdentity,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -60,6 +89,13 @@ BLOCKED_OPERATION_ID = "00000000-0000-4000-8000-000000000201"
 TARGET_FINGERPRINT = "sha256:" + "c" * 64
 ENVIRONMENT_FINGERPRINT = "sha256:" + "a" * 64
 MANIFEST_CHECKSUM = "sha256:" + "b" * 64
+GATEWAY_ENDPOINT = "https://gateway.example.test/admin"
+GATEWAY_VCLUSTER = "recovery-vcluster"
+GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
+    GATEWAY_ENDPOINT,
+    virtual_cluster=GATEWAY_VCLUSTER,
+)
+GATEWAY_CONFIG_SECRET = "gateway-config-secret-9281"
 
 
 def _write_project(path: Path) -> None:
@@ -81,6 +117,204 @@ def _json(result: object) -> dict[str, object]:
 
 def _target_id() -> str:
     return resource_id("recovery-test", "default", "topic", "orders")
+
+
+def _gateway_project(
+    *,
+    endpoint: str = GATEWAY_ENDPOINT,
+) -> StreamtProject:
+    return StreamtProject(
+        project=ProjectInfo(name="recovery-test"),
+        runtime=RuntimeConfig(
+            kafka=KafkaConfig(bootstrap_servers="broker.invalid:9092"),
+            conduktor=ConduktorConfig(
+                gateway=GatewayConfig(
+                    admin_url=endpoint,
+                    password=SecretStr(GATEWAY_CONFIG_SECRET),
+                    virtual_cluster=GATEWAY_VCLUSTER,
+                )
+            ),
+        ),
+    )
+
+
+def _gateway_rule(
+    *,
+    rule_name: str = "orders_rule",
+    alias_name: str = "orders.public",
+    physical_name: str = "orders.v1",
+    owner_name: str = "orders_owner",
+    where: str | None = None,
+) -> GatewayRuleArtifact:
+    interceptors: list[dict[str, object]] = []
+    if where is not None:
+        interceptors.append({"type": "filter", "config": {"where": where}})
+    return GatewayRuleArtifact(
+        name=rule_name,
+        virtual_topic=alias_name,
+        physical_topic=physical_name,
+        interceptors=interceptors,
+        ownership=ArtifactOwnership(
+            project="recovery-test",
+            owner_type="model",
+            owner_name=owner_name,
+            mode="managed",
+        ),
+    )
+
+
+def _absent_gateway(
+    present: ManagedGatewayRuleObservation,
+) -> ManagedGatewayRuleObservation:
+    return ManagedGatewayRuleObservation(
+        binding=present.binding,
+        logical_name=present.logical_name,
+        alias_name=present.alias_name,
+        exists=False,
+    )
+
+
+def _gateway_operation_action(
+    *,
+    index: int,
+    owner_name: str,
+    action: str,
+    current: ManagedGatewayRuleObservation,
+    desired: ManagedGatewayRuleObservation,
+) -> OperationAction:
+    return OperationAction(
+        index=index,
+        resource_id=resource_id(
+            "recovery-test",
+            "default",
+            "gateway_rule",
+            owner_name,
+        ),
+        action=action,
+        gateway_evidence=GatewayActionEvidence(
+            version=1,
+            backend_identity=current.binding.backend_identity,
+            rule_name=current.logical_name,
+            alias_name=current.alias_name,
+            current=GatewayActionSurfaceEvidence(
+                exists=current.exists,
+                fingerprint=current.fingerprint,
+                managed_interceptor_count=len(current.interceptors),
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=desired.exists,
+                fingerprint=desired.fingerprint,
+                managed_interceptor_count=len(desired.interceptors),
+            ),
+        ),
+    )
+
+
+def _gateway_recovery_snapshot(
+    state: LocalState,
+    actions: tuple[OperationAction, ...],
+    *,
+    address: StateAddress | None = None,
+    control_version: int = 2,
+) -> RecoverySnapshotEvidence:
+    effective_address = address or StateAddress(
+        namespace="default",
+        project="recovery-test",
+        environment="default",
+    )
+    intent = OperationIntent(
+        operation_id=BLOCKED_OPERATION_ID,
+        kind="apply",
+        started_at="2026-09-02T12:00:00Z",
+        actor="prior-runner",
+        prior_state_serial=state.serial,
+        prior_state_checksum=state_checksum(state),
+        reviewed_plan_checksum=None,
+        actions=actions,
+    )
+    control = OperationControlState(
+        address=effective_address,
+        status="in_progress",
+        intent=intent,
+        control_version=control_version,
+    )
+    return RecoverySnapshotEvidence.from_operation_snapshot(
+        OperationSnapshot(
+            state=StateObservation(
+                store=StateStoreIdentity(
+                    backend="local",
+                    store_id="00000000-0000-4000-8000-000000000202",
+                ),
+                address=effective_address,
+                state=state,
+                revision=StateRevision("state-revision"),
+            ),
+            control=ControlObservation(
+                control=control,
+                revision=StateRevision("control-revision"),
+            ),
+        )
+    )
+
+
+def _gateway_prior_record(
+    artifact: GatewayRuleArtifact,
+    *,
+    binding: GatewayBackendBinding = GATEWAY_BINDING,
+) -> ManagedResourceRecord:
+    return ManagedResourceRecord(
+        physical_name=artifact.virtual_topic,
+        ownership="managed",
+        artifact_checksum=artifact_checksum(artifact.to_dict()),
+        backend=binding.backend_identity,
+    )
+
+
+def _observe_gateway_runtime(
+    *,
+    manifest: Manifest,
+    snapshot: RecoverySnapshotEvidence,
+    observations: dict[tuple[str, str], ManagedGatewayRuleObservation],
+    project: StreamtProject | None = None,
+    resolution: RecoveryResolution = "observed",
+) -> tuple[RecoveryLiveObservation, MagicMock, MagicMock]:
+    effective_project = project or _gateway_project()
+    conduktor = effective_project.runtime.conduktor
+    assert conduktor is not None
+    gateway_config = conduktor.gateway
+    assert gateway_config is not None
+    assert gateway_config.admin_url is not None
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = GatewayBackendBinding.from_endpoint(
+        gateway_config.admin_url,
+        virtual_cluster=GATEWAY_VCLUSTER,
+    )
+    provider_snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    provider_snapshot.binding = gateway.cluster_binding
+    provider_snapshot.rule.side_effect = lambda rule_name, alias_name: observations[
+        (rule_name, alias_name)
+    ]
+    gateway.observe_managed_gateway_snapshot.return_value = provider_snapshot
+    kafka = MagicMock(spec=KafkaDeployer)
+    runtime = _RecoveryRuntime(Path("/not-read"), None)
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(effective_project, manifest, "default"),
+        ),
+        patch("streamt.cli.helpers.make_sr_deployer", return_value=None),
+        patch("streamt.cli.helpers.make_kafka_deployer", return_value=kafka),
+        patch("streamt.cli.helpers.make_flink_deployer", return_value=None),
+        patch("streamt.cli.helpers.make_connect_deployer", return_value=None),
+        patch("streamt.cli.helpers.make_gateway_deployer", return_value=gateway),
+    ):
+        result = runtime.observe_recovery_targets(
+            resolution=resolution,
+            snapshot=snapshot,
+        )
+    return result, gateway, provider_snapshot
 
 
 def _block_local_operation(path: Path, *, with_progress: bool) -> OperationAction:
@@ -501,6 +735,10 @@ def test_abandoned_planning_never_constructs_live_deployers(
             "streamt.cli.helpers.make_sr_deployer",
             side_effect=AssertionError("Schema Registry deployer constructed"),
         ),
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            side_effect=AssertionError("Gateway deployer constructed"),
+        ),
     ):
         result = CliRunner().invoke(
             main,
@@ -519,6 +757,315 @@ def test_abandoned_planning_never_constructs_live_deployers(
         )
 
     assert result.exit_code == 0, result.output
+
+
+def test_recovery_runtime_observes_removed_gateway_delete_without_manifest_rule() -> None:
+    removed = _gateway_rule()
+    present = build_desired_gateway_rule(removed, GATEWAY_BINDING)
+    absent = _absent_gateway(present)
+    target_id = resource_id(
+        "recovery-test",
+        "default",
+        "gateway_rule",
+        "orders_owner",
+    )
+    prior = LocalState(
+        project="recovery-test",
+        environment="default",
+        serial=7,
+        resources={target_id: _gateway_prior_record(removed)},
+    )
+    action = _gateway_operation_action(
+        index=0,
+        owner_name="orders_owner",
+        action="delete",
+        current=present,
+        desired=absent,
+    )
+
+    observed, gateway, provider_snapshot = _observe_gateway_runtime(
+        manifest=Manifest(version="1", project_name="recovery-test"),
+        snapshot=_gateway_recovery_snapshot(prior, (action,)),
+        observations={("orders_rule", "orders.public"): absent},
+    )
+
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    provider_snapshot.rule.assert_called_once_with("orders_rule", "orders.public")
+    assert observed.targets[0].presence == "absent"
+    assert observed.targets[0].accepted_as == "candidate"
+    assert observed.candidate_state is not None
+    assert target_id not in observed.candidate_state.resources
+
+
+def test_recovery_runtime_uses_one_gateway_snapshot_for_desired_and_removed_rules() -> None:
+    old_orders = _gateway_rule(physical_name="orders.v0")
+    new_orders = _gateway_rule(
+        physical_name="orders.v1",
+        where=f"tenant_token = '{GATEWAY_CONFIG_SECRET}'",
+    )
+    removed_payments = _gateway_rule(
+        rule_name="payments_rule",
+        alias_name="payments.public",
+        physical_name="payments.v1",
+        owner_name="payments_owner",
+    )
+    old_orders_live = build_desired_gateway_rule(old_orders, GATEWAY_BINDING)
+    new_orders_live = build_desired_gateway_rule(new_orders, GATEWAY_BINDING)
+    payments_live = build_desired_gateway_rule(removed_payments, GATEWAY_BINDING)
+    payments_absent = _absent_gateway(payments_live)
+    orders_id = resource_id(
+        "recovery-test",
+        "default",
+        "gateway_rule",
+        "orders_owner",
+    )
+    payments_id = resource_id(
+        "recovery-test",
+        "default",
+        "gateway_rule",
+        "payments_owner",
+    )
+    prior = LocalState(
+        project="recovery-test",
+        environment="default",
+        serial=11,
+        resources={
+            orders_id: _gateway_prior_record(old_orders),
+            payments_id: _gateway_prior_record(removed_payments),
+        },
+    )
+    actions = (
+        _gateway_operation_action(
+            index=0,
+            owner_name="orders_owner",
+            action="update",
+            current=old_orders_live,
+            desired=new_orders_live,
+        ),
+        _gateway_operation_action(
+            index=1,
+            owner_name="payments_owner",
+            action="delete",
+            current=payments_live,
+            desired=payments_absent,
+        ),
+    )
+
+    observed, gateway, provider_snapshot = _observe_gateway_runtime(
+        manifest=Manifest(
+            version="1",
+            project_name="recovery-test",
+            artifacts={"gateway_rules": [new_orders.to_dict()]},
+        ),
+        snapshot=_gateway_recovery_snapshot(prior, actions),
+        observations={
+            ("orders_rule", "orders.public"): new_orders_live,
+            ("payments_rule", "payments.public"): payments_absent,
+        },
+    )
+
+    gateway.observe_managed_gateway_snapshot.assert_called_once_with()
+    provider_snapshot.rule.assert_has_calls(
+        [
+            call("orders_rule", "orders.public"),
+            call("payments_rule", "payments.public"),
+        ]
+    )
+    assert [target.accepted_as for target in observed.targets] == [
+        "candidate",
+        "candidate",
+    ]
+    assert observed.candidate_state is not None
+    assert set(observed.candidate_state.resources) == {orders_id}
+    assert GATEWAY_CONFIG_SECRET not in repr(observed)
+
+
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_recovery_runtime_rejects_legacy_gateway_before_deployer_construction(
+    resolution: RecoveryResolution,
+) -> None:
+    state = LocalState(project="recovery-test", environment="default")
+    legacy_action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            "recovery-test",
+            "default",
+            "gateway_rule",
+            "orders_owner",
+        ),
+        action="delete",
+    )
+    snapshot = _gateway_recovery_snapshot(
+        state,
+        (legacy_action,),
+        control_version=1,
+    )
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _gateway_project(),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            side_effect=AssertionError("Gateway deployer constructed"),
+        ) as make_gateway,
+        pytest.raises(ValueError, match="Gateway"),
+    ):
+        _RecoveryRuntime(Path("/not-read"), None).observe_recovery_targets(
+            resolution=resolution,
+            snapshot=snapshot,
+        )
+
+    make_gateway.assert_not_called()
+
+
+def test_recovery_runtime_rejects_gateway_backend_evidence_before_live_reads() -> None:
+    artifact = _gateway_rule()
+    present = build_desired_gateway_rule(artifact, GATEWAY_BINDING)
+    other_binding = GatewayBackendBinding.from_endpoint(
+        "https://other-gateway.example.test/admin",
+        virtual_cluster=GATEWAY_VCLUSTER,
+    )
+    other_present = build_desired_gateway_rule(artifact, other_binding)
+    action = _gateway_operation_action(
+        index=0,
+        owner_name="orders_owner",
+        action="delete",
+        current=other_present,
+        desired=_absent_gateway(other_present),
+    )
+    target_id = action.resource_id
+    prior = LocalState(
+        project="recovery-test",
+        environment="default",
+        resources={target_id: _gateway_prior_record(artifact)},
+    )
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = GATEWAY_BINDING
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _gateway_project(),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            return_value=gateway,
+        ) as make_gateway,
+        pytest.raises(ValueError) as failure,
+    ):
+        _RecoveryRuntime(Path("/not-read"), None).observe_recovery_targets(
+            resolution="observed",
+            snapshot=_gateway_recovery_snapshot(prior, (action,)),
+        )
+
+    make_gateway.assert_called_once()
+    gateway.observe_managed_gateway_snapshot.assert_not_called()
+    error = str(failure.value)
+    assert GATEWAY_ENDPOINT not in error
+    assert GATEWAY_CONFIG_SECRET not in error
+    assert present.physical_name is not None
+    assert present.physical_name not in error
+
+
+def test_recovery_runtime_rejects_gateway_alias_evidence_without_leaking_config() -> None:
+    prior_artifact = _gateway_rule()
+    evidence_artifact = _gateway_rule(
+        alias_name="other.public",
+        where=f"token = '{GATEWAY_CONFIG_SECRET}'",
+    )
+    evidence_present = build_desired_gateway_rule(evidence_artifact, GATEWAY_BINDING)
+    action = _gateway_operation_action(
+        index=0,
+        owner_name="orders_owner",
+        action="delete",
+        current=evidence_present,
+        desired=_absent_gateway(evidence_present),
+    )
+    prior = LocalState(
+        project="recovery-test",
+        environment="default",
+        resources={action.resource_id: _gateway_prior_record(prior_artifact)},
+    )
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = GATEWAY_BINDING
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _gateway_project(),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            return_value=gateway,
+        ) as make_gateway,
+        pytest.raises(ValueError) as failure,
+    ):
+        _RecoveryRuntime(Path("/not-read"), None).observe_recovery_targets(
+            resolution="observed",
+            snapshot=_gateway_recovery_snapshot(prior, (action,)),
+        )
+
+    make_gateway.assert_called_once()
+    gateway.observe_managed_gateway_snapshot.assert_not_called()
+    error = str(failure.value)
+    assert GATEWAY_ENDPOINT not in error
+    assert GATEWAY_CONFIG_SECRET not in error
+    assert evidence_present.physical_name is not None
+    assert evidence_present.physical_name not in error
+
+
+def test_recovery_runtime_rejects_changed_state_address_before_live_reads() -> None:
+    other_state = LocalState(project="other-project", environment="default")
+    other_address = StateAddress(
+        namespace="default",
+        project="other-project",
+        environment="default",
+    )
+    snapshot = _gateway_recovery_snapshot(
+        other_state,
+        (),
+        address=other_address,
+    )
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _gateway_project(),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            side_effect=AssertionError("Gateway deployer constructed"),
+        ) as make_gateway,
+        pytest.raises(ValueError, match="identity changed"),
+    ):
+        _RecoveryRuntime(Path("/not-read"), None).observe_recovery_targets(
+            resolution="observed",
+            snapshot=snapshot,
+        )
+
+    make_gateway.assert_not_called()
 
 
 def test_recovery_runtime_forces_strict_topic_config_and_replans_action() -> None:

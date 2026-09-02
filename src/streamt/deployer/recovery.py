@@ -152,6 +152,22 @@ class RecoveryTargetEvidence:
                 "recovery target accepted_as must be 'prior' or 'candidate'"
             )
         _require_checksum(self.fingerprint, "recovery target fingerprint")
+        gateway_evidence = self.action.gateway_evidence
+        if gateway_evidence is not None:
+            accepted_surface = (
+                gateway_evidence.current
+                if self.accepted_as == "prior"
+                else gateway_evidence.desired
+            )
+            expected_presence = "present" if accepted_surface.exists else "absent"
+            if self.presence != expected_presence:
+                raise StateFormatError(
+                    "Gateway recovery target presence does not match accepted action evidence"
+                )
+            if self.fingerprint != accepted_surface.fingerprint:
+                raise StateFormatError(
+                    "Gateway recovery target fingerprint does not match accepted action evidence"
+                )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -207,6 +223,13 @@ class RecoverySnapshotEvidence:
             raise StateFormatError("recovery evidence requires an active operation control")
         if state_checksum(self.state) != self.state_checksum:
             raise StateFormatError("recovery state checksum does not match state content")
+        if (
+            self.control.intent.prior_state_serial != self.state.serial
+            or self.control.intent.prior_state_checksum != self.state_checksum
+        ):
+            raise StateFormatError(
+                "blocked operation intent does not match recovery prior state"
+            )
         if control_checksum(self.control) != self.control_checksum:
             raise StateFormatError("recovery control checksum does not match control content")
         _reject_unsafe_text(self.state.to_dict(), label="recovery state")
