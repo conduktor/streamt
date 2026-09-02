@@ -177,6 +177,55 @@ class TestProjectValidator:
             assert not result.is_valid
             assert any("CONTINUOUS_TEST_REQUIRES_FLINK" in e.code for e in result.errors)
 
+    def test_default_dlq_action_does_not_require_a_model(self):
+        """The supported ``dlq: true`` shorthand has no model reference to validate."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "sources": [{"name": "payments_raw", "topic": "t1"}],
+                "tests": [
+                    {
+                        "name": "quality_test",
+                        "model": "payments_raw",
+                        "type": "sample",
+                        "assertions": [],
+                        "on_failure": {"actions": [{"dlq": True}]},
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+
+            result = ProjectValidator(project).validate()
+
+            assert not any(error.code == "DLQ_MODEL_NOT_FOUND" for error in result.errors)
+
+    def test_dlq_action_with_unknown_model_is_rejected(self):
+        """Explicit DLQ model references retain their existing validation error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "sources": [{"name": "payments_raw", "topic": "t1"}],
+                "tests": [
+                    {
+                        "name": "quality_test",
+                        "model": "payments_raw",
+                        "type": "sample",
+                        "assertions": [],
+                        "on_failure": {"actions": [{"dlq": {"model": "missing_dlq"}}]},
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+
+            result = ProjectValidator(project).validate()
+
+            errors = [error for error in result.errors if error.code == "DLQ_MODEL_NOT_FOUND"]
+            assert [error.message for error in errors] == [
+                "DLQ model 'missing_dlq' not found in test 'quality_test'"
+            ]
+
     def test_jinja_syntax_error(self):
         """TC-ERR-009: Invalid Jinja syntax should be detected."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -923,6 +972,28 @@ class TestGovernanceRules:
             validator = ProjectValidator(project)
             result = validator.validate()
             assert not any("RULE_MAX_RETENTION" in e.code for e in result.errors)
+
+    def test_max_retention_ignores_non_finite_numeric_value(self):
+        """A non-finite config value cannot crash governance validation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "project": {"name": "test"},
+                "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+                "rules": {"topics": {"max_retention_ms": 1000}},
+                "sources": [{"name": "src", "topic": "t1"}],
+                "models": [
+                    {
+                        "name": "m1",
+                        "topic": {"config": {"retention.ms": float("inf")}},
+                        "sql": 'SELECT * FROM {{ source("src") }}',
+                    }
+                ],
+            }
+            project = self._create_project(tmpdir, config)
+
+            result = ProjectValidator(project).validate()
+
+            assert not any(error.code == "RULE_MAX_RETENTION" for error in result.errors)
 
     def test_no_rules_section_no_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, SupportsIndex, SupportsInt
 
 from streamt.core import errors
 from streamt.core.models import (
@@ -385,8 +385,9 @@ class ProjectValidator:
                 )
 
         # Validate state_ttl_ms
-        if model.get_flink_config() and model.get_flink_config().state_ttl_ms is not None:
-            ttl = model.get_flink_config().state_ttl_ms
+        flink_config = model.get_flink_config()
+        if flink_config is not None and flink_config.state_ttl_ms is not None:
+            ttl = flink_config.state_ttl_ms
             if ttl <= 0:
                 self.result.add_error(
                     "INVALID_STATE_TTL",
@@ -405,9 +406,10 @@ class ProjectValidator:
             # Validate Jinja syntax
             is_valid, error = self.parser.validate_jinja_sql(model.sql)
             if not is_valid:
+                error_message = error if error is not None else "Unknown Jinja syntax error"
                 self.result.add_error(
                     "JINJA_SYNTAX_ERROR",
-                    errors.jinja_syntax_error(model.name, error, model.sql),
+                    errors.jinja_syntax_error(model.name, error_message, model.sql),
                 )
                 return
 
@@ -517,8 +519,11 @@ class ProjectValidator:
             if test.on_failure:
                 for action in test.on_failure.actions:
                     if "dlq" in action:
-                        dlq_model = action["dlq"].get("model")
-                        if dlq_model and dlq_model not in self.model_names:
+                        dlq_config = action["dlq"]
+                        dlq_model = (
+                            dlq_config.get("model") if isinstance(dlq_config, dict) else None
+                        )
+                        if isinstance(dlq_model, str) and dlq_model not in self.model_names:
                             self.result.add_error(
                                 "DLQ_MODEL_NOT_FOUND",
                                 f"DLQ model '{dlq_model}' not found in test '{test.name}'",
@@ -655,10 +660,10 @@ class ProjectValidator:
             from streamt.compiler.type_inference import TypeInferenceMixin
 
             class _Helper(TypeInferenceMixin):
-                def __init__(self, project: object) -> None:
-                    self.project = project  # type: ignore[assignment]
+                def __init__(self, project: StreamtProject) -> None:
+                    self.project = project
                     self._udf_types = {
-                        udf.name.upper(): udf.return_type for udf in getattr(project, "udfs", [])
+                        udf.name.upper(): udf.return_type for udf in project.udfs
                     }
 
             helper: Optional[_Helper] = _Helper(self.project)
@@ -674,7 +679,7 @@ class ProjectValidator:
             inferred: list[tuple[str, str]] = []
             if helper:
                 try:
-                    inferred = helper._extract_select_columns_with_types(  # type: ignore[attr-defined]
+                    inferred = helper._extract_select_columns_with_types(
                         model.sql, schema_context={}, model=None
                     )
                 except Exception:
@@ -830,7 +835,9 @@ class ProjectValidator:
             )
         if rules.max_retention_ms is not None and tc:
             retention = tc.config.get("retention.ms") if tc.config else None
-            if retention is not None:
+            if isinstance(
+                retention, (str, bytes, bytearray, SupportsInt, SupportsIndex)
+            ):
                 try:
                     retention_val = int(retention)
                     if retention_val > rules.max_retention_ms and retention_val != -1:
@@ -839,7 +846,7 @@ class ProjectValidator:
                             f"Model '{model.name}' topic retention {retention_val}ms exceeds "
                             f"max allowed {rules.max_retention_ms}ms",
                         )
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
         topic_name = tc.name if tc and tc.name else model.name
         if rules.naming_pattern and not re.match(rules.naming_pattern, topic_name):
