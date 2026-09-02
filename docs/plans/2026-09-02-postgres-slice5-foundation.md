@@ -4,14 +4,28 @@
 
 Implement PostgreSQL ordinary deployment state without making an incomplete
 backend selectable. This plan is the implementation-ready prerequisite for
-Slices 5 and 6 of `2026-09-01-remote-state-and-locking.md`; it does not describe
-functionality that has already shipped.
+Slices 5 and 6 of `2026-09-01-remote-state-and-locking.md`. It records both the
+foundation already delivered and the remaining production gates.
 
 The ordinary PostgreSQL factory remains disabled until the final enablement
 commit. Before that commit, the backend is reachable only from focused tests
 and explicit administrative commands. The final commit is allowed only after
 the protocol, command integration, failure injection, minimum recovery
 workflow, schema/role contract, and full release gates below pass together.
+
+## Delivery status (2026-09-02)
+
+Packages 1 through 5 are implemented and green in CI, including PostgreSQL 14
+and 18 conformance. The delivered foundation includes canonical planned-action
+identity, snapshot-bound local apply/adopt, stable failure taxonomy and
+operation-ID recovery evidence, and a direct-construction-only PostgreSQL v1
+owner backend covering consistent reads, session locks, atomic mutation,
+histories, commit ambiguity, and crash recovery evidence.
+
+Package 6 is in progress. Packages 7 through 9 remain prohibited until schema
+v2, exact writer-role execution, command failure injection, minimum recovery,
+and final release gates pass. Ordinary PostgreSQL factory selection remains
+disabled.
 
 ## Dependencies and preserved boundaries
 
@@ -242,9 +256,13 @@ as mutation-ready.
 
 Before production enablement, add an explicit version-1-to-version-2
 administrative migration with fresh verification and unknown-outcome handling.
-Version 2 identifies the ordinary writer role in store metadata and validates
-the exact non-grantable ACL below. streamt does not create the role, infer it
-from the login, or silently broaden grants.
+Version 2 stores the canonical ordinary writer role name in metadata and
+validates the exact non-grantable ACL below. It never stores the cluster-local
+role OID, which would break logical restore portability. streamt does not
+create, alter, or drop the role, infer it from the login, or silently broaden
+grants. The explicit migration transaction resets that pre-created role's ACL
+on the state schema, issues the exact grants, and validates the result; writer
+DML cannot be pre-granted while the source remains a valid v1 catalog.
 
 | Object | Ordinary writer grants | Explicitly forbidden |
 | --- | --- | --- |
@@ -262,17 +280,40 @@ or schema-migration authority. Status-reader grants remain the version-1
 read-only set. Catalog validation rejects missing, extra, grantable, owner, or
 `PUBLIC` privileges.
 
+The writer role must be a direct `LOGIN` identity distinct from the common
+owner, with no superuser, database creation, role creation, replication,
+bypass-RLS, inheritance, or membership authority. Ordinary sessions must later
+prove `session_user = current_user = writer_role_name`; `SET ROLE` is not a
+substitute. Writer grants use the common owner as grantor. Other named readers
+retain the exact non-grantable v1 `USAGE`/`SELECT` contract.
+
+Migration takes the schema initialization lock, then every registered address
+lock in deterministic order under one bounded deadline. After all locks are
+held it rereads exact v1, requires every control row to be clear, and preserves
+populated current state and both histories unchanged. Catalog DDL, metadata,
+ledger, and grants commit in one serializable transaction and receive a fresh
+direct-primary verification. Address locks are released in reverse order
+before the schema lock. Active/recovery controls, a busy address, partial v2,
+writer mismatch, or ACL drift fail closed; there is no implicit repair,
+downgrade, or automatic migration.
+
+After migration, administrative status, lock diagnostics, and owner-only
+address registration must dispatch between exact v1 and exact v2 without an
+external writer setting because v2 already stores the role name. Exact v2 may
+report the catalog as mutation-ready, but `ordinary_state_authority` remains
+disabled until the final factory commit. New stores still initialize as v1.
+
 The schema-version-2 implementation adds a strict optional
 `postgres.writer_role_env` configuration field naming the environment variable
 that contains the ordinary role identifier. It remains unnecessary for shipped
 version-1 `state init`, `state status`, and `state lock-status`, but is required
 by the version-2 migration and every ordinary factory construction. The
 migration requires an exact writer-role confirmation before connecting, stores
-the resolved role identity in catalog metadata, and freshly verifies its ACL.
-An ordinary session must prove that `current_user` is that exact role; role
-membership or equivalent effective privileges are not a substitute. The role
-value, database login, and catalog role identifiers remain excluded from normal
-text/JSON output and reviewed plans. Add the field to generated configuration
+the resolved role name in catalog metadata, and freshly verifies its ACL. An
+ordinary session must prove that `session_user` and `current_user` are that
+exact role; role membership or equivalent effective privileges are not a
+substitute. The role value, database login, and catalog role identifiers remain
+excluded from normal text/JSON output and reviewed plans. Add the field to generated configuration
 schema/reference material and strict unknown-field/environment-resolution tests
 only when the implementation lands.
 

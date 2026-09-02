@@ -482,10 +482,17 @@ must never be reported as production mutation-ready.
 Before the ordinary factory is enabled, streamt must ship an explicit
 version-1-to-version-2 administrative migration. It must use the same bounded,
 confirmed, validate-before-commit, fresh-read-back, and unknown-outcome rules as
-initialization. Version 2 records the configured ordinary writer-role identity
-in immutable catalog metadata and validates its exact non-grantable ACL. It
+initialization. Version 2 records the configured ordinary writer-role name in
+immutable catalog metadata and validates its exact non-grantable ACL. It
 does not create the role, infer authority from the current login, silently
 upgrade on `plan`/`apply`/`adopt`, or weaken version-1 validation.
+
+The role name is the portable logical identity; a cluster-local `pg_roles.oid`
+must not be persisted in user metadata because logical restore does not remap
+it. The administrative migration requires an externally pre-created, exactly
+confirmed safe role, then transactionally resets that role's state-schema ACL
+and installs the exact grants itself. External writer DML pre-grants are not a
+valid source state because version 1 rejects them.
 
 The version-2 ordinary writer ACL is exact:
 
@@ -505,15 +512,32 @@ history rewrite, or schema-migration authority. Catalog validation rejects a
 missing, extra, grantable, owner, or `PUBLIC` privilege. Production conformance
 tests run through this least-privilege role, not the private owner identity.
 
+The writer is a direct login distinct from the common owner and has
+`NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOREPLICATION`, `NOBYPASSRLS`,
+`NOINHERIT`, and no membership edge in either direction. Its writer ACL grantor
+is the common owner. An ordinary writer connection proves both `session_user`
+and `current_user` equal the stored name. Existing named status readers remain
+limited to direct non-grantable `USAGE` and `SELECT`.
+
+Migration holds the schema initialization lock and every registered address
+session lock before starting its serializable write transaction. It validates
+all addresses, requires every operation control to be clear, and preserves
+populated ownership and history rows. DDL, metadata, ledger, and ACL changes
+commit atomically and are freshly verified. Post-v2 status, lock diagnostics,
+and owner-only address registration validate exact v2 without requiring the
+writer environment variable. Mutation readiness is reported separately from
+ordinary factory authority, which remains disabled until the final gate.
+
 The version-2 implementation extends the strict PostgreSQL shape with optional
 `writer_role_env`, the name of an environment variable containing the ordinary
 role identifier. Shipped version-1 administrative commands do not require it;
 the version-2 migration and ordinary factory do. Migration requires an exact
-writer-role confirmation before construction, stores the resolved identity in
+writer-role confirmation before construction, stores the resolved name in
 catalog metadata, and freshly verifies its ACL. An ordinary session must prove
-that `current_user` is that exact role; membership or equivalent effective
-privileges are insufficient. The resolved role and database login remain
-excluded from reviewed plans and ordinary text/structured output.
+that `session_user` and `current_user` are that exact role; membership or
+equivalent effective privileges are insufficient. The resolved role and
+database login remain excluded from reviewed plans and ordinary
+text/structured output.
 
 All three administrative paths set transaction-local `search_path` to
 `pg_catalog`. All state-object identifiers are validated and schema-qualified.
