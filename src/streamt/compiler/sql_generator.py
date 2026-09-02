@@ -227,7 +227,14 @@ WHERE {condition}""")
 
     def _model_topic_name(self, model: Model) -> str:
         """Return the configured output topic name or the model name fallback."""
-        if model.get_materialized() == MaterializedType.VIRTUAL_TOPIC:
+        is_declared_virtual_topic = (
+            model.materialized == MaterializedType.VIRTUAL_TOPIC
+            or (
+                model.gateway is not None
+                and model.gateway.virtual_topic is not None
+            )
+        )
+        if is_declared_virtual_topic:
             return model.get_virtual_topic_name()
         topic_config = model.get_topic_config()
         return topic_config.name if topic_config and topic_config.name else model.name
