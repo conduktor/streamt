@@ -124,10 +124,11 @@ lifecycle:
         interceptors: []
 ```
 
-`prior_artifact` deliberately uses the existing compiled-artifact field names
-so it can be copied from `generated/manifest.json`. It does not accept an
-`ownership` field. The compiler constructs ownership from the current project
-and `logical_owner`.
+`prior_artifact` deliberately uses the existing compiled-artifact field names.
+Its `name`, `virtualTopic`, `physicalTopic`, and `interceptors` fields can be
+copied from `generated/manifest.json`; the enclosing `ownership` field must not
+be copied and is rejected. The compiler constructs ownership from the current
+project and `logical_owner`.
 
 ### Typed schema
 
@@ -277,9 +278,13 @@ ResolvedGatewayRuleRemoval
   alias_name
 ```
 
-Preflight runs after parsing, compilation, environment resolution, and the
-authoritative state read, but before `make_gateway_deployer` or any provider
-call. It performs these steps in durable declaration order:
+Preflight runs after parsing, compilation, environment resolution, and an
+authoritative state/control read, but before `make_gateway_deployer` or any
+provider call. A live `streamt plan` containing a removal holds the state
+operation lock from that read through pure preflight, live provider planning,
+and atomic reviewed-plan save. This closes the control-marker race without
+turning the read-only plan into a state mutation. It performs these steps in
+durable declaration order:
 
 1. Strictly parse every desired Gateway rule and removal `priorArtifact`.
 2. Reconstruct managed ownership from project and `logical_owner`.
@@ -318,7 +323,9 @@ Online planning resolves the union of desired rules and explicit removals:
    - call `plan_managed_gateway_rule_deletion(current)`; and
    - bind the delete change to the tombstone's canonical `resource_id`.
 7. For each removal without prior ownership:
-   - absent current is an already-satisfied no-op;
+   - absent current is an already-satisfied no-op recorded as a separate
+     secret-neutral `GatewayRemovalAssessment`, never as an absent-to-absent
+     `GatewayRuleChange`;
    - present current produces a blocking `requires_adoption` ownership
      requirement and no action.
 8. Compute safety blockers and reviewed action evidence before returning.
@@ -329,7 +336,10 @@ they do not convert the two endpoints into a transaction.
 
 Offline planning may validate tombstone syntax and collisions, but it emits no
 delete action. It reports a deterministic blocker stating that a live complete
-Gateway aggregate and authoritative online state are required.
+Gateway aggregate and authoritative online state are required. Removal
+assessments live on `DeploymentPlan` separately from normalized mutation
+changes so blocker refresh and risk classification cannot accidentally erase
+or reinterpret them.
 
 ## Reviewed-plan version 4
 
@@ -389,8 +399,10 @@ streamt apply --project-dir . --env prod \
 
 Lifecycle removals require an online reviewed plan regardless of environment
 defaults. Existing environment confirmation and remote-state policies still
-apply. `--force` or an explicit environment destructive policy is also
-required; the reviewed plan does not itself waive destructive authorization.
+apply. When the fresh plan contains an actual delete, `--force` or an explicit
+environment destructive policy is also required; a satisfied no-op tombstone
+does not require destructive authorization. The reviewed plan never waives
+authorization for a real delete.
 
 The following fail before provider access:
 
@@ -618,7 +630,8 @@ The feature remains hidden or explicitly experimental until all of these hold:
    support.
 2. Every identity, state, legacy, checksum, collision, and partial-selection
    failure occurs before provider access.
-3. Mixed desired/removal planning proves exactly one two-list snapshot.
+3. Mixed desired/removal planning proves exactly one two-list snapshot, while
+   satisfied no-ops and drift use a distinct immutable removal assessment.
 4. Reviewed-plan version 4 binds and revalidates exact ordered action evidence.
 5. Direct, targeted, selected, offline, stale, and unowned deletion attempts
    are blocked.
