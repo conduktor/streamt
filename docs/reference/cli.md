@@ -482,14 +482,14 @@ streamt apply
 # Deploy to specific environment
 streamt apply --env dev
 
-# Deploy to protected environment (CI/CD)
-streamt apply --env prod --confirm
+# Create the required reviewed plan for a protected environment
+streamt plan --env prod --out prod.plan.json
 
-# Non-interactive confirm with name verification (agents/CI)
-streamt apply --env prod --confirm-env prod
+# After review, verify and apply that exact plan in CI/CD
+streamt apply --env prod --plan prod.plan.json --confirm-env prod
 
-# Override destructive safety (use with caution)
-streamt apply --env prod --confirm --force
+# Override destructive policy after review (unsupported migrations remain blocked)
+streamt apply --env prod --plan prod.plan.json --confirm-env prod --force
 
 # Deploy specific model
 streamt apply --target order_metrics
@@ -517,7 +517,17 @@ remote state backend with locking, which is not yet supported. Failed and
 rolled-back applies do not advance state.
 
 !!! warning "Protected Environments"
-    When deploying to a protected environment, you must confirm interactively (by typing the environment name), use `--confirm`, or use `--confirm-env ENV` (which also verifies the environment name matches). If destructive operations are blocked (`allow_destructive: false`), use `--force` to override.
+    Protected environments reject direct apply with
+    `E418_REVIEWED_PLAN_REQUIRED`. First save and review an online plan with
+    `streamt plan --env ENV --out ENV.plan.json`, then apply it with
+    `streamt apply --env ENV --plan ENV.plan.json`. Confirmation is still
+    required: type the environment name interactively, use `--confirm`, or use
+    `--confirm-env ENV` (which also verifies the name). `--confirm`, `--force`,
+    and `--dry-run` do not bypass the reviewed-plan requirement.
+
+    An unprotected environment can opt into the same shared-workflow gate with
+    `safety.require_reviewed_plan: true`. streamt never infers this policy from
+    names such as `staging`, `shared`, or `prod`.
 
 !!! danger "Unsupported migrations are not forceable"
     `apply` rejects Kafka partition reductions, incompatible Schema Registry
@@ -1201,6 +1211,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `E415_ADOPTION_STATE_CONFLICT` | Existing ownership state conflicts with the requested claim |
 | `E416_ADOPTION_FAILED` | Live observation or atomic adoption-state persistence failed |
 | `E417_SAFETY_BLOCKED` | Apply refused an unsupported partition, schema, or Flink migration before mutation |
+| `E418_REVIEWED_PLAN_REQUIRED` | Direct apply is disabled by protected/shared environment policy; create and apply a reviewed plan file |
 
 **Parse Errors (E5xx):**
 
@@ -1282,13 +1293,13 @@ set -e
 streamt validate --all-envs --strict
 
 # Deploy to staging
-streamt plan --env staging
-streamt apply --env staging
+streamt plan --env staging --out staging.plan.json
+streamt apply --env staging --plan staging.plan.json
 streamt test --env staging
 
 # Deploy to production (protected, with name verification)
-streamt plan --env prod
-streamt apply --env prod --confirm-env prod
+streamt plan --env prod --out prod.plan.json
+streamt apply --env prod --plan prod.plan.json --confirm-env prod
 streamt test --env prod
 ```
 
@@ -1299,8 +1310,8 @@ streamt test --env prod
 streamt -o json list models
 streamt -o json show model order_metrics
 streamt -o json validate
-streamt -o json plan --env staging
-streamt -o json apply --env prod --confirm-env prod
+streamt -o json plan --env prod --out prod.plan.json
+streamt -o json apply --env prod --plan prod.plan.json --confirm-env prod
 ```
 
 ### Development Workflow

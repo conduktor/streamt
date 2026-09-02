@@ -170,3 +170,49 @@ class TestDestructiveDefaults:
         )
 
         assert destructive_operations_allowed(config, force=False) is True
+
+
+class TestReviewedPlanPolicy:
+    def test_policy_is_off_by_default_for_unprotected_environment(self):
+        config = EnvironmentConfig(
+            environment=EnvironmentInfo(name="dev"),
+            runtime={},
+        )
+
+        assert config.requires_reviewed_plan is False
+
+    def test_explicit_safety_policy_marks_shared_environment(self):
+        config = EnvironmentConfig(
+            environment=EnvironmentInfo(name="staging"),
+            runtime={},
+            safety=SafetyConfig(require_reviewed_plan=True),
+        )
+
+        assert config.requires_reviewed_plan is True
+
+    def test_protected_environment_cannot_disable_reviewed_plan_policy(self):
+        config = EnvironmentConfig(
+            environment=EnvironmentInfo(name="prod", protected=True),
+            runtime={},
+            safety=SafetyConfig(require_reviewed_plan=False),
+        )
+
+        assert config.requires_reviewed_plan is True
+
+    def test_explicit_confirmation_policy_applies_to_unprotected_environment(self):
+        config = EnvironmentConfig(
+            environment=EnvironmentInfo(name="staging"),
+            runtime={},
+            safety=SafetyConfig(confirm_apply=True),
+        )
+
+        assert config.requires_apply_confirmation is True
+
+    def test_protected_environment_cannot_disable_confirmation(self):
+        config = EnvironmentConfig(
+            environment=EnvironmentInfo(name="prod", protected=True),
+            runtime={},
+            safety=SafetyConfig(confirm_apply=False),
+        )
+
+        assert config.requires_apply_confirmation is True

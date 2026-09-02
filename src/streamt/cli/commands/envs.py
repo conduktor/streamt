@@ -49,11 +49,18 @@ def envs_list(ctx: click.Context, project_dir: Optional[str]) -> None:
                 "name": env_name,
                 "description": env_config.environment.description,
                 "protected": env_config.environment.protected,
+                "reviewed_plan_required": env_config.requires_reviewed_plan,
             }
             env_list.append(entry)
             desc = env_config.environment.description or ""
-            prot = " \\[protected]" if env_config.environment.protected else ""
-            fmt.print(f"{env_name:12} {desc}{prot}" if desc else f"{env_name}{prot}")
+            marker = ""
+            if env_config.environment.protected:
+                marker = " \\[protected]"
+            elif env_config.requires_reviewed_plan:
+                marker = " \\[reviewed-plan]"
+            fmt.print(
+                f"{env_name:12} {desc}{marker}" if desc else f"{env_name}{marker}"
+            )
         except EnvironmentError as e:
             env_list.append({"name": env_name, "error": str(e)})
             fmt.print(f"{env_name:12} [red]Error: {e}[/red]")
@@ -93,10 +100,12 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
             "name": env_config.environment.name,
             "description": env_config.environment.description,
             "protected": env_config.environment.protected,
+            "reviewed_plan_required": env_config.requires_reviewed_plan,
             "runtime": masked_runtime,
             "safety": {
                 "confirm_apply": env_config.safety.confirm_apply,
                 "allow_destructive": env_config.safety.allow_destructive,
+                "require_reviewed_plan": env_config.safety.require_reviewed_plan,
             },
         }
         fmt.set_data(data)
@@ -106,11 +115,18 @@ def envs_show(ctx: click.Context, project_dir: Optional[str], name: str) -> None
             fmt.print(f"[cyan]Description:[/cyan] {env_config.environment.description}")
         if env_config.environment.protected:
             fmt.print("[cyan]Protected:[/cyan] [yellow]yes[/yellow]")
+        fmt.print(
+            "[cyan]Reviewed plan required:[/cyan] "
+            f"{'yes' if env_config.requires_reviewed_plan else 'no'}"
+        )
         fmt.print("\n[cyan]Runtime:[/cyan]")
         fmt.print(yaml.dump(masked_runtime, default_flow_style=False, sort_keys=False))
         fmt.print("[cyan]Safety:[/cyan]")
         fmt.print(f"  confirm_apply: {env_config.safety.confirm_apply}")
         fmt.print(f"  allow_destructive: {env_config.safety.allow_destructive}")
+        fmt.print(
+            f"  require_reviewed_plan: {env_config.safety.require_reviewed_plan}"
+        )
         fmt.flush()
 
     except EnvironmentError as e:
@@ -170,6 +186,7 @@ def envs_diff(ctx: click.Context, project_dir: Optional[str], env_a: str, env_b:
         safety_fields = [
             ("confirm_apply", "safety.confirm_apply"),
             ("allow_destructive", "safety.allow_destructive"),
+            ("require_reviewed_plan", "safety.require_reviewed_plan"),
         ]
         for attr, label in safety_fields:
             va = getattr(cfg_a.safety, attr)

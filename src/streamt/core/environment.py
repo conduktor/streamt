@@ -94,6 +94,7 @@ class SafetyConfig:
 
     confirm_apply: bool = True
     allow_destructive: bool = False
+    require_reviewed_plan: bool = False
 
 
 @dataclass
@@ -113,6 +114,16 @@ class EnvironmentConfig:
     runtime: dict[str, object]
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     raw_data: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def requires_reviewed_plan(self) -> bool:
+        """Return whether apply must use a saved, reviewed plan file."""
+        return self.environment.protected or self.safety.require_reviewed_plan
+
+    @property
+    def requires_apply_confirmation(self) -> bool:
+        """Return whether apply requires explicit environment confirmation."""
+        return self.environment.protected or self.safety.confirm_apply
 
 
 class EnvironmentManager:
@@ -227,21 +238,74 @@ class EnvironmentManager:
 
         try:
             with open(env_file) as f:
-                data = yaml.safe_load(f) or {}
+                loaded = yaml.safe_load(f)
         except yaml.YAMLError as e:
             raise EnvironmentError(f"YAML parse error in '{env_file}': {e}") from e
+        if loaded is None:
+            data: dict[str, object] = {}
+        elif isinstance(loaded, dict):
+            data = loaded
+        else:
+            raise EnvironmentError(
+                f"Invalid environment file '{env_file.name}': expected an object"
+            )
+
+        allowed_top_level_fields = {"environment", "runtime", "safety"}
+        unknown_top_level_fields = sorted(set(data) - allowed_top_level_fields)
+        if unknown_top_level_fields:
+            details = "; ".join(
+                f"field '{field}': Extra inputs are not permitted"
+                for field in unknown_top_level_fields
+            )
+            raise EnvironmentError(
+                f"Invalid environment file '{env_file.name}': {details}"
+            )
 
         # Validate environment name matches filename
         env_info = data.get("environment", {})
+        if not isinstance(env_info, dict):
+            raise EnvironmentError(
+                f"Invalid environment configuration in '{env_file.name}': expected an object"
+            )
+        allowed_environment_fields = {"name", "description", "protected"}
+        unknown_environment_fields = sorted(
+            set(env_info) - allowed_environment_fields
+        )
+        if unknown_environment_fields:
+            details = "; ".join(
+                f"environment.{field}: Extra inputs are not permitted"
+                for field in unknown_environment_fields
+            )
+            raise EnvironmentError(
+                f"Invalid environment configuration in '{env_file.name}': {details}"
+            )
         yaml_name = env_info.get("name")
+        if yaml_name is not None and not isinstance(yaml_name, str):
+            raise EnvironmentError(
+                f"Invalid environment configuration in '{env_file.name}': "
+                "environment.name must be a string"
+            )
         if yaml_name and yaml_name != env_name:
             raise EnvironmentNameMismatchError(env_name, yaml_name)
+
+        description = env_info.get("description", "")
+        if not isinstance(description, str):
+            raise EnvironmentError(
+                f"Invalid environment configuration in '{env_file.name}': "
+                "environment.description must be a string"
+            )
+        protected = env_info.get("protected", False)
+        if not isinstance(protected, bool):
+            raise EnvironmentError(
+                f"Invalid environment configuration in '{env_file.name}': "
+                "environment.protected must be a boolean"
+            )
 
         # Parse environment info
         environment = EnvironmentInfo(
             name=env_name,
-            description=env_info.get("description", ""),
-            protected=env_info.get("protected", False),
+            description=description,
+            protected=protected,
         )
 
         # Parse runtime
@@ -266,9 +330,39 @@ class EnvironmentManager:
 
         # Parse safety config
         safety_data = data.get("safety", {})
+        if not isinstance(safety_data, dict):
+            raise EnvironmentError(
+                f"Invalid safety configuration in '{env_file.name}': expected an object"
+            )
+        allowed_safety_fields = {
+            "confirm_apply",
+            "allow_destructive",
+            "require_reviewed_plan",
+        }
+        unknown_safety_fields = sorted(set(safety_data) - allowed_safety_fields)
+        if unknown_safety_fields:
+            details = "; ".join(
+                f"safety.{field}: Extra inputs are not permitted"
+                for field in unknown_safety_fields
+            )
+            raise EnvironmentError(
+                f"Invalid safety configuration in '{env_file.name}': {details}"
+            )
+        for field_name, default in (
+            ("confirm_apply", environment.protected),
+            ("allow_destructive", False),
+            ("require_reviewed_plan", False),
+        ):
+            value = safety_data.get(field_name, default)
+            if not isinstance(value, bool):
+                raise EnvironmentError(
+                    f"Invalid safety configuration in '{env_file.name}': "
+                    f"safety.{field_name} must be a boolean"
+                )
         safety = SafetyConfig(
             confirm_apply=safety_data.get("confirm_apply", environment.protected),
             allow_destructive=safety_data.get("allow_destructive", False),
+            require_reviewed_plan=safety_data.get("require_reviewed_plan", False),
         )
 
         return EnvironmentConfig(

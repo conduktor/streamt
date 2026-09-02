@@ -132,6 +132,18 @@ proposed actions, ordered ownership and safety decisions, and plan checksum.
 Version 1 files are rejected as unsupported rather than interpreted without
 safety-blocker semantics.
 
+Protected environments always require `apply --plan`. Other shared deployment
+workflows opt in explicitly with `safety.require_reviewed_plan: true`; streamt
+does not infer sharing or criticality from an environment name. A direct apply
+under either policy fails with `E418_REVIEWED_PLAN_REQUIRED` before deployers
+are constructed, including when `--confirm`, `--force`, or `--dry-run` is
+present. Structured output includes executable `plan --out` and `apply --plan`
+next steps with the resolved `--project-dir` preserved, shell-quoted paths, and
+a fixed `.streamt/reviewed-plan.json` output name. A reviewed-plan apply still
+requires protected-environment confirmation and all checksum, project,
+environment, state-serial, live-drift, ownership, and safety-blocker checks
+below.
+
 `apply` must reject a plan when:
 
 - Project content changed after planning.

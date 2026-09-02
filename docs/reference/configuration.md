@@ -440,7 +440,7 @@ project/
 environment:
   name: prod
   description: Production environment
-  protected: true              # Requires confirmation for apply
+  protected: true              # Requires a reviewed plan and confirmation
 
 runtime:
   kafka:
@@ -456,15 +456,24 @@ runtime:
 safety:
   confirm_apply: true          # Require --confirm in CI/CD
   allow_destructive: false     # Block topic deletions, etc.
+  require_reviewed_plan: true  # Require apply --plan (also implied by protected)
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `environment.name` | string | Required | Must match filename |
 | `environment.description` | string | - | Human-readable description |
-| `environment.protected` | bool | `false` | Require confirmation for apply |
-| `safety.confirm_apply` | bool | `false` | Require `--confirm` flag in CI |
-| `safety.allow_destructive` | bool | `true` | Allow destructive operations |
+| `environment.protected` | bool | `false` | Require a reviewed plan and environment confirmation for apply |
+| `safety.confirm_apply` | bool | value of `protected` | Require environment confirmation in CI |
+| `safety.allow_destructive` | bool | `false` | Allow destructive operations |
+| `safety.require_reviewed_plan` | bool | `false` | Require `apply --plan` for a shared or otherwise review-gated environment |
+
+Protected environments always require a reviewed plan, even when
+`safety.require_reviewed_plan` is `false`. Set `require_reviewed_plan: true` on
+an unprotected environment to mark a shared workflow explicitly without relying
+on its name. Environment sidecars accept only `environment`, `runtime`, and
+`safety` at the top level. Policy values are strict booleans, and unknown or
+misspelled environment and safety fields are rejected.
 
 ---
 

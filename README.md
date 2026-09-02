@@ -231,7 +231,7 @@ Each environment file defines its runtime configuration:
 environment:
   name: prod
   description: Production environment
-  protected: true  # Requires confirmation for apply
+  protected: true  # Requires a reviewed plan and confirmation for apply
 
 runtime:
   kafka:
@@ -247,6 +247,7 @@ runtime:
 safety:
   confirm_apply: true
   allow_destructive: false  # Block destructive operations
+  require_reviewed_plan: true  # Also available for unprotected shared envs
 ```
 
 ### CLI Usage
@@ -254,19 +255,18 @@ safety:
 ```bash
 # Target a specific environment
 streamt validate --env dev
-streamt plan --env prod
+streamt plan --env prod --out prod.plan.json
 streamt apply --env staging
 
 # Use STREAMT_ENV environment variable
 export STREAMT_ENV=prod
 streamt validate
 
-# Protected environment apply
-streamt apply --env prod --confirm              # Interactive or CI
-streamt apply --env prod --confirm-env prod     # Non-interactive (agents/CI)
+# Protected environment apply after reviewing prod.plan.json
+streamt apply --env prod --plan prod.plan.json --confirm-env prod
 
 # Override destructive safety
-streamt apply --env prod --confirm --force
+streamt apply --env prod --plan prod.plan.json --confirm-env prod --force
 
 # Validate all environments at once
 streamt validate --all-envs

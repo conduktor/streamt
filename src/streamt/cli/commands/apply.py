@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 from typing import Optional, cast
@@ -91,6 +92,21 @@ def destructive_operations_allowed(
     return force or bool(env_config and env_config.safety.allow_destructive)
 
 
+def _reviewed_plan_commands(
+    environment: str,
+    project_path: Path,
+) -> tuple[str, str]:
+    """Return executable commands for the required review/apply workflow."""
+    project_arg = shlex.quote(str(project_path))
+    environment_arg = shlex.quote(environment)
+    plan_file = project_path / ".streamt" / "reviewed-plan.json"
+    plan_arg = shlex.quote(str(plan_file))
+    return (
+        f"streamt plan --project-dir {project_arg} --env {environment_arg} --out {plan_arg}",
+        f"streamt apply --project-dir {project_arg} --env {environment_arg} --plan {plan_arg}",
+    )
+
+
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option(
@@ -152,10 +168,51 @@ def apply(
         )
         project = parser.parse()
 
-        # Protected environment confirmation
-        if parser.env_config and parser.env_config.environment.protected:
-            env_name = parser.env_config.environment.name
-            fmt.print_warning(f"Deploying to protected environment '{env_name}'")
+        env_config = parser.env_config
+        if env_config and env_config.requires_reviewed_plan and not reviewed_plan_path:
+            env_name = env_config.environment.name
+            plan_command, apply_command = _reviewed_plan_commands(env_name, project_path)
+            policy = (
+                "environment.protected"
+                if env_config.environment.protected
+                else "safety.require_reviewed_plan"
+            )
+            message = (
+                f"Direct apply is disabled for environment '{env_name}'; "
+                "a reviewed plan file is required"
+            )
+            fmt.set_data(
+                {
+                    "environment": env_name,
+                    "policy": policy,
+                    "required_workflow": "reviewed_plan",
+                    "next_steps": [plan_command, apply_command],
+                }
+            )
+            fmt.add_error(
+                StructuredError(
+                    code=ErrorCode.REVIEWED_PLAN_REQUIRED,
+                    message=message,
+                    suggestion=(
+                        f"Run '{plan_command}', review the saved file, then run "
+                        f"'{apply_command}'."
+                    ),
+                    docs_url="https://streamt.dev/docs/reference/cli#apply",
+                )
+            )
+            fmt.print_error(f"{message}. Run: {plan_command}")
+            fmt.flush()
+            sys.exit(1)
+
+        # Explicit environment confirmation
+        if env_config and env_config.requires_apply_confirmation:
+            env_name = env_config.environment.name
+            if env_config.environment.protected:
+                fmt.print_warning(f"Deploying to protected environment '{env_name}'")
+            else:
+                fmt.print_warning(
+                    f"Environment '{env_name}' requires explicit apply confirmation"
+                )
 
             if confirm_env:
                 if confirm_env != env_name:
@@ -170,7 +227,8 @@ def apply(
                     sys.exit(1)
             elif not confirm:
                 if sys.stdin.isatty():
-                    fmt.print_warning(f"'{env_name}' is a protected environment.")
+                    if env_config.environment.protected:
+                        fmt.print_warning(f"'{env_name}' is a protected environment.")
                     user_input = click.prompt(
                         f"Type '{env_name}' to confirm", default="", show_default=False
                     )
@@ -180,14 +238,24 @@ def apply(
                         fmt.flush()
                         sys.exit(1)
                 else:
+                    reason = (
+                        "because it is protected"
+                        if env_config.environment.protected
+                        else "because safety.confirm_apply is enabled"
+                    )
                     fmt.add_error(
                         StructuredError(
                             code=ErrorCode.ENVIRONMENT_ERROR,
-                            message=f"Protected env '{env_name}'. Use --confirm or --confirm-env {env_name}.",
+                            message=(
+                                f"Environment '{env_name}' requires confirmation {reason}. "
+                                "Use --confirm or "
+                                f"--confirm-env {env_name}."
+                            ),
                         )
                     )
                     fmt.print_error(
-                        f"'{env_name}' is protected. Use --confirm or --confirm-env in CI."
+                        f"'{env_name}' requires confirmation. Use --confirm or "
+                        "--confirm-env in CI."
                     )
                     fmt.flush()
                     sys.exit(1)

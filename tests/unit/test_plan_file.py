@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,6 +79,31 @@ def _write_project(path: Path) -> None:
         "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
     }
     (path / "stream_project.yml").write_text(yaml.safe_dump(config))
+
+
+def _write_environment_project(
+    path: Path,
+    *,
+    protected: bool,
+    require_reviewed_plan: bool = False,
+) -> None:
+    _write_project(path)
+    environments = path / "environments"
+    environments.mkdir()
+    environment = {
+        "environment": {
+            "name": "prod",
+            "description": "Production",
+            "protected": protected,
+        },
+        "runtime": {"kafka": {"bootstrap_servers": "localhost:9092"}},
+        "safety": {
+            "confirm_apply": protected,
+            "allow_destructive": False,
+            "require_reviewed_plan": require_reviewed_plan,
+        },
+    }
+    (environments / "prod.yml").write_text(yaml.safe_dump(environment))
 
 
 def _json_output(result: object) -> dict[str, object]:
@@ -285,6 +311,188 @@ def test_cli_saves_and_applies_reviewed_plan(tmp_path: Path) -> None:
     assert applied.exit_code == 0, applied.output
     applied_output = _json_output(applied)
     assert applied_output["data"]["plan_checksum"] == ReviewedPlanFile.load(plan_path).checksum
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [[], ["--confirm"], ["--confirm-env", "prod"], ["--force"], ["--dry-run"]],
+)
+def test_protected_environment_rejects_every_direct_apply_before_backend_setup(
+    tmp_path: Path,
+    extra_args: list[str],
+) -> None:
+    project_path = tmp_path / "project with spaces"
+    project_path.mkdir()
+    _write_environment_project(project_path, protected=True)
+    resolved_project = project_path.resolve()
+    project_arg = shlex.quote(str(resolved_project))
+    plan_path = resolved_project / ".streamt" / "reviewed-plan.json"
+    plan_arg = shlex.quote(str(plan_path))
+    plan_command = (
+        f"streamt plan --project-dir {project_arg} --env prod --out {plan_arg}"
+    )
+    apply_command = (
+        f"streamt apply --project-dir {project_arg} --env prod --plan {plan_arg}"
+    )
+
+    with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
+        result = CliRunner().invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "apply",
+                "-p",
+                str(project_path),
+                "--env",
+                "prod",
+                *extra_args,
+            ],
+        )
+
+    assert result.exit_code == 1
+    payload = _json_output(result)
+    assert payload["errors"][0]["code"] == "E418_REVIEWED_PLAN_REQUIRED"
+    assert payload["data"] == {
+        "environment": "prod",
+        "policy": "environment.protected",
+        "required_workflow": "reviewed_plan",
+        "next_steps": [plan_command, apply_command],
+    }
+    assert plan_command in payload["errors"][0]["suggestion"]
+    make_kafka.assert_not_called()
+
+
+def test_explicit_shared_environment_policy_requires_reviewed_plan(
+    tmp_path: Path,
+) -> None:
+    _write_environment_project(
+        tmp_path,
+        protected=False,
+        require_reviewed_plan=True,
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["-o", "json", "apply", "-p", str(tmp_path), "--env", "prod"],
+    )
+
+    assert result.exit_code == 1
+    payload = _json_output(result)
+    assert payload["errors"][0]["code"] == "E418_REVIEWED_PLAN_REQUIRED"
+    assert payload["data"]["policy"] == "safety.require_reviewed_plan"
+
+
+def test_unprotected_confirmation_policy_fails_before_backend_setup(
+    tmp_path: Path,
+) -> None:
+    _write_environment_project(tmp_path, protected=False)
+    environment_path = tmp_path / "environments" / "prod.yml"
+    environment = yaml.safe_load(environment_path.read_text())
+    environment["safety"]["confirm_apply"] = True
+    environment_path.write_text(yaml.safe_dump(environment))
+
+    with patch("streamt.cli.commands.apply.make_kafka_deployer") as make_kafka:
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path), "--env", "prod"],
+        )
+
+    assert result.exit_code == 1
+    payload = _json_output(result)
+    assert payload["errors"][0]["code"] == "E503_ENVIRONMENT_ERROR"
+    assert "requires confirmation" in payload["errors"][0]["message"]
+    make_kafka.assert_not_called()
+
+
+def test_protected_environment_accepts_integrity_checked_reviewed_plan(
+    tmp_path: Path,
+) -> None:
+    _write_environment_project(tmp_path, protected=True)
+    plan_path = tmp_path / "prod.plan.json"
+    runner = CliRunner()
+    planned = runner.invoke(
+        main,
+        [
+            "-o",
+            "json",
+            "plan",
+            "-p",
+            str(tmp_path),
+            "--env",
+            "prod",
+            "--offline",
+            "--out",
+            str(plan_path),
+        ],
+    )
+    assert planned.exit_code == 0, planned.output
+
+    applied = runner.invoke(
+        main,
+        [
+            "-o",
+            "json",
+            "apply",
+            "-p",
+            str(tmp_path),
+            "--env",
+            "prod",
+            "--confirm-env",
+            "prod",
+            "--plan",
+            str(plan_path),
+        ],
+    )
+
+    assert applied.exit_code == 0, applied.output
+    payload = _json_output(applied)
+    assert payload["data"]["plan_checksum"] == ReviewedPlanFile.load(plan_path).checksum
+
+
+def test_protected_environment_still_rejects_tampered_reviewed_plan(
+    tmp_path: Path,
+) -> None:
+    _write_environment_project(tmp_path, protected=True)
+    plan_path = tmp_path / "prod.plan.json"
+    runner = CliRunner()
+    planned = runner.invoke(
+        main,
+        [
+            "plan",
+            "-p",
+            str(tmp_path),
+            "--env",
+            "prod",
+            "--offline",
+            "--out",
+            str(plan_path),
+        ],
+    )
+    assert planned.exit_code == 0, planned.output
+    plan_data = json.loads(plan_path.read_text())
+    plan_data["environment"] = "staging"
+    plan_path.write_text(json.dumps(plan_data))
+
+    applied = runner.invoke(
+        main,
+        [
+            "-o",
+            "json",
+            "apply",
+            "-p",
+            str(tmp_path),
+            "--env",
+            "prod",
+            "--confirm-env",
+            "prod",
+            "--plan",
+            str(plan_path),
+        ],
+    )
+
+    assert applied.exit_code == 1
+    assert _json_output(applied)["errors"][0]["code"] == "E408_PLAN_FILE_INVALID"
 
 
 def test_cli_rejects_tampered_and_stale_plan_files(tmp_path: Path) -> None:

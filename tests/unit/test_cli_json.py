@@ -373,8 +373,36 @@ class TestConfirmEnvFlag:
         runner = CliRunner()
         with tempfile.TemporaryDirectory() as tmpdir:
             self._create_multi_env_project(tmpdir)
+            plan_path = Path(tmpdir) / "prod.plan.json"
+            planned = runner.invoke(
+                main,
+                [
+                    "plan",
+                    "-p",
+                    tmpdir,
+                    "--env",
+                    "prod",
+                    "--offline",
+                    "--out",
+                    str(plan_path),
+                ],
+            )
+            assert planned.exit_code == 0, planned.output
             result = runner.invoke(
-                main, ["-o", "json", "apply", "-p", tmpdir, "--env", "prod", "--confirm-env", "staging"]
+                main,
+                [
+                    "-o",
+                    "json",
+                    "apply",
+                    "-p",
+                    tmpdir,
+                    "--env",
+                    "prod",
+                    "--confirm-env",
+                    "staging",
+                    "--plan",
+                    str(plan_path),
+                ],
             )
 
             assert result.exit_code == 1
@@ -399,7 +427,7 @@ class TestDestructiveSafety:
         envs_dir.mkdir()
         with open(envs_dir / "prod.yml", "w") as f:
             yaml.dump({
-                "environment": {"name": "prod", "description": "Production", "protected": True},
+                "environment": {"name": "prod", "description": "Production", "protected": False},
                 "runtime": {"kafka": {"bootstrap_servers": "prod:9092"}},
                 "safety": {"confirm_apply": True, "allow_destructive": False},
             }, f)

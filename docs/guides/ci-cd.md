@@ -81,10 +81,10 @@ jobs:
       - run: pip install streamt
 
       - name: Plan
-        run: streamt -o json plan --env staging
+        run: streamt -o json plan --env staging --out staging.plan.json
 
-      - name: Apply
-        run: streamt apply --env staging --confirm-env staging
+      - name: Apply reviewed plan
+        run: streamt apply --env staging --plan staging.plan.json
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.STAGING_KAFKA }}
           SCHEMA_REGISTRY_URL: ${{ secrets.STAGING_SR_URL }}
@@ -101,10 +101,10 @@ jobs:
       - run: pip install streamt
 
       - name: Plan
-        run: streamt -o json plan --env prod
+        run: streamt -o json plan --env prod --out prod.plan.json
 
-      - name: Apply
-        run: streamt apply --env prod --confirm-env prod
+      - name: Apply reviewed plan
+        run: streamt apply --env prod --plan prod.plan.json --confirm-env prod
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.PROD_KAFKA }}
           SCHEMA_REGISTRY_URL: ${{ secrets.PROD_SR_URL }}
@@ -120,6 +120,12 @@ jobs:
 | `--confirm` | Skip interactive confirmation (simpler, no name check) |
 | `--all-envs` | Validate all environments at once |
 | `--dry-run` | Show what would change without writing/deploying |
+
+Protected environments always require a saved reviewed plan. Set
+`safety.require_reviewed_plan: true` for any other shared environment that must
+use the same protocol. Neither confirmation nor `--force` bypasses this gate.
+Keep the saved plan as the reviewed artifact between jobs; if approval happens
+in a separate job, download the exact artifact rather than regenerating it.
 
 ## PR Validation Pattern
 

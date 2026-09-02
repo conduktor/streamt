@@ -21,7 +21,9 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 - Phase 1 foundations now include live Schema Registry reference and
   compatibility validation, deterministic reviewed plan files, and a
   validate/plan-only first-party GitHub Action. No-clobber Kafka source import
-  and fail-closed single-topic adoption are also implemented.
+  and fail-closed single-topic adoption are also implemented. Protected
+  environments, plus shared environments that opt in explicitly, now reject
+  direct apply and require the integrity-checked reviewed-plan workflow.
 
 ## Work order
 

@@ -68,7 +68,7 @@ runtime:
 environment:
   name: prod
   description: Production environment
-  protected: true  # Requires confirmation for apply
+  protected: true  # Requires a reviewed plan and confirmation for apply
 
 runtime:
   kafka:
@@ -86,6 +86,7 @@ runtime:
 safety:
   confirm_apply: true         # Require --confirm flag in CI
   allow_destructive: false    # Block topic deletions, etc.
+  require_reviewed_plan: true # Optional here: protected already implies it
 ```
 
 ## CLI Usage
@@ -174,7 +175,8 @@ runtime:
 
 ## Protected Environments
 
-Mark critical environments as protected to prevent accidental deployments:
+Mark critical environments as protected to require both a reviewed plan and
+explicit environment confirmation:
 
 ```yaml title="environments/prod.yml"
 environment:
@@ -184,34 +186,47 @@ environment:
 
 ### Behavior
 
-**Interactive mode (terminal):**
+Direct apply is rejected before streamt constructs any deployer. Confirmation
+and force flags cannot bypass the review gate:
+
 ```bash
 $ streamt apply --env prod
-WARNING: Deploying to protected environment 'prod'
-WARNING: 'prod' is a protected environment.
-Type 'prod' to confirm: _
+ERROR: Direct apply is disabled for environment 'prod'; a reviewed plan file is required.
+$ streamt apply --env prod --confirm --force
+ERROR: Direct apply is disabled for environment 'prod'; a reviewed plan file is required.
 ```
 
-**Non-interactive mode (CI/CD):**
+Create the online plan, review the saved JSON, then apply that exact file:
+
 ```bash
-# Without --confirm: fails
-$ streamt apply --env prod
-ERROR: 'prod' is a protected environment. Use --confirm or --confirm-env in CI.
-
-# With --confirm: proceeds
-$ streamt apply --env prod --confirm
+$ streamt plan --env prod --out prod.plan.json
+$ streamt apply --env prod --plan prod.plan.json --confirm-env prod
 WARNING: Deploying to protected environment 'prod'
-Applying changes...
-
-# With --confirm-env (recommended for agents/CI — verifies env name matches):
-$ streamt apply --env prod --confirm-env prod
-WARNING: Deploying to protected environment 'prod'
-Applying changes...
-
-# Wrong name is rejected:
-$ streamt apply --env prod --confirm-env staging
-ERROR: --confirm-env 'staging' does not match 'prod'
+Apply complete
 ```
+
+The reviewed apply verifies the checksum, project and environment fingerprints,
+ownership-state serial, current live actions, ownership requirements, and
+safety blockers before mutation. Protected-environment confirmation remains a
+separate check. In an interactive terminal, omit `--confirm-env` and type the
+environment name at the prompt.
+
+### Shared Environments
+
+An environment does not need to be protected to require the review/apply
+protocol. Mark a shared staging or integration environment explicitly:
+
+```yaml title="environments/staging.yml"
+environment:
+  name: staging
+  protected: false
+
+safety:
+  require_reviewed_plan: true
+```
+
+streamt does not infer policy from environment names. The explicit safety field
+is the supported way to gate an otherwise unprotected shared workflow.
 
 ## Destructive Safety
 
@@ -226,11 +241,11 @@ safety:
 
 ```bash
 # Blocked by default
-$ streamt apply --env prod --confirm
+$ streamt apply --env prod --plan prod.plan.json --confirm-env prod
 ERROR: Destructive operations blocked for 'prod' environment. Use --force flag to override.
 
 # Override with --force
-$ streamt apply --env prod --confirm --force
+$ streamt apply --env prod --plan prod.plan.json --confirm-env prod --force
 WARNING: --force flag used, allowing destructive operations on 'prod'
 Applying changes...
 ```
@@ -269,7 +284,8 @@ runtime:
 # .env.prod has KAFKA_SERVERS=prod-kafka.example.com:9092
 # But actual env var takes precedence
 export KAFKA_SERVERS=custom-kafka.example.com:9092
-streamt apply --env prod --confirm  # Uses custom-kafka.example.com:9092
+streamt plan --env prod --out prod.plan.json
+streamt apply --env prod --plan prod.plan.json --confirm-env prod
 ```
 
 ## CI/CD Integration
@@ -296,8 +312,8 @@ jobs:
           STAGING_SR_URL: ${{ secrets.STAGING_SR_URL }}
         run: |
           streamt validate --env staging
-          streamt plan --env staging
-          streamt apply --env staging
+          streamt plan --env staging --out staging.plan.json
+          streamt apply --env staging --plan staging.plan.json
 
   deploy-prod:
     needs: deploy-staging
@@ -312,9 +328,9 @@ jobs:
           PROD_SR_URL: ${{ secrets.PROD_SR_URL }}
         run: |
           streamt validate --env prod
-          streamt plan --env prod
+          streamt plan --env prod --out prod.plan.json
           # --confirm-env verifies the environment name matches (safer for CI)
-          streamt apply --env prod --confirm-env prod
+          streamt apply --env prod --plan prod.plan.json --confirm-env prod
 ```
 
 ### Agent/LLM Automation
@@ -324,12 +340,12 @@ For programmatic use by LLM agents or automation tools, use `--output json` for 
 ```bash
 # Structured JSON output from any command
 streamt -o json validate --env staging
-streamt -o json plan --env prod
+streamt -o json plan --env prod --out prod.plan.json
 streamt -o json list models
 streamt -o json show model order_metrics
 
-# Deploy with name verification and JSON output
-streamt -o json apply --env prod --confirm-env prod
+# Deploy the reviewed plan with name verification and JSON output
+streamt -o json apply --env prod --plan prod.plan.json --confirm-env prod
 ```
 
 ## Best Practices

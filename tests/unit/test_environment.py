@@ -807,6 +807,119 @@ class TestEdgeCases:
             assert result.exit_code != 0
             assert "runtime" in result.output.lower()
 
+    @pytest.mark.parametrize("value", ["true", 1, [], {}])
+    def test_reviewed_plan_policy_requires_a_boolean(self, value: object):
+        """Safety policy values must not rely on YAML truthiness or coercion."""
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            factory = ProjectFactory(tmpdir)
+            factory.create_multi_env_project(
+                environments={
+                    "prod": {
+                        "environment": {"name": "prod"},
+                        "runtime": make_runtime("prod-kafka:9092"),
+                        "safety": {"require_reviewed_plan": value},
+                    }
+                }
+            )
+
+            result = runner.invoke(
+                main,
+                ["validate", "-p", str(tmpdir), "--env", "prod"],
+            )
+
+            assert result.exit_code != 0
+            assert "safety.require_reviewed_plan" in result.output
+            assert "must be a boolean" in result.output
+
+    def test_unknown_safety_field_is_rejected(self):
+        """Misspelled safety policy fields must fail closed."""
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            factory = ProjectFactory(tmpdir)
+            factory.create_multi_env_project(
+                environments={
+                    "prod": {
+                        "environment": {"name": "prod"},
+                        "runtime": make_runtime("prod-kafka:9092"),
+                        "safety": {"require_review_plan": True},
+                    }
+                }
+            )
+
+            result = runner.invoke(
+                main,
+                ["validate", "-p", str(tmpdir), "--env", "prod"],
+            )
+
+            assert result.exit_code != 0
+            assert "safety.require_review_plan" in result.output
+            assert "Extra inputs are not permitted" in result.output
+
+    @pytest.mark.parametrize("value", ["true", 1, 0, [], {}])
+    def test_protected_policy_requires_a_boolean(self, value: object):
+        """Protected policy cannot be weakened through YAML coercion."""
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            factory = ProjectFactory(tmpdir)
+            factory.create_multi_env_project(
+                environments={
+                    "prod": {
+                        "environment": {"name": "prod", "protected": value},
+                        "runtime": make_runtime("prod-kafka:9092"),
+                    }
+                }
+            )
+
+            result = runner.invoke(
+                main,
+                ["validate", "-p", str(tmpdir), "--env", "prod"],
+            )
+
+            assert result.exit_code != 0
+            assert "environment.protected" in result.output
+            assert "must be a boolean" in result.output
+
+    @pytest.mark.parametrize(
+        ("environment_extra", "top_level_extra", "expected"),
+        [
+            ({"protectd": True}, {}, "environment.protectd"),
+            ({}, {"safty": {"require_reviewed_plan": True}}, "field 'safty'"),
+        ],
+    )
+    def test_misspelled_environment_policy_fields_are_rejected(
+        self,
+        environment_extra: dict[str, object],
+        top_level_extra: dict[str, object],
+        expected: str,
+    ):
+        """Policy typos fail closed instead of becoming an unprotected apply."""
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            factory = ProjectFactory(tmpdir)
+            environment_config: dict[str, object] = {
+                "environment": {"name": "prod", **environment_extra},
+                "runtime": make_runtime("prod-kafka:9092"),
+                **top_level_extra,
+            }
+            factory.create_multi_env_project(
+                environments={"prod": environment_config}
+            )
+
+            result = runner.invoke(
+                main,
+                ["validate", "-p", str(tmpdir), "--env", "prod"],
+            )
+
+            assert result.exit_code != 0
+            assert expected in result.output
+            assert "Extra inputs are not" in result.output
+            assert "permitted" in result.output
+
     def test_non_yml_files_in_environments_ignored(self):
         """Non-.yml files in environments/ should be ignored."""
         runner = CliRunner()
@@ -858,8 +971,8 @@ class TestProtectedEnvironments:
             "runtime": make_runtime(f"{name}-kafka:9092"),
         }
 
-    def test_t5_1_protected_env_prompts_in_interactive_mode(self):
-        """T5.1: protected: true -> apply prompts for confirmation in interactive mode."""
+    def test_t5_1_protected_env_requires_reviewed_plan(self):
+        """T5.1: protected direct apply requires a reviewed plan."""
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -870,22 +983,19 @@ class TestProtectedEnvironments:
                 }
             )
 
-            # Interactive mode - should prompt (we won't provide input)
             result = runner.invoke(
                 main,
                 ["apply", "-p", str(tmpdir), "--env", "prod"],
-                input="",  # No confirmation provided
             )
 
-            # Should either show confirmation prompt or require explicit confirm
-            assert (
-                "confirm" in result.output.lower()
-                or "protected" in result.output.lower()
-                or "prod" in result.output.lower()
-            )
+            assert result.exit_code != 0
+            assert "reviewed plan" in result.output.lower()
+            assert "streamt plan --project-dir" in result.output
+            assert "--env prod" in result.output
+            assert "--out" in result.output
 
-    def test_t5_2_protected_env_proceeds_with_confirm_flag(self):
-        """T5.2: protected: true + --confirm flag -> proceeds without prompt."""
+    def test_t5_2_confirm_does_not_bypass_reviewed_plan(self):
+        """T5.2: --confirm does not bypass the reviewed-plan requirement."""
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -900,12 +1010,11 @@ class TestProtectedEnvironments:
                 main, ["apply", "-p", str(tmpdir), "--env", "prod", "--confirm"]
             )
 
-            # Should not show a prompt asking for confirmation
-            # (may fail for other reasons like connectivity, but not for confirmation)
-            assert "type" not in result.output.lower() or "confirm" not in result.output.lower()
+            assert result.exit_code != 0
+            assert "reviewed plan" in result.output.lower()
 
-    def test_t5_3_protected_env_requires_confirm_in_ci_mode(self):
-        """T5.3: protected: true in non-interactive (CI) mode without --confirm -> error."""
+    def test_t5_3_protected_ci_requires_review_before_confirmation(self):
+        """T5.3: protected CI apply requires review before confirmation."""
         runner = CliRunner()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -923,16 +1032,11 @@ class TestProtectedEnvironments:
                 input=None,  # Non-interactive
             )
 
-            # MUST fail - protected environment requires --confirm in non-interactive mode
             assert result.exit_code != 0, (
-                f"Expected error for protected env without --confirm, but got exit_code=0. "
+                f"Expected error for protected env without a plan, but got exit_code=0. "
                 f"Output: {result.output}"
             )
-            # Error message MUST mention either --confirm requirement OR protected status
-            output_lower = result.output.lower()
-            assert "--confirm" in result.output or "protected" in output_lower, (
-                f"Error must mention '--confirm' or 'protected', got: {result.output}"
-            )
+            assert "reviewed plan" in result.output.lower()
 
     def test_t5_4_unprotected_env_proceeds_without_prompt(self):
         """T5.4: protected: false -> apply proceeds without prompt."""
@@ -1010,7 +1114,7 @@ class TestDestructiveSafety:
             "environment": {
                 "name": name,
                 "description": f"{name} environment",
-                "protected": True,
+                "protected": False,
             },
             "runtime": make_runtime(f"{name}-kafka:9092"),
             "safety": {"confirm_apply": True, "allow_destructive": allow_destructive},
