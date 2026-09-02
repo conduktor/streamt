@@ -63,7 +63,7 @@ to deploy anything.
 - [x] Add no-clobber `streamt import` for external Kafka source declarations.
 - [x] Add explicit, fail-closed adoption for one existing Kafka topic at a time.
 - [x] Extend fail-closed adoption to one Schema Registry subject at a time.
-- [ ] Extend fail-closed adoption beyond topics and schemas in the scoped order
+- [x] Extend fail-closed adoption beyond topics and schemas in the scoped order
       defined by the
       [extended resource adoption plan](docs/plans/2026-09-02-extended-resource-adoption.md):
   - [x] Make Connector planning secret-neutral, bind the canonical artifact to
@@ -96,7 +96,7 @@ to deploy anything.
         isolated-wheel execution, and real Gateway 3.15 coverage. Adoption of
         rules with interceptors remains deliberately unsupported under the
         [Gateway specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md).
-  - [ ] Keep Flink adoption deferred until stable per-job identity, strict
+  - [x] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
 - [x] Resolve Schema Registry subjects, versions, references, and compatibility
