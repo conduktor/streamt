@@ -79,9 +79,9 @@ project:
 
 ## Deployment Ownership State
 
-`deployment_state` selects the authority used by online plan, apply, adopt, and
-`state status`. Omitting the block preserves the existing local version 1 JSON
-provider:
+`deployment_state` selects the configured state provider. Omitting the block
+preserves the existing local version 1 JSON provider used by online plan,
+apply, adopt, and `state status`:
 
 ```yaml
 deployment_state:
@@ -92,9 +92,9 @@ Local accepts no remote fields and stores ownership at
 `.streamt/state/<environment>.json`. It is intended for a single-user checkout,
 not shared or distributed runners.
 
-The strict PostgreSQL shape is recognized so projects can establish their
-future authority explicitly and inspect a separately initialized version-1
-store with `streamt state status`:
+The strict PostgreSQL shape lets projects explicitly initialize, register, and
+inspect a future remote authority through the narrow `state init` and
+`state status` administrative commands:
 
 ```yaml
 deployment_state:
@@ -110,7 +110,7 @@ deployment_state:
 |-------|------|---------|-------------|
 | `backend` | `local` or `postgres` | local when the block is omitted | Required discriminator in every explicit block |
 | `namespace` | string | - | Required, nonempty, slash-free PostgreSQL state-address namespace |
-| `lock_timeout_seconds` | integer | `30` | PostgreSQL lock wait, from 1 through 300 seconds |
+| `lock_timeout_seconds` | integer | `30` | PostgreSQL initializer advisory-lock and catalog lock wait, from 1 through 300 seconds |
 | `postgres.dsn_env` | string | - | Required environment-variable name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 | `postgres.schema` | string | `streamt` | Unquoted schema name matching `^[A-Za-z_][A-Za-z0-9_]*$` |
 
@@ -121,14 +121,28 @@ the provider, after `.env`, `.env.<environment>`, and the real environment have
 been applied. Validation, compilation, and offline plan do not read it.
 
 !!! warning "PostgreSQL is administrative-only"
-    With the optional `postgres` package extra, `state status` can inspect an
-    existing exact version-1 store in a bounded, repeatable-read, read-only
-    transaction. A missing extra, DSN, invalid connection policy, unavailable
-    database, or incompatible store fails with a secret-neutral state error.
-    Online plan, apply, and adopt still fail with
+    With the optional `postgres` package extra, `state status` inspects an exact
+    version-1 store in a bounded, repeatable-read, read-only transaction.
+    `state init` is the sole PostgreSQL administrative write: it requires exact
+    project, effective-environment, and canonical-address confirmations and can
+    create or register only an empty address. A missing extra, DSN, invalid
+    connection policy, unavailable database, or incompatible store fails with
+    a secret-neutral state error. Online plan, apply, and adopt still fail with
     `E420_STATE_BACKEND_UNAVAILABLE` and never fall back to local state.
-    `state init`, mutation, migration, recovery, and lock-availability probing
-    remain deferred.
+    Ownership mutation, migration, recovery, ordinary operation locking, and
+    lock-availability probing remain deferred.
+
+!!! note "PostgreSQL roles and catalog security"
+    The initializer identity owns a newly created schema and all seven state
+    tables, and must own a pre-existing empty schema. Initialization revokes all
+    table access from `PUBLIC` and, for a newly created schema, all schema access
+    from `PUBLIC`. It never creates roles or grants privileges. The exact
+    catalog requires one common schema/table owner and rejects every `PUBLIC`
+    ACL; a named status role may have only non-grantable schema `USAGE` and
+    non-grantable table or column `SELECT`. Any mutating or grantable non-owner
+    ACL fails closed. Both administrative paths set the transaction-local
+    `search_path` to `pg_catalog`, and all state objects use validated,
+    schema-qualified identifiers.
 
 In multi-environment mode, a root `deployment_state` is inherited when the
 selected environment omits the block. An environment block replaces the whole

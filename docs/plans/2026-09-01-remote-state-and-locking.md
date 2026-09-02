@@ -7,14 +7,16 @@ the existing local path or allowing concurrent runners to mutate infrastructure
 from the same prior snapshot. The normative boundary is
 `docs/specs/remote-deployment-state.md`.
 
-## Status — 2026-09-01
+## Status — 2026-09-02
 
 Slices 1 through 3 and the Slice 4A configuration/policy boundary are
 complete. Slice 4A landed in `2b75090`, building on the read-only local status
-command from `0e04112`. Slice 4B is the next boundary: explicit PostgreSQL
-store initialization and read-only diagnostics. Normal PostgreSQL state reads
-and mutations for `plan`, `apply`, and `adopt` remain deliberately disabled
-until the full backend and operation protocol pass later acceptance gates.
+command from `0e04112`. Slice 4B now includes explicit PostgreSQL store/address
+initialization, read-only diagnostics, and PostgreSQL 14/18 real-server and
+process-concurrency gates. The non-reserving lock-availability probe remains.
+Normal PostgreSQL state reads and mutations for `plan`, `apply`, and `adopt`
+remain deliberately disabled until the full backend and operation protocol pass
+later acceptance gates.
 
 ## Current implementation audit
 
@@ -175,8 +177,8 @@ boundary, whole-block environment replacement, environment-only remote-state
 policy, central redaction coverage, and safe administrative command boundary
 are implemented. Local remains the only ordinary state provider. PostgreSQL
 ordinary selection deliberately returns a sanitized unavailable error with no
-local fallback. `state init` and lock-availability probing remain Slice 4B
-work.
+local fallback. At that boundary, `state init` and lock-availability probing
+were reserved for Slice 4B.
 
 1. Add strict `deployment_state` models to base and environment configuration.
 2. Support `local` and `postgres` tagged shapes. Local is the default. Reject
@@ -200,13 +202,14 @@ Acceptance:
 
 ### Slice 4B: PostgreSQL initialization and diagnostics
 
-Progress: the first read-only administrative boundary is complete in
-`81c97fc`. The optional Psycopg dependency, strict version-1 schema contract,
-bounded read-only `state status` snapshot, TLS/endpoint policy, size caps,
-secret-neutral failure translation, and no-fallback CLI wiring are implemented.
-Initialization, lock probing, real-PostgreSQL process tests, and the CI service
-matrix remain before Slice 4B is complete. Ordinary PostgreSQL authority stays
-disabled.
+Progress: read-only status landed in `81c97fc`, explicit initialization in
+`dacb74b`, and PostgreSQL 14/18 conformance CI in `e620d42`. The optional
+Psycopg dependency, strict version-1 schema/owner/ACL contract, bounded
+read-only `state status` snapshot, confirmation-gated `state init`,
+TLS/endpoint policy, size caps, secret-neutral failure translation, no-fallback
+CLI wiring, and separate-process initialization convergence are implemented.
+The status lock probe remains before Slice 4B is complete. Ordinary PostgreSQL
+authority stays disabled.
 
 This slice makes a configured PostgreSQL store administratively inspectable;
 it does not make PostgreSQL the state authority for normal commands. Keep
@@ -225,21 +228,29 @@ accidentally.
    current ownership/control rows, and append-only state/operation history.
    Validate the configured schema identifier separately, compose identifiers
    with Psycopg SQL objects, parameterize every value, and persist ownership
-   payloads as canonical JSON text rather than database-normalized JSON.
-3. Add explicit `streamt state init` for PostgreSQL only. Require the exact
-   canonical address and environment confirmation. In one serializable
-   transaction, take the store initialization lock, require an empty schema or
-   an exactly compatible version-1 store, create one random immutable
-   `store_id`, register the current address and lock-key mapping, and leave
-   ownership absent with no active operation. Do not import local state,
-   migrate populated stores, or grant roles implicitly.
+   payloads as canonical JSON text rather than database-normalized JSON. The
+   exact catalog requires one common schema/table owner, rejects every `PUBLIC`
+   ACL, and permits named status roles only non-grantable schema `USAGE` and
+   non-grantable table or column `SELECT`.
+3. Add explicit `streamt state init` for PostgreSQL only. Require exact parsed
+   project, effective environment, and canonical address confirmations. Before
+   starting the serializable transaction, take a bounded schema-scoped session
+   advisory lock so a concurrent waiter begins from a fresh post-lock snapshot.
+   Require an absent schema, an empty schema owned by the init identity, or an
+   exactly compatible version-1 store. Create one random immutable `store_id`,
+   register the current address and collision-checked lock-key mapping, and
+   leave ownership absent with clear operation control. Do not import local
+   state, migrate populated stores, create roles, or grant privileges.
 4. Make initialization exactly idempotent for the same compatible store and
-   address. Reject a nonempty unowned schema, partial installation,
-   incompatible schema version, store/address mismatch, and hash-key collision
-   without repairing or adopting them. After commit, open a fresh connection
-   and verify store ID, version, address, and empty control state. Never retry
-   an ambiguous commit; return a stable unknown-outcome error and direct the
-   operator to rerun status/init, whose identity checks make the retry safe.
+   empty address. Permit an exact compatible store to register a previously
+   unregistered address. Reject a nonempty unknown schema, partial installation,
+   populated or active target address, incompatible schema version,
+   owner/ACL drift, store/address mismatch, and hash-key collision without
+   repairing or adopting them. Precommit-validate the complete catalog and
+   rows. After commit, open a fresh connection and verify store ID, version,
+   address, absent ownership, and clear control state. Never retry an ambiguous
+   commit; return a stable unknown-outcome error and direct the operator to
+   rerun status/init, whose identity checks make the retry safe.
 5. Extend `state status` through the administrative adapter. Read metadata,
    current ownership, and operation control in one bounded, read-only,
    repeatable-read transaction and report only safe fields. Distinguish
@@ -250,21 +261,29 @@ accidentally.
    backend key, connection detail, or imply that the racy probe reserves the
    lock for a later command.
 7. Set connection, statement, and lock timeouts; enforce TLS policy and the
-   state-read size cap; close/rollback on every failure path. Redact DSNs,
-   usernames, passwords, hosts, query parameters, SQL, schema names, server
-   messages, and raw driver exceptions from text, JSON, logs, and chained
-   command errors.
+   state-read size cap; set transaction-local `search_path` to `pg_catalog`;
+   qualify state objects explicitly; and close/rollback on every failure path.
+   Revoke all `PUBLIC` access from every created table and from a newly created
+   schema. Redact DSNs, usernames, passwords, hosts, query parameters, SQL,
+   schema names, server messages, and raw driver exceptions from text, JSON,
+   logs, and chained command errors.
 
 Acceptance:
 
 - Initializing an empty schema twice returns the same store ID and creates no
   duplicate metadata, address, control, or history rows. Concurrent
   initialization produces one compatible store, not two authorities.
-- A valid existing version-1 store is an idempotent no-op; a partial, populated
-  unknown, or unsupported-version schema fails without mutation.
+- The same valid version-1 store/address is an idempotent no-op; a new address
+  can be registered only with absent ownership and clear control. A partial or
+  unknown populated schema, populated/active address, unsupported version,
+  owner mismatch, or forbidden ACL fails without mutation.
 - A simulated connection loss before commit leaves no store. A loss during or
   after commit is reported as unknown, is never retried automatically, and a
   fresh diagnostic/init invocation resolves the actual durable result.
+- A poisoned connection `search_path` cannot shadow catalog functions. Every
+  table shares its schema owner; `PUBLIC` has no access; a named status reader
+  works with non-grantable `USAGE`/`SELECT`; mutating or grantable non-owner ACL
+  and owner drift fail closed.
 - Status performs no writes. Its snapshot cannot combine metadata, ownership,
   and control from different commits, and oversized or malformed state fails
   closed without returning resource content.
@@ -283,13 +302,14 @@ ownership for mutating commands, operation transitions, apply/adopt selection,
 local-to-remote migration, recovery, export, automatic schema upgrade, role
 granting, force unlock, and destructive administration.
 
-Expected implementation surface: the optional dependency metadata, a focused
+Implemented surface: the optional dependency metadata, focused
 `src/streamt/deployer/postgres_state.py` administrative adapter, narrow wiring
 in `src/streamt/cli/commands/state_cmd.py`, unit tests for SQL composition and
 failure translation, CLI init/status tests, process-level PostgreSQL
-integration tests, and the PostgreSQL CI service matrix. Do not alter the
-ordinary state-service factory beyond tests that prove PostgreSQL selection
-remains disabled.
+integration tests, and the PostgreSQL CI service matrix. The remaining lock
+probe belongs in this same narrow adapter. Do not alter the ordinary
+state-service factory beyond tests that prove PostgreSQL selection remains
+disabled.
 
 ### Slice 5: PostgreSQL mutation backend
 

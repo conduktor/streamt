@@ -82,8 +82,10 @@ Local snapshots are isolated by environment at
 exclusive environment operation lock from their authoritative state read
 through live observation and state commit; apply also holds it through runtime
 mutation and rollback. This closes the prior same-host stale-serial mutation
-race. It is not a distributed lock, does not record durable operation intent,
-and cannot identify an interrupted mutation after a crash.
+race. A strict control sidecar records durable intent before mutation, ordered
+progress, and conservative recovery-required state, so an interrupted mutation
+blocks later local apply/adopt. The file lock is still not distributed, and the
+recovery command is not implemented.
 
 ## Planning algorithm
 

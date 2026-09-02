@@ -31,16 +31,27 @@ be `python -m pip install streamt`.
 
 The base package currently includes the client dependencies used for Kafka,
 Flink, Schema Registry, Kafka Connect, and Conduktor Gateway. Integration-
-specific dependencies for read-only PostgreSQL deployment-state status are
-kept in an optional extra:
+specific dependencies for PostgreSQL deployment-state administration are kept
+in an optional extra:
 
 ```bash
 python -m pip install "streamt[postgres] @ git+https://github.com/conduktor/streamt.git@main"
 ```
 
 The base package continues to support local deployment state without Psycopg.
-The PostgreSQL extra does not enable PostgreSQL plan/apply/adopt or mutation;
-it only enables the separately gated `streamt state status` reader.
+The PostgreSQL extra enables the bounded `streamt state status` reader and the
+separately gated, confirmation-required `streamt state init` administrator. It
+does not enable PostgreSQL plan/apply/adopt, ownership-state mutation, or
+operation locking.
+
+Initialization requires an explicit DSN endpoint and a database identity that
+can create the configured schema, or that already owns the configured empty
+schema. TLS is required by default for non-loopback endpoints. streamt creates
+no roles and grants no privileges: provision the initializer identity and any
+status-only identity outside streamt. A status-only identity may have only
+non-grantable `USAGE` on the schema and non-grantable `SELECT` on its state
+tables or columns. `PUBLIC` access, mutating or grantable reader privileges, and
+mixed schema/table ownership fail catalog verification.
 
 ## Development Installation
 

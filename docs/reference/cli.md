@@ -19,6 +19,7 @@ Complete reference for all streamt CLI commands.
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
 | Compare local vs deployed state | `diff` | **Yes** |
+| Initialize configured PostgreSQL state | `state init` | No |
 | Inspect ownership/recovery metadata | `state status` | No |
 | Claim an existing declared topic or schema subject | `adopt` | **Yes** |
 | Deploy to infrastructure | `apply` | **Yes** |
@@ -795,6 +796,72 @@ orders_raw (source)
 
 ---
 
+### state init
+
+Explicitly initialize the configured PostgreSQL version-1 store and register
+one empty canonical address. This is an administrative command, not ordinary
+deployment-state authority.
+
+```bash
+streamt state init [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Target environment (reads `STREAMT_ENV` if omitted) |
+| `--confirm-project NAME` | Exact parsed project name |
+| `--confirm-env ENV` | Exact effective environment, including `default` |
+| `--confirm-address URI` | Exact `streamt-state://<namespace>/<project>/<environment>` address |
+
+All three confirmation values are required and must match exactly. A mismatch
+fails before the initializer is constructed or a database connection is
+opened. For example:
+
+```bash
+streamt state init -p . -e prod \
+  --confirm-project payments \
+  --confirm-env prod \
+  --confirm-address streamt-state://platform/payments/prod
+```
+
+When the configured schema is absent, init creates the frozen seven-table
+version-1 catalog, one immutable random store ID, the requested address and its
+collision-checked advisory-lock mapping, and a clear operation-control row.
+When the schema already exists but is empty, the initializer identity must own
+it. An exact compatible store can register a previously unregistered empty
+address. Repeating init for the same compatible, empty address is a no-op.
+
+The structured `outcome` is `initialized`, `address_registered`, or
+`already_initialized`. Every successful result reports the safe store ID,
+schema version, canonical address, absent ownership state, clear operation
+status, and `ordinary_state_authority: disabled`. Init never imports local
+state, repairs a partial catalog, migrates a populated store, or enables
+PostgreSQL plan/apply/adopt.
+
+Initialization is serialized by a bounded schema-scoped session advisory lock.
+After acquiring it, streamt begins a fresh serializable transaction, sets the
+transaction-local `search_path` to `pg_catalog`, creates and precommit-validates
+the complete result, commits once, and verifies the result through a fresh
+read-only connection. A failure before commit rolls the transaction back. An
+ambiguous commit is never retried automatically; run `state status` or repeat
+the identical confirmed init to resolve the durable result.
+
+For a newly created schema, init revokes all schema access from `PUBLIC`; it
+revokes all table access from `PUBLIC` for every table it creates. It creates no
+roles and grants no privileges. The exact catalog requires one common owner for
+the schema and tables. A named status role may have only non-grantable schema
+`USAGE` and non-grantable table or column `SELECT`; every `PUBLIC`, mutating, or
+grantable non-owner ACL is rejected. Partial catalogs, owner/ACL drift, extra
+objects, populated or active target addresses, incompatible versions, and
+advisory-lock-key collisions fail closed without repair.
+
+Incompatible state uses `E411_STATE_INVALID`. Missing dependencies or
+credentials, connection failures, and unknown commit outcomes use the
+secret-neutral `E420_STATE_BACKEND_UNAVAILABLE`; no local fallback occurs.
+
+---
+
 ### state status
 
 Inspect safe configured ownership-state and operation-control metadata without
@@ -829,9 +896,12 @@ endpoint, SQL, raw driver errors, or ownership payload. An absent schema is
 `uninitialized`; an initialized store can report an unregistered, absent, or
 present address. Missing dependencies or credentials, incompatible stores, and
 connection failures use sanitized state errors and never fall back to local.
-PostgreSQL remains unavailable to ordinary plan/apply/adopt. `state init`,
-recovery, migration, mutation, and remote lock-availability probing are not
-implemented.
+Catalog verification also requires common schema/table ownership, no `PUBLIC`
+ACL, and no non-owner access beyond non-grantable schema `USAGE` and table or
+column `SELECT`. The read-only transaction sets `search_path` to `pg_catalog`
+and uses schema-qualified state objects. PostgreSQL remains unavailable to
+ordinary plan/apply/adopt. Recovery, migration, ownership mutation, ordinary
+operation locking, and remote lock-availability probing are not implemented.
 
 ```bash
 streamt state status -p . -e prod

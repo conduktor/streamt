@@ -121,9 +121,26 @@ The configuration contains only the DSN environment-variable name. Its value
 is read when an online command constructs the selected provider, after
 `.env`, `.env.<environment>`, and the real process environment are applied.
 Offline plan and validation do not read it. With the optional `postgres`
-package extra, `state status` can inspect an existing exact version-1 store;
-ordinary PostgreSQL plan/apply/adopt and every mutation remain unavailable and
-fail safely without falling back to local state.
+package extra, `state status` can inspect an exact version-1 store and the
+confirmation-gated `state init` command can create or register an empty address.
+Ordinary PostgreSQL plan/apply/adopt, ownership mutation, and operation locking
+remain unavailable and fail safely without falling back to local state.
+
+Initialization confirmations bind to the effective environment after the
+whole-block precedence rules above have been applied. For a project named
+`payments`, the inherited `platform` namespace, and the `prod` environment:
+
+```bash
+streamt state init -p . -e prod \
+  --confirm-project payments \
+  --confirm-env prod \
+  --confirm-address streamt-state://platform/payments/prod
+```
+
+All three confirmations must match exactly. Without a selected environment,
+the effective environment and required confirmation are `default`. Normal
+commands never initialize a store implicitly, and no CLI flag can replace the
+configured state backend.
 
 ## CLI Usage
 

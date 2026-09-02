@@ -4,12 +4,13 @@
 
 Partially implemented safety contract. The provider-neutral state boundary,
 local version 1 JSON provider, strict provider configuration, and safe status
-command are implemented. PostgreSQL has a separate optional read-only
-administrative status adapter with strict version-1 catalog verification; it
-is not selectable as ordinary state authority. Remote mutation and locking are
-not operational until an implementation satisfies this specification and its
-conformance tests. Local JSON remains the only ordinary provider and the
-compatibility default for single-user development.
+command are implemented. PostgreSQL has a separate optional administrative
+adapter for strict read-only status and explicit, confirmation-gated version-1
+store/address initialization; it is not selectable as ordinary state authority.
+Remote ownership mutation and operation locking are not operational until an
+implementation satisfies this specification and its conformance tests. Local
+JSON remains the only ordinary provider and the compatibility default for
+single-user development.
 
 ## Scope
 
@@ -308,10 +309,38 @@ must use a dedicated schema with:
 - Strict primary/unique keys over namespace, project, and environment.
 - Parameterized values and a separately validated SQL schema identifier.
 
-Initialization is explicit and idempotent for an empty compatible schema. The
-runtime role should have only the DML and lock privileges needed by streamt;
-schema migration uses a separate administrative role. Unsupported database
-schema versions fail closed.
+Initialization is explicit. A missing schema is created; a pre-existing empty
+schema must be owned by the initializer identity. In either case streamt creates
+the frozen seven-table version-1 catalog, one immutable random store ID, the
+requested collision-checked address mapping, absent ownership, and clear
+operation control in one transaction. An exact compatible store may register a
+previously unregistered empty address, while repeating initialization for the
+same compatible empty address is an idempotent no-op. It never imports local
+state or adopts, repairs, or migrates a populated target. Partial catalogs,
+extra objects, populated or active target addresses, unsupported versions,
+identity mismatch, and address-lock-key collision fail closed.
+
+PostgreSQL object ownership and ACLs are part of catalog conformance. The schema
+and all seven tables must have one common owner. `PUBLIC` may have no schema,
+table, or column privilege. Named status roles may hold only non-grantable
+`USAGE` on the schema and non-grantable `SELECT` on tables or columns; mutating
+or grantable non-owner access is rejected. For a newly created schema,
+initialization revokes all schema access from `PUBLIC`, and it revokes all table
+access from `PUBLIC` after every table creation, neutralizing unsafe `PUBLIC`
+default table privileges. streamt creates no roles and issues no grants; role
+creation and allowed status-reader grants remain an external DBA operation.
+There is no ordinary PostgreSQL runtime role yet; any later DML/lock role and
+schema-migration role contract must land with the mutation backend rather than
+weakening this administrative catalog implicitly.
+
+Status and initialization set transaction-local `search_path` to `pg_catalog`.
+All state-object identifiers are validated and schema-qualified. Initialization
+takes a bounded schema-scoped session advisory lock before beginning its
+serializable transaction, so a concurrent waiter starts from a fresh snapshot
+after the prior initializer commits. The complete result is validated before
+commit and again through a fresh read-only connection afterward. A precommit
+failure rolls back DDL and rows together. An ambiguous commit is not retried;
+the operator resolves it with status or the identical confirmed init request.
 
 State size has a configured hard limit checked before mutation. The provider
 must set statement and lock timeouts, require TLS for non-loopback endpoints by
@@ -326,7 +355,7 @@ plus a best-effort lock file does not meet this contract.
 Use `deployment_state` to avoid confusion with Flink application state:
 
 ```yaml
-# Read-only status is available; PostgreSQL state authority is not.
+# Administrative init/status are available; PostgreSQL state authority is not.
 deployment_state:
   backend: postgres
   namespace: platform
@@ -361,11 +390,11 @@ provider without a command-line override.
 The parser validates only the `dsn_env` name. Its value is resolved after
 `.env`, `.env.<environment>`, and the real process environment have been
 applied, and only when an online command constructs the provider. Validation,
-compilation, and offline planning neither require nor read the DSN. The
-read-only PostgreSQL status adapter requires the optional package extra and an
-explicit endpoint in the DSN, enforces TLS for non-loopback connections, and
-returns only secret-neutral failures. Ordinary plan/apply/adopt still fail with
-a sanitized backend-unavailable error and never fall back to local state.
+compilation, and offline planning neither require nor read the DSN. PostgreSQL
+administration requires the optional package extra and an explicit endpoint in
+the DSN, enforces TLS for non-loopback connections, and returns only
+secret-neutral failures. Ordinary plan/apply/adopt still fail with a sanitized
+backend-unavailable error and never fall back to local state.
 
 State backend selection belongs to effective environment configuration and
 cannot be overridden by `plan`, `apply`, or `adopt` flags. This prevents an
@@ -373,18 +402,30 @@ operator from accidentally planning against one authority and applying against
 another. The reviewed state reference also detects endpoint changes through the
 remote store ID.
 
-The implemented read-only administrative command is:
+The implemented administrative commands are:
 
 ```text
+streamt state init -p PATH -e ENV \
+  --confirm-project PROJECT \
+  --confirm-env ENV \
+  --confirm-address streamt-state://NAMESPACE/PROJECT/ENV
 streamt state status -p PATH -e ENV
 ```
+
+`init` is PostgreSQL-only and requires all three confirmations to exactly match
+the parsed project, effective environment, and canonical address. Confirmation
+failure occurs before initializer construction or a database connection. A
+successful structured result reports one of `initialized`,
+`address_registered`, or `already_initialized`, plus only the safe store ID,
+schema version, address, absent ownership, clear operation status, and disabled
+ordinary-authority boundary.
 
 For PostgreSQL, `status` uses a separate administrative adapter and one bounded,
 repeatable-read, read-only snapshot. It verifies the exact version-1 catalog
 and reports backend kind, store ID, address, serial, checksum, and safe
 operation status without credentials, endpoint details, SQL, raw exceptions,
-or ownership payload. Lock-availability probing, `init`, ordinary state
-authority, mutation, `migrate`, `recover`, and `export` remain deferred. Normal
+or ownership payload. Lock-availability probing, ordinary state authority,
+ownership mutation, `migrate`, `recover`, and `export` remain deferred. Normal
 commands never initialize or migrate a remote store implicitly.
 
 The environment-only `safety.require_remote_state` policy defaults to `false`.
@@ -402,6 +443,10 @@ documented config migration and release notice.
   fingerprint.
 - Never expose usernames, passwords, hosts, query parameters, lock tokens,
   database exception detail, SQL text, or provider response bodies by default.
+- Use a dedicated initializer identity that owns the configured schema. Keep it
+  out of status-only and ordinary deployment jobs. Provision status roles
+  externally with only the non-grantable `USAGE`/`SELECT` ACL accepted by the
+  exact catalog; streamt never creates or grants a database role.
 - Map provider failures to stable sanitized errors. Detailed diagnostics, when
   explicitly enabled, still pass through central key, URL, authorization, and
   inline-value redaction.

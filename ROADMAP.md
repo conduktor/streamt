@@ -133,6 +133,12 @@ Target: close the loop between declared intent and runtime evidence.
       authority for plan/apply/adopt.
 - [x] Add optional, bounded, read-only PostgreSQL `state status` inspection
       with strict version-1 catalog verification and secret-neutral failures.
+- [x] Add explicit, confirmation-gated PostgreSQL `state init` with atomic
+      version-1 catalog creation, restrictive ACL validation, idempotent address
+      registration, fresh read-back verification, and PostgreSQL 14/18
+      process-concurrency gates. PostgreSQL remains unavailable as the authority
+      for plan/apply/adopt.
+- [ ] Add the non-reserving PostgreSQL operation-lock availability probe.
 - [ ] Add remote state, locking, state migration, and recovery documentation for
       installations that retain direct apply.
 - [ ] Add curated, validated connector profiles after the connector contract is
