@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -213,6 +215,64 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
     ):
         getattr(kafka, method).assert_not_called()
     kafka.close.assert_called_once_with()
+
+
+def test_adoption_holds_operation_lock_during_observation_and_confirmation(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    artifact = _topic()
+    kafka = _kafka()
+    current = kafka.get_topic_state.return_value
+    events: list[str] = []
+
+    def observe(*_args: object, **_kwargs: object) -> TopicState:
+        events.append("live-observation")
+        return current
+
+    def confirm(**_kwargs: object) -> None:
+        events.append("confirmation")
+
+    @contextmanager
+    def operation_lock(path: Path) -> Iterator[MagicMock]:
+        events.append("lock-enter")
+        lock = MagicMock()
+
+        def save(state: LocalState, *, expected_serial: int) -> None:
+            assert expected_serial == 0
+            events.append("state-save")
+            state.save(path)
+
+        lock.save_if_serial.side_effect = save
+        try:
+            yield lock
+        finally:
+            events.append("lock-exit")
+
+    kafka.get_topic_state.side_effect = observe
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(artifact), kafka)
+    with (
+        compiler_patch,
+        kafka_patch,
+        patch(
+            "streamt.cli.commands.adopt.local_state_operation_lock",
+            side_effect=operation_lock,
+        ),
+        patch(
+            "streamt.cli.commands.adopt._require_confirmation",
+            side_effect=confirm,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 0, result.output
+    assert events == [
+        "lock-enter",
+        "live-observation",
+        "confirmation",
+        "state-save",
+        "lock-exit",
+    ]
 
 
 @pytest.mark.parametrize("mode", ["external", "managed"])

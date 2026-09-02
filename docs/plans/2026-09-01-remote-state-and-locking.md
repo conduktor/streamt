@@ -15,8 +15,12 @@ The current local implementation has a sound single-host commit primitive:
   resource identities, record fields, and duplicate JSON keys.
 - State is isolated at `.streamt/state/<environment>.json`.
 - `save()` writes, flushes, fsyncs, and atomically replaces the target.
-- `save_if_serial()` takes an adjacent `flock`, reloads the current serial, and
-  only writes `expected_serial + 1`.
+- `apply` and `adopt` take an adjacent environment `flock` before their final
+  state read and retain it through live observation and ownership persistence;
+  apply also retains it through runtime mutation and rollback.
+- `save_if_serial()` uses that same typed lock boundary for standalone CAS
+  writes, while an already-held operation lock can perform the CAS without
+  reacquiring and deadlocking.
 - `plan`, `apply`, and `adopt` load the same environment-scoped state.
 - Reviewed plans bind to the state serial; apply replans live actions.
 - Failed applies and completed rollback paths do not advance state.
@@ -25,13 +29,11 @@ The current local implementation has a sound single-host commit primitive:
 
 The remaining gaps are material:
 
-- The `flock` is held only during the final state write, after runtime mutations
-  have already happened. Two local processes can both act from the same prior
-  snapshot; the loser detects the serial conflict only after mutation.
 - `apply` computes `next_state` before runtime actions and writes after them,
   with no durable operation intent or recovery marker.
-- `adopt` observes and confirms before taking the final write lock, so live or
-  ownership state can change between review and commit.
+- Local adoption holds the operation lock while interactive confirmation is
+  pending. This preserves authoritative evidence but can intentionally block a
+  second same-host mutator until the prompt completes.
 - State access is coupled to paths and `LocalState` methods rather than a
   provider-neutral application service.
 - A plan records only `state_serial`, not the state checksum, backend instance,
@@ -105,6 +107,12 @@ Acceptance:
 ### Slice 3: exclusive local operation protocol
 
 This slice closes the existing same-host race before adding remote state.
+
+Progress: the operation-wide local lock in step 1 is implemented for apply and
+adoption, including process-contention, exception-release, lock-ordering, and
+non-reentrant-CAS tests. The version 1 ownership JSON is unchanged. Steps 2-6
+remain open, so interrupted operations are not durably discoverable and this
+must not be described as crash recovery or distributed locking.
 
 1. Hold the local address lock from the final state read through live replan,
    runtime apply/adoption commit, and state persistence.

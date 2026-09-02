@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,7 @@ from streamt.deployer.state import (
     StateError,
     artifact_checksum,
     load_local_state,
+    local_state_operation_lock,
     local_state_path,
     resource_id,
 )
@@ -601,6 +603,7 @@ def adopt(
     kafka = None
     schema_registry = None
     data: dict[str, object] = {}
+    operation_stack = ExitStack()
 
     try:
         parser_environment = (
@@ -663,6 +666,11 @@ def adopt(
             project_path,
             environment=effective_environment,
         )
+        state_operation_lock = operation_stack.enter_context(
+            local_state_operation_lock(state_path)
+        )
+        # Adoption intentionally keeps the local lock across observation and
+        # confirmation so the approved evidence remains authoritative.
         prior_state = load_local_state(
             project_path,
             project=project.project.name,
@@ -797,8 +805,8 @@ def adopt(
             resources=resources,
         )
         try:
-            next_state.save_if_serial(
-                state_path,
+            state_operation_lock.save_if_serial(
+                next_state,
                 expected_serial=prior_state.serial,
             )
         except StateConflictError as exc:
@@ -863,4 +871,7 @@ def adopt(
         fmt.flush()
         raise click.exceptions.Exit(1) from exc
     finally:
-        close_deployers(schema_registry, kafka)
+        try:
+            close_deployers(schema_registry, kafka)
+        finally:
+            operation_stack.close()

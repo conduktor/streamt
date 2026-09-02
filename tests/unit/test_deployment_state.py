@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
+from typing import Protocol
 from unittest.mock import patch
 
 import pytest
@@ -22,10 +24,31 @@ from streamt.deployer.state import (
     StateVersionError,
     artifact_checksum,
     desired_managed_records,
+    local_state_operation_lock,
     local_state_path,
     resource_id,
     updated_local_state,
 )
+
+
+class _ProcessEvent(Protocol):
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
+
+
+def _hold_operation_lock(
+    state_path: str,
+    attempting: _ProcessEvent,
+    entered: _ProcessEvent,
+    release: _ProcessEvent,
+) -> None:
+    """Process target used to prove flock contention, not thread serialization."""
+    attempting.set()
+    with local_state_operation_lock(Path(state_path)):
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("test did not release local operation lock")
 
 
 def _record(
@@ -146,6 +169,76 @@ class TestStatePersistence:
         replacement = _state(serial=2)
 
         replacement.save_if_serial(path, expected_serial=1)
+
+        assert LocalState.load(path).serial == 2
+
+    def test_operation_lock_serializes_mutators_across_processes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = local_state_path(tmp_path, environment="prod")
+        context = multiprocessing.get_context("spawn")
+        first_attempting = context.Event()
+        first_entered = context.Event()
+        first_release = context.Event()
+        second_attempting = context.Event()
+        second_entered = context.Event()
+        second_release = context.Event()
+        second_release.set()
+        first = context.Process(
+            target=_hold_operation_lock,
+            args=(str(path), first_attempting, first_entered, first_release),
+        )
+        second = context.Process(
+            target=_hold_operation_lock,
+            args=(str(path), second_attempting, second_entered, second_release),
+        )
+
+        first.start()
+        try:
+            assert first_attempting.wait(5)
+            assert first_entered.wait(5)
+            second.start()
+            assert second_attempting.wait(5)
+            assert not second_entered.wait(0.25)
+
+            first_release.set()
+            assert second_entered.wait(5)
+            first.join(5)
+            second.join(5)
+            assert first.exitcode == 0
+            assert second.exitcode == 0
+        finally:
+            first_release.set()
+            second_release.set()
+            for process in (first, second):
+                if process.pid is not None and process.is_alive():
+                    process.terminate()
+                if process.pid is not None:
+                    process.join(5)
+
+    def test_operation_lock_releases_after_exception(self, tmp_path: Path) -> None:
+        path = local_state_path(tmp_path, environment="prod")
+
+        with (
+            pytest.raises(RuntimeError, match="mutation failed"),
+            local_state_operation_lock(path),
+        ):
+            raise RuntimeError("mutation failed")
+
+        with local_state_operation_lock(path):
+            pass
+
+    def test_operation_lock_cas_save_does_not_reacquire_or_deadlock(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = local_state_path(tmp_path, environment="prod")
+        _state(serial=1).save(path)
+        replacement = _state(serial=2)
+
+        with local_state_operation_lock(path) as operation_lock:
+            operation_lock.save_if_serial(replacement, expected_serial=1)
 
         assert LocalState.load(path).serial == 2
 

@@ -8,9 +8,12 @@ safe, advertised CLI paths work, and the roadmap is enforced by tests and CI.
 ## Status — 2026-09-01
 
 - Milestone A immediate safety stop: implemented. Environment-scoped local
-  ownership state is now persisted after successful direct applies, with local
-  writer locking and explicit topic adoption. Remote state, distributed
-  locking, broader adoption, and an explicit destroy workflow remain.
+  ownership state is now persisted after successful direct applies, with an
+  operation-wide same-host lock and explicit topic adoption. The lock covers
+  the final state read, live re-observation, mutation, and state commit, closing
+  the old local stale-serial race. Durable operation/recovery markers, remote
+  state, distributed locking, broader adoption, and an explicit destroy
+  workflow remain.
 - Milestone B strict public contract: implemented with `streamt.dev/v1alpha1`
   and parser-backed documentation validation.
 - Milestone C CLI reliability: the broken observe and sample-test paths are

@@ -234,6 +234,16 @@ and the exact live resource, repeats confirmation-context checks, then writes
 only the ownership record. A stale confirmation or changed resource fails
 closed. Topic or subject APIs are never mutated.
 
+The current local-only compatibility path takes a stricter, simpler approach:
+it acquires the same-host operation lock before its authoritative observation
+and keeps that lock while an interactive confirmation prompt is open. A second
+local mutator therefore waits instead of observing the same prior serial. This
+behavior is intentional until the durable operation protocol can safely
+support confirmation before lock acquisition followed by under-lock
+re-observation. Operators should prefer the non-interactive exact-resource and
+environment confirmation flags in automation. This local path still has no
+durable operation marker or cross-host exclusion.
+
 ## Operation and recovery records
 
 Operation metadata is control-plane metadata outside the version 1 ownership

@@ -78,7 +78,12 @@ Local state is acceptable for development but must warn that it is unsuitable
 for shared CI. A production direct-apply backend requires remote state and
 locking. External deployment backends may use their own state authority.
 Local snapshots are isolated by environment at
-`.streamt/state/<environment>.json`.
+`.streamt/state/<environment>.json`. On one host, `apply` and `adopt` hold an
+exclusive environment operation lock from their authoritative state read
+through live observation and state commit; apply also holds it through runtime
+mutation and rollback. This closes the prior same-host stale-serial mutation
+race. It is not a distributed lock, does not record durable operation intent,
+and cannot identify an interrupted mutation after a crash.
 
 ## Planning algorithm
 

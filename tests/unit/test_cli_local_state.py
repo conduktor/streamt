@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,11 +18,28 @@ from streamt.deployer.kafka import TopicChange, TopicState
 from streamt.deployer.plan_file import ReviewedPlanFile
 from streamt.deployer.state import (
     LocalState,
+    LocalStateOperationLock,
     ManagedResourceRecord,
     artifact_checksum,
+    load_local_state,
+    local_state_operation_lock,
     local_state_path,
     resource_id,
 )
+
+
+class _RecordingOperationLock:
+    def __init__(
+        self,
+        delegate: LocalStateOperationLock,
+        events: list[str],
+    ) -> None:
+        self._delegate = delegate
+        self._events = events
+
+    def save_if_serial(self, state: LocalState, *, expected_serial: int) -> None:
+        self._events.append("state-save")
+        self._delegate.save_if_serial(state, expected_serial=expected_serial)
 
 
 def _write_project(path: Path) -> None:
@@ -158,6 +177,78 @@ def test_first_apply_persists_state_and_repeat_plan_has_update_authority(
     assert payload["data"]["ownership_requirements"] == []
     assert payload["warnings"][0]["code"] == "W106_LOCAL_STATE_ONLY"
     assert "not yet supported" in payload["warnings"][0]["message"]
+
+
+def test_apply_holds_operation_lock_from_final_state_read_through_mutation_and_save(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    manifest = _manifest(_topic("payments.clean.v1", owner="payments_clean"))
+    kafka = _kafka(exists=False)
+    events: list[str] = []
+    original_plan_topic = kafka.plan_topic.side_effect
+
+    def plan_topic(artifact: TopicArtifact) -> TopicChange:
+        events.append("live-plan")
+        return original_plan_topic(artifact)
+
+    def apply_topic(_artifact: TopicArtifact) -> str:
+        events.append("runtime-mutation")
+        return "created"
+
+    def read_state(
+        project_path: Path,
+        *,
+        project: str,
+        environment: str,
+    ) -> LocalState:
+        events.append("state-read")
+        return load_local_state(
+            project_path,
+            project=project,
+            environment=environment,
+        )
+
+    @contextmanager
+    def operation_lock(path: Path) -> Iterator[_RecordingOperationLock]:
+        events.append("lock-enter")
+        with local_state_operation_lock(path) as delegate:
+            try:
+                yield _RecordingOperationLock(delegate, events)
+            finally:
+                events.append("lock-exit")
+
+    kafka.plan_topic.side_effect = plan_topic
+    kafka.apply_topic.side_effect = apply_topic
+    with (
+        patch("streamt.compiler.Compiler.compile", return_value=manifest),
+        patch(
+            "streamt.cli.commands.apply.make_kafka_deployer",
+            return_value=kafka,
+        ),
+        patch(
+            "streamt.cli.commands.apply.local_state_operation_lock",
+            side_effect=operation_lock,
+        ),
+        patch(
+            "streamt.cli.commands.apply.load_local_state",
+            side_effect=read_state,
+        ),
+    ):
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path)],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert events == [
+        "lock-enter",
+        "state-read",
+        "live-plan",
+        "runtime-mutation",
+        "state-save",
+        "lock-exit",
+    ]
 
 
 def test_saved_online_plan_rejects_changed_state_serial(tmp_path: Path) -> None:

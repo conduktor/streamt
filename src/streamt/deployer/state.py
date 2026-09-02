@@ -13,7 +13,8 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -51,6 +52,67 @@ class StateIdentityError(StateError):
 
 class StateConflictError(StateError):
     """Persisted state changed after a caller loaded its prior snapshot."""
+
+
+class LocalStateOperationLock:
+    """Exclusive same-host lock for one environment's complete mutation.
+
+    Mutating commands hold this boundary from their authoritative state read
+    through live observation, runtime mutation, and state persistence.  This
+    lock is intentionally local-only; it is neither a distributed lock nor a
+    durable recovery marker.
+    """
+
+    def __init__(self, state_path: Path) -> None:
+        self.state_path = Path(state_path)
+        self.lock_path = self.state_path.with_name(f".{self.state_path.name}.lock")
+        self._fd: int | None = None
+
+    def __enter__(self) -> LocalStateOperationLock:
+        if self._fd is not None:
+            raise RuntimeError("local state operation lock is already held")
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(lock_fd)
+            raise
+        self._fd = lock_fd
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        lock_fd = self._fd
+        if lock_fd is None:
+            return
+        self._fd = None
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+    def save_if_serial(
+        self,
+        state: LocalState,
+        *,
+        expected_serial: int,
+    ) -> None:
+        """CAS-save while retaining this operation-wide lock."""
+        if self._fd is None:
+            raise RuntimeError("local state operation lock is not held")
+        state._save_if_serial_locked(
+            self.state_path,
+            expected_serial=expected_serial,
+        )
+
+
+@contextmanager
+def local_state_operation_lock(
+    state_path: Path,
+) -> Iterator[LocalStateOperationLock]:
+    """Acquire the exclusive local mutation boundary for one state address."""
+    with LocalStateOperationLock(state_path) as lock:
+        yield lock
 
 
 def _require_segment(value: object, label: str) -> str:
@@ -322,6 +384,14 @@ class LocalState:
 
     def save_if_serial(self, path: Path, *, expected_serial: int) -> None:
         """Lock, compare the current serial, and atomically save this snapshot."""
+        with local_state_operation_lock(path) as operation_lock:
+            operation_lock.save_if_serial(
+                self,
+                expected_serial=expected_serial,
+            )
+
+    def _save_if_serial_locked(self, path: Path, *, expected_serial: int) -> None:
+        """Compare-and-save while the caller retains the operation lock."""
         if type(expected_serial) is not int or expected_serial < 0:
             raise StateFormatError("expected_serial must be a non-negative integer")
         if self.serial != expected_serial + 1:
@@ -330,30 +400,20 @@ class LocalState:
             )
 
         path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = path.with_name(f".{path.name}.lock")
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            if path.exists():
-                current_serial = LocalState.load(
-                    path,
-                    expected_project=self.project,
-                    expected_environment=self.environment,
-                ).serial
-            else:
-                current_serial = 0
-            if current_serial != expected_serial:
-                raise StateConflictError(
-                    f"state serial changed from {expected_serial} to {current_serial}; "
-                    "reload state and produce a fresh plan"
-                )
-            self.save(path)
-        finally:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            finally:
-                os.close(lock_fd)
+        if path.exists():
+            current_serial = LocalState.load(
+                path,
+                expected_project=self.project,
+                expected_environment=self.environment,
+            ).serial
+        else:
+            current_serial = 0
+        if current_serial != expected_serial:
+            raise StateConflictError(
+                f"state serial changed from {expected_serial} to {current_serial}; "
+                "reload state and produce a fresh plan"
+            )
+        self.save(path)
 
     @classmethod
     def load(

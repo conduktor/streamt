@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional, cast
 
@@ -30,6 +31,7 @@ from streamt.deployer.state import (
     StateError,
     StateFormatError,
     load_local_state,
+    local_state_operation_lock,
     local_state_path,
     updated_local_state,
 )
@@ -160,6 +162,7 @@ def apply(
         fmt.flush()
         sys.exit(1)
 
+    operation_stack = ExitStack()
     try:
         parser = ProjectParser(
             project_path,
@@ -288,13 +291,18 @@ def apply(
             if isinstance(parsed_environment, str) and parsed_environment
             else "default"
         )
+        state_path = local_state_path(
+            project_path,
+            environment=effective_environment,
+        )
+        state_operation_lock = operation_stack.enter_context(
+            local_state_operation_lock(state_path)
+        )
+        # This is the authoritative state read.  The operation lock remains
+        # held through live re-planning, runtime mutation, and state commit.
         prior_state = load_local_state(
             project_path,
             project=project.project.name,
-            environment=effective_environment,
-        )
-        state_path = local_state_path(
-            project_path,
             environment=effective_environment,
         )
         fmt.print_warning(
@@ -551,8 +559,8 @@ def apply(
 
             if next_state is not None:
                 try:
-                    next_state.save_if_serial(
-                        state_path,
+                    state_operation_lock.save_if_serial(
+                        next_state,
                         expected_serial=prior_state.serial,
                     )
                 except OSError as error:
@@ -597,3 +605,5 @@ def apply(
         fmt.print_error(f"Cannot connect: {e}")
         fmt.flush()
         sys.exit(1)
+    finally:
+        operation_stack.close()
