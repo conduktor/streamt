@@ -12,6 +12,18 @@ from streamt.core.errors import ErrorCode
 from streamt.output import get_output_format_from_context
 
 
+def _dag_records(value: object, label: str) -> list[dict[str, object]]:
+    """Validate one list-shaped DAG serialization field."""
+    if not isinstance(value, list):
+        raise TypeError(f"DAG {label} must be a list")
+    records: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise TypeError(f"DAG {label} entries must be mappings")
+        records.append(item)
+    return records
+
+
 @click.command()
 @click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
 @click.option(
@@ -108,13 +120,15 @@ def lineage(
 
         # Filter dag_data if we have a subset
         if nodes_to_show is not None:
+            dag_nodes = _dag_records(dag_data.get("nodes"), "nodes")
+            dag_edges = _dag_records(dag_data.get("edges"), "edges")
             dag_data["nodes"] = [
-                n for n in dag_data.get("nodes", []) if n.get("name") in nodes_to_show
+                node for node in dag_nodes if node.get("name") in nodes_to_show
             ]
             dag_data["edges"] = [
-                e
-                for e in dag_data.get("edges", [])
-                if e.get("from") in nodes_to_show and e.get("to") in nodes_to_show
+                edge
+                for edge in dag_edges
+                if edge.get("from") in nodes_to_show and edge.get("to") in nodes_to_show
             ]
 
         fmt.set_data(dag_data)
