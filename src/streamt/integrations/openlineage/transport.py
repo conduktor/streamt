@@ -6,7 +6,7 @@ import math
 import re
 import stat
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 import yaml
 from pydantic import SecretStr
-from yaml.nodes import MappingNode
+from yaml.nodes import MappingNode, Node
 from yaml.tokens import (
     AliasToken,
     AnchorToken,
@@ -92,9 +92,10 @@ def _construct_unique_mapping(
     deep: bool = False,
 ) -> dict[str, object]:
     loader.flatten_mapping(node)
+    construct_object: Callable[[Node, bool], object] = loader.construct_object
     result: dict[str, object] = {}
     for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)  # type: ignore[no-untyped-call]
+        key = construct_object(key_node, deep)
         if not isinstance(key, str):
             raise yaml.constructor.ConstructorError(
                 "while constructing an OpenLineage configuration",
@@ -109,10 +110,7 @@ def _construct_unique_mapping(
                 "duplicate mapping key",
                 key_node.start_mark,
             )
-        result[key] = loader.construct_object(  # type: ignore[no-untyped-call]
-            value_node,
-            deep=deep,
-        )
+        result[key] = construct_object(value_node, deep)
     return result
 
 
