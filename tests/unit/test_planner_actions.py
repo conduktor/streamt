@@ -371,3 +371,31 @@ def test_ambiguous_prior_identity_fails_closed() -> None:
         match="ambiguous ownership identity",
     ):
         planner.planned_actions(plan)
+
+
+def test_duplicate_canonical_action_identity_fails_closed() -> None:
+    planner = _planner(LocalState(project="payments", environment="prod"))
+    first = TopicArtifact(
+        name="runtime-topic-first",
+        partitions=1,
+        replication_factor=1,
+        ownership=_ownership("shared_logical_topic"),
+    )
+    second = TopicArtifact(
+        name="runtime-topic-second",
+        partitions=1,
+        replication_factor=1,
+        ownership=_ownership("shared_logical_topic"),
+    )
+    plan = DeploymentPlan(
+        topic_changes=[
+            TopicChange(topic=first.name, action="create", desired=first),
+            TopicChange(topic=second.name, action="create", desired=second),
+        ]
+    )
+
+    with pytest.raises(
+        StateIdentityError,
+        match="duplicate canonical action identity",
+    ):
+        planner.planned_actions(plan)

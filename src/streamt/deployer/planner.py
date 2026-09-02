@@ -1961,6 +1961,22 @@ class DeploymentPlanner:
             ),
             upsert_actions=("create", "update"),
         )
+
+        seen_resource_ids: set[str] = set()
+        for planned_action in actions:
+            identity = ResourceIdentity.parse(planned_action.resource_id)
+            if (
+                identity.project != self.project_name
+                or identity.environment != self.environment
+            ):
+                raise StateIdentityError(
+                    "planned action identity belongs to another state address"
+                )
+            if planned_action.resource_id in seen_resource_ids:
+                raise StateIdentityError(
+                    "deployment plan contains duplicate canonical action identity"
+                )
+            seen_resource_ids.add(planned_action.resource_id)
         return actions
 
     def apply(
