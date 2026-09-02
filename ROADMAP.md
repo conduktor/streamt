@@ -99,9 +99,11 @@ plane.
       and version metadata.
 - [x] Export offline-validated OpenLineage 1.53.0 static `DatasetEvent` and
       `JobEvent` design metadata as deterministic JSONL.
-- [ ] Emit opt-in OpenLineage `RunEvent` telemetry for finite streamt commands;
-      this must not be presented as deployed Flink, Gateway, or Connect runtime
-      telemetry.
+- [x] Emit opt-in OpenLineage `RunEvent` telemetry for finite `streamt test`
+      invocations without presenting it as deployed Flink, Gateway, or Connect
+      runtime telemetry.
+- [ ] Emit opt-in OpenLineage `RunEvent` telemetry across the durable
+      `streamt apply` operation boundary.
 - [ ] Publish catalog metadata to Conduktor Console and support portable exports
       for Backstage/DataHub-style catalogs.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.

@@ -678,8 +678,12 @@ streamt test [OPTIONS]
 | `--env ENV` | Target environment (multi-env mode) |
 | `--model MODEL` | Test specific model only |
 | `--type TYPE` | Filter by type: `schema`, `sample`, `continuous` |
-| `--deploy` | Deploy continuous tests as Flink jobs |
+| `--deploy` | Reserved deployment path; currently warns and runs locally without OpenLineage emission |
 | `--coverage` | Show test coverage report (which models have tests) |
+| `--emit-openlineage` | Emit one validated finite command-run lifecycle through an explicit transport |
+| `--openlineage-job-namespace NAMESPACE` | Job namespace; falls back to `OPENLINEAGE_NAMESPACE` |
+| `--openlineage-kafka-namespace KAFKA-URI` | Sample-input namespace; falls back to `STREAMT_OPENLINEAGE_KAFKA_NAMESPACE` or safe Kafka bootstrap derivation |
+| `--openlineage-gateway-namespace KAFKA-URI` | Validated shared Gateway namespace option; test inputs still use Kafka because the runner consumes `runtime.kafka` |
 
 **Examples:**
 
@@ -696,9 +700,24 @@ streamt test --type schema
 # Test specific model
 streamt test --model orders_clean
 
-# Deploy continuous monitoring
+# Emit a finite command lifecycle using an explicitly configured transport
+streamt test --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
+
+# Reserved deployment path; currently warns and runs locally
 streamt test --deploy
 ```
+
+OpenLineage emission is strictly opt-in and requires File or HTTP transport
+configuration. One non-empty invocation uses a new UUIDv4 and attempts START
+plus exactly one COMPLETE, FAIL, or ABORT event. Only selected sample-test
+topics appear as Kafka inputs; schema and continuous tests contribute no
+dataset input. Coverage, an empty selection, and `--deploy` emit no run.
+Preflight construction/configuration failures use
+`E506_OPENLINEAGE_INVALID` before the runner starts. Delivery or close failures
+use `W112_OPENLINEAGE_EMIT_FAILED` without changing the test output or exit
+status. This lifecycle describes the finite streamt invocation, not completion
+of a deployed streaming job. See [OpenLineage integration](openlineage.md).
 
 **Output:**
 
@@ -1238,10 +1257,11 @@ serialized before event output begins. Failures use
 
 This command exports static `DatasetEvent` and `JobEvent` records from one
 dry-run compile. It performs no live-service or deployment-state reads and does
-not emit `RunEvent` records. Ordinary compile/apply/test commands and deployed
-Flink, Gateway, or Connect processes do not currently emit OpenLineage
-telemetry. See [OpenLineage static export](openlineage.md) for exact mapping,
-namespace, validation, and security boundaries.
+not emit `RunEvent` records. Separately, `test --emit-openlineage` supports a
+finite command-run pair through an explicit File or HTTP transport. Ordinary
+compile/apply and deployed Flink, Gateway, or Connect processes do not emit
+OpenLineage telemetry. See [OpenLineage integration](openlineage.md) for exact
+mapping, transport, namespace, validation, and security boundaries.
 
 #### docs openapi
 
@@ -1492,6 +1512,7 @@ When using `--output json`, errors include machine-readable codes. These codes f
 | `W109_ODCS_SCHEMA_INCOMPLETE` | A source or model has no declared columns, so its ODCS object omits properties |
 | `W110_OPENLINEAGE_SCHEMA_INCOMPLETE` | A dataset has no declared columns, so its OpenLineage event omits the schema facet |
 | `W111_OPENLINEAGE_SINK_OUTPUT_OMITTED` | A sink job has no normalized OpenLineage output dataset |
+| `W112_OPENLINEAGE_EMIT_FAILED` | A finite command started, but OpenLineage START, terminal, or transport-close delivery failed without changing command truth |
 | `W201_SQL_PARSE_WARNING` | Non-fatal SQL parsing issue |
 | `W202_UNUSED_SOURCE` | Defined source not referenced by any model |
 | `W203_SOURCE_NO_COLUMNS` | Source has no column definitions |

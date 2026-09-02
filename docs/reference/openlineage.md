@@ -1,13 +1,15 @@
-# OpenLineage static export
+# OpenLineage integration
 
 `streamt docs openlineage` emits deterministic OpenLineage 1.53.0 design
 metadata for one successfully compiled streamt project. It writes one
 `DatasetEvent` or `JobEvent` JSON object per line and validates the complete
 event sequence before any event bytes are written.
 
-This is a static metadata export. It does not connect to Kafka, Schema
-Registry, Flink, Connect, Gateway administration, deployment state, an
-OpenLineage backend, or any other network service.
+The static command does not connect to Kafka, Schema Registry, Flink, Connect,
+Gateway administration, deployment state, an OpenLineage backend, or any other
+network service. Separately, `streamt test --emit-openlineage` can send a
+validated finite command lifecycle through an explicitly configured bounded
+File or HTTP transport.
 
 ## Complete project example
 
@@ -148,6 +150,89 @@ total/dataset/job `counts`; it also contains `output_file` when requested.
 Warnings remain in the envelope's top-level `warnings` array and are not
 duplicated under `data`.
 
+## Finite test-command run events
+
+Runtime emission requires an explicit flag; transport environment variables
+alone never enable it:
+
+```bash
+streamt test --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
+```
+
+The four runtime options are `--emit-openlineage`,
+`--openlineage-job-namespace`, `--openlineage-kafka-namespace`, and
+`--openlineage-gateway-namespace`. Namespace options override the same
+environment values used by static export. Project `.env` files are applied
+first. Sample tests consume `runtime.kafka`, so their dataset identity always
+uses the Kafka namespace, never the Gateway namespace.
+
+One non-empty selected invocation creates one aggregate job named
+`streamt/{project-segment}/commands/test`, one random UUIDv4 run, and job type
+`BATCH` / `STREAMT` / `TEST`. Its inputs are the sorted unique physical topics
+actually consumed by the selected sample tests. Schema and continuous tests
+may participate in the aggregate run but add no dataset inputs. Coverage, an
+empty selection, and the reserved `--deploy` path open no transport and claim
+no run.
+
+streamt validates START and every possible terminal shape before constructing
+the test runner, then attempts START immediately before execution. Every result
+passing produces COMPLETE; a non-passing result or uncaught execution exception
+produces FAIL; interruption produces ABORT. The pair keeps the same run, job,
+facets, and inputs. FAIL contains only a fixed generic error-message facet—test
+assertion details, SQL, configuration, and credentials are never copied.
+
+## Runtime transport configuration
+
+Runtime emission requires either an explicit UTF-8 YAML file named by
+`OPENLINEAGE_CONFIG` or the exact supported nested environment fields. This
+local append-only File configuration writes one durably synchronized JSON event
+per line:
+
+```yaml
+# streamt:skip
+transport:
+  type: file
+  log_file_path: /var/log/streamt/openlineage.jsonl
+```
+
+```bash
+OPENLINEAGE_CONFIG=/etc/streamt/openlineage.yml \
+  streamt test --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
+```
+
+An HTTP transport can instead be supplied entirely by the environment:
+
+```bash
+export OPENLINEAGE__TRANSPORT__TYPE=http
+export OPENLINEAGE__TRANSPORT__URL=https://lineage.example
+export OPENLINEAGE__TRANSPORT__ENDPOINT=api/v1/lineage
+export OPENLINEAGE__TRANSPORT__TIMEOUT=5
+export OPENLINEAGE__TRANSPORT__VERIFY=true
+export OPENLINEAGE__TRANSPORT__RETRY__TOTAL=1
+```
+
+Optional API-key authentication requires HTTPS plus
+`OPENLINEAGE__TRANSPORT__AUTH__TYPE=api_key` and
+`OPENLINEAGE__TRANSPORT__AUTH__APIKEY` supplied by the process secret manager.
+The URL must contain no credentials. Certificate verification cannot be
+disabled; plain HTTP is accepted only for loopback; redirects, proxy and
+`.netrc` inheritance, and adapter-level retries are disabled. Timeout is at
+most five seconds, and total retry count is zero or one.
+
+Only File and synchronous HTTP are supported. Console, Kafka, composite,
+asynchronous, remote-filesystem, and custom Python transports are rejected, as
+are legacy `OPENLINEAGE_URL` and `OPENLINEAGE_API_KEY`. An explicit
+`OPENLINEAGE_DISABLED=true` conflicts with `--emit-openlineage`.
+
+Namespace, event, and transport preflight failures are fatal
+`E506_OPENLINEAGE_INVALID` errors before samples are consumed. After START is
+attempted, delivery and close are best effort: failures add the bounded,
+secret-neutral `W112_OPENLINEAGE_EMIT_FAILED` warning without changing a real
+pass/fail result, exit code, or original exception. There is no required-
+delivery mode or durable outbox.
+
 ## Validation and security boundary
 
 Every generated event validates offline against the bundled official
@@ -166,12 +251,13 @@ location when available; no partial event stream is emitted.
 
 ## Intentional non-support
 
-Static export does not emit `RunEvent` records. Ordinary `compile`, `plan`,
-`apply`, and `test` commands do not emit OpenLineage telemetry, and streamt does
-not claim lifecycle telemetry for deployed Flink, Gateway, Kafka Connect, or
-topic processes. Transport configuration, backend delivery, field lineage,
-live schema enrichment, connector-specific sink datasets, catalog sync, and
-round-trip editing remain unsupported.
+Static export does not emit `RunEvent` records. Ordinary `compile`, `plan`, and
+`apply` do not emit OpenLineage telemetry. Runtime command events are currently
+limited to explicitly enabled finite `test` invocations, and streamt does not
+claim lifecycle telemetry for deployed Flink, Gateway, Kafka Connect, or topic
+processes. Apply telemetry, field lineage, live schema enrichment, connector-
+specific sink datasets, catalog sync, round-trip editing, required delivery,
+and transports beyond File/HTTP remain unsupported.
 
 See the [normative integration contract](../specs/openlineage-integration.md)
 for the complete event, facet, identity, and future-runtime design.

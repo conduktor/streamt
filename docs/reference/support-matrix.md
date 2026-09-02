@@ -15,7 +15,7 @@ production-safe stateful upgrades are not implemented.
 | PostgreSQL deployment state | No | Read-only store, address, ownership, and operation-control status | No | Requires the optional `postgres` package extra. Status verifies the exact version-1 catalog in one bounded read-only snapshot. Initialization, lock probing, ordinary state authority, mutation, migration, and recovery remain disabled. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
 | Open Data Contract Standard (ODCS) | ODCS 3.1.0 project-wide schema export | No | No | One parsed project becomes one offline-validated contract containing every declared source and model. Quality, SLA, team, role, server, import, catalog publication, runtime enrichment, and per-model documents are not supported. |
-| OpenLineage | OpenLineage 1.53.0 static `DatasetEvent` and `JobEvent` JSONL export | No | No | Design metadata is validated offline against pinned official core/facet schemas plus local identity invariants. Ordinary compile/apply/test commands and deployed Flink, Gateway, and Connect processes emit no `RunEvent` telemetry. No backend transport is configured. |
+| OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` `RunEvent` pairs | No | No | Static metadata and command events are validated offline against pinned official schemas plus local invariants. Explicit bounded File/HTTP transports are supported. `apply` and deployed Flink, Gateway, and Connect processes emit no telemetry. |
 
 ## Not supported as deployment backends
 
@@ -35,8 +35,8 @@ unlock:
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
-4. OpenLineage command-run telemetry, Conduktor Console metadata publication,
-   and portable catalog exports.
+4. OpenLineage durable apply-command telemetry, Conduktor Console metadata
+   publication, and portable catalog exports.
 5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
    actions for runtime policy evaluation.
 

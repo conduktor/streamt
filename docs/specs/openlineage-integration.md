@@ -2,14 +2,14 @@
 
 ## Status
 
-The design-time `DatasetEvent` and `JobEvent` export is supported against its
-executable acceptance gates. The remaining normative contract for narrowly
-scoped streamt command telemetry is proposed and must not be described as
-supported until its separate acceptance requirements are executable.
+The design-time `DatasetEvent` and `JobEvent` export and the explicitly enabled
+finite `test` command `RunEvent` lifecycle are supported against executable
+acceptance gates. The remaining normative contract for durable `apply` command
+telemetry is proposed and must not be described as supported until its separate
+acceptance requirements are executable.
 
-The first implementation is static export. Runtime command events are separate
-later slices. Neither static export nor command telemetry is deployed Apache
-Flink runtime telemetry.
+Neither static export nor finite command telemetry is deployed Apache Flink
+runtime telemetry.
 
 ## Purpose
 
@@ -22,7 +22,8 @@ The integration exposes only those facts:
 
 - design-time `DatasetEvent` records for declared Kafka datasets;
 - design-time `JobEvent` records for declared streamt model processes;
-- later, finite `RunEvent` pairs for streamt's own `apply` and `test` commands.
+- finite `RunEvent` pairs for explicitly enabled `test` commands;
+- later, finite `RunEvent` pairs across durable `apply` operations.
 
 The integration does not infer deployed Flink run identity, completion, record
 counts, connector destination identities, or data-processing facts that streamt
@@ -95,7 +96,7 @@ field-lineage slice is implemented, it must separately pin this artifact:
 | ordinary `compile` | None | Compilation remains local and side-effect free |
 | `plan` | None | A desired/live diff is not a data-processing run |
 | `apply --emit-openlineage` | Later `RunEvent` pair | The finite streamt control-plane command, not deployed Flink |
-| `test --emit-openlineage` | Later `RunEvent` pair | The finite streamt test invocation |
+| `test --emit-openlineage` | Supported `RunEvent` pair | The finite streamt test invocation |
 | `observe` and `status` | None | Flink status and IDs do not establish an OpenLineage run cycle |
 | deployed Flink, Gateway, or Connect process | None | streamt does not observe a correlated runtime lifecycle |
 
