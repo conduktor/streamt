@@ -2,7 +2,7 @@
 
 ## Status and release boundary
 
-Status: Package 6 remains in progress. The strict compiled-artifact parser,
+Status: Package 6 is complete. The strict compiled-artifact parser,
 versioned Gateway binding, pure desired aggregate, reusable strict two-list
 snapshot, immutable observations and fingerprints, normalized change model,
 desired/prior collision gates, online/offline planner integration, canonical
@@ -15,14 +15,17 @@ also complete: versioned rule-name plus current/desired aggregate evidence is
 written on the durable pre-mutation `OperationAction`, exact legacy control and
 recovery-plan shapes remain compatible, and reviewed recovery resolves Gateway
 create, update, and delete outcomes from one bounded two-list snapshot. Package
-6 is still not complete: local and PostgreSQL reviewed-command E2E,
-installed-wheel, focused real Gateway gates, and an explicit ordinary
-delete-source/broad-discovery contract remain pending. Gateway adoption remains
-unsupported.
+6 now also has an explicit ordinary delete-source contract: strict lifecycle
+tombstones, exact state preflight, one-snapshot planning, reviewed-plan v4
+action evidence, destructive authorization, mutation, state projection, and
+recovery reuse are enabled. Local and PostgreSQL 14/18 command lifecycles,
+uncertain-delete recovery, isolated installed-wheel execution, and focused real
+Gateway 3.15 exact deletion pass. Gateway adoption remains unsupported and is
+the separate Package 7 boundary.
 
 This specification freezes the implementation contract for Package 6 of the
 [extended resource adoption plan](2026-09-02-extended-resource-adoption.md).
-Package 6 is not complete, and Gateway adoption remains unsupported.
+Package 6 is complete, while Gateway adoption remains unsupported.
 
 The work is intentionally staged. The public `streamt adopt` choices must not
 include `gateway_rule` until the normalized aggregate is used by planning,
@@ -39,8 +42,8 @@ working happy-path command is not enough to cross that boundary.
 | Normalized change model and collision gates | Complete | Fingerprint-only evidence plus desired and prior-state collision rejection are shipped. |
 | Planner, state, and reviewed-plan presentation | Complete | Online/offline planning, one reusable online snapshot, canonical state projection, and secret-neutral CLI rendering are shipped. |
 | Status and health | Complete | All selected rules derive normalized status and health from one reusable strict snapshot with secret-neutral drift evidence. |
-| Exact apply, delete, and rollback | Complete bounded slice | The managed mutation core and planner routing require canonical aggregate evidence; rollback is limited to exact reviewed creates, and normalized deletion is representable only from a complete present surface, not broad discovery. |
-| Reviewed recovery | Complete bounded unit/model/runtime slice | Durable current/desired action evidence, legacy compatibility, preflight identity/state binding, one bounded snapshot across desired and explicitly removed targets, and exact create/update/delete current-or-candidate decisions are shipped. Local/PostgreSQL reviewed-command E2E, installed-wheel, and real Gateway release gates remain pending. |
+| Exact apply, delete, and rollback | Complete | The managed mutation core and planner routing require canonical aggregate evidence; rollback is limited to exact reviewed creates, and explicit removal is sourced only from a strict lifecycle tombstone and complete present surface, never broad discovery. |
+| Reviewed recovery | Complete | Durable current/desired action evidence, legacy compatibility, preflight identity/state binding, one bounded snapshot across desired and explicitly removed targets, and exact create/update/delete current-or-candidate decisions pass local, PostgreSQL 14/18, installed-wheel, and real-Gateway release gates. |
 | Alias-only adoption | Planned after Package 6 | The CLI kind remains unsupported. |
 
 This specification covers Conduktor Gateway API v2 AliasTopic and Interceptor
@@ -411,13 +414,11 @@ automatically.
 
 ## Stage 8: exact apply, delete, and rollback
 
-Component status: complete for the exact mutation core and planner
-apply/delete/rollback routing, with rollback limited to exact creates from the
-reviewed plan. The normalized delete change model is complete only for an
-already established exact present aggregate. Reviewed recovery for an explicit
-durable delete is complete in the bounded Stage 9 slice. Ordinary delete
-candidate sourcing and any broader discovery contract remain outside this
-shipped slice, so Package 6 is not complete.
+Component status: complete. Exact mutation and planner apply/delete/rollback
+routing require reviewed aggregate evidence, with rollback limited to exact
+creates from the reviewed plan. Ordinary deletion is sourced only from an exact
+lifecycle tombstone and an already established complete present aggregate.
+Deletion by absence and broader discovery remain unsupported.
 
 Mutation APIs accept the exact desired/current aggregate or an equally strict
 locator object. A bare logical rule name is not enough to mutate Gateway.
@@ -441,9 +442,8 @@ documented absence are distinguished correctly.
 ### Gateway 3.15 provider evidence
 
 Live mutation probes established the following exact provider behavior. This is
-frozen evidence behind the shipped bounded Stage 8 implementation, not a claim
-that broad ordinary delete discovery, the remaining durable workflow release
-gates, or adoption are complete:
+frozen evidence behind the shipped Stage 8 implementation, not a claim that
+broad ordinary delete discovery or adoption is supported:
 
 - `PUT` returns HTTP 200 and the exact object `{resource, upsertResult}`;
   `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
@@ -477,15 +477,15 @@ provider configuration or credentials.
 
 ## Stage 9: reviewed recovery
 
-Component status: complete for the bounded unit/model/runtime slice. Durable
+Component status: complete. Durable
 current and desired Gateway surfaces are recorded before mutation. Recovery
 preflight binds the complete action list to the exact state address, prior state
 serial, and prior checksum before live planning. One fresh bounded Gateway
 snapshot covers manifest-backed desired targets and explicit removed targets,
 then exact surface evidence proves current or desired outcomes for create,
 update, and delete. Third-state, legacy, partial, duplicate, extra, or mismatched
-evidence fails closed. Local and PostgreSQL reviewed-command E2E,
-installed-wheel, and real Gateway release gates remain pending.
+evidence fails closed. Local and PostgreSQL 14/18 reviewed-command E2E,
+installed-wheel execution, and real Gateway 3.15 release gates pass.
 
 ### Durable action-evidence boundary
 
@@ -619,8 +619,7 @@ Recovery fails closed for:
 
 ### Staged implementation and test gates
 
-The bounded unit/model/runtime implementation gates are complete. The durable
-workflow release gate remains open:
+The implementation and durable workflow release gates are complete:
 
 1. **Strict model and compatibility — complete:** the immutable version-1 Gateway
    evidence value and optional `OperationAction.gateway_evidence`; accept only
@@ -650,8 +649,9 @@ workflow release gate remains open:
    coverage, focused real Gateway observation, lint, typing, unit, and strict
    documentation checks pass together.
 
-Local and PostgreSQL v2 reviewed-recovery gates must pass for the alias-only
-surface before Gateway adoption is added to `_SUPPORTED_ACTIONS` or the CLI.
+The required local and PostgreSQL v2 reviewed-recovery gates now pass. Gateway
+adoption remains absent from `_SUPPORTED_ACTIONS` and the CLI until the separate
+alias-only Stage 10 gates pass.
 
 ## Stage 10: alias-only adoption
 
@@ -709,9 +709,8 @@ Gateway service. Kafka health alone is not Gateway readiness.
 
 ## Completion checklist
 
-Package 6 remains in progress until all of these end-to-end integration gates
-are checked. Shipped foundation-component status above does not by itself check
-an integration gate:
+Package 6 is complete because all of these end-to-end integration gates are
+checked:
 
 - [x] Strict artifact parsing is shared by offline and live paths.
 - [x] Versioned endpoint and effective-vCluster binding is persisted everywhere.
@@ -732,16 +731,19 @@ an integration gate:
       one shared snapshot and rejects missing or mismatched action evidence.
 - [x] Only an explicit durable delete action can remove Gateway ownership state;
       manifest absence alone never does.
-- [ ] Complete the explicit ordinary non-recovery removal workflow. The strict
-      lifecycle DSL and separate compiled tombstone artifact have landed, but
-      pure state preflight, live planning, reviewed-plan v4, and ordinary apply
-      are not yet enabled. Manifest absence remains inert.
+- [x] Complete the explicit ordinary non-recovery removal workflow with strict
+      lifecycle tombstones, pure state preflight, one-snapshot live planning,
+      reviewed-plan v4, exact ordinary apply, and inert manifest absence.
 - [x] Local and PostgreSQL v2 recovery use the same aggregate and pass.
 - [x] Installed-wheel reviewed recovery and the focused real Gateway 3.15
       strict-observer gate pass.
+- [x] Local and PostgreSQL 14/18 ordinary reviewed removal, including uncertain
+      provider-result recovery, pass through their production state backends.
+- [x] The isolated installed-wheel removal workflow and focused real Gateway
+      3.15 exact-deletion gate pass.
 - [x] Unit, typing, lint, strict documentation, packaging, PostgreSQL, and real
-      Gateway observation checks pass together.
+      Gateway observation/deletion checks pass together.
 
-Package 7 remains planned until Package 6 is complete. Gateway adoption remains
-unsupported until the additional alias-only command, installed-wheel, local
+Package 7 is now the next planned implementation. Gateway adoption remains
+unsupported until its additional alias-only command, installed-wheel, local
 state, PostgreSQL v2, and real Gateway gates pass.

@@ -19,8 +19,8 @@ of resource identity. Delivery is deliberately ordered:
 This plan also records the implemented boundary; it is not by itself a broad
 production-readiness claim. Packages 1 through 5 are complete and the public
 `adopt` command accepts `topic`, `schema`, and the deliberately narrow
-`connector` slice. Package 6 is in progress; Package 7 and Gateway adoption
-remain planned.
+`connector` slice. Package 6 is complete; Package 7 and Gateway adoption remain
+planned.
 
 ## Current boundary
 
@@ -46,8 +46,8 @@ an explicit non-default cluster fails closed. An identical existing state claim
 returns after the first strict observation without confirmation or a state
 write. Flink does not yet provide enough exact provider evidence to enter this
 protocol safely. Gateway now has durable action evidence and exact bounded
-reviewed-recovery decisions, but its adoption command remains disabled until
-the Package 6 release gates and Package 7 command gates pass.
+reviewed-recovery decisions and has passed the Package 6 release gates, but its
+adoption command remains disabled until the Package 7 command gates pass.
 
 ## Cross-provider invariants
 
@@ -272,7 +272,7 @@ writer and operation history.
 
 ## Package 6: normalized scoped Gateway aggregate
 
-Status: in progress; adoption remains unsupported. The strict artifact parser,
+Status: complete; adoption remains unsupported. The strict artifact parser,
 versioned endpoint/vCluster binding, pure desired aggregate, reusable strict
 two-list snapshot, immutable observations and fingerprints, normalized change
 model, desired/prior collision gates, online/offline planner integration,
@@ -287,11 +287,16 @@ validates the complete intent first, observes manifest-backed and explicitly
 removed targets through one two-list snapshot, and proves exact current or
 desired create, update, and delete outcomes. Local and PostgreSQL reviewed
 recovery, installed-wheel execution, and the focused real Gateway 3.15 strict
-observer now pass. The compile-only explicit lifecycle tombstone has landed;
-Package 6 and adoption remain incomplete until ordinary removal preflight,
-one-snapshot planning, reviewed-plan v4, apply, and exact deletion gates pass.
-The staged contract and release gates are in the
-[Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
+observer now pass. The explicit ordinary removal implementation is complete:
+strict lifecycle tombstones, provider-free state preflight, one-snapshot live
+planning, reviewed-plan version 4 action evidence, destructive authorization,
+exact apply deletion, state projection, and recovery reuse are enabled. The
+local reviewed command lifecycle, PostgreSQL 14/18 ordinary-delete and
+uncertain-result recovery, isolated installed-wheel lifecycle, and focused real
+Gateway 3.15 exact-delete gate pass. This completes Package 6; adoption remains
+the separately gated Package 7. The
+[Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md)
+records the staged contract and release evidence.
 
 A Gateway rule is not one provider object. Its logical identity still uses
 `ownership.owner_name`, while its compound provider identity contains:
@@ -360,8 +365,7 @@ vCluster-only managed scope.
 
 Live Gateway 3.15 provider probes additionally established the following
 mutation contract. It is provider evidence behind the shipped exact mutation
-core, not a claim that broad ordinary delete discovery, the remaining durable
-workflow release gates, or adoption are complete:
+core, not a claim that broad ordinary delete discovery or adoption is supported:
 
 - `PUT` returns HTTP 200 with the exact object shape `{resource, upsertResult}`,
   where `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
@@ -384,8 +388,10 @@ discovery: it accepts one complete, present, bound observation and carries the
 exact alias and owned interceptor identities with fingerprint-only change
 evidence. It does not infer deletion from an absent manifest entry or rediscover
 targets from a logical name, prefix, or legacy state record. Reviewed recovery
-can reconstruct only an explicitly recorded durable delete target; ordinary
-delete candidate sourcing remains a separate unresolved boundary.
+can reconstruct only an explicitly recorded durable delete target. Ordinary
+planning now sources that target only from an exact lifecycle tombstone. It
+still never treats manifest absence as deletion authority, and broad or
+prefix-based discovery remains deliberately unsupported.
 
 ### Durable recovery-evidence implementation
 

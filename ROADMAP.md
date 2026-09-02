@@ -85,10 +85,15 @@ to deploy anything.
         snapshot, and resolves exact create, update, and delete current/desired
         outcomes. Local and PostgreSQL reviewed-command E2E, installed-wheel
         recovery, and the focused real Gateway 3.15 observer gate now pass. The
-        compile-only lifecycle tombstone contract has landed; Package 6 and
-        Gateway adoption remain incomplete until its pure preflight, live
-        planning, reviewed-plan v4, and exact ordinary delete workflow pass the
-        [explicit Gateway removal gates](docs/plans/2026-09-02-gateway-explicit-removal.md).
+        explicit lifecycle-removal workflow is implemented end to end in source:
+        strict tombstones, provider-free state preflight, one-snapshot planning,
+        reviewed-plan v4, destructive authorization, exact deletion, state
+        projection, and recovery reuse. Its local, PostgreSQL 14/18, isolated
+        installed-wheel, and real Gateway 3.15 exact-deletion gates pass, so the
+        normalized Package 6 boundary is complete. Gateway adoption remains
+        unsupported and moves next through the deliberately alias-only Package 7
+        gates in the
+        [Gateway specification](docs/plans/2026-09-02-gateway-normalized-aggregate.md).
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.

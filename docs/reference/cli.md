@@ -449,9 +449,10 @@ streamt plan --env staging --out staging.plan.json
 Online planning reports ordered `safety_blockers` for Kafka partition
 reductions, incompatible schemas, and Flink job updates. A blocked plan still
 exits successfully and can be saved for review; its JSON data sets
-`is_apply_blocked: true`. Reviewed plan format version 3 includes these blockers
-and an exact ownership-state reference in its integrity checksum. Older version
-1 and 2 files are rejected with regeneration guidance.
+`is_apply_blocked: true`. Reviewed plan format version 4 includes these blockers,
+an exact ownership-state reference, and canonical ordered action evidence in its
+integrity checksum. Version 1 through 3 files cannot authorize apply and are
+rejected with regeneration guidance.
 
 **Output:**
 
@@ -491,7 +492,7 @@ streamt apply [OPTIONS]
 | `--dry-run` | Show what would be deployed |
 | `--confirm` | Skip confirmation prompt for protected environments |
 | `--confirm-env ENV` | Non-interactive confirm: pass environment name to verify (for agents/CI) |
-| `--force` | Allow destructive operations in protected environments |
+| `--force` | Allow destructive operations when environment policy does not already permit them |
 
 **Examples:**
 
@@ -531,6 +532,32 @@ ownership state, resource actions, or ownership decisions. Offline plans record
 `state: null` and cannot authorize apply.
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
+
+#### Remove an exact Gateway rule
+
+Gateway removal is an explicit reviewed workflow. Declare one exact
+`lifecycle.gateway_rule_removals` tombstone using the prior compiler-level
+artifact fields shown in the
+[YAML reference](yaml-schema.md#explicit-gateway-rule-removals), then create an
+online plan and apply that exact plan:
+
+```bash
+streamt plan --env prod --out gateway-removal.plan.json
+streamt apply --env prod --plan gateway-removal.plan.json --confirm-env prod --force
+```
+
+The tombstone always requires a fresh online reviewed plan, even in an
+unprotected environment. Direct `apply`, direct `apply --dry-run`, offline plan
+files, and `apply` combined with `--target` or `--select` cannot authorize the
+removal. An actual delete also requires `--force` unless the environment sets
+`safety.allow_destructive: true`; an exact reviewed already-absent no-op does not
+need that destructive override.
+
+streamt deletes only the exact live AliasTopic and owned Interceptors bound by
+the tombstone, reviewed action evidence, and ownership state. Removing a model
+or omitting a rule does not request deletion, and streamt does not discover
+Gateway deletion candidates by prefix or cluster-wide search. Gateway adoption
+remains unsupported.
 
 Online JSON plan output also includes `operation_status`, containing only safe
 status, operation ID/kind, stable failure code, and last safely successful

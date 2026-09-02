@@ -2,10 +2,12 @@
 
 ## Status and decision
 
-Status: planned. This plan defines the remaining ordinary, non-recovery delete
-source for Package 6 of the
+Status: complete. Slices 1 through 7 provide and validate the ordinary,
+non-recovery delete source for Package 6 of the
 [Gateway normalized aggregate specification](2026-09-02-gateway-normalized-aggregate.md).
-It does not mark Package 6 or Gateway adoption complete.
+Local and PostgreSQL 14/18 command lifecycles, uncertain-delete recovery, an
+isolated installed-wheel workflow, and real Gateway 3.15 exact deletion now
+pass. This completes Package 6; it does not enable Gateway adoption.
 
 The decision is to add an explicit project-level lifecycle tombstone. A
 Gateway delete candidate exists only when the current project contains that
@@ -610,27 +612,27 @@ and PostgreSQL recovery gates.
 
 | Area | Required evidence | Primary tests |
 | --- | --- | --- |
-| DSL strictness | Exact spelling; empty list default; missing fields; unknown fields; null collections; author ownership/backend/endpoint rejected | `tests/unit/test_parser.py`, new `tests/unit/test_gateway_removal_dsl.py` |
+| DSL strictness | Exact spelling; empty list default; missing fields; unknown fields; null collections; author ownership/backend/endpoint rejected | `tests/unit/test_parser.py`, `tests/unit/test_gateway_removal_dsl.py` |
 | Compilation | Exact prior artifact and injected ownership; checksum equals last desired artifact; removal separate from desired rules/DAG | `tests/unit/test_compiler.py`, `tests/unit/test_compiled_gateway_artifact.py` |
 | Explicit-only source | Removing a model or manifest artifact produces no delete; inert state removal candidates remain inert | `tests/unit/test_deployment_state.py`, `tests/unit/test_planner_gateway_artifacts.py` |
-| Preflight | Owner/rule/alias divergence; checksum/backend/alias/ownership mismatch; legacy record; duplicate and desired/removal collisions all fail with zero Gateway reads | `tests/unit/test_planner_gateway_artifacts.py`, new `tests/unit/test_gateway_removal_preflight.py` |
-| Selection | Tombstone with `--target` or `--select` fails before deployer/provider access; unrelated selected apply remains non-destructive | `tests/unit/test_deployment_safety.py`, new CLI removal tests |
+| Preflight | Owner/rule/alias divergence; checksum/backend/alias/ownership mismatch; legacy record; duplicate and desired/removal collisions all fail with zero Gateway reads | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_gateway_removal_preflight.py` |
+| Selection | Tombstone with `--target` or `--select` fails before deployer/provider access; unrelated selected apply remains non-destructive | `tests/unit/test_deployment_safety.py`, `tests/unit/test_cli_gateway_removal_authorization.py` |
 | Bounded observation | One removal, many removals, and mixed desired/removal sets each make exactly two sequential list GETs | `tests/unit/test_planner_gateway_artifacts.py`, `tests/unit/test_gateway_runtime_foundation.py` |
-| Planning | Exact present aggregate produces delete; exact-prior/absent blocks; no-prior/absent no-ops; no-prior/present requires adoption | new `tests/unit/test_planner_gateway_removal.py` |
-| Reviewed plan | Version 4 contains exact ordered action evidence; state/manifest/runtime/action/aggregate drift rejects; versions 1-3 cannot authorize | `tests/unit/test_plan_file.py`, `tests/unit/test_safety_blockers.py` |
+| Planning | Exact present aggregate produces delete; exact-prior/absent blocks; no-prior/absent no-ops; no-prior/present requires adoption | `tests/unit/test_gateway_removal_planning.py` |
+| Reviewed plan | Version 4 contains exact ordered action evidence; state/manifest/runtime/action/aggregate drift rejects; versions 1-3 cannot authorize | `tests/unit/test_plan_file.py`, `tests/unit/test_safety_blockers.py`, `tests/unit/test_cli_plan_action_wiring.py` |
 | Secrecy | Endpoint, credentials, provider configuration, SQL, and physical addresses absent from plans, control, history, errors, and logs | `tests/unit/test_gateway_plan_secrecy.py`, removal CLI tests |
 | Exact mutation | Interceptors and alias deleted from reviewed current surface only; 404/result drift fails; no cross-rule deletion | `tests/unit/test_gateway_managed_mutation.py`, `tests/unit/test_planner_gateway_mutation.py` |
 | State | Only successful durable delete removes exact record; desired collision and duplicate claims reject; tombstone/no-op never edits state | `tests/unit/test_deployment_state.py` |
-| Recovery | Interrupted ordinary deletion reuses exact action evidence and resolves completed/rolled-back/drift outcomes | `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_recovery_observer.py` |
-| Local command E2E | Plan-save/load/apply/state/history/retry lifecycle, including owner != rule != alias | new local CLI removal scenario |
-| PostgreSQL v2 | Same reviewed delete/recovery semantics through production factory, lock, writer, history, and clear | `tests/postgres/test_postgres_recovery_commands_real.py`, ordinary factory command tests |
-| Installed wheel | Isolated `streamt plan` and `apply --plan --force` complete the lifecycle | packaging workflow smoke test |
-| Real Gateway | Gateway 3.15 exact alias/interceptor delete, verified empty post-state, no residue | `tests/integration/test_gateway_e2e.py` |
-| Documentation | New YAML parses; links resolve; strict MkDocs build passes | documentation CI |
+| Recovery | Interrupted ordinary deletion reuses exact action evidence and resolves completed/rolled-back/drift outcomes | `tests/unit/test_cli_state_recovery.py`, `tests/unit/test_recovery_observer.py`, `tests/postgres/test_postgres_gateway_removal_commands_real.py` |
+| Local command E2E | Plan save/load, destructive refusal, forced apply, durable pre-mutation progress, exact state/control finalization, and satisfied retry, including owner != rule != alias | `tests/unit/test_cli_gateway_removal_e2e.py` |
+| PostgreSQL v2 | Reviewed delete and uncertain-delete recovery through the production factory, lock, writer, history, and clear | `tests/postgres/test_postgres_gateway_removal_commands_real.py` |
+| Installed wheel | Isolated `streamt plan` and `apply --plan --force` complete the lifecycle through the installed executable | `tests/package/gateway_removal_wheel_smoke.py`, `.github/workflows/ci.yml` |
+| Real Gateway | Gateway 3.15 exact alias/interceptor delete, unrelated-resource preservation, and residue-free cleanup | `tests/integration/test_gateway_strict_observer_real.py`, `.github/workflows/ci.yml` |
+| Documentation | New YAML parses; strict MkDocs build passes; CLI, support matrix, and release notes state the safety boundary | documentation CI, `tests/unit/test_doc_yaml_validation.py` |
 
 ## Rollout and release gates
 
-The feature remains hidden or explicitly experimental until all of these hold:
+The completed Package 6 release boundary satisfies all of these gates:
 
 1. Strict DSL and compiler tests pass without broadening desired Gateway
    support.
@@ -645,28 +647,30 @@ The feature remains hidden or explicitly experimental until all of these hold:
    backends.
 7. Installed-wheel tests exercise the public commands.
 8. A focused real Gateway 3.15 test proves exact deletion and cleanup.
-9. Full unit, integration, lint, formatting, zero-error mypy, packaging, secret
-   scan, and strict documentation gates pass together.
+9. Full unit, integration, lint, zero-error mypy, packaging, targeted secrecy,
+   and strict documentation gates pass together.
 10. Gateway recovery documentation remains accurate and Gateway adoption stays
     unsupported.
 
-Package 6 may call its ordinary delete-source boundary complete only after all
-ten gates pass. Gateway adoption remains separately gated by the alias-only
-adoption plan.
+All ten gates pass, so Package 6's ordinary delete-source boundary is complete.
+Gateway adoption remains separately gated by the alias-only adoption plan.
 
 ## Completion checklist
 
-- [ ] Add strict lifecycle-removal YAML and compiled artifact models.
-- [ ] Prove prior-artifact checksum equality without changing state format.
-- [ ] Fail legacy, mismatched, colliding, and partial targets before provider
+- [x] Add strict lifecycle-removal YAML and compiled artifact models.
+- [x] Prove prior-artifact checksum equality without changing state format.
+- [x] Fail legacy, mismatched, colliding, and partial targets before provider
       access.
-- [ ] Plan desired and explicit removal targets from one shared snapshot.
-- [ ] Emit deletion only from a complete present aggregate.
-- [ ] Add safe no-prior/absent no-op and drift/ownership blockers.
-- [ ] Add reviewed-plan version 4 exact action evidence.
-- [ ] Require full online reviewed plan plus destructive authorization.
-- [ ] Reuse exact durable mutation, state projection, and recovery paths.
-- [ ] Pass local and PostgreSQL v2 command E2E.
-- [ ] Pass installed-wheel and real Gateway 3.15 gates.
-- [ ] Pass documentation, secrecy, lint, typing, unit, integration, and package
+- [x] Plan desired and explicit removal targets from one shared snapshot.
+- [x] Emit deletion only from a complete present aggregate.
+- [x] Add safe no-prior/absent no-op and drift/ownership blockers.
+- [x] Add reviewed-plan version 4 exact action evidence.
+- [x] Require full online reviewed plan plus destructive authorization.
+- [x] Reuse exact durable mutation, state projection, and recovery paths.
+- [x] Pass local reviewed-removal command E2E.
+- [x] Pass PostgreSQL v2 ordinary removal and uncertain-delete recovery E2E on
+      PostgreSQL 14 and 18.
+- [x] Pass the isolated installed-wheel reviewed-removal lifecycle.
+- [x] Pass the focused real Gateway 3.15 exact-deletion gate.
+- [x] Pass documentation, secrecy, lint, typing, unit, integration, and package
       checks.

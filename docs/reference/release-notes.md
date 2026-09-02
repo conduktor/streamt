@@ -5,6 +5,37 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
+## Unreleased — explicit reviewed Gateway rule removal
+
+Projects can now request removal of one exact managed Gateway rule with a
+`lifecycle.gateway_rule_removals` tombstone. The tombstone copies the prior
+compiler-level rule name, AliasTopic mapping, and interceptor configuration from
+the generated manifest; removing a model or omitting its rule never implies
+deletion. See the [YAML reference](yaml-schema.md#explicit-gateway-rule-removals)
+for the accepted declaration.
+
+Removal uses a fresh online reviewed-plan workflow:
+
+```bash
+streamt plan --env prod --out gateway-removal.plan.json
+streamt apply --env prod --plan gateway-removal.plan.json --confirm-env prod --force
+```
+
+Reviewed-plan format version 4 binds the exact ordered action and secret-neutral
+Gateway current/desired aggregate evidence. Versions 1 through 3 must be
+regenerated. Direct apply, direct dry-run, offline plan files, and targeted or
+selected apply cannot authorize a tombstone. The actual delete requires
+`--force` unless environment policy already allows destructive operations.
+
+Provider-free preflight first binds the logical owner, provider rule name,
+AliasTopic, backend, prior artifact checksum, and managed ownership. Planning
+then observes one complete Gateway aggregate and deletion removes only its exact
+owned Interceptors and AliasTopic. The AliasTopic and Interceptor collection
+reads are sequential, not provider-atomic; external writers remain a TOCTOU
+boundary and any ambiguous or third-state evidence fails closed. Broad
+discovery, deletion by manifest absence, and Gateway adoption remain
+unsupported.
+
 ## Unreleased — exact Kafka Connect adoption
 
 `streamt adopt --kind connector` can now claim one compiled adopted Connector
