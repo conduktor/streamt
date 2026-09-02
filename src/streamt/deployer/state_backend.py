@@ -19,7 +19,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, cast, overload, runtime_checkable
 
 from streamt.core.deployment_state import DeploymentStateConfig
 from streamt.deployer.state import (
@@ -669,6 +669,29 @@ class ControlObservation:
         }
 
 
+@dataclass(frozen=True)
+class OperationSnapshot:
+    """State and operation control observed at one locked workflow boundary.
+
+    Remote providers can produce this pair from one database snapshot.  The
+    local provider binds two adjacent files while retaining its existing
+    operation-wide file lock; it does not claim an atomic cross-file read.
+    """
+
+    state: StateObservation
+    control: ControlObservation
+
+    def __post_init__(self) -> None:
+        if self.state.address != self.control.control.address:
+            raise StateIdentityError(
+                "operation state and control observations have different addresses"
+            )
+
+    @property
+    def address(self) -> StateAddress:
+        return self.state.address
+
+
 def _strict_object(
     value: object,
     *,
@@ -698,32 +721,79 @@ class DeploymentStateOperation(Protocol):
 
     def read_control(self) -> ControlObservation: ...
 
-    def ensure_ready(self, observation: ControlObservation) -> None: ...
+    def observe(self) -> OperationSnapshot: ...
+
+    def ensure_ready(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+    ) -> None: ...
 
     def check_lock(self) -> None: ...
 
+    @overload
+    def begin_operation(
+        self,
+        observation: OperationSnapshot,
+        intent: OperationIntent,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def begin_operation(
         self,
         observation: ControlObservation,
         intent: OperationIntent,
     ) -> ControlObservation: ...
 
+    @overload
+    def record_progress(
+        self,
+        observation: OperationSnapshot,
+        progress: OperationProgress,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def record_progress(
         self,
         observation: ControlObservation,
         progress: OperationProgress,
     ) -> ControlObservation: ...
 
+    @overload
+    def mark_recovery_required(
+        self,
+        observation: OperationSnapshot,
+        recovery: RecoveryRecord,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def mark_recovery_required(
         self,
         observation: ControlObservation,
         recovery: RecoveryRecord,
     ) -> ControlObservation: ...
 
+    @overload
+    def clear_operation(
+        self,
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def clear_operation(
         self,
         observation: ControlObservation,
     ) -> ControlObservation: ...
+
+    def commit_operation(
+        self,
+        observation: OperationSnapshot,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot: ...
+
+    def clear_before_mutation(
+        self,
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot: ...
 
     def compare_and_swap(
         self,
@@ -803,47 +873,142 @@ class _LocalDeploymentStateOperation:
     def read_control(self) -> ControlObservation:
         return self._backend._read_control(self._address)
 
+    def observe(self) -> OperationSnapshot:
+        """Bind state and control reads while retaining the local file lock."""
+        self.check_lock()
+        return OperationSnapshot(
+            state=self.read(),
+            control=self.read_control(),
+        )
+
     def check_lock(self) -> None:
         if not self._lock.is_held:
             raise StateBackendLockLostError(
                 "deployment state operation lock was lost"
             )
 
-    def ensure_ready(self, observation: ControlObservation) -> None:
+    def _validate_snapshot(self, snapshot: OperationSnapshot) -> None:
+        self._backend._validate_observation(self._address, snapshot.state)
+        self._backend._validate_control_observation(
+            self._address,
+            snapshot.control,
+        )
+        self.check_lock()
+        current = self._backend._read(self._address)
+        if current.revision != snapshot.state.revision:
+            raise StateBackendConflictError(
+                "state revision changed after the operation snapshot was observed"
+            )
+
+    def _snapshot_for_control(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+    ) -> tuple[OperationSnapshot, bool]:
+        if isinstance(observation, OperationSnapshot):
+            self._validate_snapshot(observation)
+            return observation, True
         self._backend._validate_control_observation(self._address, observation)
         self.check_lock()
-        if observation.control.status != "clear":
+        return OperationSnapshot(state=self.read(), control=observation), False
+
+    @staticmethod
+    def _validate_intent_state(
+        snapshot: OperationSnapshot,
+        intent: OperationIntent,
+    ) -> None:
+        if (
+            intent.prior_state_serial != snapshot.state.state_serial
+            or intent.prior_state_checksum != state_checksum(snapshot.state.state)
+        ):
+            raise StateBackendConflictError(
+                "operation intent does not match its prior state snapshot"
+            )
+
+    def ensure_ready(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+    ) -> None:
+        if isinstance(observation, OperationSnapshot):
+            self._validate_snapshot(observation)
+            control = observation.control
+        else:
+            self._backend._validate_control_observation(
+                self._address,
+                observation,
+            )
+            self.check_lock()
+            control = observation
+        if control.control.status != "clear":
             raise StateBackendRecoveryRequiredError(
                 "deployment state has an unfinished operation; explicit recovery "
                 "is required before apply or adopt"
             )
 
+    @overload
+    def begin_operation(
+        self,
+        observation: OperationSnapshot,
+        intent: OperationIntent,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def begin_operation(
         self,
         observation: ControlObservation,
         intent: OperationIntent,
-    ) -> ControlObservation:
-        self.ensure_ready(observation)
+    ) -> ControlObservation: ...
+
+    def begin_operation(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+        intent: OperationIntent,
+    ) -> OperationSnapshot | ControlObservation:
+        snapshot, return_snapshot = self._snapshot_for_control(observation)
+        self.ensure_ready(snapshot)
+        if return_snapshot:
+            self._validate_intent_state(snapshot, intent)
+        # The legacy control-only delegate cannot bind the caller's prior
+        # state revision. Its existing CAS path remains responsible for the
+        # conflict until apply/adopt migrate to OperationSnapshot.
         replacement = OperationControlState(
             address=self._address,
             status="in_progress",
             intent=intent,
         )
-        return self._backend._save_control_locked(
+        active = self._backend._save_control_locked(
             self._address,
-            observation,
+            snapshot.control,
             replacement,
             self._lock,
         )
+        if return_snapshot:
+            return OperationSnapshot(state=snapshot.state, control=active)
+        # Compatibility delegate for the current CLI. New workflows retain
+        # the state/control pair by passing an OperationSnapshot.
+        return active
 
+    @overload
+    def record_progress(
+        self,
+        observation: OperationSnapshot,
+        progress: OperationProgress,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def record_progress(
         self,
         observation: ControlObservation,
         progress: OperationProgress,
-    ) -> ControlObservation:
-        self._backend._validate_active_control(self._address, observation)
-        self.check_lock()
-        intent = cast(OperationIntent, observation.control.intent)
+    ) -> ControlObservation: ...
+
+    def record_progress(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+        progress: OperationProgress,
+    ) -> OperationSnapshot | ControlObservation:
+        snapshot, return_snapshot = self._snapshot_for_control(observation)
+        self._backend._validate_active_control(self._address, snapshot.control)
+        intent = cast(OperationIntent, snapshot.control.control.intent)
         if progress.operation_id != intent.operation_id:
             raise StateIdentityError(
                 "progress belongs to another deployment operation"
@@ -852,23 +1017,40 @@ class _LocalDeploymentStateOperation:
             address=self._address,
             status="in_progress",
             intent=intent,
-            progress=(*observation.control.progress, progress),
+            progress=(*snapshot.control.control.progress, progress),
         )
-        return self._backend._save_control_locked(
+        active = self._backend._save_control_locked(
             self._address,
-            observation,
+            snapshot.control,
             replacement,
             self._lock,
         )
+        if return_snapshot:
+            return OperationSnapshot(state=snapshot.state, control=active)
+        return active
 
+    @overload
+    def mark_recovery_required(
+        self,
+        observation: OperationSnapshot,
+        recovery: RecoveryRecord,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def mark_recovery_required(
         self,
         observation: ControlObservation,
         recovery: RecoveryRecord,
-    ) -> ControlObservation:
-        self._backend._validate_active_control(self._address, observation)
-        self.check_lock()
-        intent = cast(OperationIntent, observation.control.intent)
+    ) -> ControlObservation: ...
+
+    def mark_recovery_required(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+        recovery: RecoveryRecord,
+    ) -> OperationSnapshot | ControlObservation:
+        snapshot, return_snapshot = self._snapshot_for_control(observation)
+        self._backend._validate_active_control(self._address, snapshot.control)
+        intent = cast(OperationIntent, snapshot.control.control.intent)
         if recovery.operation_id != intent.operation_id:
             raise StateIdentityError(
                 "recovery record belongs to another deployment operation"
@@ -877,28 +1059,117 @@ class _LocalDeploymentStateOperation:
             address=self._address,
             status="recovery_required",
             intent=intent,
-            progress=observation.control.progress,
+            progress=snapshot.control.control.progress,
             recovery=recovery,
         )
-        return self._backend._save_control_locked(
+        recovery_observation = self._backend._save_control_locked(
             self._address,
-            observation,
+            snapshot.control,
             replacement,
             self._lock,
         )
+        if return_snapshot:
+            return OperationSnapshot(
+                state=snapshot.state,
+                control=recovery_observation,
+            )
+        return recovery_observation
 
+    @overload
+    def clear_operation(
+        self,
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot: ...
+
+    @overload
     def clear_operation(
         self,
         observation: ControlObservation,
-    ) -> ControlObservation:
-        self._backend._validate_active_control(self._address, observation)
-        self.check_lock()
-        return self._backend._save_control_locked(
+    ) -> ControlObservation: ...
+
+    def clear_operation(
+        self,
+        observation: OperationSnapshot | ControlObservation,
+    ) -> OperationSnapshot | ControlObservation:
+        snapshot, return_snapshot = self._snapshot_for_control(observation)
+        self._backend._validate_active_control(self._address, snapshot.control)
+        cleared = self._backend._save_control_locked(
             self._address,
-            observation,
+            snapshot.control,
             OperationControlState.clear(self._address),
             self._lock,
         )
+        if return_snapshot:
+            return OperationSnapshot(state=snapshot.state, control=cleared)
+        # Compatibility delegate. It intentionally retains the existing broad
+        # clear behavior until apply/adopt migrate to the typed finalizers.
+        return cleared
+
+    @staticmethod
+    def _require_completed_operation(snapshot: OperationSnapshot) -> None:
+        intent = cast(OperationIntent, snapshot.control.control.intent)
+        completed = {
+            progress.action_index
+            for progress in snapshot.control.control.progress
+            if progress.status == "completed" and progress.succeeded is True
+        }
+        if completed != set(range(len(intent.actions))):
+            raise StateBackendRecoveryRequiredError(
+                "deployment operation is incomplete; explicit recovery is required"
+            )
+
+    def commit_operation(
+        self,
+        observation: OperationSnapshot,
+        replacement: LocalState | None,
+    ) -> OperationSnapshot:
+        """Commit ownership before clearing local operation control.
+
+        The two local files cannot be committed atomically.  Ordering the state
+        write first ensures an uncertain clear normally leaves the prewritten
+        marker blocking a successor instead of clearing before ownership is
+        authoritative.
+        """
+        self._validate_snapshot(observation)
+        self._backend._validate_active_control(
+            self._address,
+            observation.control,
+        )
+        self._require_completed_operation(observation)
+        current_control = self._backend._read_control(self._address)
+        if current_control.revision != observation.control.revision:
+            raise StateBackendConflictError(
+                "operation control state changed after it was observed"
+            )
+
+        committed_state = observation.state
+        if replacement is not None:
+            committed_state = self.compare_and_swap(observation.state, replacement)
+        cleared = self._backend._save_control_locked(
+            self._address,
+            observation.control,
+            OperationControlState.clear(self._address),
+            self._lock,
+        )
+        return OperationSnapshot(state=committed_state, control=cleared)
+
+    def clear_before_mutation(
+        self,
+        observation: OperationSnapshot,
+    ) -> OperationSnapshot:
+        """Clear an intent only when no durable action-start boundary exists."""
+        self._validate_snapshot(observation)
+        self._backend._validate_active_control(
+            self._address,
+            observation.control,
+        )
+        if observation.control.control.progress:
+            raise StateBackendRecoveryRequiredError(
+                "deployment operation may have started mutation; explicit recovery "
+                "is required"
+            )
+        cleared = self.clear_operation(observation)
+        return cleared
 
     def compare_and_swap(
         self,

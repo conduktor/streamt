@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,7 +18,9 @@ from streamt.deployer.state_backend import (
     OperationControlState,
     OperationIntent,
     OperationProgress,
+    OperationSnapshot,
     RecoveryRecord,
+    StateBackendConflictError,
     StateBackendRecoveryRequiredError,
     StateBackendUnknownCommitError,
     local_control_path,
@@ -118,6 +121,245 @@ def test_control_lifecycle_is_strict_atomic_and_does_not_change_v1_state(
     assert control_path.stat().st_mode & 0o777 == 0o600
     assert state_path.read_bytes() == ownership_bytes
     assert not list(control_path.parent.glob(f".{control_path.name}.*.tmp"))
+
+
+def test_typed_snapshot_lifecycle_commits_state_before_clearing_control(
+    tmp_path: Path,
+) -> None:
+    state_path = local_state_path(tmp_path, environment="dev")
+    prior = LocalState(project="payments", environment="dev")
+    prior.save(state_path)
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        assert isinstance(snapshot, OperationSnapshot)
+        assert snapshot.address == service.address
+        intent = _intent(snapshot.state.state)
+        active = operation.begin_operation(snapshot, intent)
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id="topic:orders",
+                action="create",
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id="topic:orders",
+                action="create",
+                status="completed",
+                succeeded=True,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        replacement = LocalState(
+            project="payments",
+            environment="dev",
+            serial=1,
+        )
+        committed = operation.commit_operation(active, replacement)
+
+    assert committed.state.state == replacement
+    assert committed.control.control == OperationControlState.clear(service.address)
+    assert LocalState.load(state_path) == replacement
+
+
+def test_snapshot_begin_rejects_intent_or_state_revision_drift(
+    tmp_path: Path,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        mismatched = replace(
+            _intent(snapshot.state.state),
+            prior_state_serial=1,
+        )
+        with pytest.raises(StateBackendConflictError, match="prior state snapshot"):
+            operation.begin_operation(snapshot, mismatched)
+        checksum_mismatch = replace(
+            _intent(snapshot.state.state),
+            prior_state_checksum=state_checksum(
+                LocalState(project="payments", environment="dev", serial=1)
+            ),
+        )
+        with pytest.raises(StateBackendConflictError, match="prior state snapshot"):
+            operation.begin_operation(snapshot, checksum_mismatch)
+
+        changed = LocalState(
+            project="payments",
+            environment="dev",
+            serial=1,
+        )
+        changed.save(local_state_path(tmp_path, environment="dev"))
+        with pytest.raises(StateBackendConflictError, match="revision changed"):
+            operation.begin_operation(snapshot, _intent(snapshot.state.state))
+
+    assert service.read_control().control.status == "clear"
+
+
+def test_commit_clear_failure_preserves_written_state_and_active_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        intent = replace(_intent(snapshot.state.state), actions=())
+        active = operation.begin_operation(snapshot, intent)
+        backend = service.backend
+        original_write = backend._write_control  # type: ignore[attr-defined]
+
+        def fail_clear(path: Path, control: OperationControlState) -> None:
+            if control.status == "clear":
+                raise StateBackendUnknownCommitError(
+                    "local operation control state commit could not be confirmed"
+                )
+            original_write(path, control)
+
+        monkeypatch.setattr(backend, "_write_control", fail_clear)
+        replacement = LocalState(
+            project="payments",
+            environment="dev",
+            serial=1,
+        )
+        with pytest.raises(StateBackendUnknownCommitError):
+            operation.commit_operation(active, replacement)
+
+        assert operation.read().state == replacement
+        assert operation.read_control().control.status == "in_progress"
+
+
+def test_commit_rejects_incomplete_action_without_state_write_or_clear(
+    tmp_path: Path,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        intent = _intent(snapshot.state.state)
+        active = operation.begin_operation(snapshot, intent)
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id="topic:orders",
+                action="create",
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        replacement = LocalState(
+            project="payments",
+            environment="dev",
+            serial=1,
+        )
+        with pytest.raises(StateBackendRecoveryRequiredError, match="incomplete"):
+            operation.commit_operation(active, replacement)
+
+        assert operation.read().revision.is_absent is True
+        assert operation.read_control().control.status == "in_progress"
+
+
+def test_clear_before_mutation_rejects_started_progress(tmp_path: Path) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        intent = _intent(snapshot.state.state)
+        active = operation.begin_operation(snapshot, intent)
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id="topic:orders",
+                action="create",
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        with pytest.raises(StateBackendRecoveryRequiredError, match="may have started"):
+            operation.clear_before_mutation(active)
+
+    assert service.read_control().control.status == "in_progress"
+
+
+def test_clear_before_mutation_clears_intent_without_progress(tmp_path: Path) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        active = operation.begin_operation(snapshot, _intent(snapshot.state.state))
+        cleared = operation.clear_before_mutation(active)
+
+    assert cleared.state == snapshot.state
+    assert cleared.control.control.status == "clear"
+    assert not local_state_path(tmp_path, environment="dev").exists()
+
+
+def test_commit_without_ownership_change_clears_completed_empty_intent(
+    tmp_path: Path,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        intent = replace(_intent(snapshot.state.state), actions=())
+        active = operation.begin_operation(snapshot, intent)
+        committed = operation.commit_operation(active, None)
+
+    assert committed.state == snapshot.state
+    assert committed.control.control.status == "clear"
+    assert not local_state_path(tmp_path, environment="dev").exists()
 
 
 def test_recovery_record_is_sanitized_and_blocks_successor(tmp_path: Path) -> None:
