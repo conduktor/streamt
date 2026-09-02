@@ -3,12 +3,67 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Optional
 
 import click
 
 from streamt.cli.helpers import get_project_path, handle_parse_error, make_formatter
 from streamt.core.errors import ErrorCode
+
+
+class ListPayloadError(ValueError):
+    """Raised when a list row cannot be rendered safely."""
+
+
+def _required_string(item: Mapping[str, object], field: str) -> str:
+    """Return a required string field or reject the malformed row."""
+    value = item.get(field)
+    if not isinstance(value, str):
+        raise ListPayloadError(f"List item field '{field}' must be a string")
+    return value
+
+
+def _optional_string(item: Mapping[str, object], field: str) -> Optional[str]:
+    """Return an optional string field or reject the malformed row."""
+    value = item.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ListPayloadError(f"List item field '{field}' must be a string or null")
+    return value
+
+
+def _required_int(item: Mapping[str, object], field: str) -> int:
+    """Return a required integer field or reject booleans and other values."""
+    value = item.get(field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ListPayloadError(f"List item field '{field}' must be an integer")
+    return value
+
+
+def _required_bool(item: Mapping[str, object], field: str) -> bool:
+    """Return a required boolean field or reject the malformed row."""
+    value = item.get(field)
+    if not isinstance(value, bool):
+        raise ListPayloadError(f"List item field '{field}' must be a boolean")
+    return value
+
+
+def _required_strings(item: Mapping[str, object], field: str) -> list[str]:
+    """Return a required string list without trusting the object payload."""
+    value = item.get(field)
+    if not isinstance(value, list) or not all(isinstance(entry, str) for entry in value):
+        raise ListPayloadError(f"List item field '{field}' must be a list of strings")
+    return value
+
+
+def _model_type_sort_key(item: Mapping[str, object]) -> tuple[str, str]:
+    return (_required_string(item, "materialized"), _required_string(item, "name"))
+
+
+def _model_upstream_sort_key(item: Mapping[str, object]) -> tuple[int, str]:
+    return (-len(_required_strings(item, "upstream")), _required_string(item, "name"))
 
 
 @click.command("list")
@@ -98,7 +153,12 @@ def list_resources(
                 "Sources",
                 [("Name", "cyan"), ("Topic", "green"), ("Columns", "yellow"), ("Schema", "dim")],
                 [
-                    [i["name"], i["topic"], str(i["columns"]), "yes" if i["has_schema"] else "-"]
+                    [
+                        _required_string(i, "name"),
+                        _required_string(i, "topic"),
+                        str(_required_int(i, "columns")),
+                        "yes" if _required_bool(i, "has_schema") else "-",
+                    ]
                     for i in items
                 ],
             )
@@ -129,15 +189,22 @@ def list_resources(
                     }
                 )
             if sort_by == "type":
-                items.sort(key=lambda x: (x.get("materialized", ""), x.get("name", "")))
+                items.sort(key=_model_type_sort_key)
             elif sort_by == "upstream":
-                items.sort(key=lambda x: (-len(x.get("upstream", [])), x.get("name", "")))
+                items.sort(key=_model_upstream_sort_key)
             else:
-                items.sort(key=lambda x: x.get("name", ""))
+                items.sort(key=lambda item: _required_string(item, "name"))
             fmt.print_table(
                 "Models",
                 [("Name", "cyan"), ("Materialized", "green"), ("Upstream", "yellow")],
-                [[i["name"], i["materialized"], ", ".join(i["upstream"]) or "-"] for i in items],
+                [
+                    [
+                        _required_string(i, "name"),
+                        _required_string(i, "materialized"),
+                        ", ".join(_required_strings(i, "upstream")) or "-",
+                    ]
+                    for i in items
+                ],
             )
 
         elif resource_type == "tests":
@@ -153,7 +220,15 @@ def list_resources(
             fmt.print_table(
                 "Tests",
                 [("Name", "cyan"), ("Model", "green"), ("Type", "yellow"), ("Assertions", "dim")],
-                [[i["name"], i["model"], i["type"], str(i["assertions"])] for i in items],
+                [
+                    [
+                        _required_string(i, "name"),
+                        _required_string(i, "model"),
+                        _required_string(i, "type"),
+                        str(_required_int(i, "assertions")),
+                    ]
+                    for i in items
+                ],
             )
 
         elif resource_type == "exposures":
@@ -169,11 +244,18 @@ def list_resources(
             fmt.print_table(
                 "Exposures",
                 [("Name", "cyan"), ("Type", "green"), ("Owner", "yellow")],
-                [[i["name"], i["type"], i.get("owner") or "-"] for i in items],
+                [
+                    [
+                        _required_string(i, "name"),
+                        _required_string(i, "type"),
+                        _optional_string(i, "owner") or "-",
+                    ]
+                    for i in items
+                ],
             )
 
         fmt.set_data({"resource_type": resource_type, "count": len(items), "items": items})
         fmt.flush()
 
-    except (EnvVarError, ParseError, EnvironmentError) as e:
+    except (EnvVarError, ParseError, EnvironmentError, ListPayloadError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)
