@@ -31,7 +31,7 @@ class TestStatusCommand:
     def _create_project(self, tmpdir: Path, config: dict) -> Path:
         """Create a project configuration file."""
         with open(tmpdir / "stream_project.yml", "w") as f:
-            yaml.dump(config, f)
+            yaml.dump({"apiVersion": "streamt.dev/v1alpha1", **config}, f)
         return tmpdir
 
     def test_status_shows_topics(self, docker_services):
@@ -145,7 +145,7 @@ class TestStatusCommand:
                 assert result.exit_code == 0
 
                 # Parse JSON output
-                status_data = json.loads(result.output)
+                status_data = json.loads(result.stdout)
                 assert "project" in status_data
                 assert "topics" in status_data
                 assert status_data["project"] == "test-json"
@@ -319,7 +319,7 @@ class TestStatusCommandEdgeCases:
     def _create_project(self, tmpdir: Path, config: dict) -> Path:
         """Create a project configuration file."""
         with open(tmpdir / "stream_project.yml", "w") as f:
-            yaml.dump(config, f)
+            yaml.dump({"apiVersion": "streamt.dev/v1alpha1", **config}, f)
         return tmpdir
 
     def test_status_empty_project(self, docker_services):
@@ -378,7 +378,7 @@ class TestStatusCommandEdgeCases:
                 )
 
                 assert result.exit_code == 0
-                status_data = json.loads(result.output)
+                status_data = json.loads(result.stdout)
 
                 # Check top-level fields
                 assert "project" in status_data
