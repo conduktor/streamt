@@ -26,12 +26,14 @@ from streamt.deployer.state import (
 from streamt.deployer.state_backend import (
     OperationAction,
     OperationIntent,
+    OperationSnapshot,
     RecoveryRecord,
     StateObservation,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
 )
+from streamt.output import OutputFormatter
 
 
 def _write_project(path: Path) -> None:
@@ -187,6 +189,7 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
     assert data["physical_name"] == "orders.v1"
     assert data["observed"]["partitions"] == 3
     assert data["observed"]["replication_factor"] == 2
+    assert data["observation_fingerprint"].startswith("sha256:")
     assert data["pending_diffs"]["partitions"] == {"from": 3, "to": 6}
     assert data["next_command"] == [
         "streamt",
@@ -215,7 +218,10 @@ def test_success_observes_redacts_and_writes_only_adopted_state(tmp_path: Path) 
         artifact_checksum=artifact_checksum(artifact.to_dict()),
         backend="direct-kafka",
     )
-    kafka.get_topic_state.assert_called_once_with("orders.v1", strict_config=True)
+    assert kafka.get_topic_state.call_args_list == [
+        (("orders.v1",), {"strict_config": True}),
+        (("orders.v1",), {"strict_config": True}),
+    ]
     for method in (
         "apply_topic",
         "create_topic",
@@ -295,6 +301,7 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
     kafka = _kafka()
     current = kafka.get_topic_state.return_value
     events: list[str] = []
+    operation_spy = MagicMock()
 
     def observe(*_args: object, **_kwargs: object) -> TopicState:
         events.append("live-observation")
@@ -313,21 +320,25 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
             config=local_deployment_state_config(),
         )
         with service.operation() as delegate:
-            operation = MagicMock()
-            operation.read.side_effect = delegate.read
+            operation_spy.observe.side_effect = delegate.observe
+            operation_spy.ensure_ready.side_effect = delegate.ensure_ready
+            operation_spy.check_lock.side_effect = delegate.check_lock
+            operation_spy.begin_operation.side_effect = delegate.begin_operation
+            operation_spy.record_progress.side_effect = delegate.record_progress
+            operation_spy.mark_recovery_required.side_effect = delegate.mark_recovery_required
+            operation_spy.clear_before_mutation.side_effect = delegate.clear_before_mutation
 
-            def save(
-                observation: StateObservation,
+            def commit(
+                observation: object,
                 state: LocalState,
-            ) -> StateObservation:
+            ) -> object:
                 assert state.serial == 1
-                assert observation == delegate.read()
                 events.append("state-save")
-                return delegate.compare_and_swap(observation, state)
+                return delegate.commit_operation(observation, state)
 
-            operation.compare_and_swap.side_effect = save
+            operation_spy.commit_operation.side_effect = commit
             try:
-                yield operation
+                yield operation_spy
             finally:
                 events.append("lock-exit")
 
@@ -335,6 +346,15 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
     state_service.operation.side_effect = operation
 
     kafka.get_topic_state.side_effect = observe
+    formatter = OutputFormatter(output_format="json")
+    formatter.set_command("adopt")
+    flush = formatter.flush
+
+    def flush_after_release() -> None:
+        events.append("flush")
+        flush()
+
+    formatter.flush = flush_after_release  # type: ignore[method-assign]
     compiler_patch, kafka_patch = _patch_adoption(_manifest(artifact), kafka)
     with (
         compiler_patch,
@@ -347,6 +367,10 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
             "streamt.cli.commands.adopt._require_confirmation",
             side_effect=confirm,
         ),
+        patch(
+            "streamt.cli.commands.adopt.make_formatter",
+            return_value=formatter,
+        ),
     ):
         result = _invoke(tmp_path)
 
@@ -355,9 +379,23 @@ def test_adoption_holds_operation_lock_during_observation_and_confirmation(
         "lock-enter",
         "live-observation",
         "confirmation",
+        "live-observation",
         "state-save",
         "lock-exit",
+        "flush",
     ]
+    operation_spy.commit_operation.assert_called_once()
+    operation_spy.compare_and_swap.assert_not_called()
+    operation_spy.clear_operation.assert_not_called()
+    begin_snapshot, intent = operation_spy.begin_operation.call_args.args
+    assert begin_snapshot.address.uri == ("streamt-state://local/adoption-test/default")
+    assert intent.actions == (
+        OperationAction(
+            index=0,
+            resource_id=resource_id("adoption-test", "default", "topic", "orders"),
+            action="adopt",
+        ),
+    )
 
 
 @pytest.mark.parametrize("mode", ["external", "managed"])
@@ -411,6 +449,46 @@ def test_config_observation_failure_fails_before_confirmation_or_save(
     assert "live-secret" not in result.output
     assert not local_state_path(tmp_path, environment="default").exists()
     kafka.get_topic_state.assert_called_once_with("orders.v1", strict_config=True)
+
+
+def test_post_confirmation_topic_drift_requires_fresh_confirmation(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    kafka = _kafka()
+    initial = kafka.get_topic_state.return_value
+    changed = TopicState(
+        name=initial.name,
+        exists=True,
+        partitions=initial.partitions,
+        replication_factor=initial.replication_factor,
+        config={
+            **initial.config,
+            "cleanup.policy": "compact",
+            "sasl.jaas.config": "username=drift-user password=drift-secret",
+        },
+    )
+    kafka.get_topic_state.side_effect = [initial, changed]
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), kafka)
+
+    with compiler_patch, kafka_patch:
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == "E414_ADOPTION_CONFIRMATION_REQUIRED"
+    assert "drift-user" not in result.output
+    assert "drift-secret" not in result.output
+    assert not local_state_path(tmp_path, environment="default").exists()
+    assert kafka.get_topic_state.call_count == 2
+    for method in (
+        "apply_topic",
+        "create_topic",
+        "update_topic",
+        "delete_topic",
+        "apply",
+    ):
+        getattr(kafka, method).assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -613,6 +691,84 @@ def test_concurrent_state_change_fails_conflict_and_preserves_newer_snapshot(
     assert result.exit_code == 1
     assert _payload(result)["errors"][0]["code"] == "E415_ADOPTION_STATE_CONFLICT"
     assert LocalState.load(state_path) == newer
+
+
+def test_final_snapshot_payload_drift_fails_even_with_reused_revision(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    other_uri = resource_id("adoption-test", "default", "topic", "payments")
+    original = LocalState(
+        project="adoption-test",
+        environment="default",
+        serial=1,
+        resources={
+            other_uri: ManagedResourceRecord(
+                physical_name="payments.v1",
+                ownership="managed",
+                artifact_checksum=artifact_checksum({"name": "payments.v1"}),
+                backend="direct-kafka",
+            )
+        },
+    )
+    original.save(local_state_path(tmp_path, environment="default"))
+    operation_spy = MagicMock()
+
+    @contextmanager
+    def operation() -> Iterator[MagicMock]:
+        service = make_deployment_state_service(
+            tmp_path,
+            project="adoption-test",
+            environment="default",
+            config=local_deployment_state_config(),
+        )
+        with service.operation() as delegate:
+            initial = delegate.observe()
+            changed_state = LocalState(
+                project=original.project,
+                environment=original.environment,
+                serial=original.serial,
+                resources={
+                    other_uri: ManagedResourceRecord(
+                        physical_name="payments.v2",
+                        ownership="managed",
+                        artifact_checksum=artifact_checksum({"name": "payments.v2"}),
+                        backend="direct-kafka",
+                    )
+                },
+            )
+            changed = OperationSnapshot(
+                state=StateObservation(
+                    store=initial.state.store,
+                    address=initial.state.address,
+                    state=changed_state,
+                    # Adversarial provider evidence: the opaque token was
+                    # reused even though the decoded payload changed.
+                    revision=initial.state.revision,
+                ),
+                control=initial.control,
+            )
+            operation_spy.observe.side_effect = [initial, changed]
+            operation_spy.ensure_ready.side_effect = delegate.ensure_ready
+            yield operation_spy
+
+    state_service = MagicMock()
+    state_service.operation.side_effect = operation
+    compiler_patch, kafka_patch = _patch_adoption(_manifest(_topic()), _kafka())
+    with (
+        compiler_patch,
+        kafka_patch,
+        patch(
+            "streamt.cli.commands.adopt.make_deployment_state_service",
+            return_value=state_service,
+        ),
+    ):
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    assert _payload(result)["errors"][0]["code"] == "E415_ADOPTION_STATE_CONFLICT"
+    operation_spy.begin_operation.assert_not_called()
+    assert LocalState.load(local_state_path(tmp_path, environment="default")) == original
 
 
 def test_environment_states_are_isolated(tmp_path: Path) -> None:

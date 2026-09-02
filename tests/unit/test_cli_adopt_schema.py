@@ -164,6 +164,7 @@ def test_success_observes_exact_subject_without_schema_or_mutation(
     assert data["adopted"] is True
     assert data["resource_id"] == resource_id("adoption-test", "default", "schema", "orders")
     assert data["physical_name"] == "orders.v1-value"
+    assert data["observation_fingerprint"].startswith("sha256:")
     assert data["observed"] == {
         "subject": "orders.v1-value",
         "schema_type": "AVRO",
@@ -192,7 +193,10 @@ def test_success_observes_exact_subject_without_schema_or_mutation(
         artifact_checksum=artifact_checksum(artifact.to_dict()),
         backend="schema-registry",
     )
-    registry.get_schema_state.assert_called_once_with("orders.v1-value")
+    assert registry.get_schema_state.call_args_list == [
+        (("orders.v1-value",), {}),
+        (("orders.v1-value",), {}),
+    ]
     registry.list_subjects.assert_not_called()
     for method in (
         "apply_schema",
@@ -327,6 +331,50 @@ def test_malformed_live_state_fails_closed_without_schema_output(tmp_path: Path)
     assert _payload(result)["errors"][0]["code"] == "E416_ADOPTION_FAILED"
     assert "malformed-live-secret" not in result.output
     assert not local_state_path(tmp_path, environment="default").exists()
+    registry.close.assert_called_once_with()
+
+
+def test_post_confirmation_schema_drift_requires_fresh_confirmation(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path)
+    registry = _registry()
+    initial = registry.get_schema_state.return_value
+    changed = SchemaState(
+        subject=initial.subject,
+        exists=True,
+        version=5,
+        schema_id=82,
+        schema={
+            "type": "record",
+            "name": "Order",
+            "doc": "changed schema contains drift-schema-secret",
+            "fields": [{"name": "id", "type": "string"}],
+        },
+        schema_type="AVRO",
+        compatibility="BACKWARD",
+    )
+    registry.get_schema_state.side_effect = [initial, changed]
+    compiler_patch, registry_patch = _patch_adoption(_manifest(_schema()), registry)
+
+    with compiler_patch, registry_patch:
+        result = _invoke(tmp_path)
+
+    assert result.exit_code == 1
+    payload = _payload(result)
+    assert payload["errors"][0]["code"] == "E414_ADOPTION_CONFIRMATION_REQUIRED"
+    assert "drift-schema-secret" not in result.output
+    assert not local_state_path(tmp_path, environment="default").exists()
+    assert registry.get_schema_state.call_count == 2
+    for method in (
+        "apply_schema",
+        "register_schema",
+        "set_compatibility",
+        "check_compatibility",
+        "delete_subject",
+        "apply",
+    ):
+        getattr(registry, method).assert_not_called()
     registry.close.assert_called_once_with()
 
 

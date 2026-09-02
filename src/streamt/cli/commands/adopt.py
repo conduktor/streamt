@@ -49,9 +49,11 @@ from streamt.deployer.state_backend import (
     OperationAction,
     OperationIntent,
     OperationProgress,
+    OperationSnapshot,
     RecoveryRecord,
     StateBackendRecoveryRequiredError,
     StateBackendUnavailableError,
+    StateBackendUnknownCommitError,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -293,6 +295,20 @@ def _pending_topic_diffs(
     return changes
 
 
+def _validate_live_topic_state(current: TopicState, *, topic: str) -> None:
+    """Reject absence or an observation for a different Kafka target."""
+    if current.name != topic:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Kafka returned state for a different topic",
+        )
+    if not current.exists:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_LIVE_NOT_FOUND,
+            f"Live topic {topic!r} does not exist; adoption never creates it",
+        )
+
+
 def _validate_live_schema_state(current: SchemaState, *, subject: str) -> None:
     """Reject incomplete or inconsistent Schema Registry observations."""
     if current.subject != subject:
@@ -424,6 +440,69 @@ def _records_match_for_idempotency(
         and existing.backend == desired.backend
         and existing.ownership in ("managed", "adopted")
     )
+
+
+def _topic_observation_fingerprint(current: TopicState) -> str:
+    """Return an exact, non-revealing fingerprint of one Kafka observation."""
+    try:
+        return artifact_checksum(
+            {
+                "name": current.name,
+                "exists": current.exists,
+                "partitions": current.partitions,
+                "replication_factor": current.replication_factor,
+                "config": current.config,
+            }
+        )
+    except StateError as exc:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Kafka returned malformed topic state that cannot be confirmed safely",
+        ) from exc
+
+
+def _schema_observation_fingerprint(current: SchemaState) -> str:
+    """Return an exact, non-revealing fingerprint of one registry observation."""
+    try:
+        return artifact_checksum(
+            {
+                "subject": current.subject,
+                "exists": current.exists,
+                "version": current.version,
+                "schema_id": current.schema_id,
+                "schema": current.schema,
+                "schema_type": current.schema_type,
+                "compatibility": current.compatibility,
+                "references": [
+                    {
+                        "name": reference.name,
+                        "subject": reference.subject,
+                        "version": reference.version,
+                    }
+                    for reference in current.references
+                ],
+            }
+        )
+    except (StateError, TypeError, AttributeError) as exc:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_FAILED,
+            "Schema Registry returned malformed state that cannot be confirmed safely",
+        ) from exc
+
+
+def _require_unchanged_observation(
+    *,
+    kind: str,
+    confirmed_fingerprint: str,
+    current_fingerprint: str,
+) -> None:
+    """Fail closed when the live evidence changed after confirmation."""
+    if current_fingerprint != confirmed_fingerprint:
+        raise AdoptionError(
+            ErrorCode.ADOPTION_CONFIRMATION_REQUIRED,
+            f"Live {kind} changed after confirmation; rerun adoption and confirm "
+            "the fresh observation",
+        )
 
 
 def _confirmation_token(resource_uri: str, environment: str) -> str:
@@ -694,12 +773,12 @@ def adopt(
         state_operation = operation_stack.enter_context(
             state_service.operation()
         )
-        # Adoption intentionally keeps the local lock across observation and
-        # confirmation so the approved evidence remains authoritative.
-        prior_observation = state_operation.read()
-        prior_state = prior_observation.state
-        control_observation = state_operation.read_control()
-        state_operation.ensure_ready(control_observation)
+        # Keep one provider operation across observation, confirmation, and
+        # the final compare-and-swap boundary. Remote providers bind state and
+        # control evidence in the same snapshot.
+        prior_snapshot = state_operation.observe()
+        prior_state = prior_snapshot.state.state
+        state_operation.ensure_ready(prior_snapshot)
         fmt.print_warning(
             f"{LOCAL_STATE_CI_WARNING} State file: {state_path}",
             code=ErrorCode.LOCAL_STATE_ONLY,
@@ -749,11 +828,10 @@ def adopt(
                     ErrorCode.ADOPTION_FAILED,
                     f"Could not observe topic {topic_artifact.name!r}: {_redact(str(exc))}",
                 ) from exc
-            if not current_topic.exists:
-                raise AdoptionError(
-                    ErrorCode.ADOPTION_LIVE_NOT_FOUND,
-                    f"Live topic {topic_artifact.name!r} does not exist; adoption never creates it",
-                )
+            _validate_live_topic_state(
+                current_topic,
+                topic=topic_artifact.name,
+            )
             data = _adoption_data(
                 resource_uri=resource_uri,
                 logical_name=logical_name,
@@ -762,6 +840,7 @@ def adopt(
                 state_path=state_path,
                 state_serial=prior_state.serial,
             )
+            confirmed_fingerprint = _topic_observation_fingerprint(current_topic)
         else:
             if schema_artifact is None:
                 raise AdoptionError(
@@ -795,10 +874,13 @@ def adopt(
                 state_path=state_path,
                 state_serial=prior_state.serial,
             )
+            confirmed_fingerprint = _schema_observation_fingerprint(current_schema)
+        data["observation_fingerprint"] = confirmed_fingerprint
         fmt.set_data(data)
         fmt.print(f"[cyan]Adoption candidate:[/cyan] {resource_uri}")
         fmt.print(f"  Physical {kind}: {_redact(physical_name)}")
         fmt.print(f"  Observed: {json.dumps(data['observed'], sort_keys=True)}")
+        fmt.print(f"  Observation fingerprint: {confirmed_fingerprint}")
         fmt.print(
             "  Desired managed attributes: "
             f"{json.dumps(data['desired_managed_attributes'], sort_keys=True)}"
@@ -808,6 +890,7 @@ def adopt(
         if existing is not None:
             data["adopted"] = False
             data["already_owned"] = True
+            operation_stack.close()
             fmt.print(f"[green]{kind.title()} already has an identical ownership record.[/green]")
             fmt.flush()
             return
@@ -820,12 +903,77 @@ def adopt(
             allow_prompt=fmt.format == "text" and _stdin_is_interactive(),
         )
 
-        resources = dict(prior_state.resources)
+        # Confirmation approves one exact observation, not merely a resource
+        # name. Re-observe the same target and require every observed field to
+        # match without emitting sensitive values.
+        if topic_artifact is not None:
+            if kafka is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    "Kafka is not configured or reachable; adoption requires live observation",
+                )
+            try:
+                confirmed_topic = kafka.get_topic_state(
+                    topic_artifact.name,
+                    strict_config=True,
+                )
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not re-observe topic {topic_artifact.name!r}: {_redact(str(exc))}",
+                ) from exc
+            _validate_live_topic_state(
+                confirmed_topic,
+                topic=topic_artifact.name,
+            )
+            current_fingerprint = _topic_observation_fingerprint(confirmed_topic)
+        else:
+            if schema_artifact is None or schema_registry is None:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_TARGET_INVALID,
+                    "Compiled adoption target is missing",
+                )
+            try:
+                confirmed_schema = schema_registry.get_schema_state(schema_artifact.subject)
+            except Exception as exc:
+                raise AdoptionError(
+                    ErrorCode.ADOPTION_FAILED,
+                    f"Could not re-observe schema subject {schema_artifact.subject!r}: "
+                    f"{_redact(str(exc))}",
+                ) from exc
+            _validate_live_schema_state(
+                confirmed_schema,
+                subject=schema_artifact.subject,
+            )
+            current_fingerprint = _schema_observation_fingerprint(confirmed_schema)
+        _require_unchanged_observation(
+            kind=kind,
+            confirmed_fingerprint=confirmed_fingerprint,
+            current_fingerprint=current_fingerprint,
+        )
+
+        # Bind the exact state and control revisions immediately before intent.
+        # Any state/control drift requires a fresh observation and confirmation.
+        final_snapshot = state_operation.observe()
+        state_operation.ensure_ready(final_snapshot)
+        if (
+            final_snapshot.state.store != prior_snapshot.state.store
+            or final_snapshot.state.revision != prior_snapshot.state.revision
+            or final_snapshot.state.state != prior_snapshot.state.state
+            or final_snapshot.control.revision != prior_snapshot.control.revision
+            or final_snapshot.control.control != prior_snapshot.control.control
+        ):
+            raise AdoptionError(
+                ErrorCode.ADOPTION_STATE_CONFLICT,
+                "Deployment state changed after confirmation; rerun adoption",
+            )
+        final_state = final_snapshot.state.state
+        resources = dict(final_state.resources)
         resources[resource_uri] = desired_record
         next_state = LocalState(
-            project=prior_state.project,
-            environment=prior_state.environment,
-            serial=prior_state.serial + 1,
+            project=final_state.project,
+            environment=final_state.environment,
+            serial=final_state.serial + 1,
             resources=resources,
         )
         operation_id = str(uuid.uuid4())
@@ -834,8 +982,8 @@ def adopt(
             kind="adopt",
             started_at=operation_timestamp(),
             actor="local-cli",
-            prior_state_serial=prior_state.serial,
-            prior_state_checksum=state_checksum(prior_state),
+            prior_state_serial=final_state.serial,
+            prior_state_checksum=state_checksum(final_state),
             reviewed_plan_checksum=None,
             actions=(
                 OperationAction(
@@ -845,16 +993,17 @@ def adopt(
                 ),
             ),
         )
-        active_control = state_operation.begin_operation(
-            control_observation,
-            intent,
-        )
+        active_snapshot: OperationSnapshot | None = None
         state_commit_attempted = False
         operation_finalized = False
         try:
+            active_snapshot = state_operation.begin_operation(
+                final_snapshot,
+                intent,
+            )
             state_operation.check_lock()
-            active_control = state_operation.record_progress(
-                active_control,
+            active_snapshot = state_operation.record_progress(
+                active_snapshot,
                 OperationProgress(
                     operation_id=operation_id,
                     action_index=0,
@@ -865,13 +1014,8 @@ def adopt(
                     recorded_at=operation_timestamp(),
                 ),
             )
-            state_commit_attempted = True
-            state_operation.compare_and_swap(
-                prior_observation,
-                next_state,
-            )
-            active_control = state_operation.record_progress(
-                active_control,
+            active_snapshot = state_operation.record_progress(
+                active_snapshot,
                 OperationProgress(
                     operation_id=operation_id,
                     action_index=0,
@@ -882,44 +1026,50 @@ def adopt(
                     recorded_at=operation_timestamp(),
                 ),
             )
-            active_control = state_operation.clear_operation(active_control)
+            state_commit_attempted = True
+            active_snapshot = state_operation.commit_operation(
+                active_snapshot,
+                next_state,
+            )
             operation_finalized = True
         except StateConflictError as exc:
-            # Local CAS detects a conflict before it writes ownership state.
-            try:
-                state_operation.clear_operation(active_control)
-                operation_finalized = True
-            except BaseException:
-                # The existing in_progress marker remains conservative.
-                pass
             raise AdoptionError(
-                ErrorCode.ADOPTION_STATE_CONFLICT,
-                str(exc),
+                (
+                    ErrorCode.ADOPTION_FAILED
+                    if state_commit_attempted
+                    else ErrorCode.ADOPTION_STATE_CONFLICT
+                ),
+                (
+                    "Could not confirm the atomic adoption state commit"
+                    if state_commit_attempted
+                    else str(exc)
+                ),
             ) from exc
-        except OSError as exc:
+        except (OSError, StateBackendUnknownCommitError) as exc:
             raise AdoptionError(
                 ErrorCode.ADOPTION_FAILED,
                 "Could not confirm the atomic adoption state commit",
             ) from exc
         finally:
-            if not operation_finalized:
-                if state_commit_attempted:
+            if active_snapshot is not None and not operation_finalized:
+                if active_snapshot.control.control.progress:
                     try:
                         completed = [
                             progress.action_index
-                            for progress in active_control.control.progress
-                            if progress.status == "completed"
-                            and progress.succeeded is True
+                            for progress in active_snapshot.control.control.progress
+                            if progress.status == "completed" and progress.succeeded is True
                         ]
                         state_operation.mark_recovery_required(
-                            active_control,
+                            active_snapshot,
                             RecoveryRecord(
                                 operation_id=operation_id,
-                                failure_code="adoption_state_commit_uncertain",
-                                failed_at=operation_timestamp(),
-                                last_completed_action_index=(
-                                    max(completed) if completed else None
+                                failure_code=(
+                                    "adoption_state_commit_uncertain"
+                                    if state_commit_attempted
+                                    else "adoption_operation_interrupted"
                                 ),
+                                failed_at=operation_timestamp(),
+                                last_completed_action_index=(max(completed) if completed else None),
                             ),
                         )
                     except BaseException:
@@ -927,9 +1077,14 @@ def adopt(
                         pass
                 else:
                     try:
-                        state_operation.clear_operation(active_control)
+                        state_operation.clear_before_mutation(active_snapshot)
                     except BaseException:
+                        # The existing in_progress marker remains conservative.
                         pass
+
+        # A provider may own a remote session or lease for the entire context.
+        # Do not report success until releasing that authority has succeeded.
+        operation_stack.close()
 
         data["adopted"] = True
         data["already_owned"] = False
