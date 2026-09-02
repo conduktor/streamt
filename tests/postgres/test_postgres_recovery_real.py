@@ -6,10 +6,17 @@ import json
 import multiprocessing
 import uuid
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 import streamt.deployer.postgres_state_backend as postgres_backend_module
+from streamt.compiler.manifest import ArtifactOwnership, GatewayRuleArtifact
+from streamt.deployer.gateway import (
+    GatewayBackendBinding,
+    ManagedGatewayRuleObservation,
+    build_desired_gateway_rule,
+)
 from streamt.deployer.postgres_state import (
     PostgresStateInitializer,
     PrivatePostgresStateV2Migrator,
@@ -17,12 +24,29 @@ from streamt.deployer.postgres_state import (
 )
 from streamt.deployer.postgres_state_backend import PrivatePostgresStateReadBackend
 from streamt.deployer.recovery import (
+    RecoveryResolution,
     RecoveryResolutionRecord,
     RecoverySnapshotEvidence,
+    RecoveryTargetEvidence,
 )
-from streamt.deployer.state import LocalState, ManagedResourceRecord, StateIdentityError
+from streamt.deployer.recovery_plan import RecoveryPlanFile
+from streamt.deployer.recovery_service import (
+    RecoveryLiveObservation,
+    RecoveryProjectContext,
+    RecoveryService,
+)
+from streamt.deployer.state import (
+    LocalState,
+    ManagedResourceRecord,
+    StateIdentityError,
+    artifact_checksum,
+    resource_id,
+)
 from streamt.deployer.state_backend import (
     ControlObservation,
+    DeploymentStateService,
+    GatewayActionEvidence,
+    GatewayActionSurfaceEvidence,
     OperationAction,
     OperationControlState,
     OperationIntent,
@@ -300,6 +324,236 @@ def _assert_lock_released(case: object) -> None:
         assert connection.execute(
             "SELECT pg_catalog.pg_advisory_unlock(%s)", (key,)
         ).fetchone() == (True,)
+
+
+def test_gateway_evidence_recovery_plan_composes_with_real_postgres_v2(
+    tmp_path: Path,
+    postgres_case: object,
+    postgres_writer: WriterIdentity,
+) -> None:
+    """Carry one reviewed Gateway candidate through file and real finalization."""
+    _initialize_v2(postgres_case, postgres_writer)
+    backend = _backend(postgres_case, postgres_writer)
+    service = DeploymentStateService(backend=backend, address=_address())
+    binding = GatewayBackendBinding.from_endpoint(
+        "https://gateway.example.test",
+        virtual_cluster="payments-prod",
+    )
+    artifact = GatewayRuleArtifact(
+        name="orders_rule",
+        virtual_topic="orders.public",
+        physical_topic="orders.v1",
+        ownership=ArtifactOwnership(
+            project="payments",
+            owner_type="model",
+            owner_name="orders_owner",
+            mode="managed",
+        ),
+    )
+    desired = build_desired_gateway_rule(artifact, binding)
+    current = ManagedGatewayRuleObservation(
+        binding=binding,
+        logical_name=artifact.name,
+        alias_name=artifact.virtual_topic,
+        exists=False,
+    )
+    action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            "payments",
+            "prod",
+            "gateway_rule",
+            "orders_owner",
+        ),
+        action="create",
+        gateway_evidence=GatewayActionEvidence(
+            version=1,
+            backend_identity=binding.backend_identity,
+            rule_name=artifact.name,
+            alias_name=artifact.virtual_topic,
+            current=GatewayActionSurfaceEvidence(
+                exists=False,
+                fingerprint=current.fingerprint,
+                managed_interceptor_count=0,
+            ),
+            desired=GatewayActionSurfaceEvidence(
+                exists=True,
+                fingerprint=desired.fingerprint,
+                managed_interceptor_count=len(desired.interceptors),
+            ),
+        ),
+    )
+
+    with service.operation() as operation:
+        observed = operation.observe()
+        intent = OperationIntent(
+            operation_id=str(uuid.uuid4()),
+            kind="apply",
+            started_at=operation_timestamp(),
+            actor="gateway-postgres-recovery-test",
+            prior_state_serial=observed.state.state_serial,
+            prior_state_checksum=state_checksum(observed.state.state),
+            reviewed_plan_checksum=None,
+            actions=(action,),
+        )
+        active = operation.begin_operation(observed, intent)
+        started = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id=action.resource_id,
+                action=action.action,
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        blocked = operation.mark_recovery_required(
+            started,
+            RecoveryRecord(
+                operation_id=intent.operation_id,
+                failure_code="runtime_outcome_unknown",
+                failed_at=operation_timestamp(),
+                last_completed_action_index=None,
+            ),
+        )
+
+    snapshot = RecoverySnapshotEvidence.from_operation_snapshot(blocked)
+    candidate = LocalState(
+        project="payments",
+        environment="prod",
+        serial=snapshot.state.serial + 1,
+        resources={
+            action.resource_id: ManagedResourceRecord(
+                physical_name=artifact.virtual_topic,
+                ownership="managed",
+                artifact_checksum=artifact_checksum(artifact.to_dict()),
+                backend=binding.backend_identity,
+            )
+        },
+    )
+    target = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="candidate",
+        fingerprint=desired.fingerprint,
+    )
+    environment_fingerprint = "sha256:" + "1" * 64
+    manifest_checksum = "sha256:" + "2" * 64
+    recovery_operation_id = str(uuid.uuid4())
+    plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=recovery_operation_id,
+        snapshot=snapshot,
+        targets=(target,),
+        candidate_state=candidate,
+        environment_fingerprint=environment_fingerprint,
+        manifest_checksum=manifest_checksum,
+    )
+    plan_path = tmp_path / "gateway-recovery.json"
+    plan.save(plan_path)
+    loaded = RecoveryPlanFile.load(plan_path)
+    assert loaded == plan
+    assert loaded.targets[0].action.gateway_evidence == action.gateway_evidence
+
+    class Observer:
+        calls = 0
+
+        def observe_recovery_targets(
+            self,
+            *,
+            resolution: RecoveryResolution,
+            snapshot: RecoverySnapshotEvidence,
+        ) -> RecoveryLiveObservation:
+            self.calls += 1
+            assert resolution == "observed"
+            assert snapshot == loaded.snapshot
+            return RecoveryLiveObservation(
+                targets=loaded.targets,
+                candidate_state=loaded.candidate_state,
+            )
+
+    class ContextReader:
+        calls = 0
+
+        def read_recovery_context(self) -> RecoveryProjectContext:
+            self.calls += 1
+            return RecoveryProjectContext(
+                environment_fingerprint=environment_fingerprint,
+                manifest_checksum=manifest_checksum,
+            )
+
+    observer = Observer()
+    context = ContextReader()
+    recovery = RecoveryService(
+        state=service,
+        resolved_at_factory=lambda: "2026-09-02T20:00:00Z",
+    )
+    result = recovery.execute_plan(
+        plan_path,
+        confirm_operation_id=plan.blocked_operation_id,
+        confirm_resolution=plan.resolution,
+        confirm_evidence_checksum=plan.evidence_checksum,
+        observer=observer,
+        context_reader=context,
+    )
+
+    assert result.state.state == candidate
+    assert result.control.control == OperationControlState.clear(_address())
+    assert observer.calls == 1
+    assert context.calls == 2
+    recovery_events = [
+        row
+        for row in _rows(
+            postgres_case,
+            "operation_history",
+            "operation_id::text, event_index, event_kind, control_json",
+        )
+        if row[0] == recovery_operation_id
+    ]
+    assert [(row[1], row[2]) for row in recovery_events] == [
+        (0, "recovery_intent"),
+        (1, "recovered_observed"),
+    ]
+    persisted_snapshot = json.loads(recovery_events[0][3])
+    assert (
+        persisted_snapshot["control"]["intent"]["actions"][0]["gateway_evidence"]
+        == action.gateway_evidence.to_dict()
+    )
+    before_retry = recovery_events
+
+    class MustNotRead:
+        def observe_recovery_targets(
+            self,
+            *,
+            resolution: RecoveryResolution,
+            snapshot: RecoverySnapshotEvidence,
+        ) -> RecoveryLiveObservation:
+            del resolution, snapshot
+            raise AssertionError("completed recovery must not re-observe Gateway")
+
+        def read_recovery_context(self) -> RecoveryProjectContext:
+            raise AssertionError("completed recovery must not reread project context")
+
+    retried = recovery.execute_plan(
+        plan_path,
+        confirm_operation_id=plan.blocked_operation_id,
+        confirm_resolution=plan.resolution,
+        confirm_evidence_checksum=plan.evidence_checksum,
+        observer=MustNotRead(),
+        context_reader=MustNotRead(),
+    )
+    assert retried.state.state == candidate
+    assert before_retry == [
+        row
+        for row in _rows(
+            postgres_case,
+            "operation_history",
+            "operation_id::text, event_index, event_kind, control_json",
+        )
+        if row[0] == recovery_operation_id
+    ]
 
 
 @pytest.mark.parametrize(

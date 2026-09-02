@@ -19,6 +19,8 @@ from streamt.cli.commands.state_cmd import (
     _RecoveryRuntime,
     _StrictRecoveryKafkaDeployer,
 )
+from streamt.compiler import Compiler
+from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     GatewayRuleArtifact,
@@ -27,6 +29,7 @@ from streamt.compiler.manifest import (
 )
 from streamt.core.deployment_state import local_deployment_state_config
 from streamt.core.models import ProjectInfo, StreamtProject
+from streamt.core.parser import ProjectParser
 from streamt.core.runtime import (
     ConduktorConfig,
     GatewayConfig,
@@ -46,6 +49,7 @@ from streamt.deployer.recovery import (
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
 )
+from streamt.deployer.recovery_plan import RecoveryPlanFile
 from streamt.deployer.recovery_service import (
     RecoveryLiveObservation,
     RecoveryProjectContext,
@@ -79,6 +83,7 @@ from streamt.deployer.state_backend import (
     StateObservation,
     StateRevision,
     StateStoreIdentity,
+    local_recovery_history_path,
     make_deployment_state_service,
     operation_timestamp,
     state_checksum,
@@ -107,6 +112,38 @@ def _write_project(path: Path) -> None:
                 "runtime": {"kafka": {"bootstrap_servers": "unreachable.invalid:9092"}},
             }
         ),
+        encoding="utf-8",
+    )
+
+
+def _write_gateway_recovery_project(path: Path, *, include_rule: bool) -> None:
+    config: dict[str, object] = {
+        "apiVersion": "streamt.dev/v1alpha1",
+        "project": {"name": "recovery-test"},
+        "runtime": {
+            "kafka": {"bootstrap_servers": "broker.invalid:9092"},
+            "conduktor": {
+                "gateway": {
+                    "admin_url": GATEWAY_ENDPOINT,
+                    "password": GATEWAY_CONFIG_SECRET,
+                    "virtual_cluster": GATEWAY_VCLUSTER,
+                }
+            },
+        },
+        "sources": [{"name": "orders_source", "topic": "orders.v1"}],
+    }
+    if include_rule:
+        config["models"] = [
+            {
+                "name": "orders_rule",
+                "materialized": "virtual_topic",
+                "gateway": {"virtual_topic": {"name": "orders.public"}},
+                "topic": {"name": "orders.public"},
+                "sql": 'SELECT * FROM {{ source("orders_source") }}',
+            }
+        ]
+    (path / "stream_project.yml").write_text(
+        yaml.safe_dump(config),
         encoding="utf-8",
     )
 
@@ -757,6 +794,277 @@ def test_abandoned_planning_never_constructs_live_deployers(
         )
 
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("gateway_action", ["create", "update", "delete"])
+def test_local_gateway_recovery_cli_round_trip_and_completed_retry(
+    tmp_path: Path,
+    gateway_action: str,
+) -> None:
+    _write_gateway_recovery_project(
+        tmp_path,
+        include_rule=gateway_action != "delete",
+    )
+    project = ProjectParser(tmp_path).parse()
+    manifest = Compiler(project).compile(dry_run=True)
+    compiled_rules = manifest.artifacts.get("gateway_rules", [])
+    expected_new = _gateway_rule(
+        rule_name="orders_rule",
+        alias_name="orders.public",
+        physical_name="orders.v1",
+        owner_name="orders_rule",
+    )
+    if gateway_action == "delete":
+        assert compiled_rules == []
+    else:
+        assert len(compiled_rules) == 1
+        assert parse_compiled_gateway_rule_artifact(compiled_rules[0]) == expected_new
+
+    old = _gateway_rule(
+        rule_name="orders_rule",
+        alias_name="orders.public",
+        physical_name="orders.v0",
+        owner_name="orders_rule",
+    )
+    old_live = build_desired_gateway_rule(old, GATEWAY_BINDING)
+    new_live = build_desired_gateway_rule(expected_new, GATEWAY_BINDING)
+    if gateway_action == "create":
+        current = _absent_gateway(new_live)
+        desired = new_live
+        provider_observation = new_live
+    elif gateway_action == "update":
+        current = old_live
+        desired = new_live
+        provider_observation = new_live
+    else:
+        current = old_live
+        desired = _absent_gateway(old_live)
+        provider_observation = desired
+
+    action = _gateway_operation_action(
+        index=0,
+        owner_name="orders_rule",
+        action=gateway_action,
+        current=current,
+        desired=desired,
+    )
+    target_id = action.resource_id
+    prior_resources = (
+        {}
+        if gateway_action == "create"
+        else {target_id: _gateway_prior_record(old)}
+    )
+    service = make_deployment_state_service(
+        tmp_path,
+        project="recovery-test",
+        environment="default",
+        config=local_deployment_state_config(),
+    )
+    with service.operation() as operation:
+        initial = operation.observe()
+        if prior_resources:
+            operation.compare_and_swap(
+                initial.state,
+                LocalState(
+                    project="recovery-test",
+                    environment="default",
+                    serial=1,
+                    resources=prior_resources,
+                ),
+            )
+        snapshot = operation.observe()
+        prior_state = snapshot.state.state
+        intent = OperationIntent(
+            operation_id=BLOCKED_OPERATION_ID,
+            kind="apply",
+            started_at=operation_timestamp(),
+            actor="prior-runner",
+            prior_state_serial=prior_state.serial,
+            prior_state_checksum=state_checksum(prior_state),
+            reviewed_plan_checksum=None,
+            actions=(action,),
+        )
+        active = operation.begin_operation(snapshot, intent)
+        operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=BLOCKED_OPERATION_ID,
+                action_index=0,
+                resource_id=target_id,
+                action=gateway_action,
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+
+    gateway = MagicMock(spec=GatewayDeployer)
+    gateway.cluster_binding = GATEWAY_BINDING
+    provider_snapshot = MagicMock(spec=ManagedGatewaySnapshot)
+    provider_snapshot.binding = GATEWAY_BINDING
+
+    def observe_rule(
+        rule_name: str,
+        alias_name: str,
+    ) -> ManagedGatewayRuleObservation:
+        assert (rule_name, alias_name) == ("orders_rule", "orders.public")
+        return provider_observation
+
+    provider_snapshot.rule.side_effect = observe_rule
+    gateway.observe_managed_gateway_snapshot.return_value = provider_snapshot
+    kafka = MagicMock(spec=KafkaDeployer)
+    plan_path = tmp_path / f"gateway-{gateway_action}.recovery.json"
+    runner = CliRunner()
+
+    with (
+        patch(
+            "streamt.cli.helpers.make_kafka_deployer",
+            return_value=kafka,
+        ) as make_kafka,
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            return_value=gateway,
+        ) as make_gateway,
+    ):
+        planned = runner.invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "state",
+                "recovery-plan",
+                "-p",
+                str(tmp_path),
+                "--resolution",
+                "observed",
+                "--out",
+                str(plan_path),
+            ],
+        )
+
+        assert planned.exit_code == 0, planned.output
+        planned_data = cast(dict[str, object], _json(planned)["data"])
+        reviewed = RecoveryPlanFile.load(plan_path)
+        assert stat.S_IMODE(plan_path.stat().st_mode) == 0o600
+        assert reviewed.evidence_checksum == planned_data["evidence_checksum"]
+        assert reviewed.snapshot.state == prior_state
+        assert reviewed.resolution == "observed"
+        assert len(reviewed.targets) == 1
+        assert reviewed.targets[0].action == action
+        assert reviewed.targets[0].presence == (
+            "absent" if gateway_action == "delete" else "present"
+        )
+        assert reviewed.targets[0].accepted_as == "candidate"
+        assert reviewed.targets[0].fingerprint == provider_observation.fingerprint
+        assert reviewed.candidate_state is not None
+        assert reviewed.candidate_state.serial == prior_state.serial + 1
+        if gateway_action == "delete":
+            assert target_id not in reviewed.candidate_state.resources
+        else:
+            candidate_record = reviewed.candidate_state.resources[target_id]
+            assert candidate_record == ManagedResourceRecord(
+                physical_name="orders.public",
+                ownership="managed",
+                artifact_checksum=artifact_checksum(expected_new.to_dict()),
+                backend=GATEWAY_BINDING.backend_identity,
+            )
+        assert GATEWAY_CONFIG_SECRET not in plan_path.read_text(encoding="utf-8")
+
+        executed = runner.invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "state",
+                "recover",
+                "-p",
+                str(tmp_path),
+                "--plan",
+                str(plan_path),
+                "--confirm-operation-id",
+                BLOCKED_OPERATION_ID,
+                "--confirm-resolution",
+                "observed",
+                "--confirm-evidence-checksum",
+                reviewed.evidence_checksum,
+            ],
+        )
+
+    assert executed.exit_code == 0, executed.output
+    executed_data = cast(dict[str, object], _json(executed)["data"])
+    assert executed_data["state_changed"] is True
+    assert executed_data["control_status"] == "clear"
+    assert executed_data["state_checksum"] == state_checksum(reviewed.candidate_state)
+    assert make_gateway.call_count == 2
+    assert make_kafka.call_count == 2
+    assert gateway.observe_managed_gateway_snapshot.call_count == 2
+    assert provider_snapshot.rule.call_args_list == [
+        call("orders_rule", "orders.public"),
+        call("orders_rule", "orders.public"),
+    ]
+
+    assert service.read().state == reviewed.candidate_state
+    assert service.read_control().control == OperationControlState.clear(service.address)
+    history_path = local_recovery_history_path(tmp_path, environment="default")
+    history_before_retry = cast(
+        dict[str, object],
+        json.loads(history_path.read_text(encoding="utf-8")),
+    )
+    events = cast(list[dict[str, object]], history_before_retry["events"])
+    assert history_before_retry["address"] == service.address.uri
+    assert [event["kind"] for event in events] == [
+        "recovery_intent",
+        "recovery_resolution",
+    ]
+    assert events[0]["record"] == events[1]["record"]
+    resolution_record = cast(dict[str, object], events[0]["record"])
+    assert resolution_record["blocked_operation_id"] == BLOCKED_OPERATION_ID
+    assert resolution_record["recovery_operation_id"] == reviewed.recovery_operation_id
+    assert resolution_record["resolution"] == "observed"
+    assert resolution_record["evidence_checksum"] == reviewed.evidence_checksum
+    assert resolution_record["state_changed"] is True
+    assert resolution_record["result_state_checksum"] == state_checksum(
+        reviewed.candidate_state
+    )
+    assert events[0]["previous_checksum"] is None
+    assert events[1]["previous_checksum"] == events[0]["checksum"]
+
+    with (
+        patch(
+            "streamt.cli.helpers.make_kafka_deployer",
+            side_effect=AssertionError("Kafka provider was read during completed retry"),
+        ) as retry_kafka,
+        patch(
+            "streamt.cli.helpers.make_gateway_deployer",
+            side_effect=AssertionError("Gateway provider was read during completed retry"),
+        ) as retry_gateway,
+    ):
+        retried = runner.invoke(
+            main,
+            [
+                "-o",
+                "json",
+                "state",
+                "recover",
+                "-p",
+                str(tmp_path),
+                "--plan",
+                str(plan_path),
+                "--confirm-operation-id",
+                BLOCKED_OPERATION_ID,
+                "--confirm-resolution",
+                "observed",
+                "--confirm-evidence-checksum",
+                reviewed.evidence_checksum,
+            ],
+        )
+
+    assert retried.exit_code == 0, retried.output
+    retry_gateway.assert_not_called()
+    retry_kafka.assert_not_called()
+    assert json.loads(history_path.read_text(encoding="utf-8")) == history_before_retry
+    assert service.read().state == reviewed.candidate_state
+    assert service.read_control().control == OperationControlState.clear(service.address)
 
 
 def test_recovery_runtime_observes_removed_gateway_delete_without_manifest_rule() -> None:
