@@ -301,6 +301,66 @@ rules:
 
 ---
 
+## Explicit Gateway Rule Removals
+
+Gateway removal intent is declared at project level with the prior
+compiler-level rule fields from `generated/manifest.json`. Copy only `name`,
+`virtualTopic`, `physicalTopic`, and `interceptors`; omit `ownership` because
+the compiler reconstructs it from the current project:
+
+```yaml
+apiVersion: streamt.dev/v1alpha1
+project:
+  name: payments
+runtime:
+  kafka:
+    bootstrap_servers: broker.example:9092
+lifecycle:
+  gateway_rule_removals:
+    - logical_owner: orders_view
+      prior_artifact:
+        name: orders_rule
+        virtualTopic: orders.public
+        physicalTopic: raw.orders
+        interceptors:
+          - type: filter
+            config:
+              where: "region = 'us'"
+          - type: mask
+            config:
+              field: customer.email
+              method: MASK_ALL
+              forRoles: [support]
+```
+
+An alias-only rule uses an explicit empty interceptor list. The declaration is
+a tombstone for one exact prior artifact; removing a model or omitting a rule
+does not imply deletion.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `lifecycle.gateway_rule_removals` | list | No | Explicit Gateway rule tombstones; defaults to an empty list |
+| `logical_owner` | string | Yes | Prior logical model owner; must be non-empty and contain no `/` |
+| `prior_artifact.name` | string | Yes | Exact prior provider rule name |
+| `prior_artifact.virtualTopic` | string | Yes | Exact prior AliasTopic name |
+| `prior_artifact.physicalTopic` | string | Yes | Exact prior physical input topic |
+| `prior_artifact.interceptors` | list | Yes | Exact ordered prior `filter` and `mask` compiler configurations |
+
+Gateway resource names accept letters, digits, `.`, `_`, and `-`. Filter
+configuration contains only `where`. Mask configuration contains `field`,
+`method`, and optional `forRoles`. All lifecycle objects are strict: unknown
+fields, null collections, singleton interceptor objects, provider endpoints,
+backend identities, credentials, and author-supplied `ownership` are rejected.
+
+The compiler injects managed ownership from the current project and
+`logical_owner`, validates the reconstructed value with the compiled Gateway
+artifact parser, and emits it under the separate
+`artifacts.gateway_rule_removals` manifest collection. Tombstones are included
+in the manifest checksum but never appear in `gateway_rules`, the desired model
+list, or the DAG.
+
+---
+
 ## Sources
 
 Sources declare external Kafka topics that your project consumes.

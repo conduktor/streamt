@@ -27,6 +27,7 @@ from streamt.core.models import (
     DataTest,
     Defaults,
     Exposure,
+    LifecycleConfig,
     Model,
     ProjectInfo,
     Rules,
@@ -169,6 +170,7 @@ class ProjectParser:
         deployment_state = self._parse_deployment_state(project_data)
         defaults = self._parse_defaults(project_data)
         rules = self._parse_rules(project_data)
+        lifecycle = self._parse_lifecycle(project_data)
 
         # Parse sources, models, tests, exposures
         sources = self._parse_sources(project_data)
@@ -186,6 +188,7 @@ class ProjectParser:
             deployment_state=deployment_state,
             defaults=defaults,
             rules=rules,
+            lifecycle=lifecycle,
             connections=connections,
             sources=sources,
             models=models,
@@ -416,6 +419,20 @@ class ProjectParser:
             return Rules.model_validate(rules_data)
         except ValidationError as e:
             raise ParseError(f"Invalid rules: {_format_pydantic_error(e)}") from e
+
+    def _parse_lifecycle(self, data: dict[str, object]) -> LifecycleConfig | None:
+        """Parse explicit lifecycle transitions from the project file."""
+        if "lifecycle" not in data:
+            return None
+        lifecycle_data = _require_mapping(
+            data["lifecycle"], context="stream_project.yml", path="lifecycle"
+        )
+        try:
+            return LifecycleConfig.model_validate(lifecycle_data)
+        except ValidationError as error:
+            raise ParseError(
+                "Invalid lifecycle: " + _format_pydantic_error(error)
+            ) from error
 
     def _parse_connections(self, data: dict[str, object]) -> dict[str, ConnectionConfig]:
         """Parse global connections section."""

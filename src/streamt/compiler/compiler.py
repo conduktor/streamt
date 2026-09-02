@@ -14,11 +14,16 @@ from streamt.compiler.compiled_models import (
     empty_compiled_models,
     freeze_compiled_models,
 )
+from streamt.compiler.gateway_artifact import (
+    GatewayArtifactFormatError,
+    parse_compiled_gateway_rule_artifact,
+)
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
     FlinkJobArtifact,
     GatewayRuleArtifact,
+    GatewayRuleRemovalArtifact,
     Manifest,
     SchemaArtifact,
     TopicArtifact,
@@ -96,6 +101,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.test_jobs: list[FlinkJobArtifact] = []
         self.connectors: list[ConnectorArtifact] = []
         self.gateway_rules: list[GatewayRuleArtifact] = []
+        self.gateway_rule_removals: list[GatewayRuleRemovalArtifact] = []
 
     def _get_topic_defaults(self) -> TopicDefaults:
         """Get topic defaults from project config."""
@@ -167,6 +173,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.test_jobs = []
         self.connectors = []
         self.gateway_rules = []
+        self.gateway_rule_removals = []
         self.resolved_models = empty_resolved_models()
         self.compiled_models = empty_compiled_models()
         self.dag = DAG()
@@ -211,6 +218,8 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         # KAFKA-2: Auto-create dead-letter topics from test on_failure DLQ actions
         self._compile_dlq_topics()
 
+        self._compile_gateway_rule_removals()
+
         compiled_models = freeze_compiled_models(
             compiled_model_views,
             expected_model_names=resolved_models,
@@ -224,6 +233,58 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             self._write_artifacts()
 
         return manifest, compiled_models
+
+    def _compile_gateway_rule_removals(self) -> None:
+        """Compile strict lifecycle tombstones without creating desired rules."""
+        if self.project.lifecycle is None:
+            return
+
+        seen_owners: set[str] = set()
+        seen_rule_names: set[str] = set()
+        seen_alias_names: set[str] = set()
+        for declaration in self.project.lifecycle.gateway_rule_removals:
+            identities = (
+                ("logical_owner", declaration.logical_owner, seen_owners),
+                (
+                    "prior_artifact.name",
+                    declaration.prior_artifact.name,
+                    seen_rule_names,
+                ),
+                (
+                    "prior_artifact.virtualTopic",
+                    declaration.prior_artifact.virtual_topic,
+                    seen_alias_names,
+                ),
+            )
+            for label, value, seen in identities:
+                if value in seen:
+                    raise CompileError(
+                        f"Duplicate Gateway rule removal {label} {value!r}"
+                    )
+                seen.add(value)
+
+            raw_prior = declaration.prior_artifact.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_unset=True,
+            )
+            raw_prior["ownership"] = self._ownership(
+                "model",
+                declaration.logical_owner,
+                mode="managed",
+            ).to_dict()
+            try:
+                prior_artifact = parse_compiled_gateway_rule_artifact(raw_prior)
+            except GatewayArtifactFormatError as error:
+                raise CompileError(
+                    "Invalid prior Gateway rule artifact for lifecycle removal"
+                ) from error
+            self.gateway_rule_removals.append(
+                GatewayRuleRemovalArtifact(
+                    logical_owner=declaration.logical_owner,
+                    prior_artifact=prior_artifact,
+                )
+            )
 
     def _compile_source_schema(self, source: Source) -> None:
         """Compile schema artifact from a source with schema definition."""
@@ -616,6 +677,9 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
                 "test_jobs": [j.to_dict() for j in self.test_jobs],
                 "connectors": [c.to_dict() for c in self.connectors],
                 "gateway_rules": [g.to_dict() for g in self.gateway_rules],
+                "gateway_rule_removals": [
+                    removal.to_dict() for removal in self.gateway_rule_removals
+                ],
             },
         )
 

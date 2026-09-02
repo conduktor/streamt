@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import (
     ConfigDict,
@@ -243,6 +243,147 @@ class Project(BaseModel):
     )
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
+
+
+# ============================================================================
+# Explicit lifecycle removals
+# ============================================================================
+
+
+GatewayResourceName = Annotated[
+    str,
+    Field(pattern=r"^[A-Za-z0-9._-]+$"),
+]
+NonEmptyGatewayConfigString = Annotated[str, Field(min_length=1)]
+
+
+class GatewayRulePriorFilterConfig(BaseModel):
+    """Exact compiler-level filter configuration retained by a tombstone."""
+
+    where: NonEmptyGatewayConfigString
+
+    @field_validator("where")
+    @classmethod
+    def validate_where(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("where must be a non-empty string")
+        return value
+
+
+class GatewayRulePriorMaskConfig(BaseModel):
+    """Exact compiler-level mask configuration retained by a tombstone."""
+
+    field: NonEmptyGatewayConfigString
+    method: NonEmptyGatewayConfigString
+    for_roles: list[NonEmptyGatewayConfigString] = Field(
+        default_factory=list,
+        alias="forRoles",
+    )
+
+    @field_validator("field", "method")
+    @classmethod
+    def validate_nonempty_string(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return value
+
+    @field_validator("for_roles", mode="before")
+    @classmethod
+    def reject_null_roles(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("forRoles must be a list when configured")
+        return value
+
+    @field_validator("for_roles")
+    @classmethod
+    def validate_roles(cls, value: list[str]) -> list[str]:
+        if any(not role.strip() for role in value):
+            raise ValueError("forRoles entries must be non-empty strings")
+        if len(set(value)) != len(value):
+            raise ValueError("forRoles entries must be unique")
+        return value
+
+
+class GatewayRulePriorInterceptor(BaseModel):
+    """One exact supported compiler-level Gateway interceptor."""
+
+    type: Literal["filter", "mask"]
+    config: GatewayRulePriorFilterConfig | GatewayRulePriorMaskConfig
+
+    @model_validator(mode="after")
+    def validate_type_specific_config(self) -> GatewayRulePriorInterceptor:
+        expected = (
+            GatewayRulePriorFilterConfig
+            if self.type == "filter"
+            else GatewayRulePriorMaskConfig
+        )
+        if not isinstance(self.config, expected):
+            raise ValueError(f"{self.type} interceptor has incompatible config")
+        return self
+
+
+class GatewayRulePriorArtifact(BaseModel):
+    """Complete prior compiler artifact declared for explicit removal."""
+
+    name: GatewayResourceName
+    virtual_topic: GatewayResourceName = Field(alias="virtualTopic")
+    physical_topic: GatewayResourceName = Field(alias="physicalTopic")
+    interceptors: list[GatewayRulePriorInterceptor]
+
+
+class GatewayRuleRemovalDeclaration(BaseModel):
+    """Affirmative intent to remove one exact previously compiled Gateway rule."""
+
+    logical_owner: str = Field(min_length=1, pattern=r"^[^/]+$")
+    prior_artifact: GatewayRulePriorArtifact
+
+    @field_validator("logical_owner")
+    @classmethod
+    def validate_logical_owner(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("logical_owner must be a non-empty string")
+        return value
+
+
+class LifecycleConfig(BaseModel):
+    """Explicit project lifecycle transitions."""
+
+    gateway_rule_removals: list[GatewayRuleRemovalDeclaration] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_gateway_rule_removals(self) -> LifecycleConfig:
+        seen: dict[str, set[str]] = {
+            "logical_owner": set(),
+            "prior_artifact.name": set(),
+            "prior_artifact.virtualTopic": set(),
+        }
+        identity_groups = [
+            (
+                ("logical_owner", removal.logical_owner)
+                for removal in self.gateway_rule_removals
+            ),
+            (
+                ("prior_artifact.name", removal.prior_artifact.name)
+                for removal in self.gateway_rule_removals
+            ),
+            (
+                (
+                    "prior_artifact.virtualTopic",
+                    removal.prior_artifact.virtual_topic,
+                )
+                for removal in self.gateway_rule_removals
+            ),
+        ]
+        for identity_group in identity_groups:
+            for label, value in identity_group:
+                if value in seen[label]:
+                    raise ValueError(
+                        f"duplicate Gateway rule removal {label} {value!r}"
+                    )
+                seen[label].add(value)
+        return self
 
 
 # ============================================================================
@@ -1121,6 +1262,7 @@ class StreamtProject(BaseModel):
     )
     defaults: Optional[Defaults] = None
     rules: Optional[Rules] = None
+    lifecycle: Optional[LifecycleConfig] = None
     connections: dict[str, ConnectionConfig] = Field(default_factory=dict)
     sources: list[Source] = Field(default_factory=list)
     models: list[Model] = Field(default_factory=list)

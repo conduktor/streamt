@@ -1470,6 +1470,140 @@
       "title": "GatewayConfig",
       "type": "object"
     },
+    "GatewayRulePriorArtifact": {
+      "additionalProperties": false,
+      "description": "Complete prior compiler artifact declared for explicit removal.",
+      "properties": {
+        "name": {
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "virtualTopic": {
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Virtualtopic",
+          "type": "string"
+        },
+        "physicalTopic": {
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Physicaltopic",
+          "type": "string"
+        },
+        "interceptors": {
+          "items": {
+            "$ref": "#/$defs/GatewayRulePriorInterceptor"
+          },
+          "title": "Interceptors",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "virtualTopic",
+        "physicalTopic",
+        "interceptors"
+      ],
+      "title": "GatewayRulePriorArtifact",
+      "type": "object"
+    },
+    "GatewayRulePriorFilterConfig": {
+      "additionalProperties": false,
+      "description": "Exact compiler-level filter configuration retained by a tombstone.",
+      "properties": {
+        "where": {
+          "minLength": 1,
+          "title": "Where",
+          "type": "string"
+        }
+      },
+      "required": [
+        "where"
+      ],
+      "title": "GatewayRulePriorFilterConfig",
+      "type": "object"
+    },
+    "GatewayRulePriorInterceptor": {
+      "additionalProperties": false,
+      "description": "One exact supported compiler-level Gateway interceptor.",
+      "properties": {
+        "type": {
+          "enum": [
+            "filter",
+            "mask"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GatewayRulePriorFilterConfig"
+            },
+            {
+              "$ref": "#/$defs/GatewayRulePriorMaskConfig"
+            }
+          ],
+          "title": "Config"
+        }
+      },
+      "required": [
+        "type",
+        "config"
+      ],
+      "title": "GatewayRulePriorInterceptor",
+      "type": "object"
+    },
+    "GatewayRulePriorMaskConfig": {
+      "additionalProperties": false,
+      "description": "Exact compiler-level mask configuration retained by a tombstone.",
+      "properties": {
+        "field": {
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "method": {
+          "minLength": 1,
+          "title": "Method",
+          "type": "string"
+        },
+        "forRoles": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Forroles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "field",
+        "method"
+      ],
+      "title": "GatewayRulePriorMaskConfig",
+      "type": "object"
+    },
+    "GatewayRuleRemovalDeclaration": {
+      "additionalProperties": false,
+      "description": "Affirmative intent to remove one exact previously compiled Gateway rule.",
+      "properties": {
+        "logical_owner": {
+          "minLength": 1,
+          "pattern": "^[^/]+$",
+          "title": "Logical Owner",
+          "type": "string"
+        },
+        "prior_artifact": {
+          "$ref": "#/$defs/GatewayRulePriorArtifact"
+        }
+      },
+      "required": [
+        "logical_owner",
+        "prior_artifact"
+      ],
+      "title": "GatewayRuleRemovalDeclaration",
+      "type": "object"
+    },
     "KafkaConfig": {
       "additionalProperties": false,
       "description": "Kafka cluster configuration.",
@@ -1615,6 +1749,21 @@
         "type"
       ],
       "title": "LegacyConnectorConfig",
+      "type": "object"
+    },
+    "LifecycleConfig": {
+      "additionalProperties": false,
+      "description": "Explicit project lifecycle transitions.",
+      "properties": {
+        "gateway_rule_removals": {
+          "items": {
+            "$ref": "#/$defs/GatewayRuleRemovalDeclaration"
+          },
+          "title": "Gateway Rule Removals",
+          "type": "array"
+        }
+      },
+      "title": "LifecycleConfig",
       "type": "object"
     },
     "LifecycleOwnership": {
@@ -3394,6 +3543,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Rules"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lifecycle": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LifecycleConfig"
         },
         {
           "type": "null"

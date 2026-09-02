@@ -170,6 +170,74 @@ class GatewayRuleArtifact:
         }, self.ownership)
 
 
+@dataclass(frozen=True, init=False)
+class GatewayRuleRemovalArtifact:
+    """Immutable explicit removal of one complete prior Gateway artifact.
+
+    The prior artifact is retained as serialized compiler data so callers only
+    receive independent parsed copies and cannot mutate the manifest value.
+    """
+
+    logical_owner: str
+    _prior_artifact_json: str = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        logical_owner: str,
+        prior_artifact: GatewayRuleArtifact,
+    ) -> None:
+        if (
+            not isinstance(logical_owner, str)
+            or not logical_owner.strip()
+            or "/" in logical_owner
+        ):
+            raise ValueError(
+                "Gateway removal logical owner must be a non-empty string without '/'"
+            )
+        from streamt.compiler.gateway_artifact import (
+            parse_compiled_gateway_rule_artifact,
+        )
+
+        parsed_prior = parse_compiled_gateway_rule_artifact(prior_artifact.to_dict())
+        ownership = ArtifactOwnership.from_dict(parsed_prior.ownership)
+        if (
+            ownership is None
+            or ownership.mode != "managed"
+            or ownership.owner_type != "model"
+            or ownership.owner_name != logical_owner
+        ):
+            raise ValueError(
+                "Gateway removal prior artifact must have matching managed model ownership"
+            )
+        object.__setattr__(self, "logical_owner", logical_owner)
+        object.__setattr__(
+            self,
+            "_prior_artifact_json",
+            json.dumps(
+                parsed_prior.to_dict(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+
+    @property
+    def prior_artifact(self) -> GatewayRuleArtifact:
+        from streamt.compiler.gateway_artifact import (
+            parse_compiled_gateway_rule_artifact,
+        )
+
+        return parse_compiled_gateway_rule_artifact(
+            json.loads(self._prior_artifact_json)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "logicalOwner": self.logical_owner,
+            "priorArtifact": json.loads(self._prior_artifact_json),
+        }
+
+
 @dataclass
 class SchemaArtifact:
     """Compiled schema artifact."""
