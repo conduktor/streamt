@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import cast
+
 from streamt.compiler.manifest import FlinkJobArtifact
+from streamt.core.models import DataTest
 
 
 class TestJobCompiler:
@@ -13,7 +17,7 @@ class TestJobCompiler:
     """
 
     @staticmethod
-    def assertion_to_where_clause(assertion: dict) -> str:
+    def assertion_to_where_clause(assertion: Mapping[str, object]) -> str:
         """Convert a single assertion dict to a SQL WHERE clause fragment.
 
         The fragment represents the violation condition (rows that FAIL the test).
@@ -21,10 +25,11 @@ class TestJobCompiler:
         if len(assertion) != 1:
             raise ValueError(f"Assertion must have exactly one key, got: {list(assertion.keys())}")
 
-        assertion_type, config = next(iter(assertion.items()))
+        assertion_type, raw_config = next(iter(assertion.items()))
+        config = cast(Mapping[str, object], raw_config)
 
         if assertion_type == "not_null":
-            columns = config.get("columns", [])
+            columns = cast(Sequence[object], config.get("columns", []))
             if not columns:
                 raise ValueError("not_null assertion requires at least one column")
             return " OR ".join(f"`{col}` IS NULL" for col in columns)
@@ -47,13 +52,15 @@ class TestJobCompiler:
         raise ValueError(f"Unknown assertion type: {assertion_type!r}")
 
     @classmethod
-    def assertions_to_where_clause(cls, assertions: list[dict]) -> str:
+    def assertions_to_where_clause(
+        cls, assertions: Sequence[Mapping[str, object]]
+    ) -> str:
         """Convert a list of assertions to a combined SQL WHERE clause."""
         parts = [cls.assertion_to_where_clause(a) for a in assertions]
         return " OR ".join(parts)
 
     @classmethod
-    def compile_job(cls, test) -> FlinkJobArtifact | None:
+    def compile_job(cls, test: DataTest) -> FlinkJobArtifact | None:
         """Compile a continuous test to a FlinkJobArtifact, or None if no assertions.
 
         Only ``not_null`` and ``range`` assertion types are supported; others are

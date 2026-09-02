@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from sqlglot import exp
 
 logger = logging.getLogger(__name__)
 
 # Mapping from masking method to Flink SQL function (for string types)
-_STRING_MASK_FUNCTIONS = {
+_STRING_MASK_FUNCTIONS: dict[str, str] = {
     "hash": "MD5",
     "redact": "REGEXP_REPLACE",
     "partial": "REGEXP_REPLACE",
@@ -48,7 +53,7 @@ def build_mask_expression(column: str, method: str, col_type: str) -> str:
 
 def apply_masking_to_sql(
     sql: str,
-    masks: list[dict],
+    masks: Sequence[Mapping[str, object]],
     schema: dict[str, str],
 ) -> str:
     """Apply masking policies to SQL using AST manipulation.
@@ -73,7 +78,7 @@ def apply_masking_to_sql(
 
 def _apply_masking_ast(
     sql: str,
-    masks: list[dict],
+    masks: Sequence[Mapping[str, object]],
     schema: dict[str, str],
 ) -> str:
     """AST-based masking: only replaces columns in SELECT expressions."""
@@ -82,14 +87,17 @@ def _apply_masking_ast(
 
     from streamt.compiler.flink_dialect import FlinkDialect
 
-    mask_map = {m["column"]: m["method"] for m in masks}
+    mask_map = {
+        cast(str, mask["column"]): cast(str, mask["method"])
+        for mask in masks
+    }
     parsed = sqlglot.parse_one(sql, dialect=FlinkDialect)
 
     select = parsed.find(exp.Select) if not isinstance(parsed, exp.Select) else parsed
     if not select:
         return sql
 
-    new_expressions = []
+    new_expressions: list[exp.Expression] = []
     modified = False
     for expr in select.expressions:
         col_name = _get_select_column_name(expr)
@@ -108,29 +116,29 @@ def _apply_masking_ast(
         return sql
 
     select.set("expressions", new_expressions)
-    return parsed.sql(dialect=FlinkDialect)
+    return cast(str, parsed.sql(dialect=FlinkDialect))
 
 
-def _get_select_column_name(expr) -> str | None:
+def _get_select_column_name(expr: exp.Expression) -> str | None:
     """Extract the output column name from a SELECT expression."""
     from sqlglot import exp
 
     if isinstance(expr, exp.Alias):
-        return expr.alias
+        return cast(str, expr.alias)
     if isinstance(expr, exp.Column):
-        return expr.name
+        return cast(str, expr.name)
     return None
 
 
 def _apply_masking_regex(
     sql: str,
-    masks: list[dict],
+    masks: Sequence[Mapping[str, object]],
     schema: dict[str, str],
 ) -> str:
     """Regex fallback: replaces first occurrence of column name."""
     for mask in masks:
-        column = mask["column"]
-        method = mask["method"]
+        column = cast(str, mask["column"])
+        method = cast(str, mask["method"])
         col_type = schema.get(column, "STRING")
         mask_expr = build_mask_expression(column, method, col_type)
         sql = re.sub(
