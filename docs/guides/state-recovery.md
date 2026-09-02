@@ -17,9 +17,11 @@ Recovery is deliberately a two-command, reviewed workflow:
    also compiles the current project and observes every intended runtime target.
 2. A different operator reviews that evidence and the live systems.
 3. `state recover` requires the blocked operation ID, selected resolution, and
-   evidence checksum again. It locks the address, revalidates the project and
-   live targets, then finalizes only if they still exactly match the reviewed
-   plan.
+   evidence checksum again. For an active blocked operation, it locks the
+   address, revalidates the project and live targets, then finalizes only if
+   they still exactly match the reviewed plan. An exact retry whose reviewed
+   result is already present and whose control is already clear skips provider
+   observation and verifies the completed resolution from recovery history.
 
 There is no timeout after which a marker becomes safe to clear. Do not edit or
 delete a control marker, hand-edit ownership state or history, force-unlock the
@@ -89,6 +91,14 @@ For `observed` and `rolled_back`, also verify that the current project can be
 validated and that every runtime provider needed by the blocked action is
 reachable with read authority. Recovery observes targets; it never repeats the
 blocked runtime mutation.
+
+For Conduktor Gateway, one fresh observation is one bounded pair of sequential
+list requests: AliasTopics first, then Interceptors. All desired rules and all
+explicit Gateway actions in the blocked intent are resolved from that shared
+pair. The two requests are deliberately read-only and bounded, but Gateway does
+not make them provider-atomic. Keep Gateway changes frozen throughout planning,
+review, and first execution; a change between the two lists can only be rejected
+when it produces inconsistent or nonmatching aggregate evidence.
 
 ## Create the reviewed evidence
 
@@ -180,11 +190,14 @@ streamt state recover -p . -e prod \
 The UUID and checksum above are placeholders. Always paste the exact values
 from the one reviewed plan.
 
-Before changing state, the command verifies all three confirmations, the plan
-checksum and strict schema, configured store/address identity, current state
-and control preimage, current project fingerprints, and fresh live target
-evidence. Drift produces a non-success result; it does not partially accept a
-plan.
+Before changing state for an active blocked operation, the command verifies all
+three confirmations, the plan checksum and strict schema, configured
+store/address identity, current state and control preimage, current project
+fingerprints, and fresh live target evidence. Drift produces a non-success
+result; it does not partially accept a plan. If the exact reviewed result is
+already present and control is already clear, an identical retry does not
+re-observe providers: the backend verifies the expected state and exact
+recovery operation in its checksum-chained or transactional recovery history.
 
 A successful PostgreSQL recovery atomically appends recovery intent and
 resolution history, optionally writes the reviewed ownership revision, and
@@ -253,7 +266,7 @@ provider response or every action is recoverable.
 | Schema Registry subject | Exact prior or candidate content can be proven for supported register/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Partial schema metadata, identity mismatch, or a checksum that cannot be reconstructed fails closed. |
 | Kafka topic | Exact partitions, replication factor, and complete config can prove prior or candidate state for supported create/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Recovery requires a strict, complete config read; filtered or partial broker config is rejected. |
 | Kafka Connect connector | Exact connector config can prove supported create/update/adopt prior or candidate state. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Evidence is bound to the effective alias, normalized-endpoint fingerprint, and connector name. Partial config/status/task observations, legacy unbound state, unsupported cluster representation, or ambiguous identity fails closed. |
-| Conduktor Gateway rule | A candidate is representable only when both desired and observed interceptor sets are empty and alias mapping is exact. | Exact absence with an empty interceptor observation can prove a completed delete candidate or not-yet-created prior state. | Present prior Gateway state and non-empty/transformed interceptors cannot be reconstructed exactly. |
+| Conduktor Gateway rule | The complete alias plus rule-owned interceptor aggregate must match exactly the durable current surface or desired surface. A desired match proves a completed create/update candidate; a current match proves the prior result, including a rolled-back update or delete. | Exact current absence proves an unapplied or rolled-back create. Exact desired absence proves a completed delete candidate. | Evidence is bound to the endpoint/vCluster backend identity, provider rule name, alias, aggregate fingerprint, and owned-interceptor count. Anything between the durable current and desired surfaces fails closed. |
 | Flink job | Unsupported. Current live status and job ID cannot prove the managed SQL artifact or execution settings. | Exact absence can prove a not-yet-submitted prior state or a completed cancel candidate. | Any present Flink target fails closed, even when its runtime status looks healthy. |
 
 Additional action constraints apply:
@@ -261,10 +274,13 @@ Additional action constraints apply:
 - `rolled_back` requires **every** target to prove its exact prior state. A
   create/register/submit that remains absent is representable. A supported
   schema/topic/connector update may be representable when its exact prior
-  artifact checksum can be reconstructed.
-- A delete or cancel plan normally omits the old desired artifact. If its target
-  is still present, recovery cannot reconstruct the prior artifact checksum and
-  fails closed; presence alone is not proof of rollback.
+  artifact checksum can be reconstructed. A Gateway update or delete can prove
+  rollback only by matching its exact durable current aggregate surface.
+- A non-Gateway delete or cancel plan normally omits the old desired artifact.
+  If its target is still present, recovery cannot reconstruct the prior artifact
+  checksum and fails closed; presence alone is not proof of rollback. Gateway
+  actions instead carry the exact current and desired aggregate fingerprints in
+  their durable pre-mutation intent.
 - Exact absence can prove the candidate result of a delete/cancel for every
   target type listed above. It can also prove the prior result when a create-like
   action never produced a target.
@@ -272,6 +288,20 @@ Additional action constraints apply:
   action list. Every individual classification must still be exact.
 - Adoption recovery is limited to exact schema-subject, Kafka-topic, and bound
   default-cluster Connector observations declared with adopted ownership.
+
+Gateway recovery never infers deletion from the current manifest. An absent
+manifest rule is accepted as a deletion target only when the blocked intent
+already contains that exact durable `delete` action; only its desired-absent
+surface can remove the corresponding ownership record. Ordinary planning does
+not currently perform broad removed-rule discovery, so removing a Gateway rule
+from the project does not itself create a delete plan or action. Gateway
+adoption also remains unsupported.
+
+Control-version-1 Gateway actions predate the exact current/desired aggregate
+evidence. They therefore fail closed for live `observed` or `rolled_back`
+recovery before Gateway is contacted. `abandoned_before_mutation` remains
+available for such an action only when durable progress is empty, because that
+resolution needs no provider observation.
 
 When a target is outside these boundaries, do not choose the closest-looking
 resolution. Preserve the marker and evidence, freeze mutations, and escalate to
@@ -301,7 +331,10 @@ Never turn a failed recovery into an `apply` retry. If status is still blocked
 after an ordinary validation, observation, availability, or lock-timeout
 failure, a fresh `recovery-plan` is the safe default. Exact retry is reserved
 for the same recovery file and confirmations after an indeterminate finalization;
-changing any of the three confirmations requires a new review.
+changing any of the three confirmations requires a new review. When that exact
+result and clear control are already present, retry verification uses recovery
+history and does not require the provider surface to remain unchanged after the
+completed recovery.
 
 ## Topology and HA boundary
 

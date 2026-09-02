@@ -44,8 +44,10 @@ each strict observation, once for review and once after confirmation. An
 artifact with no cluster or with the explicit default alias enters this slice;
 an explicit non-default cluster fails closed. An identical existing state claim
 returns after the first strict observation without confirmation or a state
-write. Gateway and Flink do not yet provide enough exact provider evidence to
-enter the protocol safely.
+write. Flink does not yet provide enough exact provider evidence to enter this
+protocol safely. Gateway now has durable action evidence and exact bounded
+reviewed-recovery decisions, but its adoption command remains disabled until
+the Package 6 release gates and Package 7 command gates pass.
 
 ## Cross-provider invariants
 
@@ -278,14 +280,16 @@ canonical state projection, and secret-neutral reviewed-plan/CLI presentation
 are complete. Normalized shared-snapshot status and health, the exact mutation
 core, the legitimate normalized delete change model, and planner
 apply/delete/rollback routing are also complete; rollback routing is limited to
-the exact creates recorded by the reviewed plan. Reviewed recovery now proves
-converged creates and updates plus an absent rolled-back create. It remains fail
-closed for a rolled-back update because prior state does not retain the prior
-provider-surface fingerprint, and normalized delete recovery is not yet
-representable. The audited fix is versioned, secret-neutral current/desired
-surface evidence on each durable pre-mutation action intent, not on ownership
-state. Package 6 and adoption therefore remain incomplete. The frozen staged
-contract and release gates are in the
+the exact creates recorded by the reviewed plan. Durable, versioned,
+secret-neutral current/desired surface evidence is now written on every Gateway
+mutation action before provider access. The bounded reviewed-recovery runtime
+validates the complete intent first, observes manifest-backed and explicitly
+removed targets through one two-list snapshot, and proves exact current or
+desired create, update, and delete outcomes. Package 6 and adoption remain
+incomplete pending local and PostgreSQL reviewed-command E2E,
+installed-wheel, focused real Gateway gates, and an explicit ordinary
+delete-source/broad-discovery contract. The staged contract and release gates
+are in the
 [Gateway normalized aggregate implementation specification](2026-09-02-gateway-normalized-aggregate.md).
 
 A Gateway rule is not one provider object. Its logical identity still uses
@@ -355,8 +359,8 @@ vCluster-only managed scope.
 
 Live Gateway 3.15 provider probes additionally established the following
 mutation contract. It is provider evidence behind the shipped exact mutation
-core, not a claim that broad delete discovery, all recovery outcomes, or
-adoption are complete:
+core, not a claim that broad ordinary delete discovery, the remaining durable
+workflow release gates, or adoption are complete:
 
 - `PUT` returns HTTP 200 with the exact object shape `{resource, upsertResult}`,
   where `upsertResult` is the string `Created`, `Updated`, or `NotChanged`.
@@ -379,11 +383,12 @@ discovery: it accepts one complete, present, bound observation and carries the
 exact alias and owned interceptor identities with fingerprint-only change
 evidence. It does not infer deletion from an absent manifest entry or rediscover
 targets from a logical name, prefix, or legacy state record. Reviewed recovery
-also does not pretend that this delete surface is reconstructable yet.
+can reconstruct only an explicitly recorded durable delete target; ordinary
+delete candidate sourcing remains a separate unresolved boundary.
 
-### Frozen durable recovery-evidence extension
+### Durable recovery-evidence implementation
 
-The audited recovery extension stores Gateway action preimages on the durable
+The recovery implementation stores Gateway action preimages on the durable
 operation intent, not on ownership state. The canonical action `resource_id`
 continues to carry the logical owner. Version 1 Gateway provider evidence carries
 the exact artifact `rule_name`, exact versioned backend identity, exact alias
@@ -426,6 +431,12 @@ snapshot for the whole union. A delete candidate can remove its ownership record
 only when the action is explicitly `delete` and the fresh aggregate matches the
 recorded desired absent evidence. Manifest absence alone never creates a delete,
 authorizes a provider mutation, or removes ownership state.
+
+The AliasTopic and Interceptor list calls in that bounded snapshot are
+sequential, not provider-atomic. External writers can mutate one collection
+between those calls, so this remains an explicit TOCTOU boundary. Strict parsing
+and exact current/desired matching make ambiguous or third-state results fail
+closed; they do not turn the two endpoints into a transaction.
 
 Exit gate: plan, status, apply, rollback, and recovery agree on the same scoped
 aggregate; ambiguous or partial observations fail closed; logical names that

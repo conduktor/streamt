@@ -30,7 +30,9 @@ Complete reference for all streamt CLI commands.
 
 [^recovery-observation]: `observed` and `rolled_back` recovery contact every
     runtime provider needed by the blocked action. `abandoned_before_mutation`
-    requires empty durable progress and does not contact runtime targets.
+    requires empty durable progress and does not contact runtime targets. An
+    exact retry of an already-completed recovery also skips provider observation
+    and verifies the expected result against recovery history.
 
 ## Global Options
 
@@ -1125,8 +1127,23 @@ control marker, durable progress, and ordered action intent. `observed` and
 `rolled_back` also recompile the current project and freshly observe every
 target. `abandoned_before_mutation` is accepted only when durable progress is
 empty and does not construct runtime deployers. A target that cannot be
-represented exactly fails closed: in particular, present Flink jobs and
-present/nonempty Gateway interceptor state are not recoverable.
+represented exactly fails closed. Present Flink jobs remain unsupported.
+
+A version-2 Gateway mutation intent contains secret-neutral evidence for the
+exact current and desired managed aggregate: its bound endpoint/vCluster
+identity, provider rule name, alias, aggregate fingerprint, and owned-interceptor
+count. Recovery compares one fresh full alias-plus-owned-interceptor aggregate
+with those two surfaces. A current match is classified as prior and can prove a
+rolled-back create, update, or delete; a desired match is classified as the
+candidate and can prove a completed create, update, or delete. Any partial or
+intermediate aggregate fails closed. Gateway performs the shared observation as
+a bounded pair of sequential AliasTopic and Interceptor list GETs. The pair is
+read-only but not provider-atomic, so freeze concurrent Gateway changes while
+creating and first executing the plan.
+
+Legacy control-version-1 Gateway actions have no exact aggregate evidence and
+fail before provider access for live `observed` or `rolled_back` recovery. They
+may use `abandoned_before_mutation` only when durable progress is empty.
 
 The evidence file is created atomically as a regular file with mode `0600` and
 is never overwritten. It binds the configured store/address, blocked and new
@@ -1183,7 +1200,11 @@ All three confirmations are required. Malformed confirmations fail before the
 plan is read or a provider is constructed. The command then strictly validates
 the plan and checksum, configured store/address, current state/control
 preimage, and, when required, project fingerprints and fresh live evidence.
-Any mismatch stops without partially accepting a plan.
+Any mismatch stops without partially accepting a plan. If the exact reviewed
+state is already present and operation control is already clear, an identical
+completed retry skips project and provider re-observation; the state backend
+verifies the recovery operation and result against its durable recovery
+history.
 
 ```bash
 streamt state recover -p . -e prod \
@@ -1218,6 +1239,12 @@ candidate states. `rolled_back` requires every target to match prior state.
 `abandoned_before_mutation` retains prior state and requires no started action.
 Recovery never repeats a runtime mutation, lowers the state serial, edits
 history in place, force-unlocks, or runs automatically.
+
+For Gateway specifically, only a desired-absent match for an exact durable
+`delete` action may remove its ownership record. Manifest absence never creates
+or implies that action. Ordinary planning currently has no broad discovery of
+removed Gateway rules, so deleting a rule declaration does not itself schedule
+a provider delete. Gateway adoption remains unsupported.
 
 Local recovery uses the local state authority and a crash-safe history
 sequence. PostgreSQL recovery requires an exact v2 catalog and resolves only

@@ -77,13 +77,15 @@ to deploy anything.
         strict parser, binding, desired aggregate, immutable two-list snapshot,
         normalized planning/change model, collision gates, state projection,
         secret-neutral reviewed-plan presentation, shared-snapshot status, and
-        exact managed mutation routing are complete. Recovery proves converged
-        creates/updates and rolled-back creates, but rolled-back updates and
-        normalized deletes still fail closed. The audited next step is
-        versioned, secret-neutral rule-name plus current/desired Gateway evidence
-        on each durable pre-mutation action intent, with old-control
-        compatibility and one recovery snapshot. Gateway adoption remains
-        unsupported.
+        exact managed mutation routing are complete. Versioned, secret-neutral
+        rule-name plus current/desired evidence is now persisted on each durable
+        pre-mutation Gateway action, with exact legacy compatibility. Reviewed
+        recovery validates all action identities before provider access, derives
+        desired and explicitly removed targets from one bounded two-list
+        snapshot, and resolves exact create, update, and delete current/desired
+        outcomes. Package 6 and Gateway adoption remain incomplete pending local
+        and PostgreSQL reviewed-command E2E, installed-wheel and real Gateway
+        gates, and an explicit ordinary delete-source/broad-discovery contract.
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
