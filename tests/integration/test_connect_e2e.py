@@ -15,7 +15,7 @@ import pytest
 import requests
 
 from streamt.compiler.manifest import ConnectorArtifact
-from streamt.deployer.connect import ConnectDeployer
+from streamt.deployer.connect import ConnectClusterBindingError, ConnectDeployer
 
 from .conftest import INFRA_CONFIG, ConnectHelper, KafkaHelper
 
@@ -34,9 +34,9 @@ class TestConnectDeployerConnection:
         assert deployer.check_connection() is True
 
     def test_check_connection_invalid(self):
-        """Test connection check with invalid URL."""
-        deployer = ConnectDeployer("http://localhost:99999")
-        assert deployer.check_connection() is False
+        """Reject a malformed endpoint before attempting a connection."""
+        with pytest.raises(ConnectClusterBindingError, match="endpoint is malformed"):
+            ConnectDeployer("http://localhost:99999")
 
     def test_list_connectors_empty(
         self,
