@@ -551,7 +551,9 @@ def test_one_run_identity_cannot_cross_job_identities() -> None:
         validate_event_sequence([events[0], second])
 
 
-def test_wheel_contains_every_openlineage_schema_resource(tmp_path: Path) -> None:
+def test_installed_wheel_contains_resources_and_exports_openlineage_offline(
+    tmp_path: Path,
+) -> None:
     repository = Path(__file__).parents[2]
     subprocess.run(
         [
@@ -583,16 +585,30 @@ def test_wheel_contains_every_openlineage_schema_resource(tmp_path: Path) -> Non
                 resource_name
             ][1]
 
-    installed = tmp_path / "installed"
+    virtualenv = tmp_path / "venv"
     subprocess.run(
         [
             sys.executable,
             "-m",
+            "venv",
+            "--system-site-packages",
+            str(virtualenv),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    scripts = virtualenv / ("Scripts" if os.name == "nt" else "bin")
+    venv_python = scripts / ("python.exe" if os.name == "nt" else "python")
+    streamt_executable = scripts / ("streamt.exe" if os.name == "nt" else "streamt")
+    subprocess.run(
+        [
+            str(venv_python),
+            "-m",
             "pip",
             "install",
-            "--target",
-            str(installed),
             "--no-deps",
+            "--force-reinstall",
             str(wheel),
         ],
         check=True,
@@ -600,25 +616,92 @@ def test_wheel_contains_every_openlineage_schema_resource(tmp_path: Path) -> Non
         text=True,
     )
     environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(installed)
-    smoke = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from streamt.integrations.openlineage import (DatasetIdentity, "
-            "build_dataset_event, validate_event); "
-            "from streamt.integrations.openlineage.validation import _official_schemas; "
-            "assert len(_official_schemas()) == 9; "
-            "event = build_dataset_event(event_time='2026-09-01T00:00:00Z', "
-            "dataset=DatasetIdentity('kafka://broker:9092', 'topic')); "
-            "validate_event(event)",
-        ],
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["STREAMT_WHEEL_VIRTUALENV"] = str(virtualenv)
+    help_result = subprocess.run(
+        [str(streamt_executable), "docs", "openlineage", "--help"],
         cwd=tmp_path,
         env=environment,
         check=True,
         capture_output=True,
         text=True,
     )
+    assert "--job-namespace" in help_result.stdout
+    assert "--kafka-namespace" in help_result.stdout
+    assert "--gateway-namespace" in help_result.stdout
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "stream_project.yml").write_text(
+        """apiVersion: streamt.dev/v1alpha1
+project:
+  name: wheel-smoke
+  version: 1.0.0
+runtime:
+  kafka:
+    bootstrap_servers: offline.invalid:9092
+sources:
+  - name: events
+    topic: events.v1
+    columns:
+      - name: id
+        type: BIGINT
+""",
+        encoding="utf-8",
+    )
+    smoke_script = f"""
+import json
+import os
+import socket
+from pathlib import Path
+
+import streamt
+from click.testing import CliRunner
+
+assert Path(streamt.__file__).resolve().is_relative_to(
+    Path(os.environ["STREAMT_WHEEL_VIRTUALENV"]).resolve()
+)
+
+def fail_network(*_args, **_kwargs):
+    raise AssertionError("installed OpenLineage export attempted network access")
+
+socket.getaddrinfo = fail_network
+socket.create_connection = fail_network
+socket.socket.connect = fail_network
+from streamt.cli import main
+
+result = CliRunner().invoke(
+    main,
+    [
+        "docs",
+        "openlineage",
+        "--project-dir",
+        {str(project)!r},
+        "--job-namespace",
+        "lineage.test",
+    ],
+    catch_exceptions=False,
+)
+assert result.exit_code == 0, result.output
+events = [json.loads(line) for line in result.stdout.splitlines()]
+assert len(events) == 1
+assert "DatasetEvent" in events[0]["schemaURL"]
+assert events[0]["producer"] == "https://github.com/conduktor/streamt"
+assert events[0]["dataset"] == {{
+    "namespace": "kafka://offline.invalid:9092",
+    "name": "events.v1",
+    "facets": events[0]["dataset"]["facets"],
+}}
+"""
+    smoke = subprocess.run(
+        [str(venv_python), "-c", smoke_script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert smoke.returncode == 0, smoke.stderr
     assert smoke.stdout == ""
 
 
