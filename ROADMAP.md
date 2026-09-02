@@ -69,8 +69,9 @@ to deploy anything.
       rules during validation.
 - [x] Compare the desired project with both the last applied manifest and live
       infrastructure.
-- [ ] Classify changes as safe, risky, destructive, schema-breaking, or
-      state-migration-requiring.
+- [x] Classify changes as safe, risky, destructive, schema-breaking, or
+      state-migration-requiring, while marking unproven schema/downstream and
+      operator-state evidence explicitly unknown.
 - [x] Include downstream models, exposures, owners, and live consumer groups in
       impact analysis.
 - [x] Emit a deterministic plan file with an integrity checksum and reject it

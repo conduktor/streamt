@@ -228,6 +228,16 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             raise PlanFileError("Safety blocker payload must be an object")
         safety_blockers.append(normalized)
 
+    change_risks: list[dict[str, object]] = []
+    for risk in plan.ordered_change_risks:
+        normalized = _redact_inline_credentials(risk.to_dict())
+        if not isinstance(normalized, dict):  # pragma: no cover - to_dict is fixed
+            raise PlanFileError("Change-risk payload must be an object")
+        change_risks.append(normalized)
+    risk_summary = _redact_inline_credentials(plan.risk_summary)
+    if not isinstance(risk_summary, dict):  # pragma: no cover - property is fixed
+        raise PlanFileError("Plan risk summary must be an object")
+
     return {
         "summary": {
             "creates": plan.creates,
@@ -237,9 +247,12 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             "ownership_requirements": len(ownership_requirements),
             "safety_blockers": len(safety_blockers),
             "is_apply_blocked": plan.is_apply_blocked,
+            "risk": risk_summary,
         },
         "resources": resources,
         "impact": impact,
+        "change_risks": change_risks,
+        "risk_summary": risk_summary,
         "ownership_requirements": ownership_requirements,
         "safety_blockers": safety_blockers,
     }
@@ -494,17 +507,22 @@ class ReviewedPlanFile:
         reviewed_live_state = {
             "resources": self.plan.get("resources"),
             "impact": _impact_drift_payload(self.plan.get("impact")),
+            "change_risks": self.plan.get("change_risks"),
+            "risk_summary": self.plan.get("risk_summary"),
             "ownership_requirements": self.plan.get("ownership_requirements"),
             "safety_blockers": self.plan.get("safety_blockers"),
         }
         current_live_state = {
             "resources": current_payload["resources"],
             "impact": _impact_drift_payload(current_payload["impact"]),
+            "change_risks": current_payload["change_risks"],
+            "risk_summary": current_payload["risk_summary"],
             "ownership_requirements": current_payload["ownership_requirements"],
             "safety_blockers": current_payload["safety_blockers"],
         }
         if canonical_json(reviewed_live_state) != canonical_json(current_live_state):
             raise StalePlanError(
                 "Reviewed plan is stale; live resource actions, diffs, impact evidence, "
-                "ownership requirements, or safety blockers changed after planning"
+                "risk classification, ownership requirements, or safety blockers changed "
+                "after planning"
             )

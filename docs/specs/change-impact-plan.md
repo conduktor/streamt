@@ -2,9 +2,9 @@
 
 ## Status
 
-Product specification for the primary streamt output. The canonical topic-impact
-evidence described below is implemented; schema, contract-column, test, and
-stateful-job impact remain roadmap work.
+Product specification for the primary streamt output. Canonical topic-impact
+evidence and conservative change-risk classification are implemented;
+contract-column, test, and operator-state compatibility remain roadmap work.
 
 ## Purpose
 
@@ -38,16 +38,24 @@ The planner never guesses a logical name from a physical topic string. Missing
 or conflicting ownership is emitted as unavailable or failed identity evidence,
 with an empty graph result.
 
-## Change classes
+## Change actions and risk assessments
 
-Each change has one primary class and zero or more risk flags:
+Each effective mutation retains its backend action and has one primary risk
+assessment:
 
-- `create`
-- `update`
-- `remove`
-- `adopt`
-- `no_change`
-- `unknown`
+- `safe`: live absence was explicitly observed before a create/register/submit.
+- `risky`: the diff is known but can affect configuration, policy, contracts,
+  partitioning, or consumers.
+- `destructive`: the resource is removed or the requested transition is
+  intrinsically destructive.
+- `schema_breaking`: Schema Registry rejected the update under the effective
+  compatibility policy.
+- `state_migration_required`: an existing Flink job would change without proven
+  operator-state and savepoint evidence.
+- `unknown`: the available evidence cannot justify a stronger classification.
+
+`unknown` has highest plan-level precedence so incomplete evidence cannot produce
+a reassuring summary. No-op resources are omitted from risk counts.
 
 Risk flags include:
 
@@ -60,6 +68,13 @@ Risk flags include:
 - `policy_violation`
 - `live_state_unverified`
 - `ownership_required`
+- `impact_unverified`
+- `schema_impact_unverified`
+
+Compatible Schema Registry output proves registry-policy compatibility only;
+schema updates remain `risky` with unverified downstream schema impact. Existing
+Flink updates and resubmissions remain state-migration-requiring and blocked.
+Offline creates are `unknown` because offline planning does not prove live absence.
 
 ## Impact graph
 
@@ -176,6 +191,7 @@ The JSON plan contains:
 - Desired manifest checksum and prior-state serial.
 - Evidence timestamps and source types.
 - Ordered resource changes.
+- Ordered per-resource risk assessments and a fixed-shape plan risk summary.
 - Impact graph entries.
 - Policy decisions.
 - Required approvals.
@@ -190,6 +206,9 @@ format-version bump. Structural impact evidence participates in apply-time
 drift checks. Consumer lag is intentionally excluded from drift comparison
 because it is a volatile metric, while the reviewed checksum still protects the
 exact lag value observed at plan creation.
+
+Risk assessments, flags, and evidence participate in the reviewed checksum and
+apply-time drift comparison.
 
 ## Exit behavior
 

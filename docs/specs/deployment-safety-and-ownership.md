@@ -113,10 +113,12 @@ blockers are:
   the subject's compatibility policy.
 - `flink_update_requires_savepoint` for every existing Flink job update until a
   savepoint-safe or explicitly stateless upgrade workflow exists.
+- `flink_resubmit_requires_state_evidence` when a non-running existing job would
+  be submitted again without equivalent state evidence.
 
 The canonical order follows backend apply order (Schema Registry, Kafka, then
-Flink), followed by physical resource name and blocker code. Creates and no-ops
-do not produce safety blockers. An ownership decision that neutralizes a
+Flink), followed by physical resource name and blocker code. Verified new-resource
+creates and no-ops do not produce safety blockers. An ownership decision that neutralizes a
 resource to observe-only/no-op also does not produce one.
 
 Planning succeeds when blockers exist so reviewers and automation can inspect

@@ -265,6 +265,26 @@ def _reviewed_plan_impact(config: ActionConfig, data: Mapping[str, object]) -> l
     return impact if isinstance(impact, list) else []
 
 
+def _reviewed_plan_risk(
+    config: ActionConfig,
+    data: Mapping[str, object],
+) -> tuple[dict[str, object], list[object]]:
+    """Read checksum-verified risk evidence from the canonical reviewed plan."""
+    try:
+        from streamt.deployer.plan_file import ReviewedPlanFile
+
+        plan = ReviewedPlanFile.load(config.plan_path).plan
+        summary = plan.get("risk_summary")
+        risks = plan.get("change_risks")
+    except (OSError, ValueError):
+        summary = data.get("risk_summary")
+        risks = data.get("change_risks")
+    return (
+        summary if isinstance(summary, dict) else {},
+        risks if isinstance(risks, list) else [],
+    )
+
+
 def _impact_exposures(value: object) -> str:
     if not isinstance(value, list):
         return "—"
@@ -338,6 +358,48 @@ def render_summary(
             f"{_markdown_cell(data.get('deletes', 0))} |",
         ]
     )
+
+    risk_summary, change_risks = _reviewed_plan_risk(config, data)
+    if risk_summary:
+        lines.append(
+            f"- Overall risk: `{_markdown_cell(risk_summary.get('overall', 'unknown'))}`"
+        )
+    if change_risks:
+        lines.extend(
+            [
+                "",
+                "### Change risk",
+                "",
+                "| Type | Resource | Action | Assessment | Risk flags | Evidence |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for risk in change_risks[:50]:
+            if not isinstance(risk, dict):
+                continue
+            flags = risk.get("risk_flags")
+            flag_text = (
+                ", ".join(str(flag) for flag in flags)
+                if isinstance(flags, list) and flags
+                else "—"
+            )
+            evidence = risk.get("evidence")
+            evidence_text = "unavailable"
+            if isinstance(evidence, dict):
+                evidence_text = str(evidence.get("status", "unavailable"))
+                reasons = evidence.get("reasons")
+                if isinstance(reasons, list) and reasons:
+                    evidence_text += f" ({', '.join(str(reason) for reason in reasons)})"
+            lines.append(
+                f"| {_markdown_cell(risk.get('kind', 'resource'))} | "
+                f"{_markdown_cell(risk.get('resource', 'unknown'))} | "
+                f"{_markdown_cell(risk.get('action', 'unknown'))} | "
+                f"{_markdown_cell(risk.get('assessment', 'unknown'))} | "
+                f"{_markdown_cell(flag_text)} | "
+                f"{_markdown_cell(evidence_text)} |"
+            )
+        if len(change_risks) > 50:
+            lines.append(f"\n_…and {len(change_risks) - 50} more risk assessment(s)._ ")
 
     changes = data.get("changes", [])
     if isinstance(changes, list) and changes:

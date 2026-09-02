@@ -165,6 +165,10 @@ def plan(
             "deletes": deployment_plan.deletes,
             "has_changes": deployment_plan.has_changes,
             "is_apply_blocked": deployment_plan.is_apply_blocked,
+            "risk_summary": deployment_plan.risk_summary,
+            "change_risks": [
+                risk.to_dict() for risk in deployment_plan.ordered_change_risks
+            ],
             "state_serial": prior_state.serial if prior_state is not None else None,
             "changes": changes,
             "ownership_requirements": [

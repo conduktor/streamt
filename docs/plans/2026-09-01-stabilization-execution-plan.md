@@ -95,9 +95,10 @@ Verification:
 
 Continue the minimum viable change-impact plan in
 `docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
-plan artifacts, Kafka source import, topic/schema adoption, and canonical topic
-impact evidence are implemented; richer schema/contract/stateful impact
-classification and broader backend adoption are next.
+plan artifacts, Kafka source import, topic/schema adoption, canonical topic
+impact evidence, and conservative resource-risk classification are implemented;
+column-level contract impact, operator-state compatibility, and broader backend
+adoption are next.
 
 ## Commit strategy
 

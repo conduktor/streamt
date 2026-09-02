@@ -80,6 +80,29 @@ class ImpactEntry:
 
 
 @dataclass(frozen=True)
+class ChangeRisk:
+    """A deterministic risk assessment for one effective resource change."""
+
+    kind: str
+    resource: str
+    action: str
+    assessment: str
+    risk_flags: tuple[str, ...] = ()
+    evidence: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the stable machine-readable representation."""
+        return {
+            "kind": self.kind,
+            "resource": self.resource,
+            "action": self.action,
+            "assessment": self.assessment,
+            "risk_flags": list(self.risk_flags),
+            "evidence": dict(self.evidence),
+        }
+
+
+@dataclass(frozen=True)
 class OwnershipRequirement:
     """A resource that cannot be mutated without an ownership decision."""
 
@@ -130,6 +153,31 @@ class SafetyBlocker:
 
 
 _SAFETY_KIND_ORDER = {"schema": 0, "topic": 1, "flink_job": 2}
+_CHANGE_KIND_ORDER = {
+    "schema": 0,
+    "topic": 1,
+    "flink_job": 2,
+    "connector": 3,
+    "gateway_rule": 4,
+}
+_RISK_ASSESSMENTS = (
+    "safe",
+    "risky",
+    "schema_breaking",
+    "state_migration_required",
+    "destructive",
+    "unknown",
+)
+_RISK_PRECEDENCE = {
+    "safe": 0,
+    "risky": 1,
+    "schema_breaking": 2,
+    "state_migration_required": 3,
+    "destructive": 4,
+    # Unknown is deliberately highest: incomplete evidence cannot produce a
+    # reassuring plan-level classification.
+    "unknown": 5,
+}
 
 
 def _safety_blocker_sort_key(blocker: SafetyBlocker) -> tuple[int, str, str, str]:
@@ -219,20 +267,28 @@ class DeploymentPlan:
             )
 
         for change in self.flink_changes:
-            if change.action != "update":
+            current_exists = getattr(change.current, "exists", False) is True
+            if change.action not in ("update", "submit") or (
+                change.action == "submit" and not current_exists
+            ):
                 continue
             details = {}
             current_status = getattr(change.current, "status", None)
             if current_status is not None:
                 details["current_status"] = current_status
+            code = (
+                "flink_update_requires_savepoint"
+                if change.action == "update"
+                else "flink_resubmit_requires_state_evidence"
+            )
             blockers.append(
                 SafetyBlocker(
-                    code="flink_update_requires_savepoint",
+                    code=code,
                     kind="flink_job",
                     resource=change.job_name,
                     action=change.action,
                     message=(
-                        "Flink job updates are blocked until a savepoint-safe or "
+                        "Existing Flink job changes are blocked until a savepoint-safe or "
                         "explicitly stateless upgrade workflow is implemented."
                     ),
                     details=details,
@@ -245,6 +301,393 @@ class DeploymentPlan:
     def ordered_safety_blockers(self) -> list[SafetyBlocker]:
         """Return blockers in their canonical review and execution order."""
         return sorted(self.safety_blockers, key=_safety_blocker_sort_key)
+
+    @staticmethod
+    def _risk_evidence(
+        status: str,
+        *reasons: str,
+        sources: tuple[str, ...] = (),
+    ) -> dict[str, object]:
+        """Build canonical evidence without carrying raw backend error text."""
+        return {
+            "status": status,
+            "sources": sorted(set(sources)),
+            "reasons": sorted(set(reasons)),
+        }
+
+    @staticmethod
+    def _absence_is_verified(current: object) -> bool:
+        """Whether a backend explicitly observed that a resource is absent."""
+        return current is not None and getattr(current, "exists", None) is False
+
+    def _topic_risk(
+        self,
+        change: TopicChange,
+        impact_by_resource: dict[str, ImpactEntry],
+    ) -> ChangeRisk:
+        changes = change.changes or {}
+        if "partitions_error" in changes:
+            return ChangeRisk(
+                kind="topic",
+                resource=change.topic,
+                action=change.action,
+                assessment="destructive",
+                risk_flags=("destructive", "policy_violation"),
+                evidence=self._risk_evidence(
+                    "verified",
+                    "partition_reduction_requested",
+                    sources=("kafka_topic_diff",),
+                ),
+            )
+        if not changes:
+            return ChangeRisk(
+                kind="topic",
+                resource=change.topic,
+                action=change.action,
+                assessment="unknown",
+                risk_flags=("live_state_unverified",),
+                evidence=self._risk_evidence(
+                    "unavailable",
+                    "topic_update_diff_missing",
+                ),
+            )
+
+        flags: set[str] = set()
+        reasons = {"topic_configuration_or_partition_change"}
+        status = "verified"
+        sources = {"kafka_topic_diff"}
+        impact = impact_by_resource.get(change.topic)
+        if impact is None:
+            flags.update(("impact_unverified", "live_state_unverified"))
+            reasons.add("canonical_topic_impact_missing")
+            status = "partial"
+        else:
+            sources.add("canonical_topic_impact")
+            if impact.downstream_models or impact.exposures or impact.consumers:
+                flags.add("consumer_impact")
+            identity_status = impact.identity_evidence.get("status")
+            graph_status = impact.graph_evidence.get("status")
+            consumer_status = impact.consumer_evidence.get("status")
+            if identity_status != "verified" or graph_status != "verified":
+                flags.add("impact_unverified")
+                reasons.add("declared_impact_evidence_incomplete")
+                status = "partial"
+            if consumer_status != "verified":
+                flags.add("live_state_unverified")
+                reasons.add("live_consumer_evidence_incomplete")
+                status = "partial"
+        return ChangeRisk(
+            kind="topic",
+            resource=change.topic,
+            action=change.action,
+            assessment="risky",
+            risk_flags=tuple(sorted(flags)),
+            evidence=self._risk_evidence(
+                status,
+                *reasons,
+                sources=tuple(sources),
+            ),
+        )
+
+    def _schema_risk(self, change: SchemaChange) -> ChangeRisk:
+        changes = change.changes or {}
+        if "schema_incompatible" in changes:
+            return ChangeRisk(
+                kind="schema",
+                resource=change.subject,
+                action=change.action,
+                assessment="schema_breaking",
+                risk_flags=("policy_violation", "schema_breaking"),
+                evidence=self._risk_evidence(
+                    "verified",
+                    "registry_compatibility_rejected",
+                    sources=("schema_registry_compatibility",),
+                ),
+            )
+        if not changes:
+            return ChangeRisk(
+                kind="schema",
+                resource=change.subject,
+                action=change.action,
+                assessment="unknown",
+                risk_flags=("schema_impact_unverified",),
+                evidence=self._risk_evidence(
+                    "unavailable",
+                    "schema_update_diff_missing",
+                ),
+            )
+
+        schema_diff = changes.get("schema")
+        if isinstance(schema_diff, dict) and schema_diff.get("compatible") is True:
+            return ChangeRisk(
+                kind="schema",
+                resource=change.subject,
+                action=change.action,
+                assessment="risky",
+                risk_flags=("schema_impact_unverified",),
+                evidence=self._risk_evidence(
+                    "partial",
+                    "registry_compatibility_verified",
+                    "downstream_contract_impact_unverified",
+                    sources=("schema_registry_compatibility",),
+                ),
+            )
+        if set(changes).issubset({"compatibility"}):
+            return ChangeRisk(
+                kind="schema",
+                resource=change.subject,
+                action=change.action,
+                assessment="risky",
+                evidence=self._risk_evidence(
+                    "verified",
+                    "compatibility_policy_change",
+                    sources=("schema_registry_diff",),
+                ),
+            )
+        return ChangeRisk(
+            kind="schema",
+            resource=change.subject,
+            action=change.action,
+            assessment="unknown",
+            risk_flags=("schema_impact_unverified",),
+            evidence=self._risk_evidence(
+                "unavailable",
+                "schema_compatibility_not_proven",
+            ),
+        )
+
+    def _classify_change(
+        self,
+        *,
+        kind: str,
+        resource: str,
+        action: str,
+        current: object = None,
+        changes: dict[str, object] | None = None,
+        impact_by_resource: dict[str, ImpactEntry],
+        topic_change: TopicChange | None = None,
+        schema_change: SchemaChange | None = None,
+    ) -> ChangeRisk:
+        """Classify one effective backend action using only explicit evidence."""
+        if action in ("delete", "cancel", "remove"):
+            return ChangeRisk(
+                kind=kind,
+                resource=resource,
+                action=action,
+                assessment="destructive",
+                risk_flags=("destructive",),
+                evidence=self._risk_evidence(
+                    "verified",
+                    "resource_removal",
+                    sources=("planned_action",),
+                ),
+            )
+        if action in ("create", "register", "submit"):
+            if kind == "flink_job" and getattr(current, "exists", None) is True:
+                return ChangeRisk(
+                    kind=kind,
+                    resource=resource,
+                    action=action,
+                    assessment="state_migration_required",
+                    risk_flags=(
+                        "live_state_unverified",
+                        "savepoint_required",
+                        "stateful_upgrade",
+                    ),
+                    evidence=self._risk_evidence(
+                        "unavailable",
+                        "existing_job_resubmission_state_compatibility_unproven",
+                        sources=("flink_job_state",),
+                    ),
+                )
+            if self._absence_is_verified(current):
+                return ChangeRisk(
+                    kind=kind,
+                    resource=resource,
+                    action=action,
+                    assessment="safe",
+                    evidence=self._risk_evidence(
+                        "verified",
+                        "resource_absence_verified",
+                        sources=("live_resource_state",),
+                    ),
+                )
+            return ChangeRisk(
+                kind=kind,
+                resource=resource,
+                action=action,
+                assessment="unknown",
+                risk_flags=("live_state_unverified",),
+                evidence=self._risk_evidence(
+                    "unavailable",
+                    "resource_absence_not_verified",
+                ),
+            )
+        if action == "update":
+            if topic_change is not None:
+                return self._topic_risk(topic_change, impact_by_resource)
+            if schema_change is not None:
+                return self._schema_risk(schema_change)
+            if kind == "flink_job":
+                return ChangeRisk(
+                    kind=kind,
+                    resource=resource,
+                    action=action,
+                    assessment="state_migration_required",
+                    risk_flags=(
+                        "live_state_unverified",
+                        "savepoint_required",
+                        "stateful_upgrade",
+                    ),
+                    evidence=self._risk_evidence(
+                        "unavailable",
+                        "operator_state_compatibility_unproven",
+                        "savepoint_availability_unproven",
+                        sources=("flink_job_diff",),
+                    ),
+                )
+            if changes:
+                flags: tuple[str, ...] = ()
+                if any(
+                    isinstance(value, dict) and value.get("to") is None
+                    for value in changes.values()
+                ):
+                    flags = ("destructive",)
+                return ChangeRisk(
+                    kind=kind,
+                    resource=resource,
+                    action=action,
+                    assessment="risky",
+                    risk_flags=flags,
+                    evidence=self._risk_evidence(
+                        "verified",
+                        "backend_configuration_change",
+                        sources=(f"{kind}_diff",),
+                    ),
+                )
+            return ChangeRisk(
+                kind=kind,
+                resource=resource,
+                action=action,
+                assessment="unknown",
+                risk_flags=("live_state_unverified",),
+                evidence=self._risk_evidence(
+                    "unavailable",
+                    "update_diff_missing",
+                ),
+            )
+        return ChangeRisk(
+            kind=kind,
+            resource=resource,
+            action=action,
+            assessment="unknown",
+            risk_flags=("policy_violation",),
+            evidence=self._risk_evidence(
+                "unavailable",
+                "unsupported_planned_action",
+            ),
+        )
+
+    @property
+    def ordered_change_risks(self) -> list[ChangeRisk]:
+        """Derive canonical per-resource assessments from the current plan."""
+        impact_by_resource = {entry.resource: entry for entry in self.impact_radius}
+        assessments: list[ChangeRisk] = []
+        for change in self.schema_changes:
+            if change.action != "none":
+                assessments.append(
+                    self._classify_change(
+                        kind="schema",
+                        resource=change.subject,
+                        action=change.action,
+                        current=change.current,
+                        changes=change.changes,
+                        impact_by_resource=impact_by_resource,
+                        schema_change=change,
+                    )
+                )
+        for change in self.topic_changes:
+            if change.action != "none":
+                assessments.append(
+                    self._classify_change(
+                        kind="topic",
+                        resource=change.topic,
+                        action=change.action,
+                        current=change.current,
+                        changes=change.changes,
+                        impact_by_resource=impact_by_resource,
+                        topic_change=change,
+                    )
+                )
+        for change in self.flink_changes:
+            if change.action != "none":
+                assessments.append(
+                    self._classify_change(
+                        kind="flink_job",
+                        resource=change.job_name,
+                        action=change.action,
+                        current=change.current,
+                        impact_by_resource=impact_by_resource,
+                    )
+                )
+        for change in self.connector_changes:
+            if change.action != "none":
+                assessments.append(
+                    self._classify_change(
+                        kind="connector",
+                        resource=change.connector_name,
+                        action=change.action,
+                        current=change.current,
+                        changes=change.changes,
+                        impact_by_resource=impact_by_resource,
+                    )
+                )
+        for change in self.gateway_changes:
+            if change.action != "none":
+                assessments.append(
+                    self._classify_change(
+                        kind="gateway_rule",
+                        resource=change.name,
+                        action=change.action,
+                        current=change.current_alias,
+                        changes=change.changes,
+                        impact_by_resource=impact_by_resource,
+                    )
+                )
+        return sorted(
+            assessments,
+            key=lambda item: (
+                _CHANGE_KIND_ORDER.get(item.kind, 99),
+                item.resource,
+                item.action,
+            ),
+        )
+
+    @property
+    def risk_summary(self) -> dict[str, object]:
+        """Return the plan-level risk assessment and fixed-shape counts."""
+        changes = self.ordered_change_risks
+        counts = {
+            assessment: sum(1 for item in changes if item.assessment == assessment)
+            for assessment in _RISK_ASSESSMENTS
+        }
+        overall = (
+            max(changes, key=lambda item: _RISK_PRECEDENCE[item.assessment]).assessment
+            if changes
+            else "safe"
+        )
+        return {
+            "overall": overall,
+            "counts": counts,
+            "risk_flags": sorted(
+                {flag for item in changes for flag in item.risk_flags}
+            ),
+            "evidence_complete": not any(
+                item.assessment == "unknown"
+                or item.evidence.get("status") != "verified"
+                for item in changes
+            ),
+        }
 
     @property
     def has_changes(self) -> bool:
@@ -320,6 +763,7 @@ class DeploymentPlan:
             f"Plan: {self.creates} to create, {self.updates} to update, "
             f"{self.deletes} to delete"
         )
+        summary += f", risk: {self.risk_summary['overall']}"
         if self.ownership_requirements:
             summary += f", {len(self.ownership_requirements)} ownership requirement(s)"
         if self.safety_blockers:
@@ -412,6 +856,29 @@ class DeploymentPlan:
 
         if not self.has_changes:
             lines.append("No changes detected.")
+
+        if self.ordered_change_risks:
+            lines.append("")
+            lines.append("Risk Classification:")
+            lines.append(f"  overall: {self.risk_summary['overall']}")
+            for risk in self.ordered_change_risks:
+                flag_suffix = (
+                    f" flags={','.join(risk.risk_flags)}" if risk.risk_flags else ""
+                )
+                lines.append(
+                    f"  {risk.kind}: {risk.resource} ({risk.action}) "
+                    f"[{risk.assessment}]{flag_suffix}"
+                )
+                reasons = risk.evidence.get("reasons", [])
+                reason_suffix = (
+                    f" ({','.join(str(reason) for reason in reasons)})"
+                    if isinstance(reasons, list) and reasons
+                    else ""
+                )
+                lines.append(
+                    "    evidence: "
+                    f"{risk.evidence.get('status', 'unavailable')}{reason_suffix}"
+                )
 
         if self.ownership_requirements:
             lines.append("")
