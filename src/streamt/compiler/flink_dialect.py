@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import typing as t
 
-from sqlglot import exp
+from sqlglot import TokenType, exp
 from sqlglot.dialects.dialect import Dialect
-from sqlglot.generator import Generator
-from sqlglot.parser import Parser
-from sqlglot.tokens import Tokenizer, TokenType
+from sqlglot.generator import Generator as SQLGlotGenerator
+from sqlglot.parser import Parser as SQLGlotParser
+from sqlglot.tokens import Tokenizer as SQLGlotTokenizer
 
 
 class FlinkDialect(Dialect):
@@ -38,14 +38,14 @@ class FlinkDialect(Dialect):
     and Flink-specific types.
     """
 
-    class Tokenizer(Tokenizer):
+    class Tokenizer(SQLGlotTokenizer):
         """Flink SQL tokenizer with custom keywords."""
 
         QUOTES = ["'"]
         IDENTIFIERS = ["`", '"']
 
         KEYWORDS = {
-            **Tokenizer.KEYWORDS,
+            **SQLGlotTokenizer.KEYWORDS,
             # Flink-specific types
             "STRING": TokenType.VARCHAR,
             "BYTES": TokenType.VARBINARY,
@@ -77,11 +77,11 @@ class FlinkDialect(Dialect):
             "FOR SYSTEM TIME AS OF": TokenType.TIMESTAMP_SNAPSHOT,
         }
 
-    class Parser(Parser):
+    class Parser(SQLGlotParser):
         """Flink SQL parser with custom function and syntax support."""
 
         CONSTRAINT_PARSERS = {
-            **Parser.CONSTRAINT_PARSERS,
+            **SQLGlotParser.CONSTRAINT_PARSERS,
             "WATERMARK": lambda self: self.expression(
                 exp.WatermarkColumnConstraint,
                 this=self._match(TokenType.FOR) and self._parse_column(),
@@ -90,16 +90,16 @@ class FlinkDialect(Dialect):
         }
 
         SCHEMA_UNNAMED_CONSTRAINTS = {
-            *Parser.SCHEMA_UNNAMED_CONSTRAINTS,
+            *SQLGlotParser.SCHEMA_UNNAMED_CONSTRAINTS,
             "WATERMARK",
         }
 
         # SESSION is tokenized as TokenType.SESSION (keyword), not VAR.
         # Add it to FUNC_TOKENS so _parse_function_call treats it as a function.
-        FUNC_TOKENS = {*Parser.FUNC_TOKENS, TokenType.SESSION}
+        FUNC_TOKENS = {*SQLGlotParser.FUNC_TOKENS, TokenType.SESSION}
 
         FUNCTIONS = {
-            **Parser.FUNCTIONS,
+            **SQLGlotParser.FUNCTIONS,
             # Map Flink window functions to Anonymous (sqlglot doesn't have these)
             # They will be parsed as exp.Anonymous which is fine for type inference
             "TUMBLE": lambda args: exp.Anonymous(this="TUMBLE", expressions=args),
@@ -259,9 +259,10 @@ class FlinkDialect(Dialect):
                     self._retreat(self._index - 1)
 
             # Fall back to parent implementation
-            return super()._parse_lambda(alias=alias)
+            fallback = super()._parse_lambda(alias=alias)
+            return fallback if isinstance(fallback, exp.Expression) else None
 
-    class Generator(Generator):
+    class Generator(SQLGlotGenerator):
         """Flink SQL generator with custom type mappings."""
 
         # Map sqlglot types to Flink SQL types
