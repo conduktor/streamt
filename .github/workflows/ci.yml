@@ -159,6 +159,8 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_state_command_concurrency_real.py"
           cp tests/postgres/test_postgres_state_command_failures_real.py \
             "${test_root}/tests/postgres/test_postgres_state_command_failures_real.py"
+          cp tests/postgres/test_postgres_recovery_commands_real.py \
+            "${test_root}/tests/postgres/test_postgres_recovery_commands_real.py"
 
           cd "${test_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
@@ -180,6 +182,7 @@ jobs:
             tests/postgres/test_postgres_state_commands_real.py \
             tests/postgres/test_postgres_state_command_concurrency_real.py \
             tests/postgres/test_postgres_state_command_failures_real.py \
+            tests/postgres/test_postgres_recovery_commands_real.py \
             -m postgres --tb=short
 
   package:
