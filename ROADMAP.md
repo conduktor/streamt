@@ -85,7 +85,8 @@ to deploy anything.
         snapshot, and resolves exact create, update, and delete current/desired
         outcomes. Package 6 and Gateway adoption remain incomplete pending local
         and PostgreSQL reviewed-command E2E, installed-wheel and real Gateway
-        gates, and an explicit ordinary delete-source/broad-discovery contract.
+        gates, and the planned
+        [explicit Gateway removal contract](docs/plans/2026-09-02-gateway-explicit-removal.md).
   - [ ] Keep Flink adoption deferred until stable per-job identity, strict
         cluster routing, provider-visible artifact evidence, unambiguous
         discovery, and evidence-gated state advancement exist.
