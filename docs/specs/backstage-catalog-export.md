@@ -134,8 +134,9 @@ for portable offline output:
 
 - an entity name is at most 63 characters and matches
   `^[A-Za-z0-9](?:[-_.]?[A-Za-z0-9])*$`;
-- the explicit catalog namespace and every external-reference namespace or name
-  are at most 63 characters and match
+- the explicit catalog namespace and every external-reference namespace are at
+  most 63 characters and match `^[a-z0-9](?:-?[a-z0-9])*$`;
+- every external-reference name is at most 63 characters and matches
   `^[a-z0-9](?:[-_.]?[a-z0-9])*$`;
 - a tag is at most 63 characters and matches
   `^[a-z0-9:+#]+(?:-[a-z0-9:+#]+)*$`; and
@@ -519,9 +520,10 @@ The exporter has no Node.js runtime dependency.
 
 As a release parity test only, the emitted fixtures are also validated by the
 entity validators from `@backstage/catalog-model@1.10.0`, the package version at
-the pinned Backstage commit. This test does not replace the vendored offline
-runtime validator and does not imply compatibility with untested Backstage
-versions.
+the pinned Backstage commit. The gate parses the emitted multi-document stream
+with release-test-only `yaml@2.8.1`; neither Node package is a streamt runtime
+dependency. This test does not replace the vendored offline runtime validator
+and does not imply compatibility with untested Backstage versions.
 
 ### Closed semantic validation
 

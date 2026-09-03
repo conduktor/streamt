@@ -5,8 +5,14 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import importlib.util
+import os
 import socket
-from collections.abc import Iterator
+import subprocess
+import sys
+import tarfile
+import zipfile
+from collections.abc import Callable, Iterator
 from importlib.resources import files
 from pathlib import Path
 
@@ -53,6 +59,15 @@ RESOURCE_EXPECTATIONS = {
         "9ff892085ddaf78243ead1cdcf24f03eb5f9af16dffbed189fae4ab0806a8d56",
     ),
 }
+LEGAL_RESOURCE_EXPECTATIONS = {
+    "backstage-1.54.2-LICENSE.txt": (
+        "e3620220d6f8a43cb5c968720f86d4e7c6e97847ee61a9c7694039896efb869b"
+    ),
+    "backstage-1.54.2-NOTICE.txt": (
+        "36395569b3867d0769a40ffb908709c0b5fbfd79bf4b827856dd34feeed644ba"
+    ),
+}
+_DISTRIBUTION_RESOURCE_NAMES = frozenset((*RESOURCE_EXPECTATIONS, *LEGAL_RESOURCE_EXPECTATIONS))
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +114,32 @@ def _copy_schema_resources(destination: Path) -> None:
         destination.joinpath(resource_name).write_bytes(
             package.joinpath(resource_name).read_bytes()
         )
+
+
+def _assert_backstage_distribution_resources(
+    *,
+    member_names: set[str],
+    read_member: Callable[[str], bytes],
+) -> None:
+    members_by_basename: dict[str, list[str]] = {}
+    for member in member_names:
+        basename = member.rsplit("/", maxsplit=1)[-1]
+        if "streamt/docs/schemas/" in member and basename.startswith("backstage-1.54.2-"):
+            members_by_basename.setdefault(basename, []).append(member)
+
+    assert set(members_by_basename) == _DISTRIBUTION_RESOURCE_NAMES
+    assert all(len(matches) == 1 for matches in members_by_basename.values())
+
+    for resource_name, (decoded_size, decoded_checksum) in RESOURCE_EXPECTATIONS.items():
+        member = members_by_basename[resource_name][0]
+        encoded = read_member(member)
+        decoded = gzip.decompress(base64.b64decode(b"".join(encoded.split()), validate=True))
+        assert len(decoded) == decoded_size
+        assert hashlib.sha256(decoded).hexdigest() == decoded_checksum
+
+    for resource_name, expected_checksum in LEGAL_RESOURCE_EXPECTATIONS.items():
+        member = members_by_basename[resource_name][0]
+        assert hashlib.sha256(read_member(member)).hexdigest() == expected_checksum
 
 
 def test_release_and_catalog_model_pins_are_distinct_and_exact() -> None:
@@ -354,3 +395,54 @@ def test_schema_error_does_not_echo_untrusted_entity_material() -> None:
 
     assert str(captured.value) == "Backstage System schema validation failed at /"
     assert secret not in str(captured.value)
+
+
+def test_built_wheel_and_source_distribution_contain_backstage_resources(
+    tmp_path: Path,
+) -> None:
+    configured_dist = os.environ.get("STREAMT_TEST_DISTRIBUTIONS_DIR")
+    if configured_dist is None:
+        if importlib.util.find_spec("build") is None:
+            pytest.skip("the build frontend is required for distribution inspection")
+        distribution_dir = tmp_path / "dist"
+        repository = Path(__file__).parents[2]
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--sdist",
+                "--outdir",
+                str(distribution_dir),
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        distribution_dir = Path(configured_dist)
+
+    wheels = list(distribution_dir.glob("streamt-*.whl"))
+    source_distributions = list(distribution_dir.glob("streamt-*.tar.gz"))
+    assert len(wheels) == 1, wheels
+    assert len(source_distributions) == 1, source_distributions
+
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        _assert_backstage_distribution_resources(
+            member_names=set(wheel.namelist()),
+            read_member=wheel.read,
+        )
+
+    with tarfile.open(source_distributions[0], "r:gz") as source_distribution:
+
+        def read_source_member(name: str) -> bytes:
+            extracted = source_distribution.extractfile(name)
+            assert extracted is not None
+            return extracted.read()
+
+        _assert_backstage_distribution_resources(
+            member_names=set(source_distribution.getnames()),
+            read_member=read_source_member,
+        )

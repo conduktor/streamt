@@ -480,7 +480,7 @@ Slice 1 merges.
    ```bash
    audit_dir="$(mktemp -d)"
    npm install --prefix "$audit_dir" --ignore-scripts --no-save \
-     --package-lock=false @backstage/catalog-model@1.10.0
+     --package-lock=false @backstage/catalog-model@1.10.0 yaml@2.8.1
    cp tests/package/backstage_catalog_node_validate.cjs "$audit_dir/validate.cjs"
    (cd "$audit_dir" && node validate.cjs < catalog.yaml)
    ```
@@ -522,7 +522,7 @@ cp tests/package/backstage_catalog_wheel_smoke.py "$isolated_root/"
 
 audit_dir="$(mktemp -d)"
 npm install --prefix "$audit_dir" --ignore-scripts --no-save \
-  --package-lock=false @backstage/catalog-model@1.10.0
+  --package-lock=false @backstage/catalog-model@1.10.0 yaml@2.8.1
 cp tests/package/backstage_catalog_node_validate.cjs "$audit_dir/validate.cjs"
 (cd "$audit_dir" && node validate.cjs < catalog.yaml)
 
