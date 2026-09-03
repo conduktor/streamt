@@ -1,7 +1,8 @@
 # Backstage Software Catalog export
 
-Status: proposed normative first-slice contract. The exporter is not a supported
-feature until every release gate in this specification is executable and green.
+Status: implemented and supported for the exact offline core-entity export
+boundary defined here. Backstage publication, DataHub export, and Conduktor
+Console publication remain unsupported.
 
 This specification defines a pure, offline projection of one compiled streamt
 project and effective environment into core Backstage Software Catalog entities.

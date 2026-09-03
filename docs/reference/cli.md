@@ -15,6 +15,7 @@ Complete reference for all streamt CLI commands.
 | Generate SQL/JSON artifacts | `compile` | No |
 | Package artifacts + manifest + checksums | `build` | No |
 | View data lineage | `lineage` | No |
+| Export Backstage catalog entities | `docs backstage` | No |
 | Export OpenLineage design metadata | `docs openlineage` | No |
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
@@ -1762,6 +1763,54 @@ declared schema facts and does not export data quality, SLAs, teams, roles,
 servers, runtime endpoints, credentials, SQL, catalog publication state, or a
 separate contract per model. See [ODCS export](odcs.md) for the exact mapping,
 validation, and omission boundary.
+
+#### docs backstage
+
+Export deterministic, offline-validated Backstage Software Catalog core
+entities as canonical multi-document YAML.
+
+```bash
+streamt docs backstage [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--catalog-id ID` | Stable catalog identity; semantically required |
+| `--catalog-namespace NAMESPACE` | Explicit lowercase namespace for generated entities; semantically required |
+| `--default-owner-ref REF` | Full Group or User reference; semantically required |
+| `--lifecycle VALUE` | Exact Component lifecycle; semantically required |
+| `--owner-map PATH` | Strict version-1 JSON mapping from declared streamt owner labels to full refs |
+| `--kafka-cluster-ref REF` | Full Resource ref; required when Kafka Resources are emitted |
+| `--gateway-cluster-ref REF` | Full Resource ref; required when Gateway virtual-topic Resources are emitted |
+| `--domain-ref REF` | Optional full Domain ref for the generated System |
+| `--output-file PATH` | Atomically replace this file with canonical YAML |
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment |
+
+```bash
+streamt docs backstage \
+  --catalog-id payments-prod \
+  --catalog-namespace payments \
+  --default-owner-ref group:platform/payments \
+  --lifecycle production \
+  --kafka-cluster-ref resource:platform/kafka-prod \
+  --output-file catalog-info.yaml
+```
+
+Text mode writes raw YAML to stdout when no file is selected; warnings remain
+on stderr. Global `--output json` returns the validated entities, exact kind
+counts, release metadata, and output path in the standard envelope. Sink
+destinations and exposures are intentionally omitted with
+`W113_BACKSTAGE_SINK_OUTPUT_OMITTED` and
+`W114_BACKSTAGE_EXPOSURE_OMITTED`. Invalid catalog inputs or mapping use
+`E507_BACKSTAGE_INVALID`.
+
+The command performs one dry-run compile and does not read deployment state,
+contact providers, or publish to Backstage, DataHub, or Conduktor Console. See
+[Backstage Software Catalog export](backstage-catalog.md) for the exact entity,
+ownership, output, and sensitivity boundaries.
 
 #### docs openlineage
 

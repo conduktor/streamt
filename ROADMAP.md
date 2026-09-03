@@ -142,8 +142,14 @@ plane.
       COMPLETE for verified post-commit `E426` release failures. Local,
       isolated-wheel, source-distribution, and real PostgreSQL 14/18 executable
       gates pass in the full Python 3.10–3.12 release workflow.
-- [ ] Publish catalog metadata to Conduktor Console and support portable exports
-      for Backstage/DataHub-style catalogs.
+- [x] Export deterministic Backstage v1.54.2 core catalog entities from one
+      offline compile, with pinned validation, canonical YAML, installed-wheel
+      coverage, and independent `@backstage/catalog-model@1.10.0` parity.
+- [ ] Add a separately specified portable DataHub export without leaking
+      Backstage identity or serialization into the neutral catalog model.
+- [ ] Publish metadata to Conduktor Console only after verifying and specifying
+      an official supported API, authentication, idempotency, review, deletion,
+      and recovery contract.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.
 - [ ] Add GitOps output for Strimzi resources.
 - [ ] Add a Flink Kubernetes Operator backend where its lifecycle semantics fit.

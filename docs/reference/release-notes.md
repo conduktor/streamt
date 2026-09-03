@@ -5,6 +5,43 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
+## Unreleased — offline Backstage Software Catalog export
+
+`streamt docs backstage` now exports deterministic Backstage `System`,
+`Resource`, and `Component` core entities from one offline dry-run compile.
+Sources and physical model outputs become Resources; Flink and Gateway models
+produce Components plus their outputs; sink models produce Components without
+invented destination Resources. Relationships use exact direct compiler
+dependencies, explicit cluster references, and explicit owner resolution.
+
+Catalog ID, lowercase namespace, default owner reference, and Component
+lifecycle are required semantic inputs. Declared streamt owner labels require
+an exact strict-JSON owner map. Kafka and Gateway cluster Resource references
+are conditionally required by the emitted dataset types. Invalid inputs,
+ambiguous identities, missing ownership, or invalid entities fail with
+`E507_BACKSTAGE_INVALID`. Sink destinations and exposures remain intentionally
+omitted with `W113_BACKSTAGE_SINK_OUTPUT_OMITTED` and
+`W114_BACKSTAGE_EXPOSURE_OMITTED`.
+
+Text output is canonical Backstage YAML; global JSON output uses the ordinary
+streamt envelope; `--output-file` performs an atomic YAML replacement. The
+exporter does not construct state or provider clients and does not perform
+network or subprocess access. The package includes the pinned Backstage
+v1.54.2 seven-schema closure. Release gates inspect its exact bytes in wheel
+and source distributions, exercise a repository-free installed-wheel export,
+and independently validate representative YAML with
+`@backstage/catalog-model@1.10.0` and release-test-only `yaml@2.8.1`. Node.js is
+not a runtime dependency.
+
+This is a static design-metadata export, not evidence of deployment, health, or
+runtime lifecycle. It does not publish to Backstage. DataHub export and
+Conduktor Console metadata publication remain unsupported and require separate
+contracts. Generated files intentionally disclose catalog metadata—including
+logical and physical names, owners, clusters, descriptions, tags, and
+dependencies—so review their contents and destination permissions before
+sharing them. See [Backstage Software Catalog export](backstage-catalog.md) for
+the supported boundary.
+
 ## Unreleased — durable OpenLineage apply telemetry
 
 `streamt apply --emit-openlineage` can now emit a validated OpenLineage 1.53.0

@@ -15,8 +15,24 @@ partially compatible contracts.
 
 ## Status — 2026-09-02
 
-Planned; no implementation slice has landed. The normative specification is
-frozen and this plan is reconciled to its 2026-09-02 contract.
+Implemented through the exact offline Backstage core-entity boundary. The
+normative specification is frozen and this plan is reconciled to its
+2026-09-02 contract. DataHub export and Conduktor Console publication remain
+separate, unimplemented work.
+
+| Slice | Status | Landed evidence |
+| --- | --- | --- |
+| Normative contract | Complete | `35bf386`, `e596275`, `baae40e` |
+| 1 — schemas and validator | Complete | `7ccdd13`; wheel/sdist inspection and Node validator foundation in `6fe5d91` |
+| 2 — neutral projection | Complete | `4fc715b`; strict adapter inputs in `9ee7439` |
+| 3 — mapper and serializer | Complete | `8c26b4a` |
+| 4 — CLI and atomic output | Complete | `1d4404f` |
+| 5 — distribution and parity gates | Complete | `6fe5d91`, `6057a6e` |
+| 6 — public documentation | Complete | Public reference, CLI reference, support matrix, release notes, and roadmap in this documentation slice |
+
+The test, lint, type, documentation, wheel/sdist, isolated-wheel, and pinned
+Node parity checks are executable release gates. A release still requires its
+own green CI run; this status is not a substitute for that run's result.
 
 The agreed first product boundary is:
 
@@ -637,21 +653,22 @@ no production fixes hidden in a test commit.
 
 ## Release gates
 
-The Backstage export may be documented as supported only when all of the
-following are true:
+All required release gates now have executable coverage. Each release must
+still run them and remain green:
 
-1. the normative spec and this plan agree on every mapping and output rule;
-2. all seven vendored schemas match the pinned upstream commit and pass
-   no-network Draft-07 validation;
-3. the full projection/mapping/CLI focused suites pass on Python 3.10–3.12;
-4. Ruff and the repository's zero-error mypy baseline pass;
-5. the full unit suite and strict MkDocs build pass;
-6. isolated-wheel export and wheel/source-distribution resource inspection
-   pass outside the checkout;
-7. every representative emitted entity passes
-   `@backstage/catalog-model@1.10.0`; and
-8. public docs and the roadmap accurately leave DataHub and Conduktor Console
-   publication deferred.
+- [x] The normative spec and this plan agree on every mapping and output rule.
+- [x] All seven vendored schemas match the pinned upstream commit and pass
+  no-network Draft-07 validation.
+- [x] The full projection, mapping, and CLI focused suites run in the Python
+  3.10–3.12 test matrix.
+- [x] Ruff and the repository's zero-error mypy baseline are CI gates.
+- [x] The full unit suite and strict MkDocs build are CI gates.
+- [x] Isolated-wheel export and exact wheel/source-distribution resource
+  inspection run outside the checkout.
+- [x] Every representative emitted entity is checked by
+  `@backstage/catalog-model@1.10.0` with release-test-only `yaml@2.8.1`.
+- [x] Public docs and the roadmap leave DataHub and Conduktor Console
+  publication explicitly deferred.
 
 Console publication requires a separate evidence-backed specification naming
 a supported metadata-only API, authentication/TLS/timeout behavior, external
