@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Protocol
 
 from streamt.deployer.recovery import (
+    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
+    contains_connector_recovery_action,
 )
 from streamt.deployer.recovery_plan import RecoveryPlanError, RecoveryPlanFile
 from streamt.deployer.state import LocalState
@@ -93,6 +95,9 @@ class RecoveryService:
                 raise RecoveryServiceError("Recovery planning requires an active blocked operation")
             evidence = RecoverySnapshotEvidence.from_operation_snapshot(snapshot)
 
+            if resolution != "abandoned_before_mutation":
+                self._reject_deferred_connector_recovery(evidence)
+
             if resolution == "abandoned_before_mutation":
                 live = RecoveryLiveObservation(targets=(), candidate_state=None)
                 context = None
@@ -146,6 +151,11 @@ class RecoveryService:
             evidence_checksum=confirm_evidence_checksum,
         )
         self._require_plan_identity(plan)
+        if plan.resolution != "abandoned_before_mutation":
+            self._reject_deferred_connector_recovery(
+                plan.snapshot,
+                targets=plan.targets,
+            )
 
         with self.state.operation() as operation:
             current = operation.observe()
@@ -214,6 +224,19 @@ class RecoveryService:
             raise RecoveryServiceError(
                 "Recovery plan does not match the configured store and address"
             )
+
+    @staticmethod
+    def _reject_deferred_connector_recovery(
+        snapshot: RecoverySnapshotEvidence,
+        *,
+        targets: tuple[RecoveryTargetEvidence, ...] = (),
+    ) -> None:
+        intent = snapshot.control.intent
+        actions = (() if intent is None else intent.actions) + tuple(
+            target.action for target in targets
+        )
+        if contains_connector_recovery_action(actions):
+            raise RecoveryServiceError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
 
     @staticmethod
     def _require_context_matches_plan(

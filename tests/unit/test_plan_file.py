@@ -15,7 +15,10 @@ from click.testing import CliRunner
 from streamt.cli import main
 from streamt.compiler.manifest import Manifest, TopicArtifact
 from streamt.core.deployment_state import local_deployment_state_config
-from streamt.deployer.connect import ConnectorChange
+from streamt.deployer.connect import (
+    ConnectorChange,
+    managed_connector_absence_fingerprint,
+)
 from streamt.deployer.gateway import managed_gateway_absence_fingerprint
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.plan_file import (
@@ -41,6 +44,8 @@ from streamt.deployer.state import (
 )
 from streamt.deployer.state_backend import (
     CURRENT_CONTROL_VERSION,
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
     OperationAction,
@@ -53,6 +58,8 @@ from streamt.deployer.state_backend import (
 
 _TEST_STORE_ID = "00000000-0000-4000-8000-000000000001"
 _GATEWAY_BACKEND = "conduktor-gateway:v1:p:sha256:" + "a" * 64
+_CONNECTOR_BACKEND = "kafka-connect:v1:primary:sha256:" + "d" * 64
+_CONNECTOR_NAME = "archive-orders-sink"
 
 
 def _manifest(*, compiled_at: str = "2026-01-01T00:00:00Z") -> Manifest:
@@ -116,6 +123,33 @@ def _gateway_delete_actions() -> tuple[OperationAction, ...]:
                         alias_name,
                     ),
                     managed_interceptor_count=0,
+                ),
+            ),
+        ),
+    )
+
+
+def _connector_delete_actions() -> tuple[OperationAction, ...]:
+    return (
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/prod/connector/archive_orders",
+            action="delete",
+            connector_evidence=ConnectorActionEvidence(
+                version=1,
+                backend_identity=_CONNECTOR_BACKEND,
+                connector_name=_CONNECTOR_NAME,
+                prior_artifact_checksum="sha256:" + "e" * 64,
+                current=ConnectorActionSurfaceEvidence(
+                    exists=True,
+                    fingerprint="sha256:" + "f" * 64,
+                ),
+                desired=ConnectorActionSurfaceEvidence(
+                    exists=False,
+                    fingerprint=managed_connector_absence_fingerprint(
+                        _CONNECTOR_BACKEND,
+                        _CONNECTOR_NAME,
+                    ),
                 ),
             ),
         ),
@@ -288,7 +322,7 @@ def test_plan_file_is_deterministic_and_excludes_compile_time(tmp_path: Path) ->
     assert not list(tmp_path.glob(".*.tmp"))
 
 
-def test_v4_online_state_reference_is_exact_and_excludes_provider_revision() -> None:
+def test_v5_online_state_reference_is_exact_and_excludes_provider_revision() -> None:
     observation = _state_observation(
         serial=7,
         resources=_managed_topic_record(partitions=3),
@@ -305,13 +339,14 @@ def test_v4_online_state_reference_is_exact_and_excludes_provider_revision() -> 
     )
     payload = reviewed.to_dict()
 
-    assert PLAN_FILE_VERSION == 4
+    assert PLAN_FILE_VERSION == 5
     assert payload["actions"] == [
         {
             "index": 0,
             "resource_id": "streamt://payments/prod/topic/payments_clean",
             "action": "create",
             "gateway_evidence": None,
+            "connector_evidence": None,
         }
     ]
     assert payload["state"] == {
@@ -327,7 +362,7 @@ def test_v4_online_state_reference_is_exact_and_excludes_provider_revision() -> 
     assert "revision-token" not in serialized
 
 
-def test_v4_actions_round_trip_with_exact_gateway_evidence(tmp_path: Path) -> None:
+def test_v5_actions_round_trip_with_exact_gateway_evidence(tmp_path: Path) -> None:
     actions = _gateway_delete_actions()
     reviewed = ReviewedPlanFile.create(
         _deployment_plan(),
@@ -348,6 +383,52 @@ def test_v4_actions_round_trip_with_exact_gateway_evidence(tmp_path: Path) -> No
     assert loaded.to_dict()["actions"] == [
         actions[0].to_dict(control_version=CURRENT_CONTROL_VERSION)
     ]
+
+
+def test_v5_connector_evidence_round_trips_and_binds_plan_checksum(
+    tmp_path: Path,
+) -> None:
+    actions = _connector_delete_actions()
+    reviewed = ReviewedPlanFile.create(
+        _deployment_plan(),
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={"connect": {"default": "primary"}},
+        state=_state_reference(),
+        actions=actions,
+    )
+    path = tmp_path / "connector-actions.plan.json"
+    reviewed.save(path)
+
+    loaded = ReviewedPlanFile.load(path)
+    assert loaded == reviewed
+    assert loaded.actions == actions
+    assert set(loaded.to_dict()["actions"][0]) == {
+        "index",
+        "resource_id",
+        "action",
+        "gateway_evidence",
+        "connector_evidence",
+    }
+    serialized = path.read_text(encoding="utf-8")
+    for forbidden in (
+        "connector-secret",
+        "provider-response",
+        "connect.example.test",
+        "postgresql://",
+        "dsn_env",
+        "config",
+    ):
+        assert forbidden not in serialized
+
+    data = loaded.to_dict()
+    evidence = data["actions"][0]["connector_evidence"]
+    evidence["current"]["fingerprint"] = "sha256:" + "0" * 64
+    tampered = tmp_path / "connector-actions-tampered.plan.json"
+    tampered.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PlanFileError, match="checksum mismatch"):
+        ReviewedPlanFile.load(tampered)
 
 
 def test_create_requires_explicit_actions_argument() -> None:
@@ -528,8 +609,8 @@ def test_offline_plan_requires_null_state_and_online_plan_requires_reference() -
         )
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
-def test_v1_through_v3_plans_require_explicit_regeneration(
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_v1_through_v4_plans_require_explicit_regeneration(
     tmp_path: Path,
     version: int,
 ) -> None:

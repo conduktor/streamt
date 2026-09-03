@@ -451,9 +451,9 @@ streamt plan --env staging --out staging.plan.json
 Online planning reports ordered `safety_blockers` for Kafka partition
 reductions, incompatible schemas, and Flink job updates. A blocked plan still
 exits successfully and can be saved for review; its JSON data sets
-`is_apply_blocked: true`. Reviewed plan format version 4 includes these blockers,
+`is_apply_blocked: true`. Reviewed plan format version 5 includes these blockers,
 an exact ownership-state reference, and canonical ordered action evidence in its
-integrity checksum. Version 1 through 3 files cannot authorize apply and are
+integrity checksum. Version 1 through 4 files cannot authorize apply and are
 rejected with regeneration guidance.
 
 **Output:**

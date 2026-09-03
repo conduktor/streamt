@@ -1072,6 +1072,7 @@ def apply(
                     or action.resource_id != planned_action.resource_id
                     or action.action != planned_action.action
                     or action.gateway_evidence != planned_action.gateway_evidence
+                    or action.connector_evidence != planned_action.connector_evidence
                 ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"
@@ -1100,6 +1101,7 @@ def apply(
                     or action.resource_id != planned_action.resource_id
                     or action.action != planned_action.action
                     or action.gateway_evidence != planned_action.gateway_evidence
+                    or action.connector_evidence != planned_action.connector_evidence
                 ):
                     raise StateFormatError(
                         "runtime action order does not match the durable operation intent"

@@ -76,6 +76,7 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
     OperationAction,
@@ -470,6 +471,7 @@ class PlannedAction:
     runtime_label: str
     action: str
     gateway_evidence: GatewayActionEvidence | None = None
+    connector_evidence: ConnectorActionEvidence | None = None
 
     def __post_init__(self) -> None:
         ResourceIdentity.parse(self.resource_id)
@@ -477,11 +479,29 @@ class PlannedAction:
             raise StateIdentityError("planned action runtime label must be non-empty")
         if not isinstance(self.action, str) or not self.action:
             raise StateIdentityError("planned action action must be non-empty")
-        if self.gateway_evidence is not None and not isinstance(
-            self.gateway_evidence,
-            GatewayActionEvidence,
+        if (
+            self.gateway_evidence is not None
+            and type(
+                self.gateway_evidence,
+            )
+            is not GatewayActionEvidence
         ):
             raise StateIdentityError("planned action Gateway evidence is invalid")
+        if (
+            self.connector_evidence is not None
+            and type(self.connector_evidence) is not ConnectorActionEvidence
+        ):
+            raise StateIdentityError("planned action Connector evidence is invalid")
+        try:
+            OperationAction(
+                index=0,
+                resource_id=self.resource_id,
+                action=self.action,
+                gateway_evidence=self.gateway_evidence,
+                connector_evidence=self.connector_evidence,
+            )
+        except StateError as error:
+            raise StateIdentityError(str(error)) from None
 
 
 @dataclass(frozen=True)

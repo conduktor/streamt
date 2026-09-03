@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 import streamt.deployer.postgres_state_backend as postgres_backend
+from streamt.deployer.connect import managed_connector_absence_fingerprint
 from streamt.deployer.postgres_state import (
     POSTGRES_STATE_MAX_BYTES,
     PostgresStateAdministration,
@@ -28,6 +29,8 @@ from streamt.deployer.postgres_state import (
 )
 from streamt.deployer.state import LocalState, ManagedResourceRecord
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     OperationAction,
     OperationControlState,
     OperationIntent,
@@ -394,6 +397,44 @@ def _intent(snapshot: OperationSnapshot, *, actions: bool = True) -> OperationIn
     )
 
 
+def _connector_intent(snapshot: OperationSnapshot) -> OperationIntent:
+    backend_identity = "kafka-connect:v1:primary:sha256:" + "4" * 64
+    connector_name = "archive-orders-sink"
+    return OperationIntent(
+        operation_id=str(uuid.uuid4()),
+        kind="apply",
+        started_at=operation_timestamp(),
+        actor="unit-test",
+        prior_state_serial=snapshot.state.state_serial,
+        prior_state_checksum=state_checksum(snapshot.state.state),
+        reviewed_plan_checksum="sha256:" + "5" * 64,
+        actions=(
+            OperationAction(
+                index=0,
+                resource_id="streamt://payments/prod/connector/archive_orders",
+                action="delete",
+                connector_evidence=ConnectorActionEvidence(
+                    version=1,
+                    backend_identity=backend_identity,
+                    connector_name=connector_name,
+                    prior_artifact_checksum="sha256:" + "6" * 64,
+                    current=ConnectorActionSurfaceEvidence(
+                        exists=True,
+                        fingerprint="sha256:" + "7" * 64,
+                    ),
+                    desired=ConnectorActionSurfaceEvidence(
+                        exists=False,
+                        fingerprint=managed_connector_absence_fingerprint(
+                            backend_identity,
+                            connector_name,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def _completed(
     operation: postgres_backend._PostgresStateReadOperation,
     snapshot: OperationSnapshot,
@@ -510,6 +551,124 @@ def test_changed_commit_is_one_atomic_transaction_with_exact_histories(
     assert owner.dml_attempts.count("insert_state_history") == 1
     assert owner.dml_attempts.count("update_operation_control") == 4
     assert len(driver.connections) == 4
+
+
+def test_postgres_control_and_history_round_trip_connector_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation, database, _owner, _driver = _operation(monkeypatch)
+    initial = operation.observe()
+    intent = _connector_intent(initial)
+    active = operation.begin_operation(initial, intent)
+    active = operation.record_progress(
+        active,
+        OperationProgress(
+            operation_id=intent.operation_id,
+            action_index=0,
+            resource_id=intent.actions[0].resource_id,
+            action="delete",
+            status="started",
+            succeeded=None,
+            recorded_at=operation_timestamp(),
+        ),
+    )
+    recovery = operation.mark_recovery_required(
+        active,
+        RecoveryRecord(
+            operation_id=intent.operation_id,
+            failure_code="runtime_action_failed",
+            failed_at=operation_timestamp(),
+            last_completed_action_index=None,
+        ),
+    )
+
+    current_json = _json(database.control.to_dict())
+    assert database.control == recovery.control.control
+    assert database.control.control_version == 3
+    assert database.control.intent is not None
+    assert (
+        database.control.intent.actions[0].connector_evidence
+        == intent.actions[0].connector_evidence
+    )
+    assert [kind for _index, kind, _payload in database.operation_history] == [
+        "intent",
+        "progress_started",
+        "recovery_required",
+    ]
+    for _index, _kind, payload in database.operation_history:
+        parsed = OperationControlState.from_dict(
+            json.loads(payload),
+            expected_address=_address(),
+        )
+        assert parsed.control_version == 3
+        assert parsed.intent is not None
+        assert parsed.intent.actions[0].connector_evidence == (intent.actions[0].connector_evidence)
+    for secret in (
+        "connector-secret",
+        "provider-secret",
+        "https://connect.internal/api",
+        "postgresql://owner:state-secret@db/state",
+    ):
+        assert secret not in current_json
+        assert all(secret not in row[2] for row in database.operation_history)
+
+
+def test_postgres_progress_and_recovery_preserve_loaded_v2_control_and_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation, database, _owner, _driver = _operation(monkeypatch)
+    empty = operation.observe()
+    v2 = OperationControlState(
+        address=_address(),
+        status="in_progress",
+        intent=_intent(empty),
+        control_version=2,
+    )
+    original = v2.to_dict()
+    database.control = OperationControlState.from_dict(
+        original,
+        expected_address=_address(),
+    )
+    database.operation_history = [(0, "intent", _json(original))]
+    active = operation.observe()
+    intent = active.control.control.intent
+    assert intent is not None
+
+    active = operation.record_progress(
+        active,
+        OperationProgress(
+            operation_id=intent.operation_id,
+            action_index=0,
+            resource_id=intent.actions[0].resource_id,
+            action=intent.actions[0].action,
+            status="started",
+            succeeded=None,
+            recorded_at=operation_timestamp(),
+        ),
+    )
+    operation.mark_recovery_required(
+        active,
+        RecoveryRecord(
+            operation_id=intent.operation_id,
+            failure_code="runtime_action_failed",
+            failed_at=operation_timestamp(),
+            last_completed_action_index=None,
+        ),
+    )
+
+    assert database.control.control_version == 2
+    assert database.control.intent is not None
+    assert database.control.intent.to_dict(control_version=2) == original["intent"]
+    for _index, _kind, payload in database.operation_history:
+        stored = json.loads(payload)
+        assert stored["control_version"] == 2
+        assert stored["intent"] == original["intent"]
+        assert set(stored["intent"]["actions"][0]) == {
+            "index",
+            "resource_id",
+            "action",
+            "gateway_evidence",
+        }
 
 
 def test_unchanged_commit_never_writes_current_or_state_history(

@@ -94,9 +94,6 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
             resource_id("payments", "prod", "flink_job", "flink_delete"): _record(
                 "runtime-flink-delete"
             ),
-            resource_id("payments", "prod", "connector", "connector_delete"): _record(
-                "runtime-connector-delete"
-            ),
             resource_id("payments", "prod", "gateway_rule", "gateway_delete"): _record(
                 "runtime-gateway-alias-delete",
                 backend=_GATEWAY_BINDING.backend_identity,
@@ -236,10 +233,6 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
                 action="update",
                 desired=connector_update,
             ),
-            ConnectorChange(
-                connector_name="runtime-connector-delete",
-                action="delete",
-            ),
         ],
         gateway_changes=[
             plan_managed_gateway_rule(
@@ -294,12 +287,6 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
             "update",
         ),
         (
-            "connector",
-            "connector_delete",
-            "connector:runtime-connector-delete",
-            "delete",
-        ),
-        (
             "gateway_rule",
             "gateway_create",
             "gateway_rule:runtime-gateway-create",
@@ -337,9 +324,37 @@ def test_planned_actions_are_canonical_ordered_and_compatible() -> None:
         action.runtime_label.partition(":")[2] not in action.resource_id
         for action in actions
     )
-
     with pytest.raises(FrozenInstanceError):
         actions[0].action = "delete"  # type: ignore[misc]
+
+
+def test_planned_actions_reject_bare_connector_delete_without_evidence() -> None:
+    connector_resource = resource_id(
+        "payments",
+        "prod",
+        "connector",
+        "connector_delete",
+    )
+    planner = _planner(
+        LocalState(
+            project="payments",
+            environment="prod",
+            resources={
+                connector_resource: _record("runtime-connector-delete"),
+            },
+        )
+    )
+    plan = DeploymentPlan(
+        connector_changes=[
+            ConnectorChange(
+                connector_name="runtime-connector-delete",
+                action="delete",
+            ),
+        ],
+    )
+
+    with pytest.raises(StateIdentityError, match="Connector deletion requires"):
+        planner.planned_actions(plan)
 
 
 def test_planned_actions_skip_runtime_actions_apply_would_not_attempt() -> None:

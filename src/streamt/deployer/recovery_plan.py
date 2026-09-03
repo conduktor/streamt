@@ -15,17 +15,19 @@ from typing import cast
 
 from streamt import __version__
 from streamt.deployer.recovery import (
+    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoveryResolutionRecord,
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
     _reject_unsafe_text,
+    contains_connector_recovery_action,
 )
 from streamt.deployer.state import LocalState, ManagedResourceRecord, StateError
 from streamt.deployer.state_backend import OperationAction, state_checksum
 
 RECOVERY_PLAN_FILE_KIND = "streamt.recovery-plan"
-RECOVERY_PLAN_FILE_VERSION = 2
+RECOVERY_PLAN_FILE_VERSION = 3
 MAX_RECOVERY_PLAN_FILE_BYTES = 10 * 1024 * 1024
 
 _CHECKSUM_PREFIX = "sha256:"
@@ -129,10 +131,10 @@ class RecoveryPlanFile:
     format_version: int = RECOVERY_PLAN_FILE_VERSION
 
     def __post_init__(self) -> None:
-        if type(self.format_version) is not int or self.format_version not in (1, 2):
+        if type(self.format_version) is not int or self.format_version not in (1, 2, 3):
             raise RecoveryPlanError(
                 f"Unsupported recovery plan format version {self.format_version!r}; "
-                "expected 1 or 2"
+                "expected 1, 2, or 3"
             )
         if self.resolution not in (
             "observed",
@@ -152,24 +154,41 @@ class RecoveryPlanFile:
             )
         if not isinstance(self.targets, tuple):
             raise RecoveryPlanError("Recovery plan targets must be an ordered tuple")
+        snapshot_control_version = self.snapshot.control.control_version
+        if self.format_version == 1 and snapshot_control_version != 1:
+            raise RecoveryPlanError("Recovery plan format version 1 requires control version 1")
+        if self.format_version == 2 and snapshot_control_version not in (1, 2):
+            raise RecoveryPlanError(
+                "Recovery plan format version 2 requires control version 1 or 2"
+            )
         if self.format_version == 1:
             intent = self.snapshot.control.intent
             if (
-                self.snapshot.control.control_version != 1
-                or (
-                    intent is not None
-                    and any(
-                        action.gateway_evidence is not None
-                        for action in intent.actions
-                    )
+                intent is not None
+                and any(
+                    action.gateway_evidence is not None or action.connector_evidence is not None
+                    for action in intent.actions
                 )
-                or any(
-                    target.action.gateway_evidence is not None
-                    for target in self.targets
-                )
+            ) or any(
+                target.action.gateway_evidence is not None
+                or target.action.connector_evidence is not None
+                for target in self.targets
             ):
                 raise RecoveryPlanError(
-                    "Recovery plan format version 1 cannot contain Gateway evidence"
+                    "Recovery plan format version 1 cannot contain action evidence"
+                )
+        if self.format_version in (1, 2):
+            legacy_actions = (
+                () if self.snapshot.control.intent is None else self.snapshot.control.intent.actions
+            ) + tuple(target.action for target in self.targets)
+            if any(
+                action.connector_evidence is not None
+                or contains_connector_recovery_action((action,))
+                for action in legacy_actions
+            ):
+                raise RecoveryPlanError(
+                    f"Recovery plan format version {self.format_version} cannot authorize "
+                    "Connector deletion"
                 )
         if not isinstance(self.streamt_version, str) or not self.streamt_version:
             raise RecoveryPlanError("Recovery plan streamt_version must be non-empty")
@@ -195,6 +214,11 @@ class RecoveryPlanFile:
         intent = self.snapshot.control.intent
         if intent is None:  # pragma: no cover - RecoverySnapshotEvidence rejects this
             raise RecoveryPlanError("Recovery plan requires an active operation intent")
+        connector_recovery = contains_connector_recovery_action(intent.actions) or any(
+            contains_connector_recovery_action((target.action,)) for target in self.targets
+        )
+        if connector_recovery and self.resolution != "abandoned_before_mutation":
+            raise RecoveryPlanError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
         if (
             self.resolution != "abandoned_before_mutation"
             and tuple(target.action for target in self.targets) != intent.actions
@@ -606,11 +630,12 @@ class RecoveryPlanFile:
             raise RecoveryPlanError("Unsupported recovery plan kind")
         if type(data["format_version"]) is not int or data["format_version"] not in (
             1,
+            2,
             RECOVERY_PLAN_FILE_VERSION,
         ):
             raise RecoveryPlanError(
                 f"Unsupported recovery plan format version {data['format_version']!r}; "
-                f"expected 1 or {RECOVERY_PLAN_FILE_VERSION}"
+                f"expected 1, 2, or {RECOVERY_PLAN_FILE_VERSION}"
             )
         format_version = data["format_version"]
         evidence_checksum = _require_checksum(

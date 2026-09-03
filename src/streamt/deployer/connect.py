@@ -295,6 +295,23 @@ class ManagedConnectorObservation:
         return dict(self.config)
 
 
+def managed_connector_absence_fingerprint(
+    backend_identity: object,
+    connector_name: object,
+) -> str:
+    """Return the canonical fingerprint for one exact absent Connector surface."""
+    binding = ConnectClusterBinding.from_backend_identity(backend_identity)
+    if not isinstance(connector_name, str):
+        raise ConnectManagedObservationError(
+            "Kafka Connect absence evidence has an invalid connector identity"
+        )
+    return ManagedConnectorObservation(
+        binding=binding,
+        name=connector_name,
+        exists=False,
+    ).fingerprint
+
+
 def _config_change_evidence(
     *,
     from_present: bool,

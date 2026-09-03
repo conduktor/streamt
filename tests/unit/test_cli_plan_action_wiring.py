@@ -8,6 +8,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -16,12 +17,15 @@ from streamt.compiler import Compiler
 from streamt.compiler.manifest import ArtifactOwnership, TopicArtifact
 from streamt.core.deployment_state import local_deployment_state_config
 from streamt.core.parser import ProjectParser
+from streamt.deployer.connect import managed_connector_absence_fingerprint
 from streamt.deployer.kafka import TopicChange
 from streamt.deployer.operation_actions import operation_actions_from_planned
 from streamt.deployer.plan_file import ReviewedPlanFile, StateReference
 from streamt.deployer.planner import DeploymentPlan, PlannedAction
 from streamt.deployer.state import LocalState, StateIdentityError, resource_id
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     DeploymentStateOperation,
     OperationAction,
     OperationIntent,
@@ -35,6 +39,8 @@ _DEPLOYER_FACTORIES = (
     "make_connect_deployer",
     "make_gateway_deployer",
 )
+_CONNECTOR_BACKEND = "kafka-connect:v1:primary:sha256:" + "7" * 64
+_CONNECTOR_NAME = "archive-orders-sink"
 
 
 def _write_project(path: Path, *, removal: bool = False) -> None:
@@ -105,6 +111,43 @@ def _topic_plan_and_action() -> tuple[DeploymentPlan, PlannedAction]:
     return plan, action
 
 
+def _connector_evidence(
+    *,
+    current_fingerprint: str = "sha256:" + "8" * 64,
+) -> ConnectorActionEvidence:
+    return ConnectorActionEvidence(
+        version=1,
+        backend_identity=_CONNECTOR_BACKEND,
+        connector_name=_CONNECTOR_NAME,
+        prior_artifact_checksum="sha256:" + "9" * 64,
+        current=ConnectorActionSurfaceEvidence(
+            exists=True,
+            fingerprint=current_fingerprint,
+        ),
+        desired=ConnectorActionSurfaceEvidence(
+            exists=False,
+            fingerprint=managed_connector_absence_fingerprint(
+                _CONNECTOR_BACKEND,
+                _CONNECTOR_NAME,
+            ),
+        ),
+    )
+
+
+def _connector_planned_action(
+    *,
+    current_fingerprint: str = "sha256:" + "8" * 64,
+) -> PlannedAction:
+    return PlannedAction(
+        resource_id="streamt://plan-test/default/connector/archive_orders",
+        runtime_label=f"connector:{_CONNECTOR_NAME}",
+        action="delete",
+        connector_evidence=_connector_evidence(
+            current_fingerprint=current_fingerprint,
+        ),
+    )
+
+
 def _patch_deployers(stack: ExitStack, command: str) -> None:
     for factory in _DEPLOYER_FACTORIES:
         stack.enter_context(patch(f"streamt.cli.commands.{command}.{factory}", return_value=None))
@@ -161,6 +204,20 @@ def test_operation_actions_from_planned_freezes_order_and_indexes() -> None:
         OperationAction(index=0, resource_id=first.resource_id, action="create"),
         OperationAction(index=1, resource_id=second.resource_id, action="update"),
     )
+
+
+def test_planned_connector_delete_requires_exact_evidence() -> None:
+    with pytest.raises(StateIdentityError, match="Connector deletion requires"):
+        PlannedAction(
+            resource_id="streamt://plan-test/default/connector/archive_orders",
+            runtime_label=f"connector:{_CONNECTOR_NAME}",
+            action="delete",
+        )
+
+    planned = _connector_planned_action()
+    frozen = operation_actions_from_planned([planned])
+    assert frozen[0].connector_evidence == planned.connector_evidence
+    assert frozen[0].gateway_evidence is None
 
 
 def test_plan_holds_operation_lock_through_action_freeze_and_atomic_save(
@@ -462,3 +519,72 @@ def test_apply_rejects_reviewed_action_drift_before_mutation(tmp_path: Path) -> 
     assert result.exit_code == 1, result.output
     assert json.loads(result.stdout)["errors"][0]["code"] == "E409_PLAN_STALE"
     apply_plan.assert_not_called()
+
+
+@pytest.mark.parametrize("boundary", ["before", "after"])
+def test_apply_callbacks_reject_connector_evidence_drift(
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    _write_project(tmp_path)
+    deployment_plan = DeploymentPlan()
+    reviewed_action = _connector_planned_action()
+    reviewed_actions = operation_actions_from_planned([reviewed_action])
+    plan_path = _reviewed_plan(tmp_path, deployment_plan, reviewed_actions)
+    ordered_actions = [reviewed_action]
+    drifted = _connector_planned_action(current_fingerprint="sha256:" + "a" * 64)
+    events: list[str] = []
+
+    def apply_plan(
+        _plan: DeploymentPlan,
+        *,
+        before_action: object,
+        after_action: object,
+        stop_on_error: bool,
+    ) -> dict[str, object]:
+        assert stop_on_error is True
+        if boundary == "before":
+            ordered_actions[0] = drifted
+        before_action(reviewed_action.runtime_label, 0)  # type: ignore[operator]
+        events.append("provider-returned")
+        if boundary == "after":
+            ordered_actions[0] = drifted
+        after_action(reviewed_action.runtime_label, 0, True)  # type: ignore[operator]
+        events.append("continued")
+        return {
+            "created": [],
+            "updated": [],
+            "deleted": [],
+            "unchanged": [],
+            "errors": [],
+            "rollback_candidates": [],
+        }
+
+    with ExitStack() as stack:
+        _patch_deployers(stack, "apply")
+        stack.enter_context(
+            patch(
+                "streamt.deployer.planner.DeploymentPlanner.plan",
+                return_value=deployment_plan,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "streamt.deployer.planner.DeploymentPlanner.planned_actions",
+                return_value=ordered_actions,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "streamt.deployer.planner.DeploymentPlanner.apply",
+                side_effect=apply_plan,
+            )
+        )
+        result = CliRunner().invoke(
+            main,
+            ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)],
+        )
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["errors"][0]["code"] == "E411_STATE_INVALID"
+    assert events == ([] if boundary == "before" else ["provider-returned"])

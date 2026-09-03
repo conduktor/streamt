@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, cast
 
-from streamt.deployer.state import LocalState, ResourceIdentity, StateFormatError
+from streamt.deployer.state import LocalState, ResourceIdentity, StateError, StateFormatError
 from streamt.deployer.state_backend import (
     OperationAction,
     OperationControlState,
@@ -27,6 +27,8 @@ RecoveryResolution = Literal[
 ]
 RecoveryTargetPresence = Literal["present", "absent"]
 RecoveryAcceptedState = Literal["prior", "candidate"]
+
+CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE = "Connector recovery is not available in this build"
 
 _CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TIMESTAMP_PATTERN = re.compile(
@@ -129,6 +131,22 @@ def control_checksum(control: OperationControlState) -> str:
     return _canonical_checksum(control.to_dict())
 
 
+def contains_connector_recovery_action(
+    actions: tuple[OperationAction, ...],
+) -> bool:
+    """Return whether an action tuple requires deferred Connector recovery logic."""
+    for action in actions:
+        if action.connector_evidence is not None:
+            return True
+        try:
+            identity = ResourceIdentity.parse(action.resource_id)
+        except StateError:
+            continue
+        if identity.kind == "connector" and action.action == "delete":
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class RecoveryTargetEvidence:
     """One normalized, secret-free live observation bound to an intent action."""
@@ -167,6 +185,22 @@ class RecoveryTargetEvidence:
             if self.fingerprint != accepted_surface.fingerprint:
                 raise StateFormatError(
                     "Gateway recovery target fingerprint does not match accepted action evidence"
+                )
+        connector_evidence = self.action.connector_evidence
+        if connector_evidence is not None:
+            connector_surface = (
+                connector_evidence.current
+                if self.accepted_as == "prior"
+                else connector_evidence.desired
+            )
+            expected_presence = "present" if connector_surface.exists else "absent"
+            if self.presence != expected_presence:
+                raise StateFormatError(
+                    "Connector recovery target presence does not match accepted action evidence"
+                )
+            if self.fingerprint != connector_surface.fingerprint:
+                raise StateFormatError(
+                    "Connector recovery target fingerprint does not match accepted action evidence"
                 )
 
     def to_dict(self) -> dict[str, object]:

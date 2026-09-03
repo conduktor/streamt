@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from streamt.deployer.connect import managed_connector_absence_fingerprint
 from streamt.deployer.gateway import (
     GatewayBackendBinding,
     managed_gateway_absence_fingerprint,
@@ -25,6 +26,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     ControlObservation,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
@@ -251,6 +254,82 @@ def test_gateway_adopt_candidate_is_bound_to_current_not_desired_surface() -> No
             accepted_as="candidate",
             fingerprint=desired_fingerprint,
         )
+
+
+def test_connector_target_evidence_is_bound_to_exact_prior_or_candidate_surface() -> None:
+    backend_identity = "kafka-connect:v1:primary:sha256:" + "4" * 64
+    connector_name = "archive-orders-sink"
+    current_fingerprint = "sha256:" + "5" * 64
+    desired_fingerprint = managed_connector_absence_fingerprint(
+        backend_identity,
+        connector_name,
+    )
+    action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            "payments",
+            "prod",
+            "connector",
+            "archive_orders",
+        ),
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=backend_identity,
+            connector_name=connector_name,
+            prior_artifact_checksum="sha256:" + "6" * 64,
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint=current_fingerprint,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=desired_fingerprint,
+            ),
+        ),
+    )
+    prior = RecoveryTargetEvidence(
+        action=action,
+        presence="present",
+        accepted_as="prior",
+        fingerprint=current_fingerprint,
+    )
+    candidate = RecoveryTargetEvidence(
+        action=action,
+        presence="absent",
+        accepted_as="candidate",
+        fingerprint=desired_fingerprint,
+    )
+
+    assert RecoveryTargetEvidence.from_dict(prior.to_dict()) == prior
+    assert RecoveryTargetEvidence.from_dict(candidate.to_dict()) == candidate
+
+    invalid = (
+        ({**candidate.to_dict(), "presence": "present"}, "presence"),
+        (
+            {**candidate.to_dict(), "fingerprint": current_fingerprint},
+            "fingerprint",
+        ),
+        (
+            {
+                **prior.to_dict(),
+                "presence": "absent",
+                "fingerprint": desired_fingerprint,
+            },
+            "presence",
+        ),
+        (
+            {
+                **candidate.to_dict(),
+                "presence": "present",
+                "fingerprint": current_fingerprint,
+            },
+            "presence",
+        ),
+    )
+    for payload, message in invalid:
+        with pytest.raises(StateFormatError, match=message):
+            RecoveryTargetEvidence.from_dict(payload)
 
 
 def test_snapshot_evidence_is_exact_but_excludes_provider_revisions() -> None:

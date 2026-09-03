@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from streamt.deployer.connect import managed_connector_absence_fingerprint
 from streamt.deployer.recovery import (
     RecoveryResolution,
     RecoveryResolutionRecord,
@@ -30,6 +31,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     ControlObservation,
     DeploymentStateBackend,
     DeploymentStateService,
@@ -53,6 +56,14 @@ ENVIRONMENT_FINGERPRINT = "sha256:" + "a" * 64
 MANIFEST_CHECKSUM = "sha256:" + "b" * 64
 TARGET_FINGERPRINT = "sha256:" + "c" * 64
 RESOLVED_AT = "2026-09-02T18:00:00Z"
+CONNECTOR_BACKEND = "kafka-connect:v1:primary:sha256:" + "d" * 64
+CONNECTOR_NAME = "archive-orders-sink"
+CONNECTOR_RESOURCE = resource_id(
+    "payments",
+    "prod",
+    "connector",
+    "archive_orders",
+)
 
 
 def _address(*, environment: str = "prod") -> StateAddress:
@@ -169,6 +180,60 @@ def _snapshot(
             revision=StateRevision(control_revision),
         ),
     )
+
+
+def _connector_snapshot() -> OperationSnapshot:
+    prior_checksum = "sha256:" + "e" * 64
+    prior = LocalState(
+        project="payments",
+        environment="prod",
+        serial=1,
+        resources={
+            CONNECTOR_RESOURCE: ManagedResourceRecord(
+                physical_name=CONNECTOR_NAME,
+                ownership="managed",
+                artifact_checksum=prior_checksum,
+                backend=CONNECTOR_BACKEND,
+            )
+        },
+    )
+    action = OperationAction(
+        index=0,
+        resource_id=CONNECTOR_RESOURCE,
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=CONNECTOR_BACKEND,
+            connector_name=CONNECTOR_NAME,
+            prior_artifact_checksum=prior_checksum,
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint="sha256:" + "f" * 64,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=managed_connector_absence_fingerprint(
+                    CONNECTOR_BACKEND,
+                    CONNECTOR_NAME,
+                ),
+            ),
+        ),
+    )
+    control = OperationControlState(
+        address=_address(),
+        status="in_progress",
+        intent=OperationIntent(
+            operation_id=BLOCKED_OPERATION_ID,
+            kind="apply",
+            started_at="2026-09-02T12:00:00Z",
+            actor="operator",
+            prior_state_serial=prior.serial,
+            prior_state_checksum=state_checksum(prior),
+            reviewed_plan_checksum=None,
+            actions=(action,),
+        ),
+    )
+    return _snapshot(state=prior, control=control)
 
 
 def _target(*, accepted_as: str) -> RecoveryTargetEvidence:
@@ -435,6 +500,35 @@ def test_create_abandoned_plan_does_not_observe_runtime_or_context(tmp_path: Pat
     assert plan.candidate_state is None
     assert "targets" not in backend.log
     assert "context" not in backend.log
+
+
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_create_live_connector_recovery_fails_before_context_or_observer(
+    tmp_path: Path,
+    resolution: RecoveryResolution,
+) -> None:
+    backend = _FakeBackend(_connector_snapshot())
+    observer = _Observer(
+        backend.log,
+        RecoveryLiveObservation(targets=(), candidate_state=None),
+        error=AssertionError("must not observe Connector recovery"),
+    )
+    context = _ContextReader(
+        backend.log,
+        error=AssertionError("must not read Connector recovery context"),
+    )
+
+    with pytest.raises(RecoveryServiceError, match="not available in this build"):
+        _service(backend).create_plan(
+            resolution=resolution,
+            destination=tmp_path / f"{resolution}.json",
+            observer=observer,
+            context_reader=context,
+        )
+
+    assert backend.log == ["enter", "observe", "exit"]
+    assert observer.calls == []
+    assert not (tmp_path / f"{resolution}.json").exists()
 
 
 @pytest.mark.parametrize("status", ["in_progress", "recovery_required"])
@@ -872,6 +966,39 @@ def test_execute_abandoned_never_calls_supplied_observer_or_context() -> None:
 
     assert "targets" not in backend.log
     assert "context" not in backend.log
+
+
+def test_execute_handcrafted_live_connector_recovery_cannot_observe_or_finalize() -> None:
+    snapshot = _connector_snapshot()
+    abandoned = RecoveryPlanFile.create(
+        resolution="abandoned_before_mutation",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=RecoverySnapshotEvidence.from_operation_snapshot(snapshot),
+        targets=(),
+    )
+    object.__setattr__(abandoned, "resolution", "observed")
+    backend = _FakeBackend(snapshot)
+    observer = _Observer(
+        backend.log,
+        RecoveryLiveObservation(targets=(), candidate_state=None),
+        error=AssertionError("must not observe Connector recovery"),
+    )
+    context = _ContextReader(
+        backend.log,
+        error=AssertionError("must not read Connector recovery context"),
+    )
+
+    with pytest.raises(RecoveryServiceError, match="not available in this build"):
+        _execute(
+            _service(backend),
+            abandoned,
+            observer=observer,
+            context_reader=context,
+        )
+
+    assert backend.log == []
+    assert observer.calls == []
+    assert backend.finalize_calls == []
 
 
 def test_execute_allows_blocked_partial_finalization_at_exact_candidate_state() -> None:

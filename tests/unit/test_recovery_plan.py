@@ -7,11 +7,13 @@ import json
 import os
 import stat
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from streamt.deployer.connect import managed_connector_absence_fingerprint
 from streamt.deployer.gateway import managed_gateway_absence_fingerprint
 from streamt.deployer.recovery import (
     RecoverySnapshotEvidence,
@@ -31,6 +33,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     ControlObservation,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
@@ -50,6 +54,14 @@ BLOCKED_OPERATION_ID = "00000000-0000-4000-8000-000000000011"
 RECOVERY_OPERATION_ID = "00000000-0000-4000-8000-000000000012"
 STORE_ID = "00000000-0000-4000-8000-000000000013"
 CHECKSUM = "sha256:" + "a" * 64
+CONNECTOR_BACKEND = "kafka-connect:v1:primary:sha256:" + "c" * 64
+CONNECTOR_NAME = "archive-orders-sink"
+CONNECTOR_RESOURCE = "streamt://payments/prod/connector/archive_orders"
+CONNECTOR_CURRENT_FINGERPRINT = "sha256:" + "d" * 64
+CONNECTOR_ABSENCE_FINGERPRINT = managed_connector_absence_fingerprint(
+    CONNECTOR_BACKEND,
+    CONNECTOR_NAME,
+)
 
 
 def _address() -> StateAddress:
@@ -102,16 +114,20 @@ def _snapshot(
         actions=(action,),
     )
     progress = (
-        OperationProgress(
-            operation_id=BLOCKED_OPERATION_ID,
-            action_index=0,
-            resource_id=action.resource_id,
-            action=action.action,
-            status="started",
-            succeeded=None,
-            recorded_at="2026-09-02T12:01:00Z",
-        ),
-    ) if with_progress else ()
+        (
+            OperationProgress(
+                operation_id=BLOCKED_OPERATION_ID,
+                action_index=0,
+                resource_id=action.resource_id,
+                action=action.action,
+                status="started",
+                succeeded=None,
+                recorded_at="2026-09-02T12:01:00Z",
+            ),
+        )
+        if with_progress
+        else ()
+    )
     control = OperationControlState(
         address=_address(),
         status="in_progress",
@@ -230,6 +246,69 @@ def _gateway_snapshot(
     )
 
 
+def _connector_snapshot() -> RecoverySnapshotEvidence:
+    state = LocalState(
+        project="payments",
+        environment="prod",
+        serial=1,
+        resources={
+            CONNECTOR_RESOURCE: ManagedResourceRecord(
+                physical_name=CONNECTOR_NAME,
+                ownership="managed",
+                artifact_checksum=CHECKSUM,
+                backend=CONNECTOR_BACKEND,
+            )
+        },
+    )
+    action = OperationAction(
+        index=0,
+        resource_id=CONNECTOR_RESOURCE,
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=CONNECTOR_BACKEND,
+            connector_name=CONNECTOR_NAME,
+            prior_artifact_checksum=CHECKSUM,
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint=CONNECTOR_CURRENT_FINGERPRINT,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=CONNECTOR_ABSENCE_FINGERPRINT,
+            ),
+        ),
+    )
+    control = OperationControlState(
+        address=_address(),
+        status="in_progress",
+        intent=OperationIntent(
+            operation_id=BLOCKED_OPERATION_ID,
+            kind="apply",
+            started_at="2026-09-02T12:00:00Z",
+            actor="operator",
+            prior_state_serial=state.serial,
+            prior_state_checksum=state_checksum(state),
+            reviewed_plan_checksum=None,
+            actions=(action,),
+        ),
+    )
+    return RecoverySnapshotEvidence.from_operation_snapshot(
+        OperationSnapshot(
+            state=StateObservation(
+                store=StateStoreIdentity(backend="postgres", store_id=STORE_ID),
+                address=_address(),
+                state=state,
+                revision=StateRevision("provider-state-revision"),
+            ),
+            control=ControlObservation(
+                control=control,
+                revision=StateRevision("provider-control-revision"),
+            ),
+        )
+    )
+
+
 def _target(*, accepted_as: str = "candidate") -> RecoveryTargetEvidence:
     return RecoveryTargetEvidence(
         action=_action(),
@@ -281,7 +360,7 @@ def test_observed_plan_is_deterministic_exact_and_omits_provider_revisions(
     second.save(second_path)
 
     assert RECOVERY_PLAN_FILE_KIND == "streamt.recovery-plan"
-    assert RECOVERY_PLAN_FILE_VERSION == 2
+    assert RECOVERY_PLAN_FILE_VERSION == 3
     assert first.evidence_checksum == second.evidence_checksum
     assert first_path.read_bytes() == second_path.read_bytes()
     serialized = first_path.read_text(encoding="utf-8")
@@ -299,8 +378,10 @@ def test_v1_recovery_plan_loads_and_reserializes_exactly(tmp_path: Path) -> None
     control["control_version"] = 1
     for action in control["intent"]["actions"]:
         action.pop("gateway_evidence")
+        action.pop("connector_evidence")
     for target in original["targets"]:
         target["action"].pop("gateway_evidence")
+        target["action"].pop("connector_evidence")
     original["snapshot"]["control_checksum"] = _object_checksum(control)
     _resign(original)
     path = tmp_path / "v1.recovery.json"
@@ -313,8 +394,10 @@ def test_v1_recovery_plan_loads_and_reserializes_exactly(tmp_path: Path) -> None
     assert loaded.to_dict() == original
 
 
-def test_v2_recovery_plan_preserves_v1_snapshot_and_uses_v2_targets() -> None:
-    plan = RecoveryPlanFile.create(
+def test_v2_recovery_plan_preserves_v1_snapshot_and_uses_v2_targets(
+    tmp_path: Path,
+) -> None:
+    current = RecoveryPlanFile.create(
         resolution="observed",
         recovery_operation_id=RECOVERY_OPERATION_ID,
         snapshot=_snapshot(with_progress=True, control_version=1),
@@ -322,6 +405,11 @@ def test_v2_recovery_plan_preserves_v1_snapshot_and_uses_v2_targets() -> None:
         candidate_state=_state(serial=2, partitions=6),
         environment_fingerprint=CHECKSUM,
         manifest_checksum="sha256:" + "b" * 64,
+    )
+    unsigned = replace(current, format_version=2, evidence_checksum="")
+    plan = replace(
+        unsigned,
+        evidence_checksum=_object_checksum(unsigned._unsigned_dict()),
     )
 
     payload: dict[str, Any] = plan.to_dict()
@@ -334,6 +422,127 @@ def test_v2_recovery_plan_preserves_v1_snapshot_and_uses_v2_targets() -> None:
         "action",
     }
     assert payload["targets"][0]["action"]["gateway_evidence"] is None
+    assert "connector_evidence" not in payload["targets"][0]["action"]
+    path = tmp_path / "v2.recovery.json"
+    plan.save(path)
+    assert RecoveryPlanFile.load(path).to_dict() == payload
+
+
+def test_v3_recovery_plan_preserves_v2_snapshot_and_uses_v3_targets(
+    tmp_path: Path,
+) -> None:
+    plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=_snapshot(with_progress=True, control_version=2),
+        targets=(_target(),),
+        candidate_state=_state(serial=2, partitions=6),
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum="sha256:" + "b" * 64,
+    )
+    payload: dict[str, Any] = plan.to_dict()
+
+    assert payload["format_version"] == 3
+    assert payload["snapshot"]["control"]["control_version"] == 2
+    assert set(payload["snapshot"]["control"]["intent"]["actions"][0]) == {
+        "index",
+        "resource_id",
+        "action",
+        "gateway_evidence",
+    }
+    assert set(payload["targets"][0]["action"]) == {
+        "index",
+        "resource_id",
+        "action",
+        "gateway_evidence",
+        "connector_evidence",
+    }
+    path = tmp_path / "v3-with-v2-snapshot.recovery.json"
+    plan.save(path)
+    assert RecoveryPlanFile.load(path).to_dict() == payload
+
+
+def test_v2_recovery_plan_rejects_v3_snapshot_at_construction_and_load(
+    tmp_path: Path,
+) -> None:
+    current = _observed_plan()
+    with pytest.raises(RecoveryPlanError, match="format version 2 requires control"):
+        replace(current, format_version=2, evidence_checksum="")
+
+    payload: dict[str, Any] = current.to_dict()
+    payload["format_version"] = 2
+    for target in payload["targets"]:
+        target["action"].pop("connector_evidence")
+    _resign(payload)
+    path = tmp_path / "v2-smuggled-v3-snapshot.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RecoveryPlanError, match="format version 2 requires control"):
+        RecoveryPlanFile.load(path)
+
+
+def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_closed(
+    tmp_path: Path,
+) -> None:
+    snapshot = _connector_snapshot()
+    action = snapshot.control.intent.actions[0]  # type: ignore[union-attr]
+    abandoned = RecoveryPlanFile.create(
+        resolution="abandoned_before_mutation",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(),
+    )
+    path = tmp_path / "abandoned-connector.recovery.json"
+    abandoned.save(path)
+
+    assert abandoned.format_version == 3
+    assert RecoveryPlanFile.load(path) == abandoned
+
+    live_cases = (
+        (
+            "rolled_back",
+            RecoveryTargetEvidence(
+                action=action,
+                presence="present",
+                accepted_as="prior",
+                fingerprint=CONNECTOR_CURRENT_FINGERPRINT,
+            ),
+            None,
+        ),
+        (
+            "observed",
+            RecoveryTargetEvidence(
+                action=action,
+                presence="absent",
+                accepted_as="candidate",
+                fingerprint=CONNECTOR_ABSENCE_FINGERPRINT,
+            ),
+            LocalState(project="payments", environment="prod", serial=2),
+        ),
+    )
+    for resolution, target, candidate in live_cases:
+        with pytest.raises(RecoveryPlanError, match="not available in this build"):
+            RecoveryPlanFile.create(
+                resolution=resolution,  # type: ignore[arg-type]
+                recovery_operation_id=RECOVERY_OPERATION_ID,
+                snapshot=snapshot,
+                targets=(target,),
+                candidate_state=candidate,
+                environment_fingerprint=CHECKSUM,
+                manifest_checksum=CHECKSUM,
+            )
+
+        payload = abandoned.to_dict()
+        payload["resolution"] = resolution
+        payload["targets"] = [target.to_dict()]
+        payload["candidate_state"] = None if candidate is None else candidate.to_dict()
+        payload["environment_fingerprint"] = CHECKSUM
+        payload["manifest_checksum"] = CHECKSUM
+        _resign(payload)
+        rejected = tmp_path / f"{resolution}-connector.recovery.json"
+        rejected.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(RecoveryPlanError, match="not available in this build"):
+            RecoveryPlanFile.load(rejected)
 
 
 def test_v2_recovery_checksum_covers_action_evidence(tmp_path: Path) -> None:
@@ -360,9 +569,8 @@ def test_v1_recovery_plan_rejects_gateway_evidence(tmp_path: Path) -> None:
     data["snapshot"]["control"]["control_version"] = 1
     for action in data["snapshot"]["control"]["intent"]["actions"]:
         action.pop("gateway_evidence")
-    data["snapshot"]["control_checksum"] = _object_checksum(
-        data["snapshot"]["control"]
-    )
+        action.pop("connector_evidence")
+    data["snapshot"]["control_checksum"] = _object_checksum(data["snapshot"]["control"])
     # The target retains its v2-only member, proving v1 cannot acquire even null.
     _resign(data)
     path = tmp_path / "v1-with-evidence.json"

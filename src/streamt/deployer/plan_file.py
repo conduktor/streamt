@@ -30,7 +30,7 @@ from streamt.deployer.state_backend import (
 )
 
 PLAN_FILE_KIND = "streamt.reviewed-plan"
-PLAN_FILE_VERSION = 4
+PLAN_FILE_VERSION = 5
 _MAX_PLAN_FILE_BYTES = 10 * 1024 * 1024
 _SENSITIVE_KEY = re.compile(
     r"(^|[._-])(?:password|passwd|secret|token|api[_-]?key|authorization|credentials?"
@@ -425,6 +425,13 @@ class ReviewedPlanFile:
             for identity, action in zip(action_identities, self.actions, strict=True)
         ):
             raise PlanFileError("Reviewed plan Gateway mutations require exact action evidence")
+        if any(
+            identity.kind == "connector"
+            and action.action == "delete"
+            and action.connector_evidence is None
+            for identity, action in zip(action_identities, self.actions, strict=True)
+        ):
+            raise PlanFileError("Reviewed plan Connector deletions require exact action evidence")
         if self.offline and self.actions:
             raise PlanFileError("Offline reviewed plans must not contain actions")
         if self.offline and self.state is not None:
@@ -552,7 +559,7 @@ class ReviewedPlanFile:
         if data.get("kind") != PLAN_FILE_KIND:
             raise PlanFileError(f"Unsupported plan file kind: {data.get('kind')!r}")
         format_version = data.get("format_version")
-        if type(format_version) is int and format_version in (1, 2, 3):
+        if type(format_version) is int and format_version in (1, 2, 3, 4):
             raise PlanFileError(
                 f"Reviewed plan format version {format_version} predates exact reviewed "
                 "action binding and cannot authorize apply; regenerate it with the current "

@@ -22,6 +22,7 @@ from streamt.deployer.connect import (
     ConnectorChange,
     ConnectorState,
     ManagedConnectorObservation,
+    managed_connector_absence_fingerprint,
 )
 from streamt.deployer.flink import FlinkJobChange, FlinkJobState
 from streamt.deployer.gateway import (
@@ -56,6 +57,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     ControlObservation,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
@@ -390,6 +393,7 @@ def _candidate_cases() -> Iterator[tuple[OperationAction, DeploymentPlan, str]]:
         ),
         CONNECT_BACKEND,
     )
+
 
 @pytest.mark.parametrize(("action", "plan", "backend"), list(_candidate_cases()))
 def test_observed_candidate_supported_kinds(
@@ -1450,20 +1454,6 @@ def test_unbound_connector_change_fails_closed() -> None:
             ),
             "cancel",
         ),
-        (
-            "connector",
-            ConnectorChange(
-                connector_name="gone_sink",
-                action="delete",
-                current=ManagedConnectorObservation(
-                    binding=CONNECT_BINDING,
-                    name="gone_sink",
-                    exists=False,
-                ),
-                backend_identity=CONNECT_BACKEND,
-            ),
-            "delete",
-        ),
     ],
 )
 def test_observed_absence_removes_deleted_ownership(
@@ -1475,20 +1465,17 @@ def test_observed_absence_removes_deleted_ownership(
         "schema": "gone",
         "topic": "gone",
         "flink_job": "gone",
-        "connector": "gone",
     }[kind]
     target = _action(kind, name, verb)
     backend = {
         "schema": "schema-registry",
         "topic": "direct-kafka",
         "flink_job": "flink",
-        "connector": CONNECT_BACKEND,
     }[kind]
     physical = {
         "schema": "gone-value",
         "topic": "gone.v1",
         "flink_job": "gone_job",
-        "connector": "gone_sink",
     }[kind]
     prior = ManagedResourceRecord(
         physical_name=physical,
@@ -1504,7 +1491,7 @@ def test_observed_absence_removes_deleted_ownership(
     elif kind == "flink_job":
         plan = DeploymentPlan(flink_changes=[cast(FlinkJobChange, change)])
     else:
-        plan = DeploymentPlan(connector_changes=[cast(ConnectorChange, change)])
+        raise AssertionError(f"unexpected generic recovery kind: {kind}")
 
     result = _observe(state, plan, (target,))
 
@@ -2075,6 +2062,41 @@ def test_preflight_accepts_gateway_adopt_with_exact_action_evidence() -> None:
     snapshot = _snapshot(_state(), (action,), kind="adopt")
 
     assert preflight_recovery_intent(snapshot) == (action,)
+
+
+def test_preflight_rejects_connector_recovery_before_live_planning() -> None:
+    connector_name = "archive-orders-sink"
+    action = OperationAction(
+        index=0,
+        resource_id=resource_id(
+            PROJECT,
+            ENVIRONMENT,
+            "connector",
+            "archive_orders",
+        ),
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=CONNECT_BINDING.backend_identity,
+            connector_name=connector_name,
+            prior_artifact_checksum="sha256:" + "6" * 64,
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint="sha256:" + "7" * 64,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=managed_connector_absence_fingerprint(
+                    CONNECT_BINDING.backend_identity,
+                    connector_name,
+                ),
+            ),
+        ),
+    )
+    snapshot = _snapshot(_state(), (action,), control_version=3)
+
+    with pytest.raises(RecoveryObservationError, match="not available in this build"):
+        preflight_recovery_intent(snapshot)
 
 
 @pytest.mark.parametrize("mismatch", ["serial", "checksum"])

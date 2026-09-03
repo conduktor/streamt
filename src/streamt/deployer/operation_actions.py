@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from streamt.deployer.state_backend import GatewayActionEvidence, OperationAction
+from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    GatewayActionEvidence,
+    OperationAction,
+)
 
 
 class PlannedOperationAction(Protocol):
@@ -20,6 +24,9 @@ class PlannedOperationAction(Protocol):
     @property
     def gateway_evidence(self) -> GatewayActionEvidence | None: ...
 
+    @property
+    def connector_evidence(self) -> ConnectorActionEvidence | None: ...
+
 
 def operation_actions_from_planned(
     planned_actions: Sequence[PlannedOperationAction],
@@ -31,6 +38,7 @@ def operation_actions_from_planned(
             resource_id=planned_action.resource_id,
             action=planned_action.action,
             gateway_evidence=planned_action.gateway_evidence,
+            connector_evidence=planned_action.connector_evidence,
         )
         for index, planned_action in enumerate(planned_actions)
     )

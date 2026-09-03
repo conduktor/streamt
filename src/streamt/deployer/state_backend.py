@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import tempfile
+import unicodedata
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
 
 LOCAL_STATE_NAMESPACE = "local"
 ABSENT_STATE_REVISION = "ABSENT"
-CURRENT_CONTROL_VERSION = 2
+CURRENT_CONTROL_VERSION = 3
 CURRENT_RECOVERY_HISTORY_VERSION = 1
 CURRENT_RECOVERY_HISTORY_EVENT_VERSION = 1
 MAX_LOCAL_RECOVERY_HISTORY_BYTES = 1024 * 1024
@@ -56,6 +57,14 @@ _ACTION_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 _TIMESTAMP_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
+_CREDENTIAL_URL = re.compile(r"://([^:@/\s]+):([^@/\s]+)@")
+_POSTGRES_URL = re.compile(r"\bpostgres(?:ql)?://", re.IGNORECASE)
+_INLINE_SECRET = re.compile(
+    r"(?:password|passwd|secret|token|api[_-]?key|authorization|bearer)"
+    r"\s*[=:]\s*\S+",
+    re.IGNORECASE,
+)
+_CONTROL_VERSIONS = (1, 2, CURRENT_CONTROL_VERSION)
 
 
 class StateBackendError(StateError):
@@ -417,6 +426,140 @@ class GatewayActionEvidence:
 
 
 @dataclass(frozen=True)
+class ConnectorActionSurfaceEvidence:
+    """One exact, secret-neutral Kafka Connect presence surface."""
+
+    exists: bool
+    fingerprint: str
+
+    def __post_init__(self) -> None:
+        if type(self.exists) is not bool:
+            raise StateFormatError("Connector action surface exists must be a boolean")
+        _require_checksum(
+            self.fingerprint,
+            "Connector action surface fingerprint",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "exists": self.exists,
+            "fingerprint": self.fingerprint,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> ConnectorActionSurfaceEvidence:
+        data = _strict_object(
+            value,
+            label="Connector action surface evidence",
+            expected={"exists", "fingerprint"},
+        )
+        return cls(
+            exists=cast(bool, data["exists"]),
+            fingerprint=cast(str, data["fingerprint"]),
+        )
+
+
+@dataclass(frozen=True)
+class ConnectorActionEvidence:
+    """Exact secret-neutral evidence for one managed Connector deletion."""
+
+    version: int
+    backend_identity: str
+    connector_name: str
+    prior_artifact_checksum: str
+    current: ConnectorActionSurfaceEvidence
+    desired: ConnectorActionSurfaceEvidence
+
+    def __post_init__(self) -> None:
+        from streamt.deployer.connect import (
+            ConnectClusterBindingError,
+            ConnectManagedObservationError,
+            is_connect_backend_identity,
+            managed_connector_absence_fingerprint,
+        )
+
+        if type(self.version) is not int or self.version != 1:
+            raise StateFormatError("Unsupported Connector action evidence version")
+        if not is_connect_backend_identity(self.backend_identity):
+            raise StateFormatError("Connector action evidence backend_identity must be canonical")
+        if (
+            type(self.connector_name) is not str
+            or not self.connector_name.strip()
+            or len(self.connector_name) > 256
+            or any(
+                unicodedata.category(character) in {"Cc", "Cs"} for character in self.connector_name
+            )
+            or _CREDENTIAL_URL.search(self.connector_name)
+            or _POSTGRES_URL.search(self.connector_name)
+            or _INLINE_SECRET.search(self.connector_name)
+        ):
+            raise StateFormatError("Connector action evidence connector_name is invalid")
+        _require_checksum(
+            self.prior_artifact_checksum,
+            "Connector action evidence prior_artifact_checksum",
+        )
+        if (
+            type(self.current) is not ConnectorActionSurfaceEvidence
+            or type(self.desired) is not ConnectorActionSurfaceEvidence
+        ):
+            raise StateFormatError(
+                "Connector action evidence requires exact current and desired surfaces"
+            )
+        try:
+            absence_fingerprint = managed_connector_absence_fingerprint(
+                self.backend_identity,
+                self.connector_name,
+            )
+        except (ConnectClusterBindingError, ConnectManagedObservationError):
+            raise StateFormatError(
+                "Connector action evidence contains an invalid canonical identity"
+            ) from None
+        if (
+            not self.current.exists
+            or self.current.fingerprint == absence_fingerprint
+            or self.desired.exists
+            or self.desired.fingerprint != absence_fingerprint
+            or self.current.fingerprint == self.desired.fingerprint
+        ):
+            raise StateFormatError(
+                "Connector action evidence must describe exact present-to-absent surfaces"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "backend_identity": self.backend_identity,
+            "connector_name": self.connector_name,
+            "prior_artifact_checksum": self.prior_artifact_checksum,
+            "current": self.current.to_dict(),
+            "desired": self.desired.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> ConnectorActionEvidence:
+        data = _strict_object(
+            value,
+            label="Connector action evidence",
+            expected={
+                "version",
+                "backend_identity",
+                "connector_name",
+                "prior_artifact_checksum",
+                "current",
+                "desired",
+            },
+        )
+        return cls(
+            version=cast(int, data["version"]),
+            backend_identity=cast(str, data["backend_identity"]),
+            connector_name=cast(str, data["connector_name"]),
+            prior_artifact_checksum=cast(str, data["prior_artifact_checksum"]),
+            current=ConnectorActionSurfaceEvidence.from_dict(data["current"]),
+            desired=ConnectorActionSurfaceEvidence.from_dict(data["desired"]),
+        )
+
+
+@dataclass(frozen=True)
 class OperationAction:
     """One ordered runtime or state action covered by an operation intent."""
 
@@ -424,6 +567,7 @@ class OperationAction:
     resource_id: str
     action: str
     gateway_evidence: GatewayActionEvidence | None = None
+    connector_evidence: ConnectorActionEvidence | None = None
     _wire_version: int = field(
         default=CURRENT_CONTROL_VERSION,
         init=False,
@@ -436,80 +580,110 @@ class OperationAction:
             raise StateFormatError("operation action index must be a non-negative integer")
         _require_safe_text(self.resource_id, "operation action resource_id")
         if not isinstance(self.action, str) or not _ACTION_PATTERN.fullmatch(self.action):
-            raise StateFormatError(
-                "operation action must be a lowercase action identifier"
-            )
+            raise StateFormatError("operation action must be a lowercase action identifier")
 
-        evidence = self.gateway_evidence
-        if evidence is None:
-            return
-        if type(evidence) is not GatewayActionEvidence:
+        gateway_evidence = self.gateway_evidence
+        connector_evidence = self.connector_evidence
+        if gateway_evidence is not None and connector_evidence is not None:
+            raise StateFormatError(
+                "operation action Gateway and Connector evidence are mutually exclusive"
+            )
+        if gateway_evidence is not None and type(gateway_evidence) is not GatewayActionEvidence:
             raise StateFormatError("operation action Gateway evidence is invalid")
+        if (
+            connector_evidence is not None
+            and type(connector_evidence) is not ConnectorActionEvidence
+        ):
+            raise StateFormatError("operation action Connector evidence is invalid")
+        if gateway_evidence is None and connector_evidence is None:
+            try:
+                identity = ResourceIdentity.parse(self.resource_id)
+            except StateFormatError:
+                return
+            if identity.kind == "connector" and self.action == "delete":
+                raise StateFormatError("Connector deletion requires exact action evidence")
+            return
         try:
             identity = ResourceIdentity.parse(self.resource_id)
         except StateFormatError as error:
             raise StateFormatError(
-                "Gateway operation action requires a canonical resource identity"
+                "evidenced operation action requires a canonical resource identity"
             ) from error
-        if identity.kind != "gateway_rule":
+        if gateway_evidence is not None and identity.kind != "gateway_rule":
             raise StateFormatError(
                 "Gateway action evidence is allowed only for gateway_rule resources"
             )
-        current = evidence.current
-        desired = evidence.desired
-        valid_transition = (
-            self.action == "adopt"
-            and current.exists
-            and desired.exists
-            and current.managed_interceptor_count == 0
-            and desired.managed_interceptor_count == 0
-        ) or (
-            current.fingerprint != desired.fingerprint
-            and (
-                (
-                    self.action == "create"
-                    and not current.exists
-                    and desired.exists
-                )
-                or (
-                    self.action == "update"
-                    and current.exists
-                    and desired.exists
-                )
-                or (
-                    self.action == "delete"
-                    and current.exists
-                    and not desired.exists
+        if gateway_evidence is not None:
+            current = gateway_evidence.current
+            desired = gateway_evidence.desired
+            valid_transition = (
+                self.action == "adopt"
+                and current.exists
+                and desired.exists
+                and current.managed_interceptor_count == 0
+                and desired.managed_interceptor_count == 0
+            ) or (
+                current.fingerprint != desired.fingerprint
+                and (
+                    (self.action == "create" and not current.exists and desired.exists)
+                    or (self.action == "update" and current.exists and desired.exists)
+                    or (self.action == "delete" and current.exists and not desired.exists)
                 )
             )
-        )
-        if not valid_transition:
+            if not valid_transition:
+                raise StateFormatError(
+                    "Gateway action evidence does not match the action transition"
+                )
+        if connector_evidence is not None and (
+            identity.kind != "connector" or self.action != "delete"
+        ):
             raise StateFormatError(
-                "Gateway action evidence does not match the action transition"
+                "Connector action evidence is allowed only for connector delete actions"
             )
+
+    def _is_connector_delete(self) -> bool:
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+        except StateFormatError:
+            return False
+        return identity.kind == "connector" and self.action == "delete"
 
     def to_dict(self, *, control_version: int | None = None) -> dict[str, object]:
         version = self._wire_version if control_version is None else control_version
-        if type(version) is not int or version not in (1, CURRENT_CONTROL_VERSION):
+        if type(version) is not int or version not in _CONTROL_VERSIONS:
             raise StateFormatError("operation action control version is unsupported")
         if version == 1:
-            if self.gateway_evidence is not None:
-                raise StateFormatError(
-                    "control version 1 cannot contain Gateway action evidence"
-                )
+            if self.gateway_evidence is not None or self.connector_evidence is not None:
+                raise StateFormatError("control version 1 cannot contain action evidence")
+            if self._is_connector_delete():
+                raise StateFormatError("control version 1 cannot authorize Connector deletion")
             return {
                 "index": self.index,
                 "resource_id": self.resource_id,
                 "action": self.action,
             }
+        if version == 2:
+            if self.connector_evidence is not None or self._is_connector_delete():
+                raise StateFormatError("control version 2 cannot authorize Connector deletion")
+            return {
+                "index": self.index,
+                "resource_id": self.resource_id,
+                "action": self.action,
+                "gateway_evidence": (
+                    self.gateway_evidence.to_dict() if self.gateway_evidence is not None else None
+                ),
+            }
+        if self._is_connector_delete() and self.connector_evidence is None:
+            raise StateFormatError("control version 3 Connector deletion requires action evidence")
         return {
             "index": self.index,
             "resource_id": self.resource_id,
             "action": self.action,
             "gateway_evidence": (
-                self.gateway_evidence.to_dict()
-                if self.gateway_evidence is not None
-                else None
+                self.gateway_evidence.to_dict() if self.gateway_evidence is not None else None
+            ),
+            "connector_evidence": (
+                self.connector_evidence.to_dict() if self.connector_evidence is not None else None
             ),
         }
 
@@ -524,28 +698,37 @@ class OperationAction:
             raise StateFormatError("operation action must be an object")
         version = control_version
         if version is None:
-            version = 2 if "gateway_evidence" in value else 1
-        if type(version) is not int or version not in (1, CURRENT_CONTROL_VERSION):
+            version = (
+                3 if "connector_evidence" in value else 2 if "gateway_evidence" in value else 1
+            )
+        if type(version) is not int or version not in _CONTROL_VERSIONS:
             raise StateFormatError("operation action control version is unsupported")
         expected = {"index", "resource_id", "action"}
-        if version == CURRENT_CONTROL_VERSION:
+        if version >= 2:
             expected.add("gateway_evidence")
+        if version >= 3:
+            expected.add("connector_evidence")
         data = _strict_object(
             value,
             label="operation action",
             expected=expected,
         )
         raw_evidence = data.get("gateway_evidence")
+        raw_connector_evidence = data.get("connector_evidence")
         action = cls(
             index=cast(int, data["index"]),
             resource_id=cast(str, data["resource_id"]),
             action=cast(str, data["action"]),
             gateway_evidence=(
+                None if raw_evidence is None else GatewayActionEvidence.from_dict(raw_evidence)
+            ),
+            connector_evidence=(
                 None
-                if raw_evidence is None
-                else GatewayActionEvidence.from_dict(raw_evidence)
+                if raw_connector_evidence is None
+                else ConnectorActionEvidence.from_dict(raw_connector_evidence)
             ),
         )
+        action.to_dict(control_version=version)
         object.__setattr__(action, "_wire_version", version)
         return action
 
@@ -617,10 +800,7 @@ class OperationIntent:
         *,
         control_version: int = CURRENT_CONTROL_VERSION,
     ) -> OperationIntent:
-        if type(control_version) is not int or control_version not in (
-            1,
-            CURRENT_CONTROL_VERSION,
-        ):
+        if type(control_version) is not int or control_version not in _CONTROL_VERSIONS:
             raise StateFormatError("operation intent control version is unsupported")
         data = _strict_object(
             value,
@@ -816,20 +996,17 @@ class OperationControlState:
 
     def __post_init__(self) -> None:
         # Provider implementations reconstruct controls around the immutable
-        # intent. Preserve a loaded v1 intent's version and canonical checksum.
+        # intent. Preserve a loaded legacy intent's version and canonical checksum.
         if (
             self.control_version == CURRENT_CONTROL_VERSION
             and self.intent is not None
-            and self.intent._wire_version == 1
+            and self.intent._wire_version in (1, 2)
         ):
-            object.__setattr__(self, "control_version", 1)
-        if type(self.control_version) is not int or self.control_version not in (
-            1,
-            CURRENT_CONTROL_VERSION,
-        ):
+            object.__setattr__(self, "control_version", self.intent._wire_version)
+        if type(self.control_version) is not int or self.control_version not in _CONTROL_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {self.control_version!r}; "
-                f"expected 1 or {CURRENT_CONTROL_VERSION}"
+                f"expected 1, 2, or {CURRENT_CONTROL_VERSION}"
             )
         if self.status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
@@ -840,12 +1017,17 @@ class OperationControlState:
         if self.intent is None:
             raise StateFormatError("active control state requires an operation intent")
         if self.control_version == 1 and any(
-            action.gateway_evidence is not None for action in self.intent.actions
+            action.gateway_evidence is not None or action.connector_evidence is not None
+            for action in self.intent.actions
         ):
-            raise StateFormatError(
-                "control version 1 cannot contain Gateway action evidence"
-            )
-        if self.control_version == CURRENT_CONTROL_VERSION:
+            raise StateFormatError("control version 1 cannot contain action evidence")
+        if self.control_version == 2 and any(
+            action.connector_evidence is not None for action in self.intent.actions
+        ):
+            raise StateFormatError("control version 2 cannot contain Connector action evidence")
+        for action in self.intent.actions:
+            action.to_dict(control_version=self.control_version)
+        if self.control_version in (2, CURRENT_CONTROL_VERSION):
             for action in self.intent.actions:
                 try:
                     identity = ResourceIdentity.parse(action.resource_id)
@@ -858,13 +1040,30 @@ class OperationControlState:
                     raise StateFormatError(
                         "Gateway action evidence belongs to another state address"
                     )
+                if action.connector_evidence is not None and (
+                    identity.project != self.address.project
+                    or identity.environment != self.address.environment
+                ):
+                    raise StateFormatError(
+                        "Connector action evidence belongs to another state address"
+                    )
                 if (
                     identity.kind == "gateway_rule"
                     and action.action in ("create", "update", "delete", "adopt")
                     and action.gateway_evidence is None
                 ):
                     raise StateFormatError(
-                        "control version 2 Gateway actions require action evidence"
+                        f"control version {self.control_version} Gateway actions require "
+                        "action evidence"
+                    )
+                if (
+                    self.control_version == CURRENT_CONTROL_VERSION
+                    and identity.kind == "connector"
+                    and action.action == "delete"
+                    and action.connector_evidence is None
+                ):
+                    raise StateFormatError(
+                        "control version 3 Connector deletion requires action evidence"
                     )
         if self.status == "in_progress" and self.recovery is not None:
             raise StateFormatError("in_progress control state cannot contain recovery data")
@@ -971,13 +1170,10 @@ class OperationControlState:
         if status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
         control_version = data["control_version"]
-        if type(control_version) is not int or control_version not in (
-            1,
-            CURRENT_CONTROL_VERSION,
-        ):
+        if type(control_version) is not int or control_version not in _CONTROL_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {control_version!r}; "
-                f"expected 1 or {CURRENT_CONTROL_VERSION}"
+                f"expected 1, 2, or {CURRENT_CONTROL_VERSION}"
             )
         return cls(
             control_version=control_version,

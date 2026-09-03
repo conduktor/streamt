@@ -249,7 +249,7 @@ class TestReviewedPlanSafetyBlockers:
         reviewed.save(path)
         loaded = ReviewedPlanFile.load(path)
 
-        assert PLAN_FILE_VERSION == 4
+        assert PLAN_FILE_VERSION == 5
         assert loaded == reviewed
         assert [blocker["code"] for blocker in loaded.plan["safety_blockers"]] == [
             "schema_incompatible",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing
 import os
@@ -14,9 +15,17 @@ from uuid import uuid4
 import pytest
 
 from streamt.core.deployment_state import local_deployment_state_config
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ManagedConnectorObservation,
+    managed_connector_absence_fingerprint,
+)
 from streamt.deployer.gateway import managed_gateway_absence_fingerprint
 from streamt.deployer.state import LocalState, StateFormatError, local_state_path
 from streamt.deployer.state_backend import (
+    CURRENT_CONTROL_VERSION,
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     GatewayActionEvidence,
     GatewayActionSurfaceEvidence,
     OperationAction,
@@ -43,6 +52,14 @@ ABSENCE_FINGERPRINT = managed_gateway_absence_fingerprint(
     "orders_rule",
     "orders.public",
 )
+CONNECTOR_BACKEND = "kafka-connect:v1:primary:sha256:" + "4" * 64
+CONNECTOR_NAME = "archive-orders-sink"
+CONNECTOR_CURRENT_FINGERPRINT = "sha256:" + "5" * 64
+CONNECTOR_ABSENCE_FINGERPRINT = managed_connector_absence_fingerprint(
+    CONNECTOR_BACKEND,
+    CONNECTOR_NAME,
+)
+CONNECTOR_PRIOR_CHECKSUM = "sha256:" + "6" * 64
 
 
 def _intent(state: LocalState) -> OperationIntent:
@@ -116,7 +133,33 @@ def _gateway_action(*, action: str = "update") -> OperationAction:
     )
 
 
-def test_gateway_action_evidence_has_one_strict_secret_neutral_v2_shape() -> None:
+def _connector_evidence() -> ConnectorActionEvidence:
+    return ConnectorActionEvidence(
+        version=1,
+        backend_identity=CONNECTOR_BACKEND,
+        connector_name=CONNECTOR_NAME,
+        prior_artifact_checksum=CONNECTOR_PRIOR_CHECKSUM,
+        current=ConnectorActionSurfaceEvidence(
+            exists=True,
+            fingerprint=CONNECTOR_CURRENT_FINGERPRINT,
+        ),
+        desired=ConnectorActionSurfaceEvidence(
+            exists=False,
+            fingerprint=CONNECTOR_ABSENCE_FINGERPRINT,
+        ),
+    )
+
+
+def _connector_action() -> OperationAction:
+    return OperationAction(
+        index=0,
+        resource_id="streamt://payments/dev/connector/archive_orders",
+        action="delete",
+        connector_evidence=_connector_evidence(),
+    )
+
+
+def test_gateway_action_evidence_has_one_strict_secret_neutral_v3_shape() -> None:
     action = _gateway_action()
 
     serialized = action.to_dict()
@@ -141,14 +184,245 @@ def test_gateway_action_evidence_has_one_strict_secret_neutral_v2_shape() -> Non
                 "managed_interceptor_count": 1,
             },
         },
+        "connector_evidence": None,
     }
-    assert OperationAction.from_dict(serialized, control_version=2) == action
+    assert OperationAction.from_dict(serialized, control_version=3) == action
     assert action.resource_id.endswith("/orders_owner")
     assert action.gateway_evidence is not None
     assert action.gateway_evidence.rule_name == "orders_rule"
     rendered = repr(action)
     assert "http" not in rendered
     assert "config" not in rendered
+
+
+def test_connector_absence_fingerprint_freezes_exact_canonical_preimage() -> None:
+    binding = ConnectClusterBinding.from_backend_identity(CONNECTOR_BACKEND)
+    preimage = json.dumps(
+        {
+            "binding": binding.backend_identity,
+            "config": (),
+            "exists": False,
+            "name": CONNECTOR_NAME,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    expected = "sha256:" + hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+    assert preimage == (
+        '{"binding":"kafka-connect:v1:primary:sha256:'
+        + "4" * 64
+        + '","config":[],"exists":false,"name":"archive-orders-sink"}'
+    )
+    assert expected == CONNECTOR_ABSENCE_FINGERPRINT
+
+
+def test_connector_present_fingerprint_freezes_exact_canonical_preimage() -> None:
+    observation = ManagedConnectorObservation(
+        binding=ConnectClusterBinding.from_backend_identity(CONNECTOR_BACKEND),
+        name=CONNECTOR_NAME,
+        exists=True,
+        config=(
+            ("connector.class", "com.example.ArchiveSink"),
+            ("name", CONNECTOR_NAME),
+            ("tasks.max", 2),
+            ("topics", "orders.v1"),
+        ),
+    )
+    preimage = json.dumps(
+        {
+            "binding": CONNECTOR_BACKEND,
+            "config": observation.config,
+            "exists": True,
+            "name": CONNECTOR_NAME,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert preimage == (
+        '{"binding":"kafka-connect:v1:primary:sha256:'
+        + "4" * 64
+        + '","config":[["connector.class","com.example.ArchiveSink"],'
+        '["name","archive-orders-sink"],["tasks.max",2],'
+        '["topics","orders.v1"]],"exists":true,'
+        '"name":"archive-orders-sink"}'
+    )
+    assert observation.fingerprint == (
+        "sha256:672988ba5add90cceda3e3615b4c86518ee4e7a293efe298e04db0e63466fb9c"
+    )
+
+
+def test_connector_action_evidence_has_one_strict_secret_neutral_v3_shape() -> None:
+    action = _connector_action()
+    serialized = action.to_dict()
+
+    assert serialized == {
+        "index": 0,
+        "resource_id": "streamt://payments/dev/connector/archive_orders",
+        "action": "delete",
+        "gateway_evidence": None,
+        "connector_evidence": {
+            "version": 1,
+            "backend_identity": CONNECTOR_BACKEND,
+            "connector_name": CONNECTOR_NAME,
+            "prior_artifact_checksum": CONNECTOR_PRIOR_CHECKSUM,
+            "current": {
+                "exists": True,
+                "fingerprint": CONNECTOR_CURRENT_FINGERPRINT,
+            },
+            "desired": {
+                "exists": False,
+                "fingerprint": CONNECTOR_ABSENCE_FINGERPRINT,
+            },
+        },
+    }
+    assert OperationAction.from_dict(serialized, control_version=3) == action
+    rendered = repr(action)
+    assert "config" not in rendered
+    assert "endpoint" not in rendered
+    assert "postgres" not in rendered
+
+
+def test_connector_action_evidence_rejects_malformed_or_secret_fields() -> None:
+    original = _connector_evidence().to_dict()
+
+    def add_raw_config(data: dict[str, Any]) -> None:
+        data["config"] = {"password": "connector-secret"}
+
+    def add_surface_config(data: dict[str, Any]) -> None:
+        data["current"]["config"] = {"token": "provider-secret"}
+
+    def remove_name(data: dict[str, Any]) -> None:
+        data.pop("connector_name")
+
+    def endpoint_backend(data: dict[str, Any]) -> None:
+        data["backend_identity"] = "https://alice:provider-secret@connect.example"
+
+    def dsn_name(data: dict[str, Any]) -> None:
+        data["connector_name"] = "postgresql://alice:dsn-secret@db/state"
+
+    def inline_secret_name(data: dict[str, Any]) -> None:
+        data["connector_name"] = "password=connector-secret"
+
+    def unsafe_name(data: dict[str, Any]) -> None:
+        data["connector_name"] = "connector\ud800"
+
+    def bad_checksum(data: dict[str, Any]) -> None:
+        data["prior_artifact_checksum"] = "SHA256:" + "A" * 64
+
+    def nonboolean_exists(data: dict[str, Any]) -> None:
+        data["current"]["exists"] = 1
+
+    def wrong_absence(data: dict[str, Any]) -> None:
+        data["desired"]["fingerprint"] = "sha256:" + "7" * 64
+
+    def absent_current(data: dict[str, Any]) -> None:
+        data["current"] = dict(data["desired"])
+
+    def present_desired(data: dict[str, Any]) -> None:
+        data["desired"] = {
+            "exists": True,
+            "fingerprint": "sha256:" + "7" * 64,
+        }
+
+    def unknown_version(data: dict[str, Any]) -> None:
+        data["version"] = 2
+
+    for mutate in (
+        add_raw_config,
+        add_surface_config,
+        remove_name,
+        endpoint_backend,
+        dsn_name,
+        inline_secret_name,
+        unsafe_name,
+        bad_checksum,
+        nonboolean_exists,
+        wrong_absence,
+        absent_current,
+        present_desired,
+        unknown_version,
+    ):
+        payload = deepcopy(original)
+        mutate(payload)
+        with pytest.raises(StateFormatError) as captured:
+            ConnectorActionEvidence.from_dict(payload)
+        message = str(captured.value)
+        assert "connector-secret" not in message
+        assert "provider-secret" not in message
+        assert "dsn-secret" not in message
+
+
+@pytest.mark.parametrize(
+    ("resource_id", "action"),
+    [
+        ("streamt://payments/dev/topic/orders", "delete"),
+        ("streamt://payments/dev/connector/archive_orders", "update"),
+        ("connector:archive_orders", "delete"),
+    ],
+)
+def test_connector_action_evidence_is_connector_delete_only(
+    resource_id: str,
+    action: str,
+) -> None:
+    with pytest.raises(StateFormatError, match=r"Connector|evidenced"):
+        OperationAction(
+            index=0,
+            resource_id=resource_id,
+            action=action,
+            connector_evidence=_connector_evidence(),
+        )
+
+
+def test_gateway_and_connector_action_evidence_are_mutually_exclusive() -> None:
+    with pytest.raises(StateFormatError, match="mutually exclusive"):
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/dev/connector/archive_orders",
+            action="delete",
+            gateway_evidence=_gateway_evidence(),
+            connector_evidence=_connector_evidence(),
+        )
+
+
+def test_connector_delete_requires_v3_evidence_and_legacy_wires_cannot_authorize() -> None:
+    resource_id = "streamt://payments/dev/connector/archive_orders"
+    with pytest.raises(StateFormatError, match="Connector deletion requires"):
+        OperationAction(
+            index=0,
+            resource_id=resource_id,
+            action="delete",
+        )
+    for version, payload in (
+        (
+            1,
+            {
+                "index": 0,
+                "resource_id": resource_id,
+                "action": "delete",
+            },
+        ),
+        (
+            2,
+            {
+                "index": 0,
+                "resource_id": resource_id,
+                "action": "delete",
+                "gateway_evidence": None,
+            },
+        ),
+    ):
+        with pytest.raises(StateFormatError, match="Connector"):
+            OperationAction.from_dict(payload, control_version=version)
+
+    for version in (1, 2):
+        with pytest.raises(StateFormatError, match=r"evidence|Connector"):
+            _connector_action().to_dict(control_version=version)
 
 
 def test_gateway_action_evidence_rejects_noncanonical_or_unsafe_fields() -> None:
@@ -260,7 +534,7 @@ def test_gateway_action_evidence_rejects_kind_action_and_transition_mismatch(
     action: str,
     evidence: GatewayActionEvidence,
 ) -> None:
-    with pytest.raises(StateFormatError, match="Gateway"):
+    with pytest.raises(StateFormatError, match=r"Gateway|evidenced"):
         OperationAction(
             index=0,
             resource_id=resource_id,
@@ -290,8 +564,9 @@ def test_gateway_adopt_allows_present_zero_interceptor_surfaces(
         gateway_evidence=evidence,
     )
 
-    assert OperationAction.from_dict(action.to_dict(), control_version=2) == action
-    assert action.to_dict()["gateway_evidence"] == evidence.to_dict()
+    serialized = action.to_dict(control_version=2)
+    assert OperationAction.from_dict(serialized, control_version=2) == action
+    assert serialized["gateway_evidence"] == evidence.to_dict()
 
 
 @pytest.mark.parametrize(
@@ -368,6 +643,89 @@ def test_v1_control_roundtrips_exactly_and_rejects_gateway_evidence() -> None:
         OperationControlState.from_dict(gateway_payload, expected_address=address)
 
 
+def test_v2_active_and_clear_controls_preserve_exact_legacy_bytes() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    active = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=_intent(state),
+        control_version=2,
+    )
+    active_payload = active.to_dict()
+    active_bytes = json.dumps(active_payload, separators=(",", ":"), sort_keys=True)
+    loaded_active = OperationControlState.from_dict(
+        active_payload,
+        expected_address=address,
+    )
+
+    assert loaded_active.control_version == 2
+    assert loaded_active.to_dict() == active_payload
+    assert (
+        json.dumps(loaded_active.to_dict(), separators=(",", ":"), sort_keys=True) == active_bytes
+    )
+    assert loaded_active.intent is not None
+    inherited = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=loaded_active.intent,
+    )
+    assert inherited.control_version == 2
+    assert inherited.to_dict() == active_payload
+
+    clear_payload = OperationControlState(address=address, control_version=2).to_dict()
+    loaded_clear = OperationControlState.from_dict(
+        clear_payload,
+        expected_address=address,
+    )
+    assert loaded_clear.control_version == 2
+    assert loaded_clear.to_dict() == clear_payload
+    assert OperationControlState.clear(address).control_version == CURRENT_CONTROL_VERSION
+
+
+def test_v3_control_requires_exact_action_members_and_connector_evidence() -> None:
+    address = StateAddress("local", "payments", "dev")
+    state = LocalState(project="payments", environment="dev")
+    ordinary = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=_intent(state),
+    )
+    ordinary_payload = ordinary.to_dict()
+    assert ordinary_payload["control_version"] == 3
+    assert ordinary_payload["intent"]["actions"][0] == {
+        "index": 0,
+        "resource_id": "topic:orders",
+        "action": "create",
+        "gateway_evidence": None,
+        "connector_evidence": None,
+    }
+
+    connector_intent = replace(_intent(state), actions=(_connector_action(),))
+    connector = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=connector_intent,
+    )
+    payload = connector.to_dict()
+    loaded = OperationControlState.from_dict(payload, expected_address=address)
+    assert loaded == connector
+    assert loaded.to_dict() == payload
+
+    with pytest.raises(StateFormatError, match="Connector deletion requires"):
+        OperationAction(
+            index=0,
+            resource_id="streamt://payments/dev/connector/archive_orders",
+            action="delete",
+        )
+    with pytest.raises(StateFormatError, match="another state address"):
+        OperationControlState(
+            address=StateAddress("local", "other", "dev"),
+            status="in_progress",
+            intent=connector_intent,
+        )
+
+
 def test_v2_control_requires_explicit_action_evidence_member() -> None:
     address = StateAddress("local", "payments", "dev")
     state = LocalState(project="payments", environment="dev")
@@ -375,6 +733,7 @@ def test_v2_control_requires_explicit_action_evidence_member() -> None:
         address=address,
         status="in_progress",
         intent=_intent(state),
+        control_version=2,
     )
     payload = control.to_dict()
 
@@ -404,6 +763,7 @@ def test_v2_control_requires_and_roundtrips_gateway_mutation_evidence() -> None:
             address=address,
             status="in_progress",
             intent=missing_evidence,
+            control_version=2,
         )
 
     intent = replace(base_intent, actions=(_gateway_action(),))
@@ -411,6 +771,7 @@ def test_v2_control_requires_and_roundtrips_gateway_mutation_evidence() -> None:
         address=address,
         status="in_progress",
         intent=intent,
+        control_version=2,
     )
     payload = control.to_dict()
 
@@ -425,6 +786,7 @@ def test_v2_control_requires_and_roundtrips_gateway_mutation_evidence() -> None:
             address=StateAddress("local", "other", "dev"),
             status="in_progress",
             intent=intent,
+            control_version=2,
         )
 
 
@@ -448,6 +810,7 @@ def test_v2_control_requires_and_roundtrips_gateway_adopt_evidence() -> None:
             address=address,
             status="in_progress",
             intent=missing_evidence,
+            control_version=2,
         )
 
     intent = replace(base_intent, actions=(_gateway_action(action="adopt"),))
@@ -455,6 +818,7 @@ def test_v2_control_requires_and_roundtrips_gateway_adopt_evidence() -> None:
         address=address,
         status="in_progress",
         intent=intent,
+        control_version=2,
     )
 
     assert OperationControlState.from_dict(
@@ -825,6 +1189,124 @@ def test_recovery_record_is_sanitized_and_blocks_successor(tmp_path: Path) -> No
         pytest.raises(StateBackendRecoveryRequiredError, match="explicit recovery"),
     ):
         successor.ensure_ready(successor.read_control())
+
+
+def test_local_backend_persists_connector_evidence_through_recovery_boundary(
+    tmp_path: Path,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+    with service.operation() as operation:
+        snapshot = operation.observe()
+        intent = replace(
+            _intent(snapshot.state.state),
+            actions=(_connector_action(),),
+        )
+        active = operation.begin_operation(snapshot, intent)
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id=intent.actions[0].resource_id,
+                action="delete",
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        recovery = operation.mark_recovery_required(
+            active,
+            RecoveryRecord(
+                operation_id=intent.operation_id,
+                failure_code="runtime_action_failed",
+                failed_at=operation_timestamp(),
+                last_completed_action_index=None,
+            ),
+        )
+
+    raw = local_control_path(tmp_path, environment="dev").read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    action_payload = payload["intent"]["actions"][0]
+    assert payload["control_version"] == 3
+    assert action_payload == _connector_action().to_dict(control_version=3)
+    assert (
+        OperationControlState.from_dict(
+            payload,
+            expected_address=service.address,
+        )
+        == recovery.control.control
+    )
+    for secret in (
+        "connector-secret",
+        "provider-secret",
+        "https://connect.internal/api",
+        "postgresql://owner:state-secret@db/state",
+    ):
+        assert secret not in raw
+
+
+def test_local_backend_preserves_loaded_active_v2_shape_through_recovery(
+    tmp_path: Path,
+) -> None:
+    service = make_deployment_state_service(
+        tmp_path,
+        project="payments",
+        environment="dev",
+        config=local_deployment_state_config(),
+    )
+    state = LocalState(project="payments", environment="dev")
+    control = OperationControlState(
+        address=service.address,
+        status="in_progress",
+        intent=_intent(state),
+        control_version=2,
+    )
+    original = control.to_dict()
+    path = local_control_path(tmp_path, environment="dev")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    with service.operation() as operation:
+        active = operation.read_control()
+        intent = active.control.intent
+        assert intent is not None
+        active = operation.record_progress(
+            active,
+            OperationProgress(
+                operation_id=intent.operation_id,
+                action_index=0,
+                resource_id=intent.actions[0].resource_id,
+                action=intent.actions[0].action,
+                status="started",
+                succeeded=None,
+                recorded_at=operation_timestamp(),
+            ),
+        )
+        operation.mark_recovery_required(
+            active,
+            RecoveryRecord(
+                operation_id=intent.operation_id,
+                failure_code="runtime_action_failed",
+                failed_at=operation_timestamp(),
+                last_completed_action_index=None,
+            ),
+        )
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["control_version"] == 2
+    assert persisted["intent"] == original["intent"]
+    assert set(persisted["intent"]["actions"][0]) == {
+        "index",
+        "resource_id",
+        "action",
+        "gateway_evidence",
+    }
+    assert persisted["intent"]["prior_state_checksum"] == original["intent"]["prior_state_checksum"]
 
 
 def test_control_parser_rejects_unknown_and_duplicate_fields(tmp_path: Path) -> None:

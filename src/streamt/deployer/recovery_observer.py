@@ -30,9 +30,11 @@ from streamt.deployer.gateway import (
 )
 from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
 from streamt.deployer.recovery import (
+    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
+    contains_connector_recovery_action,
 )
 from streamt.deployer.recovery_service import RecoveryLiveObservation
 from streamt.deployer.state import (
@@ -223,6 +225,8 @@ def preflight_recovery_intent(
         raise RecoveryObservationError(
             "Recovery intent prior state evidence does not match the recovery snapshot"
         )
+    if contains_connector_recovery_action(intent.actions):
+        raise RecoveryObservationError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
 
     action_ids: set[str] = set()
     for action in intent.actions:

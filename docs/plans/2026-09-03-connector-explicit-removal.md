@@ -3,12 +3,16 @@
 ## Status and objective
 
 Status: in progress. The reserved codes, strict declaration, compiled artifact,
-PostgreSQL-v2 authority gate, and provider-free identity/state preflight are
-implemented. Valid targets remain deliberately hard-stopped before providers,
-reviewed-plan output, or state writes until planning can produce an exact
-assessment or action for every tombstone. Observation, deletion planning,
-reviewed evidence, mutation, recovery, and release gates remain open; no
-deletion capability is claimed yet.
+PostgreSQL-v2 authority gate, provider-free identity/state preflight, and exact
+Connector action evidence are implemented. Reviewed plans now use v5 and
+operation control/recovery plans use v3 while retaining exact v1/v2 readers and
+active-control wire semantics. Valid removal targets remain deliberately
+hard-stopped before provider construction, reviewed-plan output, or state writes
+until planning can produce an exact assessment or action for every tombstone.
+Non-abandoned Connector recovery is likewise hard-stopped at model, preflight,
+and service boundaries until exact recovery observation exists. Live removal
+observation, deletion planning, mutation, state projection, recovery execution,
+and release gates remain open; no deletion capability is claimed yet.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as
@@ -591,10 +595,10 @@ resources.
 
 ## Completion checklist
 
-- [ ] Freeze new codes and negative workflow precedence.
-- [ ] Add strict secret-neutral YAML and compiled artifact shapes.
-- [ ] Add pure canonical binding/state/collision preflight.
-- [ ] Add Connector action evidence and version migrations.
+- [x] Freeze new codes and negative workflow precedence.
+- [x] Add strict secret-neutral YAML and compiled artifact shapes.
+- [x] Add pure canonical binding/state/collision preflight.
+- [x] Add Connector action evidence and version migrations.
 - [ ] Add exact checksum reconstruction and planning outcomes.
 - [ ] Add managed observed DELETE plus bounded absence postcondition.
 - [ ] Add PostgreSQL-v2-only CLI authorization and destructive warning.

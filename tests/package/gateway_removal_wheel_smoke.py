@@ -408,7 +408,7 @@ def _exercise_installed_workflow() -> None:
             assert planned_data["plan_file"] == str(plan_path.resolve())
 
             reviewed = ReviewedPlanFile.load(plan_path)
-            assert reviewed.to_dict()["format_version"] == PLAN_FILE_VERSION == 4
+            assert reviewed.to_dict()["format_version"] == PLAN_FILE_VERSION == 5
             assert reviewed.offline is False
             assert reviewed.state is not None
             assert reviewed.state.serial == _INITIAL_SERIAL
@@ -418,6 +418,7 @@ def _exercise_installed_workflow() -> None:
             assert action.resource_id == removed_resource_id
             assert action.action == "delete"
             assert action.gateway_evidence is not None
+            assert action.connector_evidence is None
             assert action.gateway_evidence.rule_name == _RULE
             assert action.gateway_evidence.alias_name == _ALIAS
             assert action.gateway_evidence.current.exists is True
