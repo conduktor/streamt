@@ -1,0 +1,126 @@
+[
+  {
+    "aspect": {
+      "json": {
+        "customProperties": {},
+        "description": "Commerce streaming catalog",
+        "env": "PROD",
+        "name": "Commerce"
+      }
+    },
+    "aspectName": "dataFlowInfo",
+    "changeType": "UPSERT",
+    "entityType": "dataFlow",
+    "entityUrn": "urn:li:dataFlow:(streamt,commerce,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "customProperties": {
+          "streamt.contract.status": "declared"
+        },
+        "description": "Public order projection",
+        "name": "public_orders",
+        "tags": []
+      }
+    },
+    "aspectName": "datasetProperties",
+    "changeType": "UPSERT",
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:conduktor-gateway,edge%2Cwest.orders%28public%29,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "instance": "urn:li:dataPlatformInstance:(urn:li:dataPlatform:conduktor-gateway,edge%2Cwest)",
+        "platform": "urn:li:dataPlatform:conduktor-gateway"
+      }
+    },
+    "aspectName": "dataPlatformInstance",
+    "changeType": "UPSERT",
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:conduktor-gateway,edge%2Cwest.orders%28public%29,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "customProperties": {},
+        "description": "Raw order events",
+        "name": "raw_orders",
+        "tags": []
+      }
+    },
+    "aspectName": "datasetProperties",
+    "changeType": "UPSERT",
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:kafka,Orders.Raw,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "customProperties": {
+          "streamt.contract.status": "enforced"
+        },
+        "description": "Enriched order events",
+        "name": "enriched_orders",
+        "tags": []
+      }
+    },
+    "aspectName": "datasetProperties",
+    "changeType": "UPSERT",
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:kafka,main.orders.enriched,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "instance": "urn:li:dataPlatformInstance:(urn:li:dataPlatform:kafka,main)",
+        "platform": "urn:li:dataPlatform:kafka"
+      }
+    },
+    "aspectName": "dataPlatformInstance",
+    "changeType": "UPSERT",
+    "entityType": "dataset",
+    "entityUrn": "urn:li:dataset:(urn:li:dataPlatform:kafka,main.orders.enriched,PROD)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "customProperties": {},
+        "description": "Enrich raw orders",
+        "env": "PROD",
+        "flowUrn": "urn:li:dataFlow:(streamt,commerce,PROD)",
+        "name": "enrich_orders",
+        "type": {
+          "string": "flink"
+        }
+      }
+    },
+    "aspectName": "dataJobInfo",
+    "changeType": "UPSERT",
+    "entityType": "dataJob",
+    "entityUrn": "urn:li:dataJob:(urn:li:dataFlow:(streamt,commerce,PROD),enrich_orders)"
+  },
+  {
+    "aspect": {
+      "json": {
+        "inputDatasetEdges": [
+          {
+            "destinationUrn": "urn:li:dataset:(urn:li:dataPlatform:kafka,Orders.Raw,PROD)"
+          }
+        ],
+        "inputDatasets": [],
+        "outputDatasetEdges": [
+          {
+            "destinationUrn": "urn:li:dataset:(urn:li:dataPlatform:kafka,main.orders.enriched,PROD)"
+          }
+        ],
+        "outputDatasets": []
+      }
+    },
+    "aspectName": "dataJobInputOutput",
+    "changeType": "UPSERT",
+    "entityType": "dataJob",
+    "entityUrn": "urn:li:dataJob:(urn:li:dataFlow:(streamt,commerce,PROD),enrich_orders)"
+  }
+]

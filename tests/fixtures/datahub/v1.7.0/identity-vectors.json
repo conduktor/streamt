@@ -1,0 +1,48 @@
+{
+  "data_flows": [
+    {
+      "fabric": "PROD",
+      "flow_id": "flow,(x)␟",
+      "orchestrator": "streamt",
+      "urn": "urn:li:dataFlow:(streamt,flow%2C%28x%29%E2%90%9F,PROD)"
+    }
+  ],
+  "data_jobs": [
+    {
+      "fabric": "PROD",
+      "flow_id": "flow,(x)␟",
+      "job_id": "job,(x)␟",
+      "orchestrator": "streamt",
+      "urn": "urn:li:dataJob:(urn:li:dataFlow:(streamt,flow%2C%28x%29%E2%90%9F,PROD),job%2C%28x%29%E2%90%9F)"
+    }
+  ],
+  "data_platform_instances": [
+    {
+      "instance": "edge,west(test)␟",
+      "platform": "conduktor,gateway",
+      "urn": "urn:li:dataPlatformInstance:(urn:li:dataPlatform:conduktor%2Cgateway,edge%2Cwest%28test%29%E2%90%9F)"
+    }
+  ],
+  "data_platforms": [
+    {
+      "platform": "conduktor,gateway",
+      "urn": "urn:li:dataPlatform:conduktor%2Cgateway"
+    }
+  ],
+  "datasets": [
+    {
+      "fabric": "PROD",
+      "instance": null,
+      "name": "Orders.Mixed",
+      "platform": "kafka",
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:kafka,Orders.Mixed,PROD)"
+    },
+    {
+      "fabric": "PROD",
+      "instance": "edge,west(test)␟",
+      "name": "topic,orders(test)␟/with space%2C",
+      "platform": "kafka",
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:kafka,edge%2Cwest%28test%29%E2%90%9F.topic%2Corders%28test%29%E2%90%9F/with space%2C,PROD)"
+    }
+  ]
+}
