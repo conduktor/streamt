@@ -843,7 +843,7 @@ jobs:
                   --env-file "${DATAHUB_ENV_FILE}" \
                   -f "${DATAHUB_COMPOSE_FILE}" \
                   -f "${DATAHUB_COMPOSE_OVERRIDE}" \
-                  -p "${project}" "$@"
+                  -p "${project}" --profile quickstart-backend "$@"
             }
 
             if ! compose_bounded 8m up -d --no-build --pull never \
@@ -925,7 +925,8 @@ jobs:
                   --env-file "${DATAHUB_ENV_FILE}" \
                   -f "${DATAHUB_COMPOSE_FILE}" \
                   -f "${DATAHUB_COMPOSE_OVERRIDE}" \
-                  -p "${project}" down --volumes --remove-orphans --timeout 30 \
+                  -p "${project}" --profile quickstart-backend \
+                  down --volumes --remove-orphans --timeout 30 \
                   >> "${DATAHUB_EVIDENCE_DIR}/final-cleanup.txt" 2>&1 \
                 || cleanup_status=1
             fi

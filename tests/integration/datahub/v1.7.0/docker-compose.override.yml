@@ -36,6 +36,9 @@ services:
     environment:
       EBEAN_DATASOURCE_PASSWORD: "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}"
       JAVA_OPTS: -Xms512m -Xmx1g
+    networks:
+      default: null
+      bootstrap: null
     volumes: !reset []
 
   kafka-broker:
@@ -75,6 +78,9 @@ networks:
   default:
     name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_network"
     internal: true
+  bootstrap:
+    name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_bootstrap"
+    internal: false
 
 volumes:
   broker:

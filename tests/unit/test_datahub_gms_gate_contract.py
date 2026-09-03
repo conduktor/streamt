@@ -583,8 +583,21 @@ def test_topology_overlay_uses_unique_internal_storage_and_disables_usage() -> N
         "default": {
             "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_network",
             "internal": "true",
-        }
+        },
+        "bootstrap": {
+            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_bootstrap",
+            "internal": "false",
+        },
     }
+    assert overlay["services"]["system-update-quickstart"]["networks"] == {
+        "default": "null",
+        "bootstrap": "null",
+    }
+    assert all(
+        "networks" not in config
+        for service, config in overlay["services"].items()
+        if service != "system-update-quickstart"
+    )
     assert overlay["volumes"] == {
         "broker": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"},
         "mysqldata": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_mysqldata"},
@@ -622,6 +635,7 @@ def test_ci_runs_both_real_gms_variants_with_bounded_cleanup() -> None:
     assert "run_variant with-kafka-instance" in source
     assert "run_variant without-kafka-instance" in source
     assert "down --volumes --remove-orphans" in source
+    assert source.count("--profile quickstart-backend") >= 2
     assert "label=com.docker.compose.project=${project}" in source
     assert "docker system prune" not in source
     assert "docker volume prune" not in source
