@@ -906,6 +906,7 @@ def test_gateway_adopt_uses_real_compiler_and_production_v2_writer(
             "resource_id": identity,
             "action": "adopt",
             "gateway_evidence": expected_evidence.to_dict(),
+            "connector_evidence": None,
         }
     ]
     assert service.read().state == expected
