@@ -18,6 +18,7 @@ _GATE_PATH = _ROOT / "tests" / "integration" / "datahub" / "gms_v170_gate.py"
 _TOPOLOGY_DIR = _ROOT / "tests" / "integration" / "datahub" / "v1.7.0"
 _COMPOSE_OVERRIDE_PATH = _TOPOLOGY_DIR / "docker-compose.override.yml"
 _IMAGE_LOCK_PATH = _TOPOLOGY_DIR / "images.lock.json"
+_CI_WORKFLOW_PATH = _ROOT / ".github" / "workflows" / "ci.yml"
 
 _EXPECTED_TOPOLOGY_IMAGES = {
     "datahub-gms-quickstart": (
@@ -36,8 +37,7 @@ _EXPECTED_TOPOLOGY_IMAGES = {
         "sha256:1c45591457f48e2b44ee4a5bbad288599651e5bbd6cd4410d8eac03003d57c01",
     ),
     "mysql": (
-        "mysql:8.2@"
-        "sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1",
+        "mysql:8.2@sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1",
         "sha256:5ba9d31938cfbfbcd6b29977181cfc246ce3f4b4923efc2af89c028d872fcc41",
     ),
     "opensearch": (
@@ -566,9 +566,7 @@ def test_topology_overlay_replaces_ports_and_host_mounts() -> None:
 
     assert services["kafka-broker"]["volumes"] == ["broker:/var/lib/kafka/data"]
     assert services["mysql"]["volumes"] == ["mysqldata:/var/lib/mysql"]
-    assert services["opensearch"]["volumes"] == [
-        "osdata:/usr/share/opensearch/data"
-    ]
+    assert services["opensearch"]["volumes"] == ["osdata:/usr/share/opensearch/data"]
     assert source.count("ports: !override") == 1
     assert source.count("ports: !reset []") == 3
     assert source.count("volumes: !override") == 3
@@ -588,15 +586,9 @@ def test_topology_overlay_uses_unique_internal_storage_and_disables_usage() -> N
         }
     }
     assert overlay["volumes"] == {
-        "broker": {
-            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"
-        },
-        "mysqldata": {
-            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_mysqldata"
-        },
-        "osdata": {
-            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_osdata"
-        },
+        "broker": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"},
+        "mysqldata": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_mysqldata"},
+        "osdata": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_osdata"},
     }
     assert gms["environment"]["DATAHUB_TELEMETRY_ENABLED"] == "false"
     assert gms["environment"]["USAGE_AGGREGATION_ENABLED"] == "false"
@@ -612,3 +604,31 @@ def test_topology_overlay_uses_unique_internal_storage_and_disables_usage() -> N
         for config in overlay["services"].values()
         for value in config.get("environment", {}).values()
     }
+
+
+def test_ci_runs_both_real_gms_variants_with_bounded_cleanup() -> None:
+    workflow = yaml.safe_load(_CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["datahub-gms-v170"]
+    source = _CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert job["needs"] == ["package", "datahub-release-oracle"]
+    assert job["permissions"] == {"contents": "read"}
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["timeout-minutes"] == 45
+    assert "acryl-datahub==1.7.0" in source
+    assert "ec476d12f6f278c50d657a617357a050510565ef00b570a69cbe9123a932a7b7" in source
+    for reference, _manifest_digest in _EXPECTED_TOPOLOGY_IMAGES.values():
+        assert reference in source
+    assert "run_variant with-kafka-instance" in source
+    assert "run_variant without-kafka-instance" in source
+    assert "down --volumes --remove-orphans" in source
+    assert "label=com.docker.compose.project=${project}" in source
+    assert "docker system prune" not in source
+    assert "docker volume prune" not in source
+    assert "${{ secrets." not in source
+
+    steps = {step["name"]: step for step in job["steps"]}
+    assert steps["Ensure exact DataHub projects are removed"]["if"] == "always()"
+    upload = steps["Upload bounded DataHub GMS evidence"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["retention-days"] == 14

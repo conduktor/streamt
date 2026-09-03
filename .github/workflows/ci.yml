@@ -639,6 +639,318 @@ jobs:
             tests/package/datahub_catalog_v170_oracle.py \
             --artifact "${STREAMT_DATAHUB_LANE_ARTIFACT_DIR}/without-kafka-instance.json"
 
+  datahub-gms-v170:
+    name: DataHub v1.7.0 real GMS acceptance
+    needs: [package, datahub-release-oracle]
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DATAHUB_COMPOSE_FILE: /tmp/streamt-datahub-gms-${{ github.run_id }}-${{ github.run_attempt }}/upstream-compose.yml
+      DATAHUB_COMPOSE_OVERRIDE: ${{ github.workspace }}/tests/integration/datahub/v1.7.0/docker-compose.override.yml
+      DATAHUB_ENV_FILE: /tmp/streamt-datahub-gms-${{ github.run_id }}-${{ github.run_attempt }}/compose.env
+      DATAHUB_EVIDENCE_DIR: /tmp/streamt-datahub-gms-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+      DATAHUB_STREAMT_VENV: /tmp/streamt-datahub-gms-${{ github.run_id }}-${{ github.run_attempt }}/streamt-venv
+      DATAHUB_CLI_VENV: /tmp/streamt-datahub-gms-${{ github.run_id }}-${{ github.run_attempt }}/datahub-venv
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup minimum supported Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Download exact built streamt wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: datahub-streamt-wheel
+          path: ${{ runner.temp }}/datahub-gms-v170/wheel
+
+      - name: Prepare isolated installed-package environments
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${DATAHUB_EVIDENCE_DIR}"
+          mapfile -t wheels < <(find "${RUNNER_TEMP}/datahub-gms-v170/wheel" \
+            -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ ${#wheels[@]} -ne 1 ]]; then
+            echo "Expected exactly one downloaded streamt wheel" >&2
+            exit 1
+          fi
+          if [[ $(find "${RUNNER_TEMP}/datahub-gms-v170/wheel" \
+            -maxdepth 1 -type f | wc -l) -ne 1 ]]; then
+            echo "Downloaded wheel artifact contains unexpected files" >&2
+            exit 1
+          fi
+          wheel="$(realpath "${wheels[0]}")"
+          test -s "${wheel}"
+          sha256sum "${wheel}" > "${DATAHUB_EVIDENCE_DIR}/streamt-wheel.sha256"
+
+          python -m venv "${DATAHUB_STREAMT_VENV}"
+          "${DATAHUB_STREAMT_VENV}/bin/python" -m pip install --upgrade pip
+          "${DATAHUB_STREAMT_VENV}/bin/python" -m pip install \
+            --progress-bar off "${wheel}"
+          "${DATAHUB_STREAMT_VENV}/bin/python" -m pip check
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            "${DATAHUB_STREAMT_VENV}/bin/python" -I - <<'PY'
+          import importlib.util
+          import os
+          import sys
+          from pathlib import Path
+
+          import streamt
+
+          checkout = Path(os.environ["STREAMT_CHECKOUT"]).resolve()
+          installed_module = Path(streamt.__file__).resolve()
+          import_roots = {Path(entry).resolve() for entry in sys.path if entry}
+          assert checkout not in installed_module.parents, installed_module
+          assert checkout / "src" not in import_roots, import_roots
+          assert importlib.util.find_spec("datahub") is None
+          PY
+
+          python -m venv "${DATAHUB_CLI_VENV}"
+          "${DATAHUB_CLI_VENV}/bin/python" -m pip install --upgrade pip
+          "${DATAHUB_CLI_VENV}/bin/python" -m pip install \
+            --progress-bar off 'acryl-datahub==1.7.0'
+          "${DATAHUB_CLI_VENV}/bin/python" -m pip check
+          env -u PYTHONPATH "${DATAHUB_CLI_VENV}/bin/python" -I - <<'PY'
+          import importlib.metadata
+          import importlib.util
+
+          assert importlib.metadata.version("acryl-datahub") == "1.7.0"
+          assert importlib.util.find_spec("streamt") is None
+          PY
+
+      - name: Preflight and lock the official DataHub Compose file
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(uname -m)" = "x86_64"
+          docker version >/dev/null
+          compose_version="$(docker compose version --short | sed 's/^v//')"
+          if [[ "$(printf '2.24.4\n%s\n' "${compose_version}" | sort -V | head -n 1)" != "2.24.4" ]]; then
+            echo "Docker Compose 2.24.4 or newer is required" >&2
+            exit 1
+          fi
+          available_memory_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+          available_disk_kib="$(df -Pk "${RUNNER_TEMP}" | awk 'NR == 2 {print $4}')"
+          if (( available_memory_kib < 8 * 1024 * 1024 )); then
+            echo "DataHub gate requires at least 8 GiB available memory" >&2
+            exit 1
+          fi
+          if (( available_disk_kib < 13 * 1024 * 1024 )); then
+            echo "DataHub gate requires at least 13 GiB available disk" >&2
+            exit 1
+          fi
+          {
+            uname -m
+            docker version --format '{{.Server.Version}}'
+            docker compose version
+            awk '/^MemAvailable:/ {print}' /proc/meminfo
+            df -Pk "${RUNNER_TEMP}"
+          } > "${DATAHUB_EVIDENCE_DIR}/preflight.txt"
+
+          mkdir -p "$(dirname "${DATAHUB_COMPOSE_FILE}")"
+          curl --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+            --output "${DATAHUB_COMPOSE_FILE}" \
+            https://raw.githubusercontent.com/datahub-project/datahub/7f81ccbfe27b9acc947f5f600fcf9ddb72138a80/docker/quickstart/docker-compose.quickstart-profile.yml
+          printf '%s  %s\n' \
+            ec476d12f6f278c50d657a617357a050510565ef00b570a69cbe9123a932a7b7 \
+            "${DATAHUB_COMPOSE_FILE}" | sha256sum --check --strict
+          test -s "${DATAHUB_COMPOSE_OVERRIDE}"
+
+          signing_key="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          signing_salt="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          mysql_password="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          echo "::add-mask::${signing_key}"
+          echo "::add-mask::${signing_salt}"
+          echo "::add-mask::${mysql_password}"
+          umask 077
+          {
+            printf 'DATAHUB_VERSION=v1.7.0\n'
+            printf 'UI_INGESTION_DEFAULT_CLI_VERSION=1.7.0\n'
+            printf 'DATAHUB_TELEMETRY_ENABLED=false\n'
+            printf 'DATAHUB_TOKEN_SERVICE_SIGNING_KEY=%s\n' "${signing_key}"
+            printf 'DATAHUB_TOKEN_SERVICE_SALT=%s\n' "${signing_salt}"
+            printf 'DATAHUB_MYSQL_PASSWORD=%s\n' "${mysql_password}"
+          } > "${DATAHUB_ENV_FILE}"
+
+          COMPOSE_PROJECT_NAME="dh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-check" \
+          DATAHUB_MAPPED_GMS_PORT=18080 \
+            docker compose --env-file "${DATAHUB_ENV_FILE}" \
+              -f "${DATAHUB_COMPOSE_FILE}" \
+              -f "${DATAHUB_COMPOSE_OVERRIDE}" config --quiet
+          printf '%s\n' \
+            'commit=7f81ccbfe27b9acc947f5f600fcf9ddb72138a80' \
+            'compose_sha256=ec476d12f6f278c50d657a617357a050510565ef00b570a69cbe9123a932a7b7' \
+            > "${DATAHUB_EVIDENCE_DIR}/upstream-lock.txt"
+
+      - name: Pull exact DataHub v1.7.0 dependency closure
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          images=(
+            'acryldata/datahub-gms:v1.7.0@sha256:54bc4431402846a72d1c1bdb69fae1148f74a59425144aa947fdf1c3506461f7'
+            'acryldata/datahub-upgrade:v1.7.0@sha256:21e77ad964be64b2b5a7f74c9685897ed79e8854995242eaa5e5c426395b88c0'
+            'confluentinc/cp-kafka:8.2.2@sha256:8e01c0305844d6c05bfb8e86479f5f363bb6a53497625395943a9da780de67ce'
+            'mysql:8.2@sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1'
+            'opensearchproject/opensearch:2.19.3@sha256:e96cc6ae1500a073d973c0906f30f7cf4d9c461f32f855f9242a2da933660cdd'
+          )
+          printf '%s\n' "${images[@]}" > "${DATAHUB_EVIDENCE_DIR}/locked-images.txt"
+          for image in "${images[@]}"; do
+            docker pull --platform linux/amd64 "${image}"
+            docker image inspect --format '{{.Id}}' "${image}" \
+              >> "${DATAHUB_EVIDENCE_DIR}/pulled-image-ids.txt"
+          done
+
+      - name: Run both fresh real-GMS variants
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          overall_status=0
+          run_variant() {
+            local variant="$1"
+            local suffix="$2"
+            local port="$3"
+            local project="dh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            local evidence="${DATAHUB_EVIDENCE_DIR}/${variant}"
+            local status=0
+            local cleanup_status=0
+            mkdir -p "${evidence}"
+            printf '{"status":"not_run","variant":"%s"}\n' "${variant}" \
+              > "${evidence}/gate-summary.json"
+
+            compose_bounded() {
+              local duration="$1"
+              shift
+              timeout --foreground --signal=TERM --kill-after=20s "${duration}" \
+                env COMPOSE_PROJECT_NAME="${project}" DATAHUB_MAPPED_GMS_PORT="${port}" \
+                docker compose --ansi never --progress plain \
+                  --env-file "${DATAHUB_ENV_FILE}" \
+                  -f "${DATAHUB_COMPOSE_FILE}" \
+                  -f "${DATAHUB_COMPOSE_OVERRIDE}" \
+                  -p "${project}" "$@"
+            }
+
+            if ! compose_bounded 8m up -d --no-build --pull never \
+              datahub-gms-quickstart; then
+              status=1
+            fi
+            if (( status == 0 )); then
+              local deadline=$((SECONDS + 180))
+              until curl --fail --silent --show-error --max-time 5 \
+                "http://127.0.0.1:${port}/health" >/dev/null; do
+                if (( SECONDS >= deadline )); then
+                  status=1
+                  break
+                fi
+                sleep 2
+              done
+            fi
+            if (( status == 0 )); then
+              env -u PYTHONPATH \
+                python -I tests/integration/datahub/gms_v170_gate.py \
+                  --gms-url "http://127.0.0.1:${port}" \
+                  --streamt-executable "${DATAHUB_STREAMT_VENV}/bin/streamt" \
+                  --datahub-executable "${DATAHUB_CLI_VENV}/bin/datahub" \
+                  --variant "${variant}" \
+                  > "${evidence}/gate-summary.json" 2>&1 || status=1
+            fi
+            if [[ ! -s "${evidence}/gate-summary.json" ]]; then
+              printf '{"status":"error","variant":"%s"}\n' "${variant}" \
+                > "${evidence}/gate-summary.json"
+            fi
+
+            compose_bounded 20s ps --all --format json \
+              > "${evidence}/compose-status.json" 2>&1 || true
+            compose_bounded 30s logs --no-color --timestamps --tail 300 \
+              kafka-broker mysql opensearch system-update-quickstart \
+              datahub-gms-quickstart 2>&1 | tail -c 1048576 \
+              > "${evidence}/compose.log" || true
+
+            if ! compose_bounded 2m down --volumes --remove-orphans --timeout 30 \
+              > "${evidence}/cleanup.txt" 2>&1; then
+              cleanup_status=1
+            fi
+            {
+              docker ps -aq --filter "label=com.docker.compose.project=${project}"
+              docker network ls -q --filter "label=com.docker.compose.project=${project}"
+              docker volume ls -q --filter "label=com.docker.compose.project=${project}"
+            } > "${evidence}/residue.txt" 2>&1 || cleanup_status=1
+            if [[ -s "${evidence}/residue.txt" ]]; then
+              cleanup_status=1
+            fi
+            if (( status != 0 || cleanup_status != 0 )); then
+              overall_status=1
+            fi
+          }
+
+          run_variant with-kafka-instance wi 18080
+          run_variant without-kafka-instance wo 18081
+          exit "${overall_status}"
+
+      - name: Ensure exact DataHub projects are removed
+        if: always()
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          mkdir -p "${DATAHUB_EVIDENCE_DIR}"
+          cleanup_status=0
+          for entry in wi:18080 wo:18081; do
+            suffix="${entry%%:*}"
+            port="${entry##*:}"
+            project="dh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            if [[ -s "${DATAHUB_COMPOSE_FILE}" \
+              && -s "${DATAHUB_COMPOSE_OVERRIDE}" \
+              && -s "${DATAHUB_ENV_FILE}" ]]; then
+              timeout --foreground --signal=TERM --kill-after=20s 2m \
+                env COMPOSE_PROJECT_NAME="${project}" DATAHUB_MAPPED_GMS_PORT="${port}" \
+                docker compose --ansi never --progress plain \
+                  --env-file "${DATAHUB_ENV_FILE}" \
+                  -f "${DATAHUB_COMPOSE_FILE}" \
+                  -f "${DATAHUB_COMPOSE_OVERRIDE}" \
+                  -p "${project}" down --volumes --remove-orphans --timeout 30 \
+                  >> "${DATAHUB_EVIDENCE_DIR}/final-cleanup.txt" 2>&1 \
+                || cleanup_status=1
+            fi
+            residue="$({
+              docker ps -aq --filter "label=com.docker.compose.project=${project}"
+              docker network ls -q --filter "label=com.docker.compose.project=${project}"
+              docker volume ls -q --filter "label=com.docker.compose.project=${project}"
+            } 2>/dev/null)" || cleanup_status=1
+            if [[ -n "${residue}" ]]; then
+              printf '%s\n' "${project}: ${residue}" \
+                >> "${DATAHUB_EVIDENCE_DIR}/final-residue.txt"
+              cleanup_status=1
+            fi
+          done
+          exit "${cleanup_status}"
+
+      - name: Upload bounded DataHub GMS evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: datahub-gms-v170-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DATAHUB_EVIDENCE_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
+
   docs:
     runs-on: ubuntu-latest
 
