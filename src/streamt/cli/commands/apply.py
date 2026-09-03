@@ -14,6 +14,9 @@ from typing import Literal, Optional, cast
 import click
 
 from streamt.cli.connector_removal_guard import (
+    CONNECTOR_REMOVAL_DRIFT_MESSAGE,
+    connector_removal_delete_count,
+    emit_connector_removal_destructive_warning,
     enforce_connector_removal_apply_authorization,
 )
 from streamt.cli.helpers import (
@@ -31,7 +34,6 @@ from streamt.cli.helpers import (
     state_operation_error_details,
 )
 from streamt.compiler.connector_artifact import (
-    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
     ConnectorRemovalClusterReferenceError,
     ConnectorRemovalPreflightError,
     ConnectorRemovalRuntimeRequiredError,
@@ -49,6 +51,7 @@ from streamt.deployer.operation_actions import operation_actions_from_planned
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
+    ManagedConnectorResourceDeletion,
     ManagedGatewayResourceDeletion,
     StateError,
     StateFormatError,
@@ -709,7 +712,6 @@ def apply(
                 prior_state=prior_state,
                 require_authoritative_state=True,
             )
-            raise ConnectorRemovalPreflightError(CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE)
 
         if project.deployment_state.backend == "local":
             fmt.print_warning(
@@ -844,15 +846,22 @@ def apply(
             )
             deployment_plan = planner.plan()
             ordered_actions = (
-                [] if deployment_plan.is_apply_blocked else planner.planned_actions(deployment_plan)
+                ()
+                if deployment_plan.is_apply_blocked
+                else tuple(planner.planned_actions(deployment_plan))
             )
             operation_actions = (
                 ()
                 if deployment_plan.is_apply_blocked
                 else operation_actions_from_planned(ordered_actions)
             )
+            connector_delete_count = connector_removal_delete_count(operation_actions)
             gateway_removal_assessments = [
                 assessment.to_dict() for assessment in deployment_plan.gateway_removal_assessments
+            ]
+            connector_removal_assessments = [
+                assessment.to_dict()
+                for assessment in deployment_plan.connector_removal_assessments
             ]
             if reviewed_plan is not None:
                 reviewed_snapshot = state_operation.observe()
@@ -896,6 +905,7 @@ def apply(
                         "blocking_ownership_requirements": blocking_requirements,
                         "safety_blockers": safety_blockers,
                         "gateway_removal_assessments": gateway_removal_assessments,
+                        "connector_removal_assessments": connector_removal_assessments,
                         "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
@@ -906,7 +916,7 @@ def apply(
                 sys.exit(1)
 
             # Destructive safety — only block if plan actually has deletes
-            if deployment_plan.deletes > 0:
+            if deployment_plan.deletes > 0 or connector_delete_count > 0:
                 env_name = parser.env_config.environment.name if parser.env_config else "default"
                 if not destructive_operations_allowed(parser.env_config, force):
                     fmt.add_error(
@@ -939,6 +949,7 @@ def apply(
                         "deletes": deployment_plan.deletes,
                         "has_changes": deployment_plan.has_changes,
                         "gateway_removal_assessments": gateway_removal_assessments,
+                        "connector_removal_assessments": connector_removal_assessments,
                         "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
                     }
                 )
@@ -969,6 +980,25 @@ def apply(
                     "planning; reload state and produce a fresh plan"
                 )
 
+            managed_gateway_deletions = tuple(
+                ManagedGatewayResourceDeletion(
+                    resource_id=action.resource_id,
+                    backend_identity=action.gateway_evidence.backend_identity,
+                    alias_name=action.gateway_evidence.alias_name,
+                )
+                for action in operation_actions
+                if action.action == "delete" and action.gateway_evidence is not None
+            )
+            # Validate every ordinary and Gateway ownership projection before a
+            # durable intent or provider mutation. Connector deletion claims do
+            # not exist until their runtime action has durably completed.
+            prevalidated_next_state = updated_local_state(
+                prior_state,
+                deployment_plan,
+                managed_gateway_deletions=managed_gateway_deletions,
+            )
+            emit_connector_removal_destructive_warning(fmt, operation_actions)
+
             operation_id = str(uuid.uuid4())
             intent = OperationIntent(
                 operation_id=operation_id,
@@ -981,20 +1011,6 @@ def apply(
                     reviewed_plan.checksum if reviewed_plan is not None else None
                 ),
                 actions=operation_actions,
-            )
-            managed_gateway_deletions = tuple(
-                ManagedGatewayResourceDeletion(
-                    resource_id=action.resource_id,
-                    backend_identity=action.gateway_evidence.backend_identity,
-                    alias_name=action.gateway_evidence.alias_name,
-                )
-                for action in intent.actions
-                if action.action == "delete" and action.gateway_evidence is not None
-            )
-            next_state = updated_local_state(
-                prior_state,
-                deployment_plan,
-                managed_gateway_deletions=managed_gateway_deletions,
             )
             if emit_openlineage:
                 try:
@@ -1059,6 +1075,7 @@ def apply(
                     lineage.close()
                 raise
             mutation_started = False
+            connector_removal_failed = False
             state_commit_attempted = False
             operation_finalized = False
 
@@ -1093,6 +1110,7 @@ def apply(
                 mutation_started = True
 
             def after_action(label: str, index: int, succeeded: bool) -> None:
+                nonlocal connector_removal_failed
                 state_operation.check_lock()
                 action = intent.actions[index]
                 planned_action = ordered_actions[index]
@@ -1118,6 +1136,12 @@ def apply(
                         recorded_at=operation_timestamp(),
                     ),
                 )
+                if (
+                    succeeded is False
+                    and action.action == "delete"
+                    and action.connector_evidence is not None
+                ):
+                    connector_removal_failed = True
 
             def mark_recovery(failure_code: str) -> None:
                 nonlocal operation_finalized
@@ -1152,6 +1176,7 @@ def apply(
                     stop_on_error=True,
                 )
                 results["gateway_removal_assessments"] = gateway_removal_assessments
+                results["connector_removal_assessments"] = connector_removal_assessments
                 if reviewed_plan and reviewed_plan_path:
                     results["plan_checksum"] = reviewed_plan.checksum
                     results["plan_file"] = str(reviewed_plan_path.resolve())
@@ -1163,9 +1188,25 @@ def apply(
                     list[str],
                     results.get("rollback_candidates", []),
                 )
+                started_action_indexes = {
+                    progress.action_index
+                    for progress in active_snapshot[0].control.control.progress
+                    if progress.status == "started"
+                }
+                successfully_completed_indexes = {
+                    progress.action_index
+                    for progress in active_snapshot[0].control.control.progress
+                    if progress.status == "completed" and progress.succeeded is True
+                }
+                connector_removal_failed = connector_removal_failed or any(
+                    action.connector_evidence is not None
+                    and action.index in started_action_indexes
+                    and action.index not in successfully_completed_indexes
+                    for action in intent.actions
+                )
 
                 rollback_failed = False
-                if errors and rollback_candidates:
+                if errors and rollback_candidates and not connector_removal_failed:
                     fmt.print("\n[yellow]Rolling back newly created resources...[/yellow]")
                     rolled_back, rb_errors = planner.rollback(
                         rollback_candidates,
@@ -1190,22 +1231,78 @@ def apply(
                 if errors:
                     if mutation_started:
                         mark_recovery(
-                            "rollback_incomplete" if rollback_failed else "runtime_action_failed"
+                            "connector_removal_drift"
+                            if connector_removal_failed
+                            else (
+                                "rollback_incomplete"
+                                if rollback_failed
+                                else "runtime_action_failed"
+                            )
                         )
                     else:
                         clear_before_mutation()
+                    if connector_removal_failed:
+                        results["errors"] = [CONNECTOR_REMOVAL_DRIFT_MESSAGE]
                     fmt.set_data(results)
                     fmt.set_status("error")
                     fmt.print("\n[red]Errors:[/red]")
-                    for item in errors:
-                        fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item))
-                        fmt.print_error(item)
+                    if connector_removal_failed:
+                        fmt.add_error(
+                            StructuredError(
+                                code=ErrorCode.CONNECTOR_REMOVAL_DRIFT,
+                                message=CONNECTOR_REMOVAL_DRIFT_MESSAGE,
+                                operation_id=operation_id,
+                            )
+                        )
+                        fmt.print_error(CONNECTOR_REMOVAL_DRIFT_MESSAGE)
+                    else:
+                        for item in errors:
+                            fmt.add_error(
+                                StructuredError(code=ErrorCode.DEPLOY_ERROR, message=item)
+                            )
+                            fmt.print_error(item)
                     if lineage is not None:
                         lineage.terminal("FAIL")
                         lineage.close()
                     fmt.flush()
                     sys.exit(1)
 
+                completed_action_indexes = successfully_completed_indexes
+                connector_actions = tuple(
+                    action
+                    for action in intent.actions
+                    if action.action == "delete" and action.connector_evidence is not None
+                )
+                if any(action.index not in completed_action_indexes for action in connector_actions):
+                    raise StateFormatError(
+                        "Connector ownership deletion requires durable completed progress"
+                    )
+                connector_deletions: list[ManagedConnectorResourceDeletion] = []
+                for action in connector_actions:
+                    evidence = action.connector_evidence
+                    if evidence is None:  # pragma: no cover - filtered above
+                        raise StateFormatError(
+                            "Connector ownership deletion requires exact action evidence"
+                        )
+                    connector_deletions.append(
+                        ManagedConnectorResourceDeletion(
+                            resource_id=action.resource_id,
+                            backend_identity=evidence.backend_identity,
+                            connector_name=evidence.connector_name,
+                            prior_artifact_checksum=evidence.prior_artifact_checksum,
+                        )
+                    )
+                managed_connector_deletions = tuple(connector_deletions)
+                next_state = (
+                    updated_local_state(
+                        prior_state,
+                        deployment_plan,
+                        managed_gateway_deletions=managed_gateway_deletions,
+                        managed_connector_deletions=managed_connector_deletions,
+                    )
+                    if managed_connector_deletions
+                    else prevalidated_next_state
+                )
                 state_operation.check_lock()
                 # Any finalizer attempt can have an ambiguous outcome, even
                 # when it only clears a zero-action/no-state-change intent.

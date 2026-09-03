@@ -15,11 +15,6 @@ _REQUIRED_FIELDS = frozenset({"name", "connector_class", "topics", "cluster", "c
 _OPTIONAL_FIELDS = frozenset({"ownership"})
 _RESERVED_CONFIG_FIELDS = frozenset({"name", "connector.class", "topics"})
 _REMOVAL_FIELDS = frozenset({"logicalOwner", "name", "cluster"})
-# Slice 2 fail-closed boundary: remove only after Slice 4 makes every resolved
-# target yield an exact removal assessment and action.
-CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE = (
-    "Connector removal planning is not available in this build"
-)
 
 
 class ConnectorRemovalArtifactFormatError(ValueError):
@@ -187,7 +182,6 @@ def parse_compiled_connector_removal_artifact(
 
 
 __all__ = [
-    "CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE",
     "ConnectorArtifactFormatError",
     "ConnectorRemovalArtifactFormatError",
     "ConnectorRemovalClusterReferenceError",

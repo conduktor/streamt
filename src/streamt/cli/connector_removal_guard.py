@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from streamt.core.errors import ErrorCode
+from streamt.deployer.state_backend import OperationAction
 from streamt.output import OutputFormatter, StructuredError
 
 CONNECTOR_REMOVAL_REVIEW_MESSAGE = "Connector removals require a complete online reviewed plan"
 CONNECTOR_REMOVAL_REVIEW_SUGGESTION = (
     "Run streamt plan with --out, review the saved plan, then apply it with --plan."
+)
+CONNECTOR_REMOVAL_DRIFT_MESSAGE = (
+    "Kafka Connect managed deletion could not prove exact absence"
 )
 
 
@@ -71,3 +76,28 @@ def enforce_connector_removal_apply_authorization(
         return
     if reviewed_plan_path is None or dry_run or target is not None or select is not None:
         _fail_reviewed_workflow(raw_connector_removals, formatter)
+
+
+def connector_removal_delete_count(actions: Sequence[OperationAction]) -> int:
+    """Count exact managed Connector delete actions in one frozen action sequence."""
+    return sum(
+        1
+        for action in actions
+        if type(action) is OperationAction
+        and action.action == "delete"
+        and action.connector_evidence is not None
+    )
+
+
+def emit_connector_removal_destructive_warning(
+    formatter: OutputFormatter,
+    actions: Sequence[OperationAction],
+) -> int:
+    """Emit one aggregate, secret-neutral warning for actionable removals."""
+    count = connector_removal_delete_count(actions)
+    if count:
+        formatter.print_warning(
+            f"Planned Connector removal is destructive ({count} delete(s))",
+            code=ErrorCode.CONNECTOR_REMOVAL_DESTRUCTIVE,
+        )
+    return count

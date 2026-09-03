@@ -10,6 +10,7 @@ from typing import Optional
 import click
 
 from streamt.cli.connector_removal_guard import (
+    emit_connector_removal_destructive_warning,
     enforce_connector_removal_plan_authorization,
 )
 from streamt.cli.helpers import (
@@ -26,7 +27,6 @@ from streamt.cli.helpers import (
     redact_sensitive_text,
 )
 from streamt.compiler.connector_artifact import (
-    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
     ConnectorRemovalClusterReferenceError,
     ConnectorRemovalPreflightError,
     ConnectorRemovalRuntimeRequiredError,
@@ -239,9 +239,6 @@ def plan(
                         prior_state=prior_state,
                         require_authoritative_state=True,
                     )
-                    raise ConnectorRemovalPreflightError(
-                        CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE
-                    )
 
                 raw_gateway_removals = manifest.artifacts.get(
                     "gateway_rule_removals",
@@ -317,6 +314,7 @@ def plan(
                     )
 
                 if plan_output:
+                    emit_connector_removal_destructive_warning(fmt, operation_actions)
                     reviewed_plan = ReviewedPlanFile.create(
                         deployment_plan,
                         manifest,
@@ -387,6 +385,10 @@ def plan(
             ],
             "gateway_removal_assessments": [
                 assessment.to_dict() for assessment in deployment_plan.gateway_removal_assessments
+            ],
+            "connector_removal_assessments": [
+                assessment.to_dict()
+                for assessment in deployment_plan.connector_removal_assessments
             ],
         }
         if plan_output and reviewed_plan is not None:

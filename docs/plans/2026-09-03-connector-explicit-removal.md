@@ -2,7 +2,7 @@
 
 ## Status and objective
 
-Status: in progress through Slice 4. The reserved codes, strict declaration,
+Status: in progress through Slice 5. The reserved codes, strict declaration,
 compiled artifact, PostgreSQL-v2 authority gate, provider-free identity/state
 preflight, exact Connector action evidence, strict live planning matrix, and
 managed observed-delete boundary are implemented. Reviewed plans use v5 and
@@ -10,12 +10,16 @@ operation control/recovery plans use v3 while retaining exact v1/v2 readers and
 active-control wire semantics. The internal planner now reconstructs the prior
 artifact checksum, produces an exact assessment or action for every tombstone,
 and routes an authorized managed delete through one preimage-checked DELETE plus
-bounded absence proof. The public plan/apply commands remain deliberately
-hard-stopped before Connector provider construction or state writes until Slice
-5 adds destructive authorization and exact state projection. Non-abandoned
+bounded absence proof. The public plan/apply commands now require the complete
+online PostgreSQL-v2 reviewed workflow, reject partial paths before provider
+access, emit the aggregate destructive warning, persist an exact durable
+action, and remove ownership only from a successfully completed exact delete.
+Uncertain mutation produces fixed E428 output, retains ownership, stops later
+actions, and records recovery without rollback mutation. Non-abandoned
 Connector recovery remains hard-stopped at model, preflight, and service
-boundaries until Slice 6 adds exact recovery observation. No public Connector
-removal capability is claimed yet.
+boundaries until Slice 6 adds exact recovery observation. The workflow remains
+undocumented as supported until its recovery, real PostgreSQL, installed-wheel,
+and real Connect release gates pass.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as
@@ -604,8 +608,8 @@ resources.
 - [x] Add Connector action evidence and version migrations.
 - [x] Add exact checksum reconstruction and planning outcomes.
 - [x] Add managed observed DELETE plus bounded absence postcondition.
-- [ ] Add PostgreSQL-v2-only CLI authorization and destructive warning.
-- [ ] Add exact Connector-specific state projection.
+- [x] Add PostgreSQL-v2-only CLI authorization and destructive warning.
+- [x] Add exact Connector-specific state projection.
 - [ ] Add tombstone-independent reviewed recovery.
 - [ ] Pass PostgreSQL 14/18 command and concurrency gates.
 - [ ] Pass installed-wheel lifecycle/recovery gate.

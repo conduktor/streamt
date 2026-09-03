@@ -14,9 +14,6 @@ import yaml
 from click.testing import CliRunner, Result
 
 from streamt.cli import main
-from streamt.compiler.connector_artifact import (
-    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
-)
 from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact, Manifest
 from streamt.deployer.connect import ConnectClusterBinding
 from streamt.deployer.planner import DeploymentPlan
@@ -504,7 +501,7 @@ def test_lock_timeout_is_e422_before_resolver_review_or_runtime(
 
 
 @pytest.mark.parametrize("command", ["plan", "apply"])
-def test_successful_preflight_fails_closed_before_plan_or_provider(
+def test_successful_preflight_reaches_provider_construction_under_lock(
     tmp_path: Path,
     command: str,
 ) -> None:
@@ -513,14 +510,12 @@ def test_successful_preflight_fails_closed_before_plan_or_provider(
 
     assert result.exit_code == 1, result.output
     error = _payload(result)["errors"][0]
-    assert error == {
-        "code": "E427_CONNECTOR_REMOVAL_INVALID",
-        "message": CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
-    }
+    assert error["code"] == "E406_CONNECTION_REFUSED"
     assert not (tmp_path / "reviewed.json").exists()
     if reviewed is not None:
-        reviewed.verify_context.assert_not_called()
-    for factory in factories:
+        reviewed.verify_context.assert_called_once()
+    factories[0].assert_called_once()
+    for factory in factories[1:]:
         factory.assert_not_called()
     _assert_no_state_writes(operation)
 
@@ -737,10 +732,7 @@ def test_exact_locked_preflight_trace_precedes_review_and_runtime(
         result = CliRunner().invoke(main, args)
 
     assert result.exit_code == 1, result.output
-    assert _payload(result)["errors"][0] == {
-        "code": "E427_CONNECTOR_REMOVAL_INVALID",
-        "message": CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
-    }
+    assert _payload(result)["errors"][0]["code"] == "E406_CONNECTION_REFUSED"
     assert lock_active is False
     assert events == [
         "state-factory",
@@ -749,7 +741,14 @@ def test_exact_locked_preflight_trace_precedes_review_and_runtime(
         "observe",
         "ensure-ready",
         "resolver",
+        *(["reviewed-context"] if command == "apply" else []),
+        "runtime:make_sr_deployer",
+        "runtime:make_kafka_deployer",
+        "runtime:make_flink_deployer",
+        "runtime:make_connect_deployer",
+        "runtime:make_gateway_deployer",
         "exit-operation",
     ]
-    reviewed.verify_context.assert_not_called()
+    if command == "apply":
+        reviewed.verify_context.assert_called_once()
     _assert_no_state_writes(operation)

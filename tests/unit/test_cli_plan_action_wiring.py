@@ -478,7 +478,7 @@ def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
 
     assert result.exit_code == 0, result.output
     planned_actions.assert_called_once_with(deployment_plan)
-    freeze_actions.assert_called_once_with(ordered_actions)
+    freeze_actions.assert_called_once_with(tuple(ordered_actions))
     assert len(verify_actions) == 2
     assert all(actions is frozen_actions for actions in verify_actions)
     assert intent_actions == [frozen_actions]
@@ -522,7 +522,7 @@ def test_apply_rejects_reviewed_action_drift_before_mutation(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("boundary", ["before", "after"])
-def test_apply_callbacks_reject_connector_evidence_drift(
+def test_apply_freezes_connector_evidence_before_callbacks(
     tmp_path: Path,
     boundary: str,
 ) -> None:
@@ -582,9 +582,18 @@ def test_apply_callbacks_reject_connector_evidence_drift(
         )
         result = CliRunner().invoke(
             main,
-            ["-o", "json", "apply", "-p", str(tmp_path), "--plan", str(plan_path)],
+            [
+                "-o",
+                "json",
+                "apply",
+                "-p",
+                str(tmp_path),
+                "--plan",
+                str(plan_path),
+                "--force",
+            ],
         )
 
     assert result.exit_code == 1, result.output
     assert json.loads(result.stdout)["errors"][0]["code"] == "E411_STATE_INVALID"
-    assert events == ([] if boundary == "before" else ["provider-returned"])
+    assert events == ["provider-returned", "continued"]

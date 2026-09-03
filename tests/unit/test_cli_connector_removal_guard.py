@@ -1,4 +1,4 @@
-"""Temporary fail-closed CLI boundary for explicit Connector removals."""
+"""Fail-closed CLI workflow authorization for explicit Connector removals."""
 
 from __future__ import annotations
 
