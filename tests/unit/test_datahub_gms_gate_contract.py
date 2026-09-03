@@ -11,9 +11,47 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GATE_PATH = _ROOT / "tests" / "integration" / "datahub" / "gms_v170_gate.py"
+_TOPOLOGY_DIR = _ROOT / "tests" / "integration" / "datahub" / "v1.7.0"
+_COMPOSE_OVERRIDE_PATH = _TOPOLOGY_DIR / "docker-compose.override.yml"
+_IMAGE_LOCK_PATH = _TOPOLOGY_DIR / "images.lock.json"
+
+_EXPECTED_TOPOLOGY_IMAGES = {
+    "datahub-gms-quickstart": (
+        "acryldata/datahub-gms:v1.7.0@"
+        "sha256:54bc4431402846a72d1c1bdb69fae1148f74a59425144aa947fdf1c3506461f7",
+        "sha256:836697a5be715699e7796022cc1b0496ac409748a8e2b6fd8e23b18b12f5b764",
+    ),
+    "system-update-quickstart": (
+        "acryldata/datahub-upgrade:v1.7.0@"
+        "sha256:21e77ad964be64b2b5a7f74c9685897ed79e8854995242eaa5e5c426395b88c0",
+        "sha256:985c0358c1c05a7966c10af1cf8fcfdc7aaea97abfbb64198981e7ce96926325",
+    ),
+    "kafka-broker": (
+        "confluentinc/cp-kafka:8.2.2@"
+        "sha256:8e01c0305844d6c05bfb8e86479f5f363bb6a53497625395943a9da780de67ce",
+        "sha256:1c45591457f48e2b44ee4a5bbad288599651e5bbd6cd4410d8eac03003d57c01",
+    ),
+    "mysql": (
+        "mysql:8.2@"
+        "sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1",
+        "sha256:5ba9d31938cfbfbcd6b29977181cfc246ce3f4b4923efc2af89c028d872fcc41",
+    ),
+    "opensearch": (
+        "opensearchproject/opensearch:2.19.3@"
+        "sha256:e96cc6ae1500a073d973c0906f30f7cf4d9c461f32f855f9242a2da933660cdd",
+        "sha256:acc1f30665727eb5d186fd15f40079615e1c9a0ee9fd3db3a8180f41d9982f51",
+    ),
+}
+
+
+def _load_compose_override() -> dict[str, Any]:
+    value = yaml.load(_COMPOSE_OVERRIDE_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(value, dict)
+    return value
 
 
 def _load_gate() -> ModuleType:
@@ -459,3 +497,118 @@ def test_fixture_is_the_only_tracked_project_input() -> None:
     assert "owner:" in text
     assert "tags:" in text
     assert "password: gms-gate-connection-secret-omitted" in text
+
+
+def test_topology_lock_pins_exact_upstream_and_linux_amd64_images() -> None:
+    lock = json.loads(_IMAGE_LOCK_PATH.read_text(encoding="utf-8"))
+
+    assert lock["schema_version"] == 1
+    assert lock["datahub"] == {
+        "release": "v1.7.0",
+        "commit": gate.SERVER_COMMIT,
+    }
+    assert lock["upstream_compose"] == {
+        "url": (
+            "https://raw.githubusercontent.com/datahub-project/datahub/"
+            f"{gate.SERVER_COMMIT}/docker/quickstart/"
+            "docker-compose.quickstart-profile.yml"
+        ),
+        "sha256": "ec476d12f6f278c50d657a617357a050510565ef00b570a69cbe9123a932a7b7",
+    }
+    assert lock["compose_minimum_version"] == "2.24.4"
+    assert lock["platform"] == "linux/amd64"
+    assert lock["target_service"] == "datahub-gms-quickstart"
+    assert set(lock["images"]) == set(_EXPECTED_TOPOLOGY_IMAGES)
+
+    for service, (reference, manifest_digest) in _EXPECTED_TOPOLOGY_IMAGES.items():
+        image = lock["images"][service]
+        assert image["reference"] == reference
+        assert image["index_digest"] == reference.rsplit("@", 1)[1]
+        assert image["linux_amd64_manifest_digest"] == manifest_digest
+        assert reference == f"{image['repository']}:{image['tag']}@{image['index_digest']}"
+
+
+def test_topology_overlay_contains_only_the_reviewed_target_dependency_closure() -> None:
+    overlay = _load_compose_override()
+    services = overlay["services"]
+
+    assert set(services) == set(_EXPECTED_TOPOLOGY_IMAGES)
+    assert "datahub-actions-quickstart" not in services
+    assert "frontend-quickstart" not in services
+    assert not any("oracle" in name or "ingestion" in name for name in services)
+    assert overlay["name"] == "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}"
+
+    lock = json.loads(_IMAGE_LOCK_PATH.read_text(encoding="utf-8"))
+    for service, config in services.items():
+        assert config["image"] == lock["images"][service]["reference"]
+        assert config["platform"] == "linux/amd64"
+        assert config["pull_policy"] == "never"
+        assert config["restart"] == "no"
+        assert config["mem_limit"] in {"1g", "2g"}
+        assert "profiles" not in config
+        assert "container_name" not in config
+        assert "privileged" not in config
+        assert "network_mode" not in config
+
+
+def test_topology_overlay_replaces_ports_and_host_mounts() -> None:
+    overlay = _load_compose_override()
+    services = overlay["services"]
+    source = _COMPOSE_OVERRIDE_PATH.read_text(encoding="utf-8")
+
+    assert services["datahub-gms-quickstart"]["ports"] == [
+        "127.0.0.1:${DATAHUB_MAPPED_GMS_PORT:?set DATAHUB_MAPPED_GMS_PORT}:8080"
+    ]
+    assert services["datahub-gms-quickstart"]["volumes"] == []
+    assert services["system-update-quickstart"]["volumes"] == []
+    for service in ("kafka-broker", "mysql", "opensearch"):
+        assert services[service]["ports"] == []
+
+    assert services["kafka-broker"]["volumes"] == ["broker:/var/lib/kafka/data"]
+    assert services["mysql"]["volumes"] == ["mysqldata:/var/lib/mysql"]
+    assert services["opensearch"]["volumes"] == [
+        "osdata:/usr/share/opensearch/data"
+    ]
+    assert source.count("ports: !override") == 1
+    assert source.count("ports: !reset []") == 3
+    assert source.count("volumes: !override") == 3
+    assert source.count("volumes: !reset []") == 2
+    assert "${HOME}" not in source
+    assert "/var/run/docker.sock" not in source
+
+
+def test_topology_overlay_uses_unique_internal_storage_and_disables_usage() -> None:
+    overlay = _load_compose_override()
+    gms = overlay["services"]["datahub-gms-quickstart"]
+
+    assert overlay["networks"] == {
+        "default": {
+            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_network",
+            "internal": "true",
+        }
+    }
+    assert overlay["volumes"] == {
+        "broker": {
+            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"
+        },
+        "mysqldata": {
+            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_mysqldata"
+        },
+        "osdata": {
+            "name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_osdata"
+        },
+    }
+    assert gms["environment"]["DATAHUB_TELEMETRY_ENABLED"] == "false"
+    assert gms["environment"]["USAGE_AGGREGATION_ENABLED"] == "false"
+    assert gms["healthcheck"] == {
+        "test": ["CMD-SHELL", "curl -sS --fail http://datahub-gms:8080/health"],
+        "interval": "2s",
+        "timeout": "5s",
+        "retries": "45",
+        "start_period": "90s",
+    }
+    assert "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}" in {
+        value
+        for config in overlay["services"].values()
+        for value in config.get("environment", {}).values()
+    }

@@ -1,0 +1,85 @@
+# Overlay for the immutable DataHub v1.7.0 quickstart Compose file recorded in
+# images.lock.json. Start only datahub-gms-quickstart; Compose then starts its
+# SystemUpdate, Kafka, MySQL, and OpenSearch dependency closure.
+name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}"
+
+services:
+  datahub-gms-quickstart:
+    image: acryldata/datahub-gms:v1.7.0@sha256:54bc4431402846a72d1c1bdb69fae1148f74a59425144aa947fdf1c3506461f7
+    platform: linux/amd64
+    pull_policy: never
+    restart: "no"
+    mem_limit: 2g
+    environment:
+      DATAHUB_TELEMETRY_ENABLED: "false"
+      EBEAN_DATASOURCE_PASSWORD: "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}"
+      USAGE_AGGREGATION_ENABLED: "false"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -sS --fail http://datahub-gms:8080/health
+      interval: 2s
+      timeout: 5s
+      retries: 45
+      start_period: 90s
+    expose: !reset []
+    ports: !override
+      - "127.0.0.1:${DATAHUB_MAPPED_GMS_PORT:?set DATAHUB_MAPPED_GMS_PORT}:8080"
+    volumes: !reset []
+
+  system-update-quickstart:
+    image: acryldata/datahub-upgrade:v1.7.0@sha256:21e77ad964be64b2b5a7f74c9685897ed79e8854995242eaa5e5c426395b88c0
+    platform: linux/amd64
+    pull_policy: never
+    restart: "no"
+    mem_limit: 2g
+    environment:
+      EBEAN_DATASOURCE_PASSWORD: "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}"
+      JAVA_OPTS: -Xms512m -Xmx1g
+    volumes: !reset []
+
+  kafka-broker:
+    image: confluentinc/cp-kafka:8.2.2@sha256:8e01c0305844d6c05bfb8e86479f5f363bb6a53497625395943a9da780de67ce
+    platform: linux/amd64
+    pull_policy: never
+    restart: "no"
+    mem_limit: 1g
+    ports: !reset []
+    volumes: !override
+      - broker:/var/lib/kafka/data
+
+  mysql:
+    image: mysql:8.2@sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1
+    platform: linux/amd64
+    pull_policy: never
+    restart: "no"
+    mem_limit: 1g
+    environment:
+      MYSQL_PASSWORD: "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${DATAHUB_MYSQL_PASSWORD:?set DATAHUB_MYSQL_PASSWORD}"
+    ports: !reset []
+    volumes: !override
+      - mysqldata:/var/lib/mysql
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.3@sha256:e96cc6ae1500a073d973c0906f30f7cf4d9c461f32f855f9242a2da933660cdd
+    platform: linux/amd64
+    pull_policy: never
+    restart: "no"
+    mem_limit: 2g
+    ports: !reset []
+    volumes: !override
+      - osdata:/usr/share/opensearch/data
+
+networks:
+  default:
+    name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_network"
+    internal: true
+
+volumes:
+  broker:
+    name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"
+  mysqldata:
+    name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_mysqldata"
+  osdata:
+    name: "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_osdata"

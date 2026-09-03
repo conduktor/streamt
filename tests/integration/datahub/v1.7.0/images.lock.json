@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "datahub": {
+    "release": "v1.7.0",
+    "commit": "7f81ccbfe27b9acc947f5f600fcf9ddb72138a80"
+  },
+  "upstream_compose": {
+    "url": "https://raw.githubusercontent.com/datahub-project/datahub/7f81ccbfe27b9acc947f5f600fcf9ddb72138a80/docker/quickstart/docker-compose.quickstart-profile.yml",
+    "sha256": "ec476d12f6f278c50d657a617357a050510565ef00b570a69cbe9123a932a7b7"
+  },
+  "compose_minimum_version": "2.24.4",
+  "platform": "linux/amd64",
+  "target_service": "datahub-gms-quickstart",
+  "images": {
+    "datahub-gms-quickstart": {
+      "repository": "acryldata/datahub-gms",
+      "tag": "v1.7.0",
+      "index_digest": "sha256:54bc4431402846a72d1c1bdb69fae1148f74a59425144aa947fdf1c3506461f7",
+      "linux_amd64_manifest_digest": "sha256:836697a5be715699e7796022cc1b0496ac409748a8e2b6fd8e23b18b12f5b764",
+      "reference": "acryldata/datahub-gms:v1.7.0@sha256:54bc4431402846a72d1c1bdb69fae1148f74a59425144aa947fdf1c3506461f7"
+    },
+    "system-update-quickstart": {
+      "repository": "acryldata/datahub-upgrade",
+      "tag": "v1.7.0",
+      "index_digest": "sha256:21e77ad964be64b2b5a7f74c9685897ed79e8854995242eaa5e5c426395b88c0",
+      "linux_amd64_manifest_digest": "sha256:985c0358c1c05a7966c10af1cf8fcfdc7aaea97abfbb64198981e7ce96926325",
+      "reference": "acryldata/datahub-upgrade:v1.7.0@sha256:21e77ad964be64b2b5a7f74c9685897ed79e8854995242eaa5e5c426395b88c0"
+    },
+    "kafka-broker": {
+      "repository": "confluentinc/cp-kafka",
+      "tag": "8.2.2",
+      "index_digest": "sha256:8e01c0305844d6c05bfb8e86479f5f363bb6a53497625395943a9da780de67ce",
+      "linux_amd64_manifest_digest": "sha256:1c45591457f48e2b44ee4a5bbad288599651e5bbd6cd4410d8eac03003d57c01",
+      "reference": "confluentinc/cp-kafka:8.2.2@sha256:8e01c0305844d6c05bfb8e86479f5f363bb6a53497625395943a9da780de67ce"
+    },
+    "mysql": {
+      "repository": "mysql",
+      "tag": "8.2",
+      "index_digest": "sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1",
+      "linux_amd64_manifest_digest": "sha256:5ba9d31938cfbfbcd6b29977181cfc246ce3f4b4923efc2af89c028d872fcc41",
+      "reference": "mysql:8.2@sha256:212fe73edca5df6ff14826d5eb975c914bfb91f82a2e923f9050568f99525da1"
+    },
+    "opensearch": {
+      "repository": "opensearchproject/opensearch",
+      "tag": "2.19.3",
+      "index_digest": "sha256:e96cc6ae1500a073d973c0906f30f7cf4d9c461f32f855f9242a2da933660cdd",
+      "linux_amd64_manifest_digest": "sha256:acc1f30665727eb5d186fd15f40079615e1c9a0ee9fd3db3a8180f41d9982f51",
+      "reference": "opensearchproject/opensearch:2.19.3@sha256:e96cc6ae1500a073d973c0906f30f7cf4d9c461f32f855f9242a2da933660cdd"
+    }
+  }
+}
