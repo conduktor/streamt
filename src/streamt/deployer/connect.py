@@ -10,7 +10,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -24,6 +24,12 @@ DEFAULT_TIMEOUT = 30
 HEALTH_CHECK_TIMEOUT = 10
 _MAX_MANAGED_CONNECTOR_RESPONSE_BYTES = 1024 * 1024
 _MANAGED_CONNECTOR_CHUNK_BYTES = 64 * 1024
+_MANAGED_CONNECTOR_DELETE_CONFIRM_ATTEMPTS = 5
+_MANAGED_CONNECTOR_DELETE_CONFIRM_SECONDS = 10.0
+_MANAGED_CONNECTOR_DELETE_POLL_SECONDS = 0.1
+_MANAGED_CONNECTOR_DELETE_FAILURE = (
+    "Kafka Connect managed deletion could not prove exact absence"
+)
 _FINGERPRINT_PREFIX = "sha256:"
 _CONNECT_BINDING_VERSION = 1
 _CLUSTER_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -43,8 +49,83 @@ class ConnectManagedObservationError(RuntimeError):
     """A strict managed-connector observation could not be proven complete."""
 
 
+class ConnectManagedMutationError(RuntimeError):
+    """An exact managed-connector mutation could not prove its postcondition."""
+
+
 class _InvalidManagedConnectorJSONError(ValueError):
     """Internal marker for non-canonical managed-observation JSON."""
+
+
+def _managed_mutation_snapshot(value: object) -> ManagedConnectorObservation:
+    """Detach one exact base observation for managed-mutation comparisons."""
+    try:
+        if type(value) is not ManagedConnectorObservation:
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+        binding = value.binding
+        if type(binding) is not ConnectClusterBinding:
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+        if (
+            type(binding.cluster_alias) is not str
+            or type(binding.endpoint_fingerprint) is not str
+            or type(binding.version) is not int
+            or type(value.name) is not str
+            or type(value.exists) is not bool
+            or type(value.config) is not tuple
+        ):
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+
+        detached_config: list[tuple[str, ConnectorConfigScalar]] = []
+        for entry in value.config:
+            if type(entry) is not tuple or len(entry) != 2:
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+            key, scalar = entry
+            if type(key) is not str or type(scalar) not in (str, bool, int, float):
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+            if type(scalar) is float and not math.isfinite(scalar):
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+            detached_config.append((key, scalar))
+
+        snapshot = ManagedConnectorObservation(
+            binding=ConnectClusterBinding(
+                cluster_alias=binding.cluster_alias,
+                endpoint_fingerprint=binding.endpoint_fingerprint,
+                version=binding.version,
+            ),
+            name=value.name,
+            exists=value.exists,
+            config=tuple(detached_config),
+        )
+        if snapshot.exists:
+            config = snapshot.config_dict()
+            if (
+                type(config.get("name")) is not str
+                or config["name"] != snapshot.name
+                or type(config.get("connector.class")) is not str
+                or not config["connector.class"].strip()
+                or type(config.get("topics")) is not str
+                or not config["topics"].strip()
+            ):
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+        return snapshot
+    except ConnectManagedMutationError:
+        raise
+    except Exception:
+        raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE) from None
+
+
+def _managed_mutation_values(
+    observation: ManagedConnectorObservation,
+) -> tuple[int, str, str, str, bool, tuple[tuple[str, ConnectorConfigScalar], ...]]:
+    """Return exact primitive values without dispatching observation equality."""
+    return (
+        observation.binding.version,
+        observation.binding.cluster_alias,
+        observation.binding.endpoint_fingerprint,
+        observation.name,
+        observation.exists,
+        observation.config,
+    )
 
 
 def _sha256(value: str) -> str:
@@ -683,7 +764,12 @@ class ConnectDeployer:
                 "Kafka Connect managed observation response is not canonical JSON"
             ) from None
 
-    def observe_managed_connector(self, connector_name: str) -> ManagedConnectorObservation:
+    def observe_managed_connector(
+        self,
+        connector_name: str,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> ManagedConnectorObservation:
         """Strictly observe one connector with one immutable, identity-bound GET."""
         binding = self.cluster_binding
         if binding is None:
@@ -702,7 +788,7 @@ class ConnectDeployer:
             response = self._http_session.request(
                 "GET",
                 f"{self.rest_url}{endpoint}",
-                timeout=DEFAULT_TIMEOUT,
+                timeout=timeout,
                 allow_redirects=False,
                 stream=True,
             )
@@ -785,8 +871,127 @@ class ConnectDeployer:
         )
 
     def delete_connector(self, connector_name: str) -> None:
-        """Delete a connector."""
+        """Compatibility/rollback primitive; not lifecycle deletion authority."""
         self._request("DELETE", f"/connectors/{self._connector_path(connector_name)}")
+
+    def delete_managed_connector(
+        self,
+        current: ManagedConnectorObservation,
+    ) -> Literal["deleted"]:
+        """Delete one exact reviewed Connector and prove its strict absence."""
+        try:
+            reviewed = _managed_mutation_snapshot(current)
+            binding = self.require_cluster_binding()
+            if type(binding) is not ConnectClusterBinding:
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+            effective_binding = ConnectClusterBinding(
+                cluster_alias=binding.cluster_alias,
+                endpoint_fingerprint=binding.endpoint_fingerprint,
+                version=binding.version,
+            )
+        except Exception:
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE) from None
+        if not reviewed.exists or (
+            reviewed.binding.version,
+            reviewed.binding.cluster_alias,
+            reviewed.binding.endpoint_fingerprint,
+        ) != (
+            effective_binding.version,
+            effective_binding.cluster_alias,
+            effective_binding.endpoint_fingerprint,
+        ):
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+
+        try:
+            fresh = _managed_mutation_snapshot(
+                self.observe_managed_connector(reviewed.name)
+            )
+        except Exception:
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE) from None
+        if _managed_mutation_values(fresh) != _managed_mutation_values(reviewed):
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+
+        endpoint = f"/connectors/{self._connector_path(reviewed.name)}"
+        try:
+            response = self._http_session.request(
+                "DELETE",
+                f"{self.rest_url}{endpoint}",
+                timeout=DEFAULT_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
+            )
+        except Exception:
+            raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE) from None
+        try:
+            try:
+                status_code = getattr(response, "status_code", None)
+                if type(status_code) is not int or status_code != 204:
+                    raise ConnectManagedMutationError(
+                        _MANAGED_CONNECTOR_DELETE_FAILURE
+                    )
+                headers = getattr(response, "headers", None)
+                declared_length = (
+                    headers.get("Content-Length")
+                    if isinstance(headers, Mapping)
+                    else None
+                )
+                if declared_length is not None and int(declared_length) != 0:
+                    raise ConnectManagedMutationError(
+                        _MANAGED_CONNECTOR_DELETE_FAILURE
+                    )
+                body = self._read_managed_observation_body(response)
+                if type(body) is not bytes or body:
+                    raise ConnectManagedMutationError(
+                        _MANAGED_CONNECTOR_DELETE_FAILURE
+                    )
+            except Exception:
+                raise ConnectManagedMutationError(
+                    _MANAGED_CONNECTOR_DELETE_FAILURE
+                ) from None
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+        expected_absence = ManagedConnectorObservation(
+            binding=effective_binding,
+            name=reviewed.name,
+            exists=False,
+        )
+        deadline = time.monotonic() + _MANAGED_CONNECTOR_DELETE_CONFIRM_SECONDS
+        for attempt in range(_MANAGED_CONNECTOR_DELETE_CONFIRM_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                observed = _managed_mutation_snapshot(
+                    self.observe_managed_connector(
+                        reviewed.name,
+                        timeout=min(float(DEFAULT_TIMEOUT), remaining),
+                    )
+                )
+            except Exception:
+                raise ConnectManagedMutationError(
+                    _MANAGED_CONNECTOR_DELETE_FAILURE
+                ) from None
+            if _managed_mutation_values(observed) == _managed_mutation_values(
+                expected_absence
+            ):
+                return "deleted"
+            if _managed_mutation_values(observed) != _managed_mutation_values(reviewed):
+                raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
+            if attempt + 1 < _MANAGED_CONNECTOR_DELETE_CONFIRM_ATTEMPTS:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    time.sleep(min(_MANAGED_CONNECTOR_DELETE_POLL_SECONDS, remaining))
+                except Exception:
+                    raise ConnectManagedMutationError(
+                        _MANAGED_CONNECTOR_DELETE_FAILURE
+                    ) from None
+        raise ConnectManagedMutationError(_MANAGED_CONNECTOR_DELETE_FAILURE)
 
     def restart_connector(self, connector_name: str) -> None:
         """Restart a connector."""

@@ -239,9 +239,16 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             raise PlanFileError("Safety blocker payload must be an object")
         safety_blockers.append(normalized)
 
+    connector_removal_assessments: list[dict[str, object]] = []
+    for connector_assessment in plan.connector_removal_assessments:
+        normalized = _redact_inline_credentials(connector_assessment.to_dict())
+        if not isinstance(normalized, dict):  # pragma: no cover - to_dict is fixed
+            raise PlanFileError("Connector removal assessment payload must be an object")
+        connector_removal_assessments.append(normalized)
+
     gateway_removal_assessments: list[dict[str, object]] = []
-    for assessment in plan.gateway_removal_assessments:
-        normalized = _redact_inline_credentials(assessment.to_dict())
+    for gateway_assessment in plan.gateway_removal_assessments:
+        normalized = _redact_inline_credentials(gateway_assessment.to_dict())
         if not isinstance(normalized, dict):  # pragma: no cover - to_dict is fixed
             raise PlanFileError("Gateway removal assessment payload must be an object")
         gateway_removal_assessments.append(normalized)
@@ -264,6 +271,7 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
             "has_changes": plan.has_changes,
             "ownership_requirements": len(ownership_requirements),
             "safety_blockers": len(safety_blockers),
+            "connector_removal_assessments": len(connector_removal_assessments),
             "gateway_removal_assessments": len(gateway_removal_assessments),
             "is_apply_blocked": plan.is_apply_blocked,
             "risk": risk_summary,
@@ -274,6 +282,7 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
         "risk_summary": risk_summary,
         "ownership_requirements": ownership_requirements,
         "safety_blockers": safety_blockers,
+        "connector_removal_assessments": connector_removal_assessments,
         "gateway_removal_assessments": gateway_removal_assessments,
     }
 
@@ -741,6 +750,7 @@ class ReviewedPlanFile:
             "risk_summary": self.plan.get("risk_summary"),
             "ownership_requirements": self.plan.get("ownership_requirements"),
             "safety_blockers": self.plan.get("safety_blockers"),
+            "connector_removal_assessments": self.plan.get("connector_removal_assessments"),
             "gateway_removal_assessments": self.plan.get("gateway_removal_assessments"),
         }
         current_live_state = {
@@ -750,11 +760,12 @@ class ReviewedPlanFile:
             "risk_summary": current_payload["risk_summary"],
             "ownership_requirements": current_payload["ownership_requirements"],
             "safety_blockers": current_payload["safety_blockers"],
+            "connector_removal_assessments": current_payload["connector_removal_assessments"],
             "gateway_removal_assessments": current_payload["gateway_removal_assessments"],
         }
         if canonical_json(reviewed_live_state) != canonical_json(current_live_state):
             raise StalePlanError(
                 "Reviewed plan is stale; live resource actions, diffs, impact evidence, "
                 "risk classification, ownership requirements, safety blockers, or "
-                "Gateway removal assessments changed after planning"
+                "Connector or Gateway removal assessments changed after planning"
             )

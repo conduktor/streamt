@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from streamt.compiler.connector_artifact import (
-    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
     ConnectorRemovalClusterReferenceError,
     ConnectorRemovalPreflightError,
     ConnectorRemovalRuntimeRequiredError,
@@ -22,7 +21,12 @@ from streamt.core.deployment_state import (
 )
 from streamt.core.models import ProjectInfo, StreamtProject
 from streamt.core.runtime import ConnectClusterConfig, ConnectConfig, KafkaConfig, RuntimeConfig
-from streamt.deployer.connect import ConnectClusterBinding, ConnectClusterBindingError
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectClusterBindingError,
+    ConnectDeployer,
+    ManagedConnectorObservation,
+)
 from streamt.deployer.planner import (
     ConnectorPlanningTargets,
     DeploymentPlanner,
@@ -437,12 +441,21 @@ def test_preflight_errors_do_not_expose_runtime_endpoint() -> None:
     assert "connect-secret.example.test" not in str(error.value)
 
 
-def test_library_planner_fails_closed_after_preflight_before_provider_reads() -> None:
+def test_library_planner_produces_assessment_after_provider_free_preflight() -> None:
+    binding = ConnectClusterBinding.from_endpoint("primary", _ENDPOINT)
+    connect_deployer = MagicMock(spec=ConnectDeployer)
+    connect_deployer.cluster_binding = binding
+    connect_deployer.require_cluster_binding.return_value = binding
+    connect_deployer.observe_managed_connector.return_value = ManagedConnectorObservation(
+        binding=binding,
+        name="archive-orders-sink",
+        exists=False,
+    )
     providers = {
         "schema_registry_deployer": MagicMock(),
         "kafka_deployer": MagicMock(),
         "flink_deployer": MagicMock(),
-        "connect_deployer": MagicMock(),
+        "connect_deployer": connect_deployer,
         "gateway_deployer": MagicMock(),
     }
     planner = DeploymentPlanner(
@@ -454,11 +467,17 @@ def test_library_planner_fails_closed_after_preflight_before_provider_reads() ->
         environment="prod",
     )
 
-    with pytest.raises(
-        ConnectorRemovalPreflightError,
-        match=f"^{CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE}$",
-    ):
-        planner.plan()
+    plan = planner.plan()
 
-    for provider in providers.values():
-        assert provider.mock_calls == []
+    assert [assessment.status for assessment in plan.connector_removal_assessments] == [
+        "already_absent"
+    ]
+    connect_deployer.require_cluster_binding.assert_called_once_with()
+    connect_deployer.observe_managed_connector.assert_called_once_with("archive-orders-sink")
+    for provider in (
+        providers["schema_registry_deployer"],
+        providers["kafka_deployer"],
+        providers["flink_deployer"],
+        providers["gateway_deployer"],
+    ):
+        assert provider.method_calls == []

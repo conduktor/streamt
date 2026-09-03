@@ -31,6 +31,7 @@ from streamt.deployer.plan_file import (
     deployment_plan_payload,
 )
 from streamt.deployer.planner import (
+    ConnectorRemovalAssessment,
     DeploymentPlan,
     GatewayRemovalAssessment,
     OwnershipRequirement,
@@ -1001,6 +1002,77 @@ def _removal_assessment(
         backend_identity=_GATEWAY_BACKEND,
         status=status,  # type: ignore[arg-type]
     )
+
+
+def _connector_removal_assessment(
+    owner: str,
+    *,
+    status: str = "already_absent",
+) -> ConnectorRemovalAssessment:
+    return ConnectorRemovalAssessment(
+        resource_id=f"streamt://payments/prod/connector/{owner}",
+        logical_owner=owner,
+        connector_name=f"{owner}-sink",
+        backend_identity=_CONNECTOR_BACKEND,
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def test_connector_removal_assessments_are_checksum_bound_and_tamper_evident(
+    tmp_path: Path,
+) -> None:
+    assessments = (
+        _connector_removal_assessment("z_owner"),
+        _connector_removal_assessment("a_owner"),
+    )
+    plan = DeploymentPlan(connector_removal_assessments=assessments)
+    payload = deployment_plan_payload(plan)
+
+    assert payload["summary"]["connector_removal_assessments"] == 2
+    assert [item["logical_owner"] for item in payload["connector_removal_assessments"]] == [
+        "z_owner",
+        "a_owner",
+    ]
+
+    reviewed = ReviewedPlanFile.create(
+        plan,
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=_state_reference(),
+        actions=(),
+    )
+    changed = DeploymentPlan(
+        connector_removal_assessments=(
+            _connector_removal_assessment("z_owner", status="ownership_required"),
+            _connector_removal_assessment("a_owner"),
+        )
+    )
+    changed_review = ReviewedPlanFile.create(
+        changed,
+        _manifest(),
+        project="payments",
+        environment="prod",
+        runtime={},
+        state=_state_reference(),
+        actions=(),
+    )
+    assert reviewed.checksum != changed_review.checksum
+    with pytest.raises(StalePlanError, match="Connector or Gateway removal assessments"):
+        reviewed.verify_current_plan(
+            changed,
+            actions=(),
+            state_observation=_state_observation(),
+        )
+
+    path = tmp_path / "connector-removal.plan.json"
+    reviewed.save(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["plan"]["connector_removal_assessments"][0]["status"] = "ownership_required"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(PlanFileError, match="checksum"):
+        ReviewedPlanFile.load(path)
 
 
 def test_plan_payload_preserves_removal_assessment_order_and_verifies_drift() -> None:
