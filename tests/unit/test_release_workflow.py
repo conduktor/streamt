@@ -82,7 +82,10 @@ def test_publish_uses_protected_oidc_environment_and_verified_artifact() -> None
     steps = publish["steps"]
     assert isinstance(steps, list)
     rendered = "\n".join(str(step) for step in steps)
-    assert "actions/download-artifact@v8" in rendered
+    assert (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+        in rendered
+    )
     assert (
         "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
         in rendered
@@ -108,7 +111,10 @@ def test_manual_rehearsal_uses_separate_testpypi_environment() -> None:
     steps = publish["steps"]
     assert isinstance(steps, list)
     rendered = "\n".join(str(step) for step in steps)
-    assert "actions/download-artifact@v8" in rendered
+    assert (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+        in rendered
+    )
     assert (
         "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
         in rendered
