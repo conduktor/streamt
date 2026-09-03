@@ -1,8 +1,10 @@
 # DataHub catalog export
 
 Status: implemented and supported for the exact offline DataHub v1.7.0
-metadata-file boundary defined here. The release gates have passed; DataHub
-publication and server acceptance remain unsupported.
+metadata-file boundary defined here. Production DataHub publication remains
+unsupported. The separate
+[`DataHub v1.7.0 GMS acceptance gate`](datahub-gms-v170-acceptance.md) supports
+only its pinned, test-only server conformance boundary.
 
 This specification defines a deterministic, offline export of one compiled
 streamt project as a JSON array of simplified DataHub Metadata Change
@@ -299,7 +301,9 @@ The exact v1 aspect contains all four arrays, including when empty:
 
 This must pass the SDK wrapper and file-source oracle. Failure blocks offline
 export support; it does not authorize duplicating edges into deprecated arrays.
-How a live server renders those edges remains explicitly unclaimed.
+The separate pinned GMS gate confirms the representative direct edges through
+DataHub v1.7.0's `/relationships` surface; broader live-server rendering remains
+unclaimed.
 
 ### Deferred owners, tags, sinks, and exposures
 
@@ -522,14 +526,16 @@ validation because v1.7.0 mutates the supplied simplified object. It compares
 the reconstructed simplified object to the untouched original.
 
 `datahub ingest mcps <PATH>` is not offline: it loads client config and
-publishes. A real-GMS ingestion/read-back gate is required before streamt may
-claim server acceptance or live lineage behavior, but those claims are outside
-this offline slice and do not block it.
+publishes. The separate pinned GMS gate has exercised this command against a
+disposable exact v1.7.0 quickstart and read the representative aspects and
+direct relationships back. That test evidence does not add publication to this
+offline command.
 
 ## Deferred work
 
 Owner/tag mapping and aspects; URL/token/publish/read/reconcile/state/delete;
 native contracts/assertions; schemas/columns/field lineage/destinations/
 exposures/domains/containers/status/subtypes/telemetry; multiple instances per
-transport; DataPlatform bootstrap; real-GMS acceptance/live lineage behavior;
-and Conduktor Console publication all require separate normative contracts.
+transport; DataPlatform bootstrap; production GMS publication and broader
+server/version behavior; and Conduktor Console publication all require separate
+normative contracts.

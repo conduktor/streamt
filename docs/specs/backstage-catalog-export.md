@@ -773,9 +773,10 @@ this specification authorizes only Backstage core export.
 The separately specified DataHub v1.7.0 adapter now consumes the neutral
 snapshot and exports an offline simplified-MCP metadata file under its own
 identity, URN, lineage, validation, and compatibility contract. It does not
-inherit Backstage entity refs or generated names. Authentication, publication,
-idempotency, server reconciliation, deletion, and real-GMS acceptance remain
-outside both offline export contracts.
+inherit Backstage entity refs or generated names. Its separate exact v1.7.0
+test-only GMS acceptance gate is complete. Authentication, production
+publication, idempotency, server reconciliation, and deletion remain outside
+both offline export contracts.
 
 ### Conduktor Console
 

@@ -8,8 +8,10 @@ Implement the dependency-free, deterministic offline DataHub MCP export in
 Status on 2026-09-03: the dependency-free mapper, CLI, distribution and
 compatibility gates have landed. CI run `33775922977` passed the complete
 Python 3.10-3.12 release workflow. Public documentation and roadmap
-reconciliation are complete; publication and real-GMS behavior remain outside
-this plan.
+reconciliation are complete. The separate
+[`DataHub v1.7.0 GMS acceptance plan`](2026-09-03-datahub-gms-v170-acceptance.md)
+has since completed the exact test-only quickstart boundary; production
+publication remains outside this plan.
 
 | Slice | Status | Exit evidence |
 | --- | --- | --- |
@@ -307,5 +309,5 @@ Separate normative contracts are required for owner/tag maps and authoritative
 replacement; live REST/emitter publication; server reads/reconciliation/state/
 deletion; native DataContracts/assertions; schemas/columns/field lineage/
 destinations/exposures/domains/containers/status/subtypes/telemetry; multiple
-instances; DataPlatform bootstrap; real-GMS acceptance/live lineage behavior;
-and Conduktor Console publication.
+instances; DataPlatform bootstrap; production GMS publication and broader
+server/version behavior; and Conduktor Console publication.

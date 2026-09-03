@@ -150,3 +150,4 @@ nav:
     - Remote Deployment State: specs/remote-deployment-state.md
     - Configuration Contract: specs/configuration-contract.md
     - Change-Impact Plan: specs/change-impact-plan.md
+    - DataHub v1.7.0 GMS Acceptance: specs/datahub-gms-v170-acceptance.md

@@ -15,19 +15,19 @@ The existing
 owner of production output. This plan adds no production publisher, client,
 dependency, option, state, or deletion behavior.
 
-Status on 2026-09-03: an 11-proposal manual feasibility probe passed against
-the official v1.7.0 quickstart, including exact `/config`, 11/11 ingestion,
-exact DataJob read-back, and one `Consumes` plus one `Produces` relationship.
-The normative foundation is complete and locally validated here; locked
-Compose, automated oracle, CI, and public claim reconciliation have not landed.
+Status on 2026-09-03: complete. The initial manual feasibility probe was
+superseded by complete CI run
+[`33798567142`](https://github.com/conduktor/streamt/actions/runs/33798567142),
+which passed both fresh artifact variants, two ingestions per variant, exact
+aspect and relationship read-back, bounded evidence, and verified teardown.
 
 | Slice | Status | Exit evidence |
 | --- | --- | --- |
-| 0 — normative foundation | Complete | proposed acceptance specification, execution plan, strict docs build, and doc-validation suite |
-| 1 — locked isolated topology | Not started | reviewed Compose/OCI lock plus static isolation tests |
-| 2 — ingestion/read-back oracle | Not started | both artifacts, replay, exact aspects, graph edges, and failure tests |
-| 3 — release-workflow gate | Not started | green post-oracle real-GMS CI job with artifacts and teardown |
-| 4 — public truth reconciliation | Deferred | only after the complete green gate |
+| 0 — normative foundation | Complete | `9decf35`; acceptance specification and execution plan |
+| 1 — locked isolated topology | Complete | `97a0fca`; pinned upstream Compose overlay, OCI locks, and static isolation tests |
+| 2 — ingestion/read-back oracle | Complete | `8f3022d`, `a58c163`; both artifacts, replay, exact aspects, graph edges, and asynchronous-key handling |
+| 3 — release-workflow gate | Complete | `e50018b`, `e6fc0dd`, `d84a83e`, `0f1b932`; green run `33798567142`, bounded evidence, and exact teardown |
+| 4 — public truth reconciliation | Complete | public specs, guide, CLI, support matrix, release notes, navigation, and roadmap reconciled to run `33798567142` |
 
 Tests must implement the specification rather than establish an alternative
 contract. If empirical server behavior conflicts with the specification,
@@ -42,9 +42,10 @@ amend the specification explicitly before weakening an assertion.
 - exactly one wheel handed off from the package job, installed in a clean
   Python 3.10 environment outside the checkout with the DataHub SDK absent;
 - a reviewed representative project containing no generated MCP JSON;
-- fresh `with-instance.json` and `without-kafka-instance.json` artifacts,
+- fresh `with-kafka-instance.json` and `without-kafka-instance.json` artifacts,
   each generated twice through the supplied installed `streamt` executable;
-- one fresh internal-network GMS and fresh volumes per artifact;
+- one fresh GMS on a private data network, a loopback-only host listener, and
+  fresh volumes per artifact;
 - two identical official `datahub ingest mcps` invocations per artifact;
 - exact read-back of every streamt-emitted aspect after each ingestion;
 - exact direct Dataset `Consumes` and `Produces` relationship sets after each
@@ -95,7 +96,8 @@ production network path.
 
 ### Ownership
 
-- `tests/integration/datahub/v1.7.0/docker-compose.yml`
+- the downloaded, checksum-verified upstream v1.7.0 Compose file;
+- `tests/integration/datahub/v1.7.0/docker-compose.override.yml`
 - `tests/integration/datahub/v1.7.0/images.lock.json`
 - focused topology assertions in
   `tests/unit/test_datahub_gms_gate_contract.py`
@@ -105,30 +107,34 @@ production packaging, or the offline artifact/oracle scripts.
 
 ### Work
 
-1. Reduce the pinned official quickstart to exactly Kafka KRaft, MySQL,
-   OpenSearch, one-shot SystemUpdate, GMS, and the one-shot ingestion runner.
+1. Reduce the pinned official quickstart dependency closure to exactly Kafka
+   KRaft, MySQL, OpenSearch, one-shot SystemUpdate, and GMS. The ingestion
+   runner remains in its isolated host environment.
 2. Layer a narrow reviewed override on the exact upstream v1.7.0 Compose file,
    retaining the environment needed for internal schema registry,
    MySQL primary storage, OpenSearch graph/search, strict URN validation, and
-   synchronous GMS ingestion. Do not invent a simplified single-container
-   server.
+   the official asynchronous batch-ingestion and read-back surfaces. Do not
+   invent a simplified single-container server.
 3. Pin every readable image tag to its reviewed OCI index digest and record its
    Linux/amd64 manifest digest, source tag, release commit, and upstream compose
    checksum in `images.lock.json`.
 4. Set `platform: linux/amd64`, `pull_policy: never`, telemetry disabled, usage
    aggregation disabled, non-debug logging, bounded Java heaps, container
    memory ceilings, and bounded health checks.
-5. Put every service on one `internal: true` network. Define no `ports`,
-   `container_name`, externally named network/volume, host network, privileged
-   mode, Docker-socket mount, home-directory mount, or cloud-directory mount.
+5. Put every service on one `internal: true` data network. Attach only GMS and
+   SystemUpdate to the per-project bootstrap bridge; publish only GMS on
+   `127.0.0.1`. Define no `container_name`, externally shared network/volume,
+   host network, privileged mode, Docker-socket mount, home-directory mount, or
+   cloud-directory mount.
 6. Make SystemUpdate depend on healthy Kafka, MySQL, and OpenSearch. Make GMS
    depend on successful SystemUpdate. The oracle runs only after GMS health and
    `/config` identity pass.
 7. Run the oracle from its isolated host virtual environment and publish only
-   GMS on a dynamic `127.0.0.1` port. Mount no host path into the services.
-8. Add static tests that fail if a service, non-loopback port, external network, mutable
-   image, host path, unbounded health check, or forbidden environment setting
-   enters the topology.
+   GMS on the dedicated `127.0.0.1` variant port. Mount no host path into the
+   services.
+8. Add static tests that fail if a service, non-loopback port, unexpected
+   network or attachment, mutable image, host path, unbounded health check, or
+   forbidden environment setting enters the topology.
 
 ### Initial reviewed image locks
 
@@ -146,8 +152,6 @@ it must not silently substitute a current quickstart or floating tag.
 ### Gate
 
 ```text
-docker compose \
-  -f tests/integration/datahub/v1.7.0/docker-compose.yml config --quiet
 pytest -q tests/unit/test_datahub_gms_gate_contract.py -k topology
 git diff --check -- tests/integration/datahub/v1.7.0 \
   tests/unit/test_datahub_gms_gate_contract.py
@@ -196,11 +200,11 @@ and exact version checks.
 8. Compute expected aspect values and direct `Consumes`/`Produces` Dataset
    relationships from the immutable, deeply validated artifact.
 9. Invoke exact official `datahub ingest mcps` as a bounded child process using
-   only the internal GMS address. Require exit zero, exactly N written, zero
-   warnings, and zero failures from the official report. Do not accept a
-   generic success string.
+   only the reviewed internal or loopback GMS address. Require exit zero,
+   exactly N written, zero warnings, and zero failures from the official report.
+   Do not accept a generic success string.
 10. Query REST.li `entitiesV2` with a percent-encoded entity URN and the exact
-    emitted aspect names. Permit only the one server-owned key aspect in
+    emitted aspect names. Permit only the optional server-owned key aspect in
     addition to the requested aspects and require exact JSON-value equality.
     Do not fall back to the
     v1.7.0 OpenAPI latest-entity route that fails on `SystemMetadata.__type`.
@@ -285,25 +289,26 @@ package
 ```
 
 The job uses one Linux/amd64 `ubuntu-24.04` runner, explicit read-only contents
-permission, and a 35-minute timeout. It downloads the built wheel and Python
-3.10 source baselines from the existing package/offline-oracle handoffs,
-generates new artifacts from the wheel as the only GMS inputs, and never mounts
-or imports the streamt source tree inside the oracle container.
+permission, and a 45-minute timeout. It downloads the built wheel from the
+package handoff; the prerequisite Python 3.10-3.12 offline matrix separately
+owns source/wheel parity. The real-GMS job generates new artifacts from the
+wheel as its only GMS inputs and never mounts the streamt source tree into a
+service container.
 
 ### Work
 
-1. Check out only the reviewed gate, input-project, and Compose files. Download
-   exactly one built wheel plus the Python 3.10 source
-   baselines, require exact filenames and nonempty bytes, reject extras, and
-   record their initial SHA-256 values.
+1. Check out the reviewed gate, input project, and Compose overlay. Download
+   exactly one built wheel, require its exact filename and nonempty bytes,
+   reject extras, and record its initial SHA-256 value.
 2. Preflight Docker Compose v2, Linux/amd64, free disk, and memory before image
    pulls. Fail with bounded capacity diagnostics rather than starting a stack
    that cannot complete.
-3. In a clean Python 3.10 virtual environment outside the checkout, install the
-   wheel, run `pip check`, prove the DataHub SDK is absent, and invoke the
-   installed executable twice for each variant. Require exact contract,
-   warnings, canonical determinism, and source-baseline parity; then mark both
-   fresh output files read only and record their SHA-256 values.
+3. In one clean Python 3.10 virtual environment outside the checkout, install
+   the wheel, run `pip check`, and prove the DataHub SDK is absent. In a second
+   isolated environment, install exact `acryl-datahub==1.7.0`. The host oracle
+   invokes the installed streamt executable twice for each variant, requires
+   exact contract and canonical determinism, makes each fresh output read only,
+   and records its SHA-256 value before ingestion.
 4. Pull every exact digest during a bounded bootstrap step. Once pulled, the
    topology's `pull_policy: never` prevents runtime registry access.
 5. Create a mode-0600 temporary environment file containing fresh disposable
@@ -313,15 +318,16 @@ or imports the streamt source tree inside the oracle container.
    run, attempt, and variant. Start a fresh stack and volumes, enforce service
    dependency/health transitions, run the oracle twice as specified, collect
    evidence, then tear down fully before starting the other variant.
-7. Run services on the internal Docker network and publish only GMS on a
-   dynamic loopback port for the host-side oracle. Do not modify host firewall
-   rules that would break Actions artifact upload or teardown.
+7. Run every service on the internal data network. Attach only GMS and
+   SystemUpdate to the per-project bootstrap bridge, and publish only GMS on
+   the dedicated loopback variant port for the host-side oracle.
 8. On both success and failure, collect tail-bounded color-free service logs,
    Compose status, exact image references, only container `State`/`Health`,
    artifact hashes, and the sanitized oracle summary.
 9. Never collect rendered Compose configuration or full container inspection
    because they include environment values.
-10. Upload one bounded evidence bundle per variant with 14-day retention.
+10. Upload one bounded evidence bundle containing per-variant directories with
+    14-day retention.
 11. In an unconditional final step, run exact-project `down --volumes
     --remove-orphans` and assert no project-labeled container, network, or
     volume remains. Preserve the test failure if cleanup also fails.
@@ -338,7 +344,7 @@ or imports the streamt source tree inside the oracle container.
 | one graph relationship phase | 90 seconds |
 | evidence collection | 2 minutes |
 | one teardown | 2 minutes |
-| complete job | 35 minutes |
+| complete job | 45 minutes |
 
 Polling intervals are two seconds. Authentication, validation, and other 4xx
 responses fail immediately. Only bounded connection and 5xx startup/indexing
@@ -350,7 +356,7 @@ Static tests parse the workflow with a YAML loader that preserves the `on`
 key and require:
 
 - dependency on the complete offline DataHub oracle;
-- exact wheel and Python 3.10 source-baseline downloads;
+- exact single-wheel download;
 - installed-wheel execution outside the checkout with the DataHub SDK absent;
 - fresh generation of both variants, with checked-in or previously uploaded
   generated JSON prohibited as the GMS input;
@@ -427,8 +433,8 @@ Slice 0 specification/plan
 
 Slices 1 and 2 may be developed in parallel after Slice 0, but neither lands
 without their shared static contract tests. Slice 3 consumes the committed
-built wheel and source-baseline handoffs, never a shared dirty tree. Slice 4
-reports only a landed green workflow.
+built-wheel handoff and follows the complete offline oracle matrix, never a
+shared dirty tree. Slice 4 reports only a landed green workflow.
 
 Agents do not modify, stage, or depend on user-owned untracked plans, prompts,
 or lockfiles. Each implementation slice has exclusive file ownership before

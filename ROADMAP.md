@@ -148,8 +148,10 @@ plane.
 - [x] Export deterministic DataHub v1.7.0 simplified Metadata Change
       Proposals from the neutral catalog model, with dependency-free
       validation, canonical JSON, isolated-wheel coverage, and an independent
-      SDK/metadata-file oracle. Live publication and real-GMS acceptance remain
-      separate work.
+      SDK/metadata-file oracle. A pinned test-only quickstart gate now proves
+      both identity variants across replay, exact aspect read-back, and direct
+      graph relationships. Production publication, synchronization, state, and
+      deletion remain separate work.
 - [ ] Publish metadata to Conduktor Console only after verifying and specifying
       an official supported API, authentication, idempotency, review, deletion,
       and recovery contract.

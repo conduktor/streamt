@@ -1,15 +1,16 @@
 # DataHub v1.7.0 GMS acceptance gate
 
-Status: proposed. An empirical feasibility run has passed, but no server-
-acceptance or live-lineage support claim may be published until the repeatable
-CI gate in this specification lands and passes.
+Status: implemented and supported for the exact test-only DataHub v1.7.0
+quickstart conformance boundary defined here. Complete CI run
+[`33798567142`](https://github.com/conduktor/streamt/actions/runs/33798567142)
+passed both fresh variants, replay, exact read-back, evidence, and teardown.
 
 This specification defines a test-only conformance gate that installs the built
 streamt wheel, generates its supported offline DataHub metadata files through
-the installed `streamt` executable, ingests those exact bytes into one fresh,
-pinned DataHub v1.7.0 Generalized Metadata Service (GMS), then reads the stored
-aspects and graph relationships back. It does not add a DataHub connection,
-publisher, or lifecycle command to production streamt.
+the installed `streamt` executable, ingests each variant's exact bytes into its
+own fresh, pinned DataHub v1.7.0 Generalized Metadata Service (GMS), then reads
+the stored aspects and graph relationships back. It does not add a DataHub
+connection, publisher, or lifecycle command to production streamt.
 
 The offline artifact contract remains owned by
 [`DataHub catalog export`](datahub-catalog-export.md). This gate consumes its
@@ -47,30 +48,22 @@ Normative upstream evidence is:
 Newer SDK, image, compose, or server behavior is not evidence. A version or
 image change requires a separate compatibility review and new locks.
 
-## Empirical feasibility evidence
+## Acceptance evidence
 
-A manual disposable probe established that the boundary is technically
-reachable:
+The initial manual disposable probe established feasibility. The implemented
+release gate now provides the normative evidence: CI run `33798567142`
+installed the built wheel and exact `acryl-datahub==1.7.0`, started two fresh
+copies of the locked five-service quickstart topology, and verified that
+`GET /config` reported version `v1.7.0` and commit
+`7f81ccbfe27b9acc947f5f600fcf9ddb72138a80`.
 
-- the official v1.7.0 quickstart started successfully;
-- `GET /config` reported
-  `versions.acryldata/datahub.version == "v1.7.0"` and
-  `versions.acryldata/datahub.commit ==
-  "7f81ccbfe27b9acc947f5f600fcf9ddb72138a80"`;
-- the current representative streamt example produced 11 proposals;
-- official `datahub ingest mcps` wrote all 11 proposals with zero warnings and
-  zero failures;
-- REST.li `entitiesV2`, also observed through `datahub get`, returned the
-  expected `dataJobInfo` and `dataJobInputOutput`;
-- `/relationships` with an exact `types` filter returned the expected one
-  `Consumes` and one `Produces` destination in `relationships[*].entity`; and
-- `/openapi/entities/v1/latest` returned HTTP 400 for the persisted aspects
-  because `SystemMetadata` lacked `__type`, so that endpoint is not an
-  acceptance surface for this exact release.
-
-This proves feasibility only. It was not the repeatable installed-wheel,
-two-artifact, isolation, replay, cleanup, and evidence-retention gate below and
-therefore does not change current public support claims.
+The Kafka-instance variant wrote all 15 proposals twice; the no-Kafka-instance
+variant wrote all 12 proposals twice. Both returned the five exact direct
+Dataset relationships after each ingestion, preserved every emitted aspect,
+left both input files unchanged, and removed every project container, network,
+and volume. The retained status evidence contains only service name, state,
+health, and exit code. This evidence supports only the test boundary and narrow
+claims below; it does not add a production DataHub network path.
 
 ## Exact boundary
 
@@ -81,7 +74,7 @@ production, DataHub Cloud, or shared quickstart instance.
 The accepted GMS address is exactly one of:
 
 - `http://datahub-gms:8080` on the gate's private internal Docker network; or
-- a dynamically allocated port bound only to `127.0.0.1` for a local
+- a dedicated job-local port bound only to `127.0.0.1` for a local
   developer or CI invocation.
 
 CI MUST use the loopback form unless the oracle itself runs on the private
@@ -102,15 +95,16 @@ In a new Python 3.10 virtual environment outside the checkout, it installs only
 that wheel, runs `pip check`, proves `acryl-datahub` is absent, and proves the
 imported `streamt` module and executable do not resolve from the checkout.
 
-A checked-in representative project and a small contract fixture define the
-expected logical declarations, URNs, aspect pairs/counts, and direct edges.
-They MUST NOT contain a generated MCP document or substitute for invoking the
-shipped command. The gate supplies this installed `streamt` executable and
-generates both canonical files during the current job:
+A checked-in representative project plus the exact contract encoded in the
+host-side gate define the expected logical declarations, URNs, aspect
+pairs/counts, and direct edges. They MUST NOT contain a generated MCP document
+or substitute for invoking the shipped command. The gate supplies this
+installed `streamt` executable and generates both canonical files during the
+current job:
 
 | Artifact | Kafka identity | Expected proposal count |
 | --- | --- | ---: |
-| `with-instance.json` | explicit Kafka platform instance `main` | 15 |
+| `with-kafka-instance.json` | explicit Kafka platform instance `main` | 15 |
 | `without-kafka-instance.json` | no Kafka platform instance or Kafka `dataPlatformInstance` aspect | 12 |
 
 Both include the explicit Gateway platform `conduktor-gateway` and instance
@@ -119,12 +113,12 @@ topic behavior; Flink, Gateway, and Connect DataJobs; direct inputs and actual
 outputs; a sink with no output; and declared/enforced contract custom
 properties.
 
-For each variant, the preparatory runner invokes the executable twice with the
+For each variant, the host-side gate invokes the executable twice with the
 same exact project and arguments. Both invocations MUST exit zero, emit the
-expected secret-neutral warnings, produce canonical bytes, equal the expected
-contract fixture, and be byte-identical. The gate MAY also compare those bytes
-with the existing source baseline handed off by the package job, but a baseline
-is secondary evidence and never the artifact sent to GMS.
+expected canonical bytes, satisfy the exact gate contract, and be
+byte-identical. The prerequisite offline release matrix owns exact warning and
+source/wheel baseline parity; the real-GMS job does not download that baseline.
+Only bytes freshly generated by its installed wheel may be sent to GMS.
 
 Only the files freshly generated by that installed executable are sent by
 the host-side server oracle. The gate records their SHA-256 values, changes their mode to
@@ -172,14 +166,19 @@ image.
 
 ## Isolation and resource contract
 
-All services MUST use one uniquely named Compose project and an
-`internal: true` Docker network. CI publishes only GMS, on a dynamically
-allocated `127.0.0.1` port, and mounts no Docker socket. The installed-wheel generation environment receives the
-representative input project and writes only to a fresh CI temporary directory.
-The host-side GMS oracle receives only its script, project fixture, installed
-executables, and freshly generated artifact. No repository source tree, home
-directory, cloud directory, or user configuration is mounted into the GMS
-network.
+All services MUST use one uniquely named Compose project and the private
+`internal: true` data-plane network. GMS and one-shot SystemUpdate additionally
+join a per-project bootstrap bridge: SystemUpdate requires outbound bootstrap
+validation, and GMS requires the ordinary bridge for Docker to publish its
+loopback listener. Kafka, MySQL, and OpenSearch remain internal-only. CI
+publishes only GMS on a dedicated `127.0.0.1` port and mounts no Docker socket.
+The installed-wheel generation environment receives the representative input
+project and writes only to a fresh CI temporary directory.
+The host-side GMS oracle is invoked with its script, project fixture, installed
+executables, and freshly generated artifact as its declared inputs. It runs
+from the checkout and is not a filesystem sandbox. No repository source tree,
+home directory, cloud directory, or user configuration is mounted into a
+service container.
 
 The gate removes inherited `DATAHUB_*`, proxy, Python-path, and user-site
 configuration before setting only its reviewed local values. It sets
@@ -191,21 +190,21 @@ the repository, printed, passed through a workflow secret, or uploaded.
 
 The runner MUST preflight Docker plus sufficient free disk and memory. The
 Compose file MUST bound Java heaps and container memory so one failed service
-cannot exhaust the runner. The job has a 35-minute outer timeout; image pull,
+cannot exhaust the runner. The job has a 45-minute outer timeout; image pull,
 each stack startup, each ingestion, read-back polling, diagnostics, and teardown
 also have smaller explicit timeouts.
 
-Network access is allowed only for the separate image/package bootstrap. Once
-the services start, containers run only on the internal Docker network and the
-host-side oracle talks only to the loopback GMS listener. The service network
-has no external route.
+Network access is allowed for the separate image/package bootstrap and the
+one-shot SystemUpdate bootstrap behavior above. The host-side oracle talks only
+to the loopback GMS listener; no storage service is published or attached to
+the bootstrap bridge.
 
 ## Per-artifact lifecycle
 
 First, the gate installs the supplied wheel outside the checkout and generates
 both variants twice through the installed `streamt` executable, proving their
-canonical bytes, deterministic equality, expected warnings, exact contract,
-and absence of the DataHub SDK. It then performs this complete lifecycle for
+canonical bytes, deterministic equality, exact contract, and absence of the
+DataHub SDK. It then performs this complete lifecycle for
 each freshly generated artifact before moving to the next variant:
 
 1. Create a new unique Compose project and new named volumes.
@@ -221,7 +220,7 @@ each freshly generated artifact before moving to the next variant:
 10. Ingest the identical bytes a second time, repeat every report and read-back
     assertion, and require no change in the exact result.
 11. Collect bounded evidence, destroy the Compose project and volumes, and
-    prove no project-labeled container or volume remains.
+    prove no project-labeled container, network, or volume remains.
 
 The second ingestion proves repeatable GMS handling of the exact `UPSERT`
 artifact only. It does not establish streamt publication idempotency,
@@ -232,13 +231,14 @@ reconciliation, ownership, deletion, or recovery behavior.
 The publishing command is intentionally test-only:
 
 ```text
-DATAHUB_GMS_URL=http://127.0.0.1:<DYNAMIC-PORT> \
+DATAHUB_GMS_URL=http://127.0.0.1:<LOOPBACK-PORT> \
 DATAHUB_TELEMETRY_ENABLED=false \
 datahub ingest mcps <READ-ONLY-ARTIFACT>
 ```
 
-It MUST use the exact official v1.7.0 executable from the locked ingestion
-image, skip inherited profiles, use no token, and complete within 120 seconds.
+It MUST use the exact official v1.7.0 executable from an isolated host virtual
+environment, skip inherited profiles, use no token, and complete within 120
+seconds.
 The gate parses the official report rather than accepting a success-looking
 log line. A nonzero exit; mismatched written count; warning; failure; traceback;
 retry exhaustion; or mutation of the input bytes fails the gate.
@@ -257,9 +257,10 @@ that entity's emitted aspect names. It extracts each returned aspect's JSON
 value and compares it with the exact emitted JSON value.
 
 The response MUST be HTTP 200 and name every requested aspect exactly once.
-GMS v1.7.0 also returns the entity's server-owned key aspect even when an
-aspect filter is supplied; that one key aspect is allowed but excluded from
-the comparison. Any other unrequested aspect fails the gate. Every emitted
+GMS v1.7.0 may also return the entity's asynchronously generated, server-owned
+key aspect even when an aspect filter is supplied; that one optional key
+aspect is allowed but excluded from the comparison. Any other unrequested
+aspect fails the gate. Every emitted
 aspect value MUST equal the generated value exactly. This assertion covers:
 
 - `dataFlowInfo`;
@@ -280,9 +281,10 @@ test-only topology. Its use is not a production streamt API promise and does
 not establish compatibility with later DataHub versions.
 
 Primary aspect read-back uses bounded polling for at most 30 seconds with
-two-second intervals. Authentication errors, schema errors, and other 4xx
-responses fail immediately; only connection/5xx startup races may retry within
-the deadline.
+two-second intervals. A missing or not-yet-matching emitted value may converge
+within that deadline. Authentication errors, schema errors, unexpected aspects,
+and other 4xx responses fail immediately; connection and 5xx startup races may
+also retry within the deadline.
 
 ## Exact graph relationship read-back
 
@@ -314,17 +316,17 @@ exact Dataset `Consumes`/`Produces` sets.
 
 The gate retains, on success and failure:
 
-- the built wheel filename and SHA-256 value plus installed-distribution
-  identity evidence;
-- the exact installed `streamt docs datahub` arguments and bounded result
-  counts, without local paths or project secrets;
-- input filenames, sizes, and SHA-256 values;
-- the locked image names/digests actually used;
-- bounded Compose status and service logs without ANSI color;
-- only container `State` and `Health` fields, never complete inspection data;
-- sanitized SystemUpdate and GMS readiness results;
-- the official ingestion count summary for both attempts; and
-- a canonical JSON summary of exact aspect and graph relationship checks.
+- the built wheel SHA-256 value and environment preflight;
+- the upstream compose commit/checksum and locked image names, digests, and
+  pulled image IDs;
+- the exact loopback port assertion;
+- tail-bounded Compose service logs without ANSI color;
+- only container `Service`, `State`, `Health`, and `ExitCode` fields, never
+  complete inspection data;
+- per-variant cleanup output and empty project-residue evidence; and
+- a canonical JSON summary containing the artifact hash, exact server/CLI
+  identity, both official ingestion counts, aspect count, relationship count,
+  and final snapshot hash.
 
 Logs are tail-bounded and retained for 14 days. The gate MUST NOT upload its
 temporary environment file, rendered Compose configuration, full `docker
@@ -347,7 +349,7 @@ then both variants complete two ingestions each with exact counts, exact
 aspect read-back, exact graph Dataset relationships, unchanged artifact bytes,
 bounded evidence, and verified teardown under the locked v1.7.0 topology.
 
-After that gate passes in the complete release workflow, streamt MAY claim:
+Because that gate passed in complete CI run `33798567142`, streamt MAY claim:
 
 - the shipped `streamt` executable generates exact supported offline artifacts
   that are accepted and persisted by the pinned DataHub v1.7.0 quickstart GMS

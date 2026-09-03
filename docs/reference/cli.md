@@ -1890,10 +1890,13 @@ closed with `E508_DATAHUB_INVALID` and no partial artifact.
 This command is an offline metadata-file export. It constructs no DataHub,
 Kafka, Gateway, deployment-state, or subprocess client and has no runtime
 `acryl-datahub` dependency. Release gates validate the bytes with the exact
-DataHub 1.7.0 SDK, wrapper, and metadata-file reader, but streamt does not call
-GMS, ingest the file, publish or reconcile entities, verify platform existence,
-or claim live-server lineage behavior. See [DataHub catalog export](datahub-catalog.md)
-for identity, mapping, warning, and sensitivity details.
+DataHub 1.7.0 SDK, wrapper, and metadata-file reader. A separate test-only gate
+also ingests both identity variants twice into a disposable exact v1.7.0 GMS
+and verifies emitted aspects and representative direct relationships. The
+production command still does not call GMS, ingest the file, publish or
+reconcile entities, or verify platform existence. See
+[DataHub catalog export](datahub-catalog.md) for identity, mapping, warning,
+sensitivity, and pinned server-acceptance details.
 
 #### docs openlineage
 

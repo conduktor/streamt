@@ -38,11 +38,21 @@ and metadata-file reader run on every lane; the official file-source CLI
 dry-run runs on Python 3.11 with telemetry and network access disabled. CI run
 `33775922977` passed this complete release gate.
 
-This support boundary ends at an offline DataHub v1.7.0 metadata file. streamt
-does not contact GMS, publish, read, reconcile, delete, verify platform or
-entity existence, or claim live-server lineage behavior. Generated files
-intentionally disclose catalog identities, physical names, descriptions,
-contract state, and topology, so review their destination permissions. See
+A separate exact-server acceptance gate now installs the same built wheel and
+`acryl-datahub==1.7.0`, then uses two fresh pinned five-service quickstart
+projects. The Kafka-instance artifact writes 15/15 proposals across two
+ingestions; the no-Kafka-instance artifact writes 12/12. Both preserve every
+emitted aspect, return the expected five direct Dataset relationships after
+each ingestion, and leave no project container, network, or volume behind.
+Complete CI run
+[`33798567142`](https://github.com/conduktor/streamt/actions/runs/33798567142)
+passed this gate with loopback-only GMS publication and bounded evidence.
+
+The production command boundary still ends at the offline metadata file:
+streamt does not contact GMS, publish, read, reconcile, delete, or verify
+platform or entity existence. Generated files intentionally disclose catalog
+identities, physical names, descriptions, contract state, and topology, so
+review their destination permissions. See
 [DataHub catalog export](datahub-catalog.md) for the exact boundary.
 
 ## Unreleased — offline Backstage Software Catalog export

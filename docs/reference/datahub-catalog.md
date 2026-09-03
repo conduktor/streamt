@@ -15,6 +15,13 @@ command. It does not contact Kafka, Gateway, DataHub, a Generalized Metadata
 Service (GMS), or any other network service, and it does not prove that an
 entity, platform, or platform instance exists remotely.
 
+A separate release gate does exercise the shipped artifact against a disposable,
+exact DataHub v1.7.0 quickstart. Both Kafka identity variants are ingested twice;
+all five emitted aspect types are read back exactly, and the five representative
+direct `Consumes`/`Produces` Dataset relationships are verified after each
+ingestion. This is pinned test evidence, not a production publisher or general
+DataHub compatibility claim.
+
 ## Export a metadata file
 
 Supply every catalog identity explicitly on the command line:
@@ -260,14 +267,16 @@ constructor, wrapper, and metadata-file reader compatibility.
 
 The command does not publish, ingest, read, patch, delete, soft-delete,
 reconcile, synchronize, or roll back DataHub metadata. It has no URL, token,
-profile, recipe, emitter, GMS client, or server-acceptance claim. In particular,
-`datahub ingest mcps` is a publishing command and is not an offline validation
-step for this artifact.
+profile, recipe, emitter, or GMS client. In particular, `datahub ingest mcps`
+is a publishing command and is not an offline validation step for this
+artifact; only the isolated release gate invokes it against disposable GMS.
 
 Native DataHub ownership, GlobalTags, DataContracts, assertions, schema,
 columns, field-level lineage, destinations, exposures, domains, glossary
 terms, containers, status, subtypes, and live synchronization are unsupported.
 They are omitted rather than fabricated. See the
-[normative specification](../specs/datahub-catalog-export.md) and
-[implementation plan](../plans/2026-09-03-datahub-catalog-export.md) for the
-exact validation and release boundary.
+[offline specification](../specs/datahub-catalog-export.md) and
+[GMS acceptance specification](../specs/datahub-gms-v170-acceptance.md) for the
+normative boundaries. The corresponding records are the
+[offline implementation plan](../plans/2026-09-03-datahub-catalog-export.md)
+and [GMS acceptance plan](../plans/2026-09-03-datahub-gms-v170-acceptance.md).
