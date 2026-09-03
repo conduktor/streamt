@@ -13,15 +13,21 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
 from streamt.compiler.gateway_artifact import parse_compiled_gateway_rule_artifact
-from streamt.compiler.manifest import ArtifactOwnership
-from streamt.deployer.connect import is_connect_backend_identity
+from streamt.compiler.manifest import ArtifactOwnership, ConnectorArtifact
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectorChange,
+    is_connect_backend_identity,
+)
 from streamt.deployer.gateway import (
     is_gateway_backend_identity,
     is_gateway_resource_name,
@@ -301,6 +307,63 @@ class ManagedGatewayResourceDeletion:
         ):
             raise StateFormatError(
                 "managed Gateway deletion alias_name must be a valid Gateway resource name"
+            )
+
+
+@dataclass(frozen=True)
+class ManagedConnectorResourceDeletion:
+    """One exact secret-neutral Connector ownership-state deletion claim.
+
+    Runtime mutation and durable completion are authorized and proven
+    elsewhere.  This value gives state projection only the exact identities
+    needed to remove one matching prior managed record.
+    """
+
+    resource_id: str
+    backend_identity: str
+    connector_name: str
+    prior_artifact_checksum: str
+
+    def __post_init__(self) -> None:
+        if type(self.resource_id) is not str:
+            raise StateFormatError(
+                "managed Connector deletion resource_id must be a canonical string"
+            )
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+        except StateError:
+            raise StateFormatError(
+                "managed Connector deletion resource_id must be canonical"
+            ) from None
+        if identity.kind != "connector":
+            raise StateFormatError(
+                "managed Connector deletion resource_id must identify a connector"
+            )
+        if (
+            type(self.backend_identity) is not str
+            or not is_connect_backend_identity(self.backend_identity)
+        ):
+            raise StateFormatError(
+                "managed Connector deletion backend_identity must be canonical"
+            )
+        if (
+            type(self.connector_name) is not str
+            or not self.connector_name.strip()
+            or len(self.connector_name) > 256
+            or any(
+                unicodedata.category(character) in {"Cc", "Cs"}
+                for character in self.connector_name
+            )
+        ):
+            raise StateFormatError(
+                "managed Connector deletion connector_name must be valid"
+            )
+        if (
+            type(self.prior_artifact_checksum) is not str
+            or not _CHECKSUM_PATTERN.fullmatch(self.prior_artifact_checksum)
+        ):
+            raise StateFormatError(
+                "managed Connector deletion prior_artifact_checksum must be canonical"
             )
 
 
@@ -697,6 +760,7 @@ def updated_local_state(
     plan: DeploymentPlan,
     *,
     managed_gateway_deletions: tuple[ManagedGatewayResourceDeletion, ...] = (),
+    managed_connector_deletions: tuple[ManagedConnectorResourceDeletion, ...] = (),
 ) -> LocalState | None:
     """Return serial+1 state when desired owned records changed, else ``None``.
 
@@ -704,7 +768,8 @@ def updated_local_state(
     helper never infers deletion or ownership relinquishment from absence.  It
     removes a Gateway record only when the caller supplies an exact explicit
     deletion claim that matches the prior state and does not conflict with any
-    desired claim.
+    desired claim. Connector claims additionally bind the prior artifact
+    checksum and managed ownership mode.
     """
     if type(managed_gateway_deletions) is not tuple:
         raise StateFormatError("managed Gateway deletions must be an exact tuple")
@@ -713,6 +778,15 @@ def updated_local_state(
         for deletion in managed_gateway_deletions
     ):
         raise StateFormatError("managed Gateway deletions must contain exact deletion values")
+    if type(managed_connector_deletions) is not tuple:
+        raise StateFormatError("managed Connector deletions must be an exact tuple")
+    if any(
+        type(deletion) is not ManagedConnectorResourceDeletion
+        for deletion in managed_connector_deletions
+    ):
+        raise StateFormatError(
+            "managed Connector deletions must contain exact deletion values"
+        )
 
     desired = desired_managed_records(
         plan,
@@ -726,21 +800,120 @@ def updated_local_state(
     deletion_provider_ids: set[tuple[str, str]] = set()
     prior_provider_owners: dict[tuple[str, str], list[str]] = {}
     desired_provider_owners: dict[tuple[str, str], list[str]] = {}
+    connector_deletion_resource_ids: set[str] = set()
+    connector_deletion_provider_ids: set[tuple[str, str]] = set()
+    prior_connector_provider_owners: dict[tuple[str, str], list[str]] = {}
+    desired_connector_provider_owners: dict[tuple[str, str], list[str]] = {}
     for resource_uri, record in prior_state.resources.items():
-        if ResourceIdentity.parse(resource_uri).kind == "gateway_rule":
+        resource_kind = ResourceIdentity.parse(resource_uri).kind
+        if resource_kind == "gateway_rule":
             prior_provider_owners.setdefault(
                 (record.backend, record.physical_name),
                 [],
             ).append(resource_uri)
+        elif resource_kind == "connector" and managed_connector_deletions:
+            if (
+                type(resource_uri) is not str
+                or type(record) is not ManagedResourceRecord
+                or type(record.physical_name) is not str
+                or not record.physical_name.strip()
+                or len(record.physical_name) > 256
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cs"}
+                    for character in record.physical_name
+                )
+                or type(record.ownership) is not str
+                or record.ownership not in ("managed", "adopted")
+                or type(record.artifact_checksum) is not str
+                or not _CHECKSUM_PATTERN.fullmatch(record.artifact_checksum)
+                or type(record.backend) is not str
+                or not is_connect_backend_identity(record.backend)
+            ):
+                raise StateIdentityError(
+                    "prior Connector state contains invalid exact identity evidence"
+                )
+            binding = ConnectClusterBinding.from_backend_identity(record.backend)
+            prior_connector_provider_owners.setdefault(
+                (binding.endpoint_fingerprint, record.physical_name),
+                [],
+            ).append(resource_uri)
     for resource_uri, record in desired.items():
-        if ResourceIdentity.parse(resource_uri).kind == "gateway_rule":
+        resource_kind = ResourceIdentity.parse(resource_uri).kind
+        if resource_kind == "gateway_rule":
             desired_provider_owners.setdefault(
                 (record.backend, record.physical_name),
                 [],
             ).append(resource_uri)
 
-    for deletion in managed_gateway_deletions:
-        deletion_identity = ResourceIdentity.parse(deletion.resource_id)
+    if managed_connector_deletions:
+        connector_changes = getattr(plan, "connector_changes", None)
+        if type(connector_changes) is not list:
+            raise StateFormatError(
+                "Connector deletion projection requires an exact desired change collection"
+            )
+        for connector_change in connector_changes:
+            if type(connector_change) is not ConnectorChange:
+                raise StateFormatError(
+                    "Connector deletion projection contains an invalid desired change"
+                )
+            desired_connector = connector_change.desired
+            if desired_connector is None:
+                continue
+            if type(desired_connector) is not ConnectorArtifact:
+                raise StateFormatError(
+                    "Connector deletion projection contains an invalid desired artifact"
+                )
+            try:
+                parsed_desired = parse_compiled_connector_artifact(
+                    desired_connector.to_dict()
+                )
+                desired_ownership = ArtifactOwnership.from_dict(
+                    parsed_desired.ownership
+                )
+                desired_binding = ConnectClusterBinding.from_backend_identity(
+                    connector_change.backend_identity
+                )
+                logical_owner = (
+                    parsed_desired.name
+                    if desired_ownership is None
+                    else desired_ownership.owner_name
+                )
+                desired_resource_uri = resource_id(
+                    prior_state.project,
+                    prior_state.environment,
+                    "connector",
+                    logical_owner,
+                )
+            except Exception:
+                raise StateFormatError(
+                    "Connector deletion projection contains an invalid desired claim"
+                ) from None
+            if (
+                type(connector_change.connector_name) is not str
+                or type(parsed_desired.name) is not str
+                or connector_change.connector_name != parsed_desired.name
+                or type(parsed_desired.cluster) is not str
+                or parsed_desired.cluster != desired_binding.cluster_alias
+                or (
+                    desired_ownership is not None
+                    and (
+                        type(desired_ownership.project) is not str
+                        or type(desired_ownership.owner_type) is not str
+                        or type(desired_ownership.owner_name) is not str
+                        or type(desired_ownership.mode) is not str
+                    )
+                )
+            ):
+                raise StateFormatError(
+                    "Connector deletion projection contains an invalid desired claim"
+                )
+            desired_connector_provider_owners.setdefault(
+                (desired_binding.endpoint_fingerprint, parsed_desired.name),
+                [],
+            ).append(desired_resource_uri)
+
+    for gateway_deletion in managed_gateway_deletions:
+        deletion_identity = ResourceIdentity.parse(gateway_deletion.resource_id)
         if (
             deletion_identity.project != prior_state.project
             or deletion_identity.environment != prior_state.environment
@@ -748,40 +921,100 @@ def updated_local_state(
             raise StateIdentityError(
                 "managed Gateway deletion does not belong to the current state"
             )
-        if deletion.resource_id in deletion_resource_ids:
+        if gateway_deletion.resource_id in deletion_resource_ids:
             raise StateIdentityError(
                 "managed Gateway deletions contain a duplicate resource identity"
             )
-        deletion_resource_ids.add(deletion.resource_id)
+        deletion_resource_ids.add(gateway_deletion.resource_id)
 
-        provider_id = (deletion.backend_identity, deletion.alias_name)
+        provider_id = (gateway_deletion.backend_identity, gateway_deletion.alias_name)
         if provider_id in deletion_provider_ids:
             raise StateIdentityError(
                 "managed Gateway deletions contain a duplicate provider identity"
             )
         deletion_provider_ids.add(provider_id)
 
-        prior_record = prior_state.resources.get(deletion.resource_id)
+        prior_record = prior_state.resources.get(gateway_deletion.resource_id)
         if (
             prior_record is None
-            or prior_record.backend != deletion.backend_identity
-            or prior_record.physical_name != deletion.alias_name
-            or prior_provider_owners.get(provider_id) != [deletion.resource_id]
+            or prior_record.backend != gateway_deletion.backend_identity
+            or prior_record.physical_name != gateway_deletion.alias_name
+            or prior_provider_owners.get(provider_id) != [gateway_deletion.resource_id]
         ):
             raise StateIdentityError(
                 "managed Gateway deletion does not match one exact prior-state record"
             )
-        if deletion.resource_id in desired or provider_id in desired_provider_owners:
+        if (
+            gateway_deletion.resource_id in desired
+            or provider_id in desired_provider_owners
+        ):
             raise StateIdentityError(
                 "managed Gateway deletion conflicts with a desired resource claim"
+            )
+
+    for connector_deletion in managed_connector_deletions:
+        deletion_identity = ResourceIdentity.parse(connector_deletion.resource_id)
+        if (
+            deletion_identity.project != prior_state.project
+            or deletion_identity.environment != prior_state.environment
+        ):
+            raise StateIdentityError(
+                "managed Connector deletion does not belong to the current state"
+            )
+        if connector_deletion.resource_id in connector_deletion_resource_ids:
+            raise StateIdentityError(
+                "managed Connector deletions contain a duplicate resource identity"
+            )
+        connector_deletion_resource_ids.add(connector_deletion.resource_id)
+
+        deletion_binding = ConnectClusterBinding.from_backend_identity(
+            connector_deletion.backend_identity
+        )
+        provider_id = (
+            deletion_binding.endpoint_fingerprint,
+            connector_deletion.connector_name,
+        )
+        if provider_id in connector_deletion_provider_ids:
+            raise StateIdentityError(
+                "managed Connector deletions contain a duplicate provider identity"
+            )
+        connector_deletion_provider_ids.add(provider_id)
+
+        prior_record = prior_state.resources.get(connector_deletion.resource_id)
+        if (
+            type(prior_record) is not ManagedResourceRecord
+            or type(prior_record.ownership) is not str
+            or type(prior_record.backend) is not str
+            or type(prior_record.physical_name) is not str
+            or type(prior_record.artifact_checksum) is not str
+            or prior_record.ownership != "managed"
+            or prior_record.backend != connector_deletion.backend_identity
+            or prior_record.physical_name != connector_deletion.connector_name
+            or prior_record.artifact_checksum
+            != connector_deletion.prior_artifact_checksum
+            or prior_connector_provider_owners.get(provider_id)
+            != [connector_deletion.resource_id]
+        ):
+            raise StateIdentityError(
+                "managed Connector deletion does not match one exact prior managed record"
+            )
+        if (
+            connector_deletion.resource_id in desired
+            or provider_id in desired_connector_provider_owners
+        ):
+            raise StateIdentityError(
+                "managed Connector deletion conflicts with a desired resource claim"
             )
 
     for resource_uri, record in desired.items():
         if resources.get(resource_uri) != record:
             resources[resource_uri] = record
             changed = True
-    for deletion in managed_gateway_deletions:
-        del resources[deletion.resource_id]
+    for gateway_deletion in managed_gateway_deletions:
+        del resources[gateway_deletion.resource_id]
+        changed = True
+    for connector_deletion in managed_connector_deletions:
+        del resources[connector_deletion.resource_id]
         changed = True
     if not changed:
         return None
