@@ -1,0 +1,79 @@
+apiVersion: streamt.dev/v1alpha1
+project:
+  name: payments-gms-gate
+  version: 1.0.0
+  description: Deterministic DataHub GMS acceptance fixture
+runtime:
+  kafka:
+    bootstrap_servers: broker-not-contacted.invalid:19092
+  conduktor:
+    gateway:
+      proxy_bootstrap: gateway-not-contacted.invalid:16969
+connections:
+  warehouse:
+    type: snowflake
+    config:
+      password: gms-gate-connection-secret-omitted
+sources:
+  - name: raw_orders
+    description: Raw order events
+    topic: Orders.Raw
+    owner: gms-gate-source-owner-omitted
+    tags:
+      - gms-gate-source-tag-omitted
+    columns:
+      - name: private_source_column
+        type: BIGINT
+        description: gms-gate-source-column-omitted
+models:
+  - name: plain_topic
+    description: Provisioned order topic
+    materialized: topic
+    topic:
+      name: orders.plain
+    tags:
+      - gms-gate-topic-tag-omitted
+  - name: enriched_orders
+    description: Enriched order events
+    materialized: flink
+    sql: >-
+      SELECT id, 'gms-gate-compiled-sql-omitted' AS private_marker
+      FROM {{ source("raw_orders") }} WHERE id > 0
+    topic:
+      name: orders.enriched
+    owner: gms-gate-flink-owner-omitted
+    tags:
+      - gms-gate-flink-tag-omitted
+    contract:
+      enforced: true
+      columns:
+        - name: private_contract_column
+          description: gms-gate-contract-column-omitted
+  - name: public_orders
+    description: Public order projection
+    materialized: virtual_topic
+    sql: >-
+      SELECT * FROM {{ ref("enriched_orders") }} WHERE id IS NOT NULL
+    gateway:
+      virtual_topic:
+        name: orders(public)
+    owner: gms-gate-gateway-owner-omitted
+    tags:
+      - gms-gate-gateway-tag-omitted
+    contract:
+      enforced: false
+      columns:
+        - name: private_contract_column
+  - name: warehouse_sink
+    description: Warehouse delivery
+    materialized: sink
+    from:
+      - ref: public_orders
+    sink:
+      connector: gms-gate-connector-omitted
+      connection: warehouse
+      config:
+        api.token: gms-gate-connector-token-omitted
+    owner: gms-gate-sink-owner-omitted
+    tags:
+      - gms-gate-sink-tag-omitted
