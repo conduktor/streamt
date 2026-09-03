@@ -851,6 +851,16 @@ jobs:
               status=1
             fi
             if (( status == 0 )); then
+              published_port="$(
+                compose_bounded 20s port datahub-gms-quickstart 8080 \
+                  2> "${evidence}/port-error.txt"
+              )" || status=1
+              printf '%s\n' "${published_port}" > "${evidence}/published-port.txt"
+              if [[ "${published_port}" != "127.0.0.1:${port}" ]]; then
+                status=1
+              fi
+            fi
+            if (( status == 0 )); then
               local deadline=$((SECONDS + 180))
               until curl --fail --silent --show-error --max-time 5 \
                 "http://127.0.0.1:${port}/health" >/dev/null; do

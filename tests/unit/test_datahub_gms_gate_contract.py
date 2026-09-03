@@ -589,14 +589,15 @@ def test_topology_overlay_uses_unique_internal_storage_and_disables_usage() -> N
             "internal": "false",
         },
     }
-    assert overlay["services"]["system-update-quickstart"]["networks"] == {
-        "default": "null",
-        "bootstrap": "null",
-    }
+    for service in ("datahub-gms-quickstart", "system-update-quickstart"):
+        assert overlay["services"][service]["networks"] == {
+            "default": "null",
+            "bootstrap": "null",
+        }
     assert all(
         "networks" not in config
         for service, config in overlay["services"].items()
-        if service != "system-update-quickstart"
+        if service not in {"datahub-gms-quickstart", "system-update-quickstart"}
     )
     assert overlay["volumes"] == {
         "broker": {"name": "${COMPOSE_PROJECT_NAME:?set COMPOSE_PROJECT_NAME}_broker"},
@@ -634,6 +635,8 @@ def test_ci_runs_both_real_gms_variants_with_bounded_cleanup() -> None:
         assert reference in source
     assert "run_variant with-kafka-instance" in source
     assert "run_variant without-kafka-instance" in source
+    assert "port datahub-gms-quickstart 8080" in source
+    assert '"127.0.0.1:${port}"' in source
     assert "down --volumes --remove-orphans" in source
     assert source.count("--profile quickstart-backend") >= 2
     assert "label=com.docker.compose.project=${project}" in source
