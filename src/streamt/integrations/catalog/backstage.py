@@ -8,6 +8,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal, cast
 
 import yaml
@@ -83,6 +84,61 @@ class BackstageCatalogExport:
     warnings: tuple[BackstageExportWarning, ...]
     yaml_text: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self._entity_payloads, tuple) or not all(
+            isinstance(payload, str) for payload in self._entity_payloads
+        ):
+            raise BackstageExportError(
+                "Backstage export entity payloads must be immutable strings",
+                location="export.entities",
+            )
+        if not isinstance(self.warnings, tuple) or not all(
+            isinstance(warning, BackstageExportWarning) for warning in self.warnings
+        ):
+            raise BackstageExportError(
+                "Backstage export warnings must be immutable records",
+                location="export.warnings",
+            )
+        if any(
+            not isinstance(value, str)
+            for warning in self.warnings
+            for value in (warning.code, warning.message, warning.location)
+        ):
+            raise BackstageExportError(
+                "Backstage export warning fields must be strings",
+                location="export.warnings",
+            )
+        if self.warnings != tuple(
+            sorted(self.warnings, key=lambda warning: (warning.location, warning.code))
+        ):
+            raise BackstageExportError(
+                "Backstage export warnings must be canonically ordered",
+                location="export.warnings",
+            )
+        if not isinstance(self.yaml_text, str):
+            raise BackstageExportError(
+                "Backstage export YAML must be text",
+                location="export.yaml",
+            )
+
+        entities: list[dict[str, object]] = []
+        try:
+            for payload in self._entity_payloads:
+                decoded = json.loads(payload)
+                if not isinstance(decoded, dict):
+                    raise ValueError
+                entities.append(cast(dict[str, object], decoded))
+        except (json.JSONDecodeError, ValueError, RecursionError, TypeError):
+            raise BackstageExportError(
+                "Backstage export entity payloads are invalid",
+                location="export.entities",
+            ) from None
+        if _serialize_entities(entities) != self.yaml_text:
+            raise BackstageExportError(
+                "Backstage export YAML does not match its entities",
+                location="export.yaml",
+            )
+
     @property
     def entities(self) -> tuple[dict[str, object], ...]:
         """Return defensive entity copies for structured output."""
@@ -124,6 +180,14 @@ class _Inputs:
 class _SnapshotIndex:
     datasets: Mapping[LogicalDataset, CatalogDataset]
     processes: Mapping[str, CatalogProcess]
+
+
+@dataclass(frozen=True)
+class _ExpectedReferences:
+    owner: str
+    domain: str | None = None
+    system: str | None = None
+    dependencies: tuple[str, ...] | None = None
 
 
 class _CanonicalDumper(yaml.SafeDumper):
@@ -201,11 +265,46 @@ def generate_backstage_catalog(
         for process in index.processes.values()
     ]
 
+    expected_references: dict[str, _ExpectedReferences] = {
+        system_ref: _ExpectedReferences(
+            owner=inputs.default_owner.canonical,
+            domain=inputs.domain.canonical if inputs.domain is not None else None,
+        )
+    }
+    for logical, dataset in index.datasets.items():
+        cluster = inputs.gateway_cluster if dataset.transport == "gateway" else inputs.kafka_cluster
+        if cluster is None:
+            raise BackstageExportError(
+                "Catalog resource cluster reference is absent",
+                location="resources.dependsOn",
+            )
+        resource_dependencies = [cluster.canonical]
+        producer = process_refs.get(dataset.logical_name)
+        if producer is not None and dataset.logical_kind == "model":
+            resource_dependencies.append(producer)
+        expected_references[dataset_refs[logical]] = _ExpectedReferences(
+            owner=_resolved_owner(dataset.owner, inputs, location="resources.owner"),
+            system=system_ref if dataset.logical_kind == "model" else None,
+            dependencies=tuple(sorted(set(resource_dependencies), key=_reference_sort_key)),
+        )
+    for process in index.processes.values():
+        process_dependencies = tuple(
+            sorted(
+                {dataset_refs[dependency.logical_identity] for dependency in process.dependencies},
+                key=_reference_sort_key,
+            )
+        )
+        expected_references[process_refs[process.logical_name]] = _ExpectedReferences(
+            owner=_resolved_owner(process.owner, inputs, location="components.owner"),
+            system=system_ref,
+            dependencies=process_dependencies or None,
+        )
+
     resources.sort(key=_entity_sort_key)
     components.sort(key=_entity_sort_key)
     entities = (system, *resources, *components)
     external_refs = _permitted_external_refs(inputs)
-    _validate_entities(entities, inputs, external_refs)
+    _validate_entities(entities, inputs, external_refs, expected_references)
 
     warnings = _warnings(snapshot, index)
     yaml_text = _serialize_entities(entities)
@@ -278,13 +377,13 @@ def _validate_inputs(
 def _validate_mapper_owner_map(
     owner_map: Mapping[str, object] | None,
 ) -> Mapping[str, ParsedEntityRef]:
-    if owner_map is None or not owner_map:
+    if owner_map is None:
         return validate_owner_map({"version": 1, "owners": {}})
-    if set(owner_map) == {"version", "owners"}:
-        return validate_owner_map(owner_map)
-    if all(isinstance(value, ParsedEntityRef) for value in owner_map.values()):
+    if owner_map and all(isinstance(value, ParsedEntityRef) for value in owner_map.values()):
         raw = {label: cast(ParsedEntityRef, value).canonical for label, value in owner_map.items()}
         return validate_owner_map({"version": 1, "owners": raw})
+    if not owner_map and isinstance(owner_map, MappingProxyType):
+        return validate_owner_map({"version": 1, "owners": {}})
     return validate_owner_map(owner_map)
 
 
@@ -427,12 +526,18 @@ def _validate_dataset(dataset: object, *, location: str) -> None:
             "Catalog dataset has an invalid type",
             location=location,
         )
-    if dataset.logical_kind not in {"source", "model"}:
+    if not isinstance(dataset.logical_kind, str) or dataset.logical_kind not in {
+        "source",
+        "model",
+    }:
         raise BackstageExportError(
             "Catalog dataset logical kind is unsupported",
             location=f"{location}/logical_kind",
         )
-    if dataset.transport not in {"kafka", "gateway"}:
+    if not isinstance(dataset.transport, str) or dataset.transport not in {
+        "kafka",
+        "gateway",
+    }:
         raise BackstageExportError(
             "Catalog dataset transport is unsupported",
             location=f"{location}/transport",
@@ -448,9 +553,11 @@ def _validate_dataset(dataset: object, *, location: str) -> None:
     _snapshot_tags(dataset.tags, location=f"{location}/tags")
     _snapshot_owner(dataset.owner, location=f"{location}/owner")
     if dataset.contract is not None:
-        if not isinstance(
-            dataset.contract, CatalogContractSummary
-        ) or dataset.contract.status not in {"declared", "enforced"}:
+        if (
+            not isinstance(dataset.contract, CatalogContractSummary)
+            or not isinstance(dataset.contract.status, str)
+            or dataset.contract.status not in {"declared", "enforced"}
+        ):
             raise BackstageExportError(
                 "Catalog contract summary is invalid",
                 location=f"{location}/contract",
@@ -473,7 +580,11 @@ def _validate_process(
             "Catalog process has an invalid type",
             location=location,
         )
-    if process.process_kind not in {"flink", "gateway", "connect"}:
+    if not isinstance(process.process_kind, str) or process.process_kind not in {
+        "flink",
+        "gateway",
+        "connect",
+    }:
         raise BackstageExportError(
             "Catalog process kind is unsupported",
             location=f"{location}/process_kind",
@@ -495,7 +606,10 @@ def _validate_process(
                 "Catalog dependency has an invalid type",
                 location=dependency_location,
             )
-        if dependency.logical_kind not in {"source", "model"}:
+        if not isinstance(dependency.logical_kind, str) or dependency.logical_kind not in {
+            "source",
+            "model",
+        }:
             raise BackstageExportError(
                 "Catalog dependency kind is unsupported",
                 location=f"{dependency_location}/logical_kind",
@@ -927,6 +1041,7 @@ def _validate_entities(
     entities: Sequence[Mapping[str, object]],
     inputs: _Inputs,
     external_refs: frozenset[str],
+    expected_references: Mapping[str, _ExpectedReferences],
 ) -> None:
     generated_refs: set[str] = set()
     identities: set[tuple[str, str, str]] = set()
@@ -966,6 +1081,7 @@ def _validate_entities(
             entity,
             generated_refs=generated_refs,
             external_refs=external_refs,
+            expected_references=expected_references,
             location=f"entities/{position}",
         )
         try:
@@ -1140,6 +1256,7 @@ def _validate_entity_references(
     *,
     generated_refs: set[str],
     external_refs: frozenset[str],
+    expected_references: Mapping[str, _ExpectedReferences],
     location: str,
 ) -> None:
     spec = cast(Mapping[str, object], entity["spec"])
@@ -1167,6 +1284,31 @@ def _validate_entity_references(
         if parsed.canonical not in generated_refs and parsed.canonical not in external_refs:
             raise BackstageExportError(
                 "Generated Backstage reference is neither internal nor permitted external metadata",
+                location=f"{location}/spec/{field}",
+            )
+
+    metadata = cast(Mapping[str, object], entity["metadata"])
+    entity_ref = _generated_ref(
+        cast(str, entity["kind"]).lower(),
+        cast(str, metadata["namespace"]),
+        cast(str, metadata["name"]),
+    )
+    expected = expected_references.get(entity_ref)
+    if expected is None:
+        raise BackstageExportError(
+            "Generated Backstage entity has no expected reference policy",
+            location=location,
+        )
+    expected_fields: tuple[tuple[str, object], ...] = (
+        ("owner", expected.owner),
+        ("domain", expected.domain),
+        ("system", expected.system),
+        ("dependsOn", list(expected.dependencies) if expected.dependencies is not None else None),
+    )
+    for field, expected_value in expected_fields:
+        if spec.get(field) != expected_value or (expected_value is None and field in spec):
+            raise BackstageExportError(
+                "Generated Backstage reference does not match its exact relationship",
                 location=f"{location}/spec/{field}",
             )
 

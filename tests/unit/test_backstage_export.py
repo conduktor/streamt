@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 from dataclasses import replace
+from typing import Any
 
 import pytest
 import yaml
@@ -15,6 +16,7 @@ from streamt.integrations.catalog.backstage import (
     BackstageExportWarning,
     generate_backstage_catalog,
 )
+from streamt.integrations.catalog.inputs import validate_owner_map
 from streamt.integrations.catalog.model import (
     CatalogContractSummary,
     CatalogDataset,
@@ -196,6 +198,15 @@ def _names(result: BackstageCatalogExport) -> dict[tuple[str, str], str]:
     }
 
 
+def _namespaces(result: BackstageCatalogExport) -> dict[tuple[str, str], str]:
+    return {
+        (str(entity["kind"]), str(entity["metadata"]["title"])): str(  # type: ignore[index]
+            entity["metadata"]["namespace"]  # type: ignore[index]
+        )
+        for entity in result.entities
+    }
+
+
 def test_source_only_golden_entities_and_canonical_yaml() -> None:
     snapshot = CatalogSnapshot(
         project_name="Payments Platform",
@@ -327,6 +338,34 @@ def test_entities_are_defensive_copies_and_export_repr_is_bounded() -> None:
     assert "Payments Platform" not in repr(result)
 
 
+def test_export_constructor_rejects_mutable_or_inconsistent_result_state() -> None:
+    result = _generate()
+
+    with pytest.raises(BackstageExportError) as mutable_entities:
+        BackstageCatalogExport(
+            _entity_payloads=list(result._entity_payloads),  # type: ignore[arg-type]
+            warnings=result.warnings,
+            yaml_text=result.yaml,
+        )
+    assert mutable_entities.value.location == "export.entities"
+
+    with pytest.raises(BackstageExportError) as mutable_warnings:
+        BackstageCatalogExport(
+            _entity_payloads=result._entity_payloads,
+            warnings=list(result.warnings),  # type: ignore[arg-type]
+            yaml_text=result.yaml,
+        )
+    assert mutable_warnings.value.location == "export.warnings"
+
+    with pytest.raises(BackstageExportError) as inconsistent_yaml:
+        BackstageCatalogExport(
+            _entity_payloads=result._entity_payloads,
+            warnings=result.warnings,
+            yaml_text="---\n{}\n",
+        )
+    assert inconsistent_yaml.value.location == "export.yaml"
+
+
 def test_reordered_snapshot_collections_and_metadata_are_byte_identical() -> None:
     snapshot = _full_snapshot()
     datasets = tuple(
@@ -389,6 +428,93 @@ def test_identity_change_matrix_uses_only_frozen_seed_fields() -> None:
     physical_names = _names(_generate(changed_physical))
     assert physical_names[("Resource", "raw_orders")] != baseline[("Resource", "raw_orders")]
     assert physical_names[("Component", "orders_total")] == baseline[("Component", "orders_total")]
+
+
+def test_identity_matrix_covers_catalog_namespace_logical_name_and_resource_type() -> None:
+    snapshot = _full_snapshot()
+    baseline_result = _generate(snapshot)
+    baseline = _names(baseline_result)
+
+    changed_catalog = _names(_generate(snapshot, catalog_id="payments-v2"))
+    assert all(changed_catalog[key] != value for key, value in baseline.items())
+
+    changed_namespace_result = _generate(snapshot, catalog_namespace="analytics")
+    assert _names(changed_namespace_result) == baseline
+    assert set(_namespaces(changed_namespace_result).values()) == {"analytics"}
+    assert set(_namespaces(baseline_result).values()) == {"platform"}
+
+    renamed_datasets = tuple(
+        replace(dataset, logical_name="orders_renamed")
+        if dataset.logical_name == "orders_total"
+        else dataset
+        for dataset in snapshot.datasets
+    )
+    renamed_processes = tuple(
+        replace(
+            process,
+            logical_name=(
+                "orders_renamed" if process.logical_name == "orders_total" else process.logical_name
+            ),
+            dependencies=tuple(
+                replace(dependency, logical_name="orders_renamed")
+                if dependency.logical_identity == ("model", "orders_total")
+                else dependency
+                for dependency in process.dependencies
+            ),
+        )
+        for process in snapshot.processes
+    )
+    renamed = _names(
+        _generate(
+            replace(
+                snapshot,
+                datasets=renamed_datasets,
+                processes=renamed_processes,
+            )
+        )
+    )
+    assert renamed[("Component", "orders_renamed")] != baseline[("Component", "orders_total")]
+    assert renamed[("Resource", "orders_renamed")] == baseline[("Resource", "orders_total")]
+    assert renamed[("Component", "filtered_orders")] == baseline[("Component", "filtered_orders")]
+
+    changed_type = replace(
+        snapshot,
+        datasets=tuple(
+            replace(dataset, transport="gateway")
+            if dataset.logical_name == "orders_total"
+            else dataset
+            for dataset in snapshot.datasets
+        ),
+        processes=tuple(
+            replace(process, process_kind="gateway")
+            if process.logical_name == "orders_total"
+            else process
+            for process in snapshot.processes
+        ),
+    )
+    shared_cluster = "resource:infra/shared"
+    shared_baseline = _names(
+        _generate(
+            snapshot,
+            kafka_cluster_ref=shared_cluster,
+            gateway_cluster_ref=shared_cluster,
+        )
+    )
+    changed_type_names = _names(
+        _generate(
+            changed_type,
+            kafka_cluster_ref=shared_cluster,
+            gateway_cluster_ref=shared_cluster,
+        )
+    )
+    assert (
+        changed_type_names[("Resource", "orders_total")]
+        != shared_baseline[("Resource", "orders_total")]
+    )
+    assert (
+        changed_type_names[("Component", "orders_total")]
+        == shared_baseline[("Component", "orders_total")]
+    )
 
 
 def test_unicode_stem_fallback_and_length_are_canonical() -> None:
@@ -465,6 +591,60 @@ def test_declared_owner_never_falls_back_when_mapping_is_absent() -> None:
     assert str(captured.value) == "Declared catalog owner has no explicit mapping"
 
 
+def test_parsed_owner_map_labels_named_like_raw_envelope_remain_unambiguous() -> None:
+    parsed = validate_owner_map(
+        {
+            "version": 1,
+            "owners": {
+                "owners": "group:teams/owners",
+                "version": "group:teams/version",
+            },
+        }
+    )
+    snapshot = CatalogSnapshot(
+        project_name="Owner labels",
+        project_description=None,
+        effective_environment="default",
+        datasets=(
+            replace(
+                _source_dataset(logical_name="one", physical_name="one"),
+                owner=CatalogOwnerLabel("owners"),
+            ),
+            replace(
+                _source_dataset(logical_name="two", physical_name="two"),
+                owner=CatalogOwnerLabel("version"),
+            ),
+        ),
+        processes=(),
+        omitted_exposure_names=(),
+    )
+
+    result = _generate(snapshot, owner_map=parsed, gateway_cluster_ref=None, domain_ref=None)
+
+    assert _by_title(result, "one")["spec"]["owner"] == "group:teams/owners"  # type: ignore[index]
+    assert _by_title(result, "two")["spec"]["owner"] == "group:teams/version"  # type: ignore[index]
+
+
+def test_only_a_validated_empty_owner_map_can_use_the_parsed_empty_shape() -> None:
+    snapshot = replace(
+        _full_snapshot(),
+        datasets=(replace(_source_dataset(), owner=None),),
+        processes=(),
+        omitted_exposure_names=(),
+    )
+    parsed_empty = validate_owner_map({"version": 1, "owners": {}})
+
+    assert _generate(
+        snapshot,
+        owner_map=parsed_empty,
+        gateway_cluster_ref=None,
+        domain_ref=None,
+    ).entities
+    with pytest.raises(BackstageExportError) as captured:
+        _generate(snapshot, owner_map={}, gateway_cluster_ref=None, domain_ref=None)
+    assert captured.value.location == "owner_map"
+
+
 @pytest.mark.parametrize(
     ("overrides", "location"),
     [
@@ -492,10 +672,85 @@ def test_empty_snapshot_needs_no_clusters_and_ignores_valid_superfluous_refs() -
         omitted_exposure_names=(),
     )
 
-    result = _generate(snapshot, kafka_cluster_ref=None, gateway_cluster_ref=None)
+    without_clusters = _generate(
+        snapshot,
+        kafka_cluster_ref=None,
+        gateway_cluster_ref=None,
+        domain_ref=None,
+    )
+    with_clusters = _generate(
+        snapshot,
+        kafka_cluster_ref="resource:infra/kafka-unused",
+        gateway_cluster_ref="resource:infra/gateway-unused",
+        domain_ref=None,
+    )
 
-    assert len(result.entities) == 1
-    assert result.entities[0]["kind"] == "System"
+    assert len(with_clusters.entities) == 1
+    assert with_clusters.entities[0]["kind"] == "System"
+    assert with_clusters.yaml_bytes == without_clusters.yaml_bytes
+    assert "kafka-unused" not in with_clusters.yaml
+    assert "gateway-unused" not in with_clusters.yaml
+
+
+@pytest.mark.parametrize(
+    ("field", "location"),
+    [
+        ("dataset_kind", "snapshot.datasets/0/logical_kind"),
+        ("dataset_transport", "snapshot.datasets/0/transport"),
+        ("contract_status", "snapshot.datasets/1/contract"),
+        ("process_kind", "snapshot.processes/0/process_kind"),
+        ("dependency_kind", "snapshot.processes/0/dependencies/0/logical_kind"),
+    ],
+)
+def test_constructed_unhashable_enum_values_fail_with_safe_locations(
+    field: str,
+    location: str,
+) -> None:
+    snapshot = _full_snapshot()
+    if field == "dataset_kind":
+        object.__setattr__(snapshot.datasets[0], "logical_kind", [])
+    elif field == "dataset_transport":
+        object.__setattr__(snapshot.datasets[0], "transport", {})
+    elif field == "contract_status":
+        assert snapshot.datasets[1].contract is not None
+        object.__setattr__(snapshot.datasets[1].contract, "status", [])
+    elif field == "process_kind":
+        object.__setattr__(snapshot.processes[0], "process_kind", {})
+    else:
+        object.__setattr__(snapshot.processes[0].dependencies[0], "logical_kind", [])
+
+    with pytest.raises(BackstageExportError) as captured:
+        _generate(snapshot)
+
+    assert captured.value.location == location
+
+
+def test_exact_topology_rejects_a_closed_but_wrong_internal_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _generate()
+    wrong_resource = _by_title(baseline, "plain_topic")
+    wrong_ref = f"resource:platform/{wrong_resource['metadata']['name']}"  # type: ignore[index]
+    original = backstage._component_entity
+
+    def substitute_closed_target(*args: Any, **kwargs: Any) -> dict[str, object]:
+        entity = original(*args, **kwargs)
+        metadata = entity["metadata"]
+        if isinstance(metadata, dict) and metadata.get("title") == "orders_total":
+            spec = entity["spec"]
+            assert isinstance(spec, dict)
+            spec["dependsOn"] = [wrong_ref]
+        return entity
+
+    monkeypatch.setattr(backstage, "_component_entity", substitute_closed_target)
+
+    with pytest.raises(BackstageExportError) as captured:
+        _generate()
+
+    assert captured.value.location.endswith("/spec/dependsOn")
+    assert str(captured.value) == (
+        "Generated Backstage reference does not match its exact relationship"
+    )
 
 
 @pytest.mark.parametrize("failure", ["version", "physical", "dangling", "metadata"])
