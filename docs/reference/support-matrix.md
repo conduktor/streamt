@@ -34,20 +34,23 @@ working targets today.
 The next integrations are ordered by how much safety or interoperability they
 unlock:
 
-1. Continue adoption beyond the exact topic, schema, default-cluster Connector,
-   and alias-only Gateway slices in the
-   [fail-closed provider order](../plans/2026-09-02-extended-resource-adoption.md).
-   Full Gateway interceptor adoption needs round-trip provider evidence, while
-   Flink remains gated on artifact evidence and lifecycle semantics. Add
-   export/import workflows for deployment ownership state separately.
-2. Stateful external backends: Terraform/OpenTofu for cloud resources, Strimzi
-   output, and Flink Kubernetes Operator resources.
-3. Confluent Cloud Flink Statements as an explicit backend rather than a
+1. Complete the exact-SHA `0.1.0a1` external trusted-publisher rehearsal and
+   publication gate in the
+   [first alpha release plan](../plans/2026-09-03-first-alpha-release.md).
+2. Add PostgreSQL-v2-only explicit Connector removal under its
+   [fail-closed lifecycle contract](../specs/connector-explicit-removal.md).
+   Topic, schema, and Flink deletion remain separate, harder contracts.
+3. Add deterministic managed-topic-only Strimzi `KafkaTopic` GitOps output
+   under the [proposed export contract](../specs/strimzi-kafkatopic-export.md),
+   then consider Terraform/OpenTofu. Flink Kubernetes Operator output remains
+   gated because the current artifact is SQL rather than an application image
+   or JAR with a safe upgrade contract.
+4. Add Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
-4. Additional catalog boundaries: separately specified publication and
+5. Additional catalog boundaries: separately specified publication and
    synchronization workflows for the supported offline Backstage and DataHub
    artifacts, plus evidence-backed Conduktor Console metadata publication.
-5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
+6. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
    actions for runtime policy evaluation.
 
 See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the

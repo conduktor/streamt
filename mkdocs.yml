@@ -151,3 +151,5 @@ nav:
     - Configuration Contract: specs/configuration-contract.md
     - Change-Impact Plan: specs/change-impact-plan.md
     - DataHub v1.7.0 GMS Acceptance: specs/datahub-gms-v170-acceptance.md
+    - Connector Explicit Removal: specs/connector-explicit-removal.md
+    - Strimzi KafkaTopic Export: specs/strimzi-kafkatopic-export.md

@@ -15,6 +15,26 @@ The project does not aim to replace Terraform, Kubernetes operators, managed
 cloud control planes, observability systems, or data catalogs. It should
 integrate with them.
 
+## Current execution order — 2026-09-03
+
+1. Finish the immutable `0.1.0a1` release gate and external publication under
+   the [first public alpha release plan](docs/plans/2026-09-03-first-alpha-release.md).
+   The source and exact-SHA workflow are prepared; TestPyPI and PyPI publication
+   remain blocked on their external protected environments and trusted-
+   publisher registrations.
+2. Add PostgreSQL-v2-only explicit Kafka Connect removal under the
+   [Connector removal specification](docs/specs/connector-explicit-removal.md).
+   This is the next destructive lifecycle type because its strict identity,
+   observer, and secret-neutral artifact boundary already exist.
+3. Add a deterministic managed-topic-only Strimzi `KafkaTopic` GitOps export
+   under the
+   [Strimzi export specification](docs/specs/strimzi-kafkatopic-export.md).
+   It remains an offline artifact until its installed-package and pinned real
+   Strimzi reconciliation gates pass.
+
+Topic and schema deletion, Flink cancellation, production catalog publication,
+and direct Kubernetes apply remain separate later contracts.
+
 ## Release gates
 
 No release may be called production-ready until all of the following hold:
@@ -37,8 +57,18 @@ development cluster.
 - [x] Introduce explicit `external`, `managed`, and `adopted` ownership modes.
 - [x] Persist environment-scoped local last-applied ownership state for direct
       development applies.
-- [ ] Delete only previously managed resources through an explicit destructive
-      workflow backed by remote state and locking.
+- [ ] Delete only previously managed resources through explicit destructive
+      workflows backed by remote state and locking:
+  - [x] Gateway rule removal uses an exact lifecycle tombstone, reviewed plan,
+        locked state projection, recovery, and real Gateway gate. Its existing
+        local-state development mode does not satisfy the broader remote-only
+        completion criterion.
+  - [ ] Kafka Connect removal is specified next as PostgreSQL-schema-v2-only in
+        the
+        [Connector removal implementation plan](docs/plans/2026-09-03-connector-explicit-removal.md).
+  - [ ] Kafka topic, Schema Registry subject, and Flink job removal remain
+        blocked on their separate data-loss, reference, identity, and stateful
+        lifecycle contracts.
 - [x] Fix `apply --target` and `apply --select` so selection happens using
       artifact ownership metadata.
 - [x] Default destructive operations to disabled.
@@ -49,7 +79,10 @@ development cluster.
 - [x] Fix or temporarily remove non-working CLI paths and unsupported claims.
 - [x] Add CLI smoke tests, packaging checks, scenario tests, and a zero-error
       mypy gate to CI.
-- [ ] Publish an installable alpha release.
+- [ ] Publish the installable `0.1.0a1` alpha. Package identity and release
+      automation are prepared; the tag and uploads wait for exact-SHA CI,
+      protected `testpypi`/`pypi` environments, trusted publishers, rehearsal,
+      and independent production installation verification.
 
 Exit criterion: on a cluster with 40 unrelated topics, a project managing two
 topics can plan and apply without proposing or performing changes to the other
@@ -141,7 +174,8 @@ plane.
       UUID and timestamp; terminal truth follows commit/recovery state, including
       COMPLETE for verified post-commit `E426` release failures. Local,
       isolated-wheel, source-distribution, and real PostgreSQL 14/18 executable
-      gates pass in the full Python 3.10–3.12 release workflow.
+      gates pass in the full Python 3.10–3.14 unit release workflow; the
+      provider-specific package gates retain their separately pinned lanes.
 - [x] Export deterministic Backstage v1.54.2 core catalog entities from one
       offline compile, with pinned validation, canonical YAML, installed-wheel
       coverage, and independent `@backstage/catalog-model@1.10.0` parity.
@@ -156,7 +190,10 @@ plane.
       an official supported API, authentication, idempotency, review, deletion,
       and recovery contract.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.
-- [ ] Add GitOps output for Strimzi resources.
+- [ ] Add GitOps output for Strimzi resources. The first proposed slice emits
+      only deterministic, offline-validated Strimzi 1.2.0 `KafkaTopic`
+      resources for managed compiled topics; it must pass a pinned real
+      reconciliation/replay/read-back gate before support is claimed.
 - [ ] Add a Flink Kubernetes Operator backend where its lifecycle semantics fit.
 - [ ] Add a real Confluent Cloud Flink Statements backend.
 

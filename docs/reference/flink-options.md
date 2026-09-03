@@ -436,7 +436,12 @@ runtime:
 | Type | Description | Status |
 |------|-------------|--------|
 | `rest` | Connect via REST API | Supported |
-| `confluent` | Confluent Cloud for Flink | Supported |
+| `confluent` | Confluent Cloud for Flink | SQL compatibility only; deployment unsupported |
+
+The current deployer always uses the generic Flink REST and SQL Gateway
+contract. A `confluent` value does not activate the Confluent Cloud Flink
+Statements API, and must not be treated as a working cloud backend. That
+backend remains separate roadmap work.
 
 ### REST Cluster Configuration
 
