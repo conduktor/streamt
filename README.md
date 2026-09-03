@@ -112,14 +112,21 @@ Most models only need `name` and `sql`. Infrastructure fields like `topic:` and 
 
 ### Installation
 
-The first PyPI alpha has not been published yet. Install the current preview
+The immutable first-alpha installation is:
+
+```bash
+python -m pip install "streamt==0.1.0a1"
+```
+
+Until that exact version is visible on PyPI, install the candidate preview
 from the repository:
 
 ```bash
 python -m pip install "git+https://github.com/conduktor/streamt.git@main"
 ```
 
-Pin `main` to an immutable commit SHA for CI or other reproducible installs.
+Pin `main` to an immutable commit SHA for CI or other reproducible preview
+installs.
 
 ### Create a Project
 

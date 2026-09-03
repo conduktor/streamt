@@ -23,28 +23,31 @@ Python matrix, installed-wheel checks, PostgreSQL 14/18, Conduktor Gateway
 
 Publication is not ready yet. There is no public `streamt` distribution, tag,
 or GitHub release, and the repository has no `pypi` or `testpypi` GitHub
-environment. The PyPI and TestPyPI trusted publishers must be configured by an
-account authorized on those services. Do not create a release or tag until the
-preparation and TestPyPI rehearsal below pass for the exact candidate commit.
+environment, immutable `v*` tag rule, or protected-main rule. The PyPI and
+TestPyPI trusted publishers must be configured by an account authorized on
+those services. Do not create a release or tag until the preparation and
+TestPyPI rehearsal below pass for the exact candidate commit.
 
 ## Release contract
 
 - The first package version is the PEP 440 prerelease `0.1.0a1`; the Git tag is
-  exactly `v0.1.0a1` and the GitHub release is marked as a prerelease.
+  exactly `v0.1.0a1`, the GitHub release title is exactly `v0.1.0a1`, and the
+  GitHub release is marked as a prerelease.
 - `pyproject.toml`, installed distribution metadata, `streamt.__version__`,
   `streamt --version`, the tag, and the release title all identify the same
   version.
 - The release commit is on `main` and the full `CI` workflow has succeeded for
   that exact commit SHA. Success for an ancestor or a different rebuild is not
   sufficient.
-- The publish job receives only distributions produced by the unprivileged
-  build job. It does not check out or execute repository code while holding an
-  OIDC publishing identity.
+- The package CI job builds and uploads one immutable wheel/sdist pair before
+  exercising that same pair. Release verification and both publish jobs
+  download that exact artifact from the successful exact-SHA CI run; the
+  release workflow never rebuilds it.
 - TestPyPI and PyPI use separate protected GitHub environments and separate
   trusted-publisher registrations. No long-lived package-index token is stored
   in GitHub.
-- The credential-bearing publish action is pinned to a reviewed immutable
-  commit. Metadata verification and default PyPI attestations remain enabled.
+- Every action in an OIDC-bearing job is pinned to a reviewed immutable commit.
+  Metadata verification and default PyPI attestations remain enabled.
 - Uploads never use `skip-existing`. A duplicate version is an error, not an
   idempotent success.
 - The wheel and source distribution hashes recorded by the release workflow
@@ -67,6 +70,11 @@ Create both GitHub environments with deployment restrictions that admit only
 the exact release tag pattern. The production `pypi` environment requires a
 human reviewer who did not create the tag. Branch ancestry checks supplement
 these controls; they do not replace them.
+
+Create a repository ruleset for `refs/tags/v*` that blocks tag updates and
+deletion, and a protected-main ruleset requiring the complete `CI` workflow.
+The workflow re-resolves annotated or lightweight tags after environment
+approval, but only the immutable-tag rule closes the race after that check.
 
 The official procedures are:
 
@@ -95,21 +103,25 @@ the repository or workflow evidence artifacts.
    `CI` workflow whose `head_sha` is exactly that commit.
 3. Reject a tag/version mismatch, a commit outside `main`, missing exact-SHA CI
    success, or a regular rather than prerelease GitHub release.
-4. Build wheel and sdist once, run `twine check`, install each distribution in
-   a clean environment, smoke-test the CLI, and emit SHA-256 evidence.
-5. Upload the verified distributions as a short-retention workflow artifact.
-6. Add a manually triggered TestPyPI rehearsal that requires an existing exact
-   tag and can never select the production environment or repository.
-7. Pin the publish action by immutable SHA and keep production publication
-   restricted to the published GitHub prerelease event.
+4. Build wheel and sdist once in the package CI job, run `twine check`, upload
+   the immutable pair, then install and exercise those same files.
+5. Resolve the successful exact-SHA CI run and download its artifact for
+   release verification and each index upload; never rebuild during release.
+6. Add a manually triggered TestPyPI rehearsal whose input and workflow ref are
+   the same existing exact tag and that cannot select production publication.
+7. Pin every action in the OIDC jobs by immutable SHA, reverify the tag after
+   environment approval, and keep production publication restricted to the
+   published GitHub prerelease event.
 
 ### Slice 3: release documentation
 
 1. Replace stale numeric test badges and make README links valid on PyPI.
 2. Consolidate the accumulated unreleased notes under `0.1.0a1`.
-3. After production-index verification, change installation examples to
-   `python -m pip install "streamt==0.1.0a1"` in a follow-up commit and use the
-   equivalent exact `postgres` extra where needed.
+3. Make the packaged README safe for the immutable PyPI description before the
+   tag: show `python -m pip install "streamt==0.1.0a1"` plus a clearly labeled
+   pre-publication fallback. After production-index verification, update the
+   live installation guide in a follow-up commit and use the equivalent exact
+   `postgres` extra where needed.
 4. Keep the alpha limitations and unsupported deployment boundaries explicit.
 5. Mark the roadmap item complete only after the production index install has
    been independently verified.
@@ -120,7 +132,9 @@ the repository or workflow evidence artifacts.
    candidate SHA.
 2. Create the signed or annotated `v0.1.0a1` tag locally and verify that it
    resolves to that SHA. Push only that exact tag.
-3. Run the manual TestPyPI workflow. From a new environment, install with
+3. Run the manual TestPyPI workflow at the exact tag, for example
+   `gh workflow run release.yml --ref v0.1.0a1 -f tag=v0.1.0a1`. From a new
+   environment, install with
    `--index-url https://test.pypi.org/simple/` while allowing dependencies from
    PyPI, then verify distribution metadata, `streamt --version`, `streamt
    --help`, and one offline example.

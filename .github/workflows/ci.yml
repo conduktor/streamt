@@ -276,17 +276,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup minimum supported Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.10'
 
       - name: Build distributions
         run: |
-          pip install --upgrade pip build
+          python -m pip install --upgrade 'pip==26.2.1' 'build==1.6.0' 'twine==7.0.0'
           python -m build
+          python -m twine check --strict dist/*
+
+      - name: Upload exact release-candidate distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-distributions-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Install wheel in a clean environment
         run: |
@@ -516,21 +525,21 @@ jobs:
           printf 'STREAMT_DATAHUB_ARTIFACT_DIR=%s\n' "${artifact_dir}" >> "${GITHUB_ENV}"
 
       - name: Upload DataHub MCP oracle artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: datahub-catalog-mcp-artifacts
           path: ${{ env.STREAMT_DATAHUB_ARTIFACT_DIR }}/
           if-no-files-found: error
 
       - name: Upload wheel for DataHub compatibility matrix
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: datahub-streamt-wheel
           path: dist/*.whl
           if-no-files-found: error
 
       - name: Upload Python 3.10 DataHub source baselines
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: datahub-catalog-source-baselines
           path: ${{ runner.temp }}/streamt-datahub-source-baselines/

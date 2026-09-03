@@ -15,36 +15,51 @@ permissions:
 
 jobs:
   build:
-    name: Build and verify distributions
+    name: Verify exact CI distributions
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      ci_run_attempt: ${{ steps.ci.outputs.run_attempt }}
+      ci_run_id: ${{ steps.ci.outputs.run_id }}
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+      release_tag: ${{ steps.identity.outputs.release_tag }}
     permissions:
       actions: read
       contents: read
     env:
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
       RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+      RELEASE_NAME: ${{ github.event.release.name }}
 
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
 
       - name: Verify exact tag, commit, version, and main ancestry
+        id: identity
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "release" && "${RELEASE_IS_PRERELEASE}" != "true" ]]; then
             echo "The first alpha must be published as a GitHub prerelease" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "release" && "${RELEASE_NAME}" != "${RELEASE_TAG}" ]]; then
+            echo "The GitHub release title must exactly match its version tag" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != "refs/tags/${RELEASE_TAG}" ]]; then
+            echo "The workflow ref must be the exact requested version tag" >&2
             exit 1
           fi
 
@@ -69,8 +84,11 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "${release_sha}" origin/main
           printf 'RELEASE_SHA=%s\n' "${release_sha}" >> "${GITHUB_ENV}"
+          printf 'release_sha=%s\n' "${release_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'release_tag=%s\n' "${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Require successful full CI for the exact release commit
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -118,12 +136,22 @@ jobs:
               sys.exit(f"no successful full CI run found for release commit {release_sha}")
           newest = max(successful_runs, key=lambda run: run["run_attempt"])
           print(f"verified exact-SHA CI run: {newest['html_url']}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run_id={newest['id']}\n")
+              output.write(f"run_attempt={newest['run_attempt']}\n")
           PY
 
-      - name: Build and inspect distributions
+      - name: Download the exact distributions tested by CI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-distributions-${{ steps.ci.outputs.run_attempt }}
+          path: dist/
+          run-id: ${{ steps.ci.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Inspect downloaded distributions
         run: |
-          python -m pip install --upgrade pip build twine
-          python -m build
+          python -m pip install 'twine==7.0.0'
           python -m twine check --strict dist/*
 
       - name: Record distribution SHA-256 digests
@@ -153,7 +181,7 @@ jobs:
             artifact="$(realpath "${artifacts[${index}]}")"
             venv="${RUNNER_TEMP}/streamt-release-${index}"
             python -m venv "${venv}"
-            "${venv}/bin/python" -m pip install --upgrade pip
+            "${venv}/bin/python" -m pip install 'pip==26.2.1'
             "${venv}/bin/python" -m pip install --progress-bar off "${artifact}"
             "${venv}/bin/python" -m pip check
             cd "${RUNNER_TEMP}"
@@ -187,14 +215,6 @@ jobs:
             cd "${GITHUB_WORKSPACE}"
           done
 
-      - name: Upload release distributions
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-distributions
-          path: dist/
-          if-no-files-found: error
-          retention-days: 1
-
   publish:
     name: Publish to PyPI
     needs: build
@@ -205,15 +225,67 @@ jobs:
       name: pypi
       url: https://pypi.org/project/streamt/
     permissions:
+      actions: read
+      contents: read
       id-token: write
+    env:
+      RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
 
     steps:
+      - name: Reverify immutable release tag after environment approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          api = f"https://api.github.com/repos/{repository}"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def load(url: str) -> dict[str, object]:
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers=headers), timeout=30
+              ) as response:
+                  return json.load(response)
+
+          encoded_tag = urllib.parse.quote(tag, safe="")
+          target = load(f"{api}/git/ref/tags/{encoded_tag}").get("object")
+          for _ in range(8):
+              if not isinstance(target, dict):
+                  sys.exit("release tag lookup returned an invalid object")
+              target_type = target.get("type")
+              target_sha = target.get("sha")
+              if target_type == "commit":
+                  if target_sha != os.environ["RELEASE_SHA"]:
+                      sys.exit("release tag moved after distribution verification")
+                  print(f"reverified immutable release tag at {target_sha}")
+                  break
+              if target_type != "tag" or not isinstance(target_sha, str):
+                  sys.exit("release tag did not resolve to a commit")
+              target = load(f"{api}/git/tags/{target_sha}").get("object")
+          else:
+              sys.exit("release tag indirection exceeds the supported bound")
+          PY
+
       - name: Download release distributions
         # Pin every action in the OIDC-bearing job, not only the publisher.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: python-distributions
+          name: python-distributions-${{ needs.build.outputs.ci_run_attempt }}
           path: dist/
+          run-id: ${{ needs.build.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Publish distributions with trusted publishing
         # Reviewed release/v1 commit; keep credential-bearing actions immutable.
@@ -229,15 +301,67 @@ jobs:
       name: testpypi
       url: https://test.pypi.org/project/streamt/
     permissions:
+      actions: read
+      contents: read
       id-token: write
+    env:
+      RELEASE_SHA: ${{ needs.build.outputs.release_sha }}
+      RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
 
     steps:
+      - name: Reverify immutable release tag after environment approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          api = f"https://api.github.com/repos/{repository}"
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def load(url: str) -> dict[str, object]:
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers=headers), timeout=30
+              ) as response:
+                  return json.load(response)
+
+          encoded_tag = urllib.parse.quote(tag, safe="")
+          target = load(f"{api}/git/ref/tags/{encoded_tag}").get("object")
+          for _ in range(8):
+              if not isinstance(target, dict):
+                  sys.exit("release tag lookup returned an invalid object")
+              target_type = target.get("type")
+              target_sha = target.get("sha")
+              if target_type == "commit":
+                  if target_sha != os.environ["RELEASE_SHA"]:
+                      sys.exit("release tag moved after distribution verification")
+                  print(f"reverified immutable release tag at {target_sha}")
+                  break
+              if target_type != "tag" or not isinstance(target_sha, str):
+                  sys.exit("release tag did not resolve to a commit")
+              target = load(f"{api}/git/tags/{target_sha}").get("object")
+          else:
+              sys.exit("release tag indirection exceeds the supported bound")
+          PY
+
       - name: Download verified rehearsal distributions
         # Pin every action in the OIDC-bearing job, not only the publisher.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: python-distributions
+          name: python-distributions-${{ needs.build.outputs.ci_run_attempt }}
           path: dist/
+          run-id: ${{ needs.build.outputs.ci_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Publish distributions to TestPyPI with trusted publishing
         # Reviewed release/v1 commit; keep credential-bearing actions immutable.
