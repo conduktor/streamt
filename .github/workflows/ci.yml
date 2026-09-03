@@ -309,6 +309,18 @@ jobs:
             "${GITHUB_WORKSPACE}/tests/unit/test_openlineage_validation.py::test_built_wheel_and_source_distribution_contain_openlineage_resources" \
             --tb=short
 
+      - name: Verify Backstage schemas in wheel and source distribution
+        timeout-minutes: 3
+        shell: bash
+        env:
+          STREAMT_TEST_DISTRIBUTIONS_DIR: ${{ github.workspace }}/dist
+        run: |
+          set -euo pipefail
+          cd /tmp
+          env -u PYTHONPATH /tmp/streamt-wheel-smoke/bin/python -I -m pytest \
+            "${GITHUB_WORKSPACE}/tests/unit/test_backstage_validation.py::test_built_wheel_and_source_distribution_contain_backstage_resources" \
+            --tb=short
+
       - name: Smoke-test installed ODCS export offline
         run: |
           cd /tmp
@@ -414,6 +426,47 @@ jobs:
           cd "${isolated_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
             /tmp/streamt-wheel-smoke/bin/python -I openlineage_apply_wheel_smoke.py
+
+      - name: Smoke-test installed Backstage catalog export offline
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-backstage-wheel-XXXXXX")"
+          parity_path="${RUNNER_TEMP}/streamt-backstage-catalog-parity.yaml"
+          cp tests/package/backstage_catalog_wheel_smoke.py "${isolated_root}/"
+          cd "${isolated_root}"
+          env -u PYTHONPATH \
+            STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_BACKSTAGE_PARITY_PATH="${parity_path}" \
+            /tmp/streamt-wheel-smoke/bin/python -I backstage_catalog_wheel_smoke.py
+          printf 'STREAMT_BACKSTAGE_PARITY_PATH=%s\n' "${parity_path}" >> "${GITHUB_ENV}"
+
+      - name: Setup Node.js for Backstage release parity
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Validate installed-wheel Backstage YAML with pinned Node packages
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s "${STREAMT_BACKSTAGE_PARITY_PATH}"
+          audit_dir="$(mktemp -d "${RUNNER_TEMP}/streamt-backstage-node-XXXXXX")"
+          npm install \
+            --prefix "${audit_dir}" \
+            --ignore-scripts \
+            --no-save \
+            --package-lock=false \
+            @backstage/catalog-model@1.10.0 \
+            yaml@2.8.1
+          cp tests/package/backstage_catalog_node_validate.cjs "${audit_dir}/validate.cjs"
+          cd "${audit_dir}"
+          validator_output="$(node validate.cjs < "${STREAMT_BACKSTAGE_PARITY_PATH}")"
+          test -z "${validator_output}"
 
       - name: Smoke-test installed PostgreSQL extra
         run: |
