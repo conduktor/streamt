@@ -3,9 +3,12 @@
 ## Status and objective
 
 Status: in progress. The reserved codes, strict declaration, compiled artifact,
-and fail-closed plan/apply boundary are implemented. Connector-removal
-preflight, planning, reviewed authorization, mutation, recovery, and release
-gates remain open; no deletion capability is claimed yet.
+PostgreSQL-v2 authority gate, and provider-free identity/state preflight are
+implemented. Valid targets remain deliberately hard-stopped before providers,
+reviewed-plan output, or state writes until planning can produce an exact
+assessment or action for every tombstone. Observation, deletion planning,
+reviewed evidence, mutation, recovery, and release gates remain open; no
+deletion capability is claimed yet.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as

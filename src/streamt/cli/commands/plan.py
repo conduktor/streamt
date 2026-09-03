@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 
 import click
 
 from streamt.cli.connector_removal_guard import (
-    enforce_connector_removals_unavailable,
+    enforce_connector_removal_plan_authorization,
 )
 from streamt.cli.helpers import (
     check_required_deployers,
@@ -24,6 +25,14 @@ from streamt.cli.helpers import (
     make_sr_deployer,
     redact_sensitive_text,
 )
+from streamt.compiler.connector_artifact import (
+    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
+    ConnectorRemovalClusterReferenceError,
+    ConnectorRemovalPreflightError,
+    ConnectorRemovalRuntimeRequiredError,
+    ConnectorRemovalStateAuthorityError,
+)
+from streamt.core.deployment_state import RemoteStateRequiredError
 from streamt.core.errors import ErrorCode
 from streamt.core.models import StreamtProject
 from streamt.deployer.connect import ConnectorChange, secret_neutral_connector_changes
@@ -42,6 +51,7 @@ from streamt.deployer.state import (
     local_state_path,
 )
 from streamt.deployer.state_backend import (
+    StateBackendInvalidStateError,
     StateBackendLockLostError,
     StateBackendLockTimeoutError,
     StateBackendRecoveryRequiredError,
@@ -102,11 +112,14 @@ def plan(
     from streamt.core.validator import ProjectValidator
     from streamt.deployer.planner import (
         DeploymentPlanner,
+        require_connector_removal_postgres_state,
+        resolve_connector_planning_targets,
         resolve_gateway_planning_targets,
     )
 
     fmt = make_formatter(ctx, "plan")
     project_path = get_project_path(project_dir)
+    connector_removal_workflow = False
 
     try:
         parser = ProjectParser(
@@ -115,13 +128,14 @@ def plan(
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
-        enforce_connector_removals_unavailable(
-            (
-                project.lifecycle.connector_removals
-                if isinstance(project, StreamtProject)
-                else []
-            ),
+        connector_removal_workflow = bool(
+            isinstance(project, StreamtProject) and project.lifecycle.connector_removals
+        )
+        enforce_connector_removal_plan_authorization(
+            (project.lifecycle.connector_removals if isinstance(project, StreamtProject) else []),
             fmt,
+            offline=offline,
+            plan_output=plan_output,
         )
         parsed_environment = parser.env_config.environment.name if parser.env_config else None
         effective_environment = (
@@ -141,9 +155,13 @@ def plan(
 
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
-        enforce_connector_removals_unavailable(
-            manifest.artifacts.get("connector_removals", []),
-            fmt,
+        raw_connector_removals = manifest.artifacts.get("connector_removals", [])
+        connector_removal_workflow = connector_removal_workflow or (
+            type(raw_connector_removals) is not list or bool(raw_connector_removals)
+        )
+        require_connector_removal_postgres_state(
+            raw_connector_removals,
+            project.deployment_state,
         )
         prior_state: LocalState | None = None
         state_reference: StateReference | None = None
@@ -179,15 +197,30 @@ def plan(
 
             fmt.print("[yellow]Offline plan — assumes no existing resources[/yellow]\n")
         else:
-            state_service = make_deployment_state_service(
-                project_path,
-                project=project.project.name,
-                environment=effective_environment,
-                config=project.deployment_state,
-            )
-            with state_service.operation() as state_operation:
-                planning_snapshot = state_operation.observe()
-                state_operation.ensure_ready(planning_snapshot)
+            try:
+                state_service = make_deployment_state_service(
+                    project_path,
+                    project=project.project.name,
+                    environment=effective_environment,
+                    config=project.deployment_state,
+                )
+            except StateBackendInvalidStateError:
+                if connector_removal_workflow:
+                    raise ConnectorRemovalStateAuthorityError(
+                        "PostgreSQL-v2 Connector removal authority is invalid"
+                    ) from None
+                raise
+            with ExitStack() as state_stack:
+                try:
+                    state_operation = state_stack.enter_context(state_service.operation())
+                    planning_snapshot = state_operation.observe()
+                    state_operation.ensure_ready(planning_snapshot)
+                except StateBackendInvalidStateError:
+                    if connector_removal_workflow:
+                        raise ConnectorRemovalStateAuthorityError(
+                            "PostgreSQL-v2 Connector removal authority is invalid"
+                        ) from None
+                    raise
                 operation_status = planning_snapshot.control.safe_status()
                 prior_state = planning_snapshot.state.state
                 state_reference = StateReference.from_observation(planning_snapshot.state)
@@ -196,6 +229,18 @@ def plan(
                         f"{LOCAL_STATE_CI_WARNING} State file: "
                         f"{local_state_path(project_path, environment=effective_environment)}",
                         code=ErrorCode.LOCAL_STATE_ONLY,
+                    )
+
+                if connector_removal_workflow:
+                    resolve_connector_planning_targets(
+                        manifest,
+                        project,
+                        environment=effective_environment,
+                        prior_state=prior_state,
+                        require_authoritative_state=True,
+                    )
+                    raise ConnectorRemovalPreflightError(
+                        CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE
                     )
 
                 raw_gateway_removals = manifest.artifacts.get(
@@ -359,6 +404,40 @@ def plan(
     except PlanFileError as e:
         fmt.add_error(StructuredError(code=ErrorCode.PLAN_FILE_INVALID, message=str(e)))
         fmt.print_error(str(e))
+        fmt.flush()
+        sys.exit(1)
+    except RemoteStateRequiredError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(StructuredError(code=ErrorCode.REMOTE_STATE_REQUIRED, message=safe_message))
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except ConnectorRemovalRuntimeRequiredError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(StructuredError(code=ErrorCode.CONNECT_REQUIRED, message=safe_message))
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except ConnectorRemovalClusterReferenceError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(StructuredError(code=ErrorCode.INVALID_CLUSTER_REF, message=safe_message))
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except ConnectorRemovalPreflightError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.CONNECTOR_REMOVAL_INVALID, message=safe_message)
+        )
+        fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except ConnectorRemovalStateAuthorityError as e:
+        safe_message = redact_sensitive_text(e)
+        fmt.add_error(
+            StructuredError(code=ErrorCode.STATE_BACKEND_UNAVAILABLE, message=safe_message)
+        )
+        fmt.print_error(safe_message)
         fmt.flush()
         sys.exit(1)
     except StateBackendLockTimeoutError as e:

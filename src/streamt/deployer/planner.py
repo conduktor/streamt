@@ -9,7 +9,15 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Optional, Protocol
 
-from streamt.compiler.connector_artifact import parse_compiled_connector_artifact
+from streamt.compiler.connector_artifact import (
+    CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE,
+    ConnectorRemovalArtifactFormatError,
+    ConnectorRemovalClusterReferenceError,
+    ConnectorRemovalPreflightError,
+    ConnectorRemovalRuntimeRequiredError,
+    parse_compiled_connector_artifact,
+    parse_compiled_connector_removal_artifact,
+)
 from streamt.compiler.gateway_artifact import (
     GatewayArtifactFormatError,
     parse_compiled_gateway_rule_artifact,
@@ -17,8 +25,14 @@ from streamt.compiler.gateway_artifact import (
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
+    ConnectorArtifactFormatError,
+    ConnectorRemovalArtifact,
     GatewayRuleArtifact,
     Manifest,
+)
+from streamt.core.deployment_state import (
+    PostgresDeploymentStateConfig,
+    RemoteStateRequiredError,
 )
 from streamt.core.models import StreamtProject
 from streamt.deployer.connect import (
@@ -74,6 +88,378 @@ class _PlannedChange(Protocol):
     """Common mutable action carried by backend-specific change records."""
 
     action: str
+
+
+@dataclass(frozen=True)
+class ResolvedConnectorRemoval:
+    """One compiled Connector tombstone bound only to runtime and prior state."""
+
+    resource_id: str
+    logical_owner: str
+    connector_name: str
+    binding: ConnectClusterBinding
+    prior_record: ManagedResourceRecord | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.resource_id) is not str
+            or type(self.logical_owner) is not str
+            or type(self.connector_name) is not str
+            or type(self.binding) is not ConnectClusterBinding
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector removal contains invalid identity value types"
+            )
+        try:
+            identity = ResourceIdentity.parse(self.resource_id)
+            declaration = ConnectorRemovalArtifact(
+                logical_owner=self.logical_owner,
+                connector_name=self.connector_name,
+                cluster_alias=self.binding.cluster_alias,
+            )
+        except (StateError, TypeError, ValueError, AttributeError):
+            raise ConnectorRemovalPreflightError(
+                "Connector removal has an invalid canonical resource identity"
+            ) from None
+        if (
+            len(self.resource_id) > 512
+            or identity.kind != "connector"
+            or identity.logical_name != declaration.logical_owner
+            or declaration.connector_name != self.connector_name
+            or declaration.cluster_alias != self.binding.cluster_alias
+            or (
+                self.prior_record is not None
+                and (
+                    type(self.prior_record) is not ManagedResourceRecord
+                    or self.prior_record.ownership != "managed"
+                    or self.prior_record.physical_name != self.connector_name
+                    or self.prior_record.backend != self.binding.backend_identity
+                )
+            )
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector removal contains mismatched identity evidence"
+            )
+
+
+@dataclass(frozen=True)
+class ConnectorPlanningTargets:
+    """Immutable provider-free desired and removal Connector targets."""
+
+    binding: ConnectClusterBinding
+    desired_connectors: tuple[ConnectorArtifact, ...] = ()
+    removals: tuple[ResolvedConnectorRemoval, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not ConnectClusterBinding:
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets require a canonical binding"
+            )
+        if not isinstance(self.desired_connectors, tuple) or any(
+            type(artifact) is not ConnectorArtifact for artifact in self.desired_connectors
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets require immutable desired artifacts"
+            )
+        if not isinstance(self.removals, tuple) or any(
+            type(removal) is not ResolvedConnectorRemoval for removal in self.removals
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets require immutable removal targets"
+            )
+        if any(
+            artifact.cluster != self.binding.cluster_alias for artifact in self.desired_connectors
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets contain a mismatched desired binding"
+            )
+        if any(removal.binding != self.binding for removal in self.removals):
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets contain a mismatched removal binding"
+            )
+
+
+def connector_removals_requested(raw_removals: object) -> bool:
+    """Return whether a collection attempts to declare Connector removals."""
+    return type(raw_removals) is not list or bool(raw_removals)
+
+
+def require_connector_removal_postgres_state(
+    raw_removals: object,
+    deployment_state: object,
+) -> None:
+    """Enforce the intrinsic PostgreSQL-v2 configuration boundary."""
+    if not connector_removals_requested(raw_removals):
+        return
+    if type(deployment_state) is not PostgresDeploymentStateConfig:
+        raise RemoteStateRequiredError("Connector removals require PostgreSQL deployment state")
+
+
+def _connector_binding_from_parsed_project(
+    project: StreamtProject,
+    *,
+    explicit_alias: str,
+) -> ConnectClusterBinding:
+    connect = project.runtime.connect
+    if connect is None or connect.default is None or not connect.clusters:
+        raise ConnectorRemovalRuntimeRequiredError(
+            "Connector removal requires a configured Kafka Connect runtime"
+        )
+    if explicit_alias != connect.default or explicit_alias not in connect.clusters:
+        raise ConnectorRemovalClusterReferenceError(
+            "Connector removal cluster must be the configured default Connect cluster"
+        )
+    try:
+        return ConnectClusterBinding.from_endpoint(
+            explicit_alias,
+            connect.clusters[explicit_alias].rest_url,
+        )
+    except ConnectClusterBindingError:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal runtime binding is invalid"
+        ) from None
+
+
+def _parse_connector_removals(raw_removals: object) -> tuple[ConnectorRemovalArtifact, ...]:
+    if type(raw_removals) is not list:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal manifest collection must be an exact list"
+        )
+    try:
+        return tuple(parse_compiled_connector_removal_artifact(removal) for removal in raw_removals)
+    except ConnectorRemovalArtifactFormatError:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal manifest contains an invalid compiled artifact"
+        ) from None
+
+
+def _connector_provider_locator(
+    binding: ConnectClusterBinding,
+    connector_name: str,
+) -> tuple[str, str]:
+    return (binding.endpoint_fingerprint, connector_name)
+
+
+def _connector_resource_uri(
+    project_name: str,
+    environment: str,
+    logical_owner: str,
+) -> str:
+    try:
+        resource_uri = resource_id(
+            project_name,
+            environment,
+            "connector",
+            logical_owner,
+        )
+    except StateError:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal has an invalid canonical resource identity"
+        ) from None
+    if len(resource_uri) > 512:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal resource identity exceeds the durable action boundary"
+        )
+    return resource_uri
+
+
+def resolve_connector_planning_targets(
+    manifest: Manifest,
+    project: object,
+    *,
+    environment: str,
+    prior_state: LocalState | None,
+    require_authoritative_state: bool,
+) -> ConnectorPlanningTargets:
+    """Resolve complete Connector identities without constructing or reading a provider."""
+    if not isinstance(manifest, Manifest) or not isinstance(project, StreamtProject):
+        raise ConnectorRemovalPreflightError(
+            "Connector removal preflight requires parsed project and manifest"
+        )
+    if type(require_authoritative_state) is not bool:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal preflight requires an exact state policy"
+        )
+    if project.project.name != manifest.project_name:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal project does not match deployment manifest"
+        )
+
+    raw_removals = manifest.artifacts.get("connector_removals", [])
+    removals = _parse_connector_removals(raw_removals)
+    require_connector_removal_postgres_state(raw_removals, project.deployment_state)
+    if not removals:
+        raise ConnectorRemovalPreflightError(
+            "Connector removal preflight requires at least one removal"
+        )
+    if require_authoritative_state and type(prior_state) is not LocalState:
+        raise ConnectorRemovalPreflightError(
+            "Online Connector removal planning requires authoritative ownership state"
+        )
+    if prior_state is not None:
+        if type(prior_state) is not LocalState:
+            raise ConnectorRemovalPreflightError(
+                "Connector removal preflight received invalid ownership state"
+            )
+        if prior_state.project != manifest.project_name or prior_state.environment != environment:
+            raise ConnectorRemovalPreflightError(
+                "Connector removal state belongs to another project environment"
+            )
+
+    binding = _connector_binding_from_parsed_project(
+        project,
+        explicit_alias=removals[0].cluster_alias,
+    )
+    if any(removal.cluster_alias != binding.cluster_alias for removal in removals):
+        raise ConnectorRemovalClusterReferenceError(
+            "Connector removal cluster must be the configured default Connect cluster"
+        )
+
+    raw_desired_connectors = manifest.artifacts.get("connectors", [])
+    if type(raw_desired_connectors) is not list:
+        raise ConnectorRemovalPreflightError("Connector manifest collection must be an exact list")
+    try:
+        desired_connectors = tuple(
+            bind_connector_artifact(
+                parse_compiled_connector_artifact(raw_connector),
+                binding,
+            )
+            for raw_connector in raw_desired_connectors
+        )
+    except (ConnectorArtifactFormatError, ConnectClusterBindingError):
+        raise ConnectorRemovalPreflightError(
+            "Connector removal manifest contains an invalid desired Connector artifact"
+        ) from None
+
+    resource_claims: dict[str, str] = {}
+    provider_claims: dict[tuple[str, str], str] = {}
+    target_claims: list[tuple[str, tuple[str, str]]] = []
+
+    def claim(logical_owner: str, connector_name: str, label: str) -> str:
+        resource_uri = _connector_resource_uri(
+            manifest.project_name,
+            environment,
+            logical_owner,
+        )
+        provider_locator = _connector_provider_locator(binding, connector_name)
+        if resource_uri in resource_claims:
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets collide on canonical resource identity"
+            )
+        if provider_locator in provider_claims:
+            raise ConnectorRemovalPreflightError(
+                "Connector planning targets collide on provider locator"
+            )
+        resource_claims[resource_uri] = label
+        provider_claims[provider_locator] = label
+        target_claims.append((resource_uri, provider_locator))
+        return resource_uri
+
+    for index, artifact in enumerate(desired_connectors):
+        ownership = ArtifactOwnership.from_dict(artifact.ownership)
+        if ownership is not None and ownership.project != manifest.project_name:
+            raise ConnectorRemovalPreflightError(
+                "Desired Connector ownership belongs to another project"
+            )
+        logical_owner = ownership.owner_name if ownership is not None else artifact.name
+        claim(logical_owner, artifact.name, f"desired[{index}]")
+
+    removal_resource_uris: list[str] = []
+    for index, removal in enumerate(removals):
+        removal_resource_uris.append(
+            claim(removal.logical_owner, removal.connector_name, f"removal[{index}]")
+        )
+
+    prior_provider_claims: dict[
+        tuple[str, str],
+        list[tuple[str, ManagedResourceRecord]],
+    ] = {}
+    legacy_name_claims: dict[str, list[str]] = {}
+    if prior_state is not None:
+        for prior_resource_uri, prior_record in prior_state.resources.items():
+            try:
+                identity = ResourceIdentity.parse(prior_resource_uri)
+            except StateError:
+                raise ConnectorRemovalPreflightError(
+                    "Connector prior state contains an invalid resource identity"
+                ) from None
+            if (
+                identity.project != prior_state.project
+                or identity.environment != prior_state.environment
+                or type(prior_record) is not ManagedResourceRecord
+            ):
+                raise ConnectorRemovalPreflightError(
+                    "Connector prior state contains mismatched identity evidence"
+                )
+            if identity.kind != "connector":
+                continue
+            try:
+                prior_binding = ConnectClusterBinding.from_backend_identity(prior_record.backend)
+            except ConnectClusterBindingError:
+                legacy_name_claims.setdefault(prior_record.physical_name, []).append(
+                    prior_resource_uri
+                )
+                continue
+            locator = _connector_provider_locator(
+                prior_binding,
+                prior_record.physical_name,
+            )
+            prior_provider_claims.setdefault(locator, []).append((prior_resource_uri, prior_record))
+
+    for resource_uri, provider_locator in target_claims:
+        connector_name = provider_locator[1]
+        if any(
+            legacy_resource_uri != resource_uri
+            for legacy_resource_uri in legacy_name_claims.get(connector_name, [])
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector prior state contains an ambiguous legacy provider claim"
+            )
+        matching_records = prior_provider_claims.get(provider_locator, [])
+        if len(matching_records) > 1 or any(
+            prior_resource_uri != resource_uri for prior_resource_uri, _record in matching_records
+        ):
+            raise ConnectorRemovalPreflightError(
+                "Connector prior state contains a conflicting provider claim"
+            )
+
+    resolved_removals: list[ResolvedConnectorRemoval] = []
+    for removal, resource_uri in zip(removals, removal_resource_uris, strict=True):
+        prior_record = prior_state.resources.get(resource_uri) if prior_state is not None else None
+        if prior_record is not None:
+            if prior_record.ownership != "managed":
+                raise ConnectorRemovalPreflightError(
+                    "Connector removal requires managed prior ownership"
+                )
+            try:
+                ConnectClusterBinding.from_backend_identity(prior_record.backend)
+            except ConnectClusterBindingError:
+                raise ConnectorRemovalPreflightError(
+                    "Connector removal cannot use legacy ownership state"
+                ) from None
+            if prior_record.backend != binding.backend_identity:
+                raise ConnectorRemovalPreflightError(
+                    "Connector removal prior ownership has a different provider binding"
+                )
+            if prior_record.physical_name != removal.connector_name:
+                raise ConnectorRemovalPreflightError(
+                    "Connector removal prior ownership has a different physical name"
+                )
+        resolved_removals.append(
+            ResolvedConnectorRemoval(
+                resource_id=resource_uri,
+                logical_owner=removal.logical_owner,
+                connector_name=removal.connector_name,
+                binding=binding,
+                prior_record=prior_record,
+            )
+        )
+
+    return ConnectorPlanningTargets(
+        binding=binding,
+        desired_connectors=desired_connectors,
+        removals=tuple(resolved_removals),
+    )
 
 
 @dataclass(frozen=True)
@@ -1802,7 +2188,7 @@ class DeploymentPlanner:
                 if resolver is not None
                 else bind_connector_artifact(parsed, binding)
             )
-            provider_locator = (binding.backend_identity, artifact.name)
+            provider_locator = _connector_provider_locator(binding, artifact.name)
             if provider_locator in provider_locators:
                 raise StateIdentityError(
                     "deployment manifest contains a duplicate Connector provider locator"
@@ -1998,9 +2384,7 @@ class DeploymentPlanner:
                         "Gateway recovery action has no exact desired manifest rule"
                     )
                 desired = desired_rule.desired
-                desired_ownership = ArtifactOwnership.from_dict(
-                    desired_rule.artifact.ownership
-                )
+                desired_ownership = ArtifactOwnership.from_dict(desired_rule.artifact.ownership)
                 if action.action == "adopt" and (
                     desired_ownership
                     != ArtifactOwnership(
@@ -2149,6 +2533,14 @@ class DeploymentPlanner:
         from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
         plan = DeploymentPlan()
+        raw_connector_removals = self.manifest.artifacts.get(
+            "connector_removals",
+            [],
+        )
+        if connector_removals_requested(raw_connector_removals):
+            raise ConnectorRemovalPreflightError(
+                "Connector removals require a complete online reviewed plan"
+            )
         raw_gateway_removals = self.manifest.artifacts.get(
             "gateway_rule_removals",
             [],
@@ -2288,6 +2680,24 @@ class DeploymentPlanner:
         """Create a deployment plan."""
         plan = DeploymentPlan()
 
+        raw_connector_removals = self.manifest.artifacts.get(
+            "connector_removals",
+            [],
+        )
+        connector_targets = (
+            resolve_connector_planning_targets(
+                self.manifest,
+                self.project,
+                environment=self.environment,
+                prior_state=self.prior_state,
+                require_authoritative_state=True,
+            )
+            if connector_removals_requested(raw_connector_removals)
+            else None
+        )
+        if connector_targets is not None:
+            raise ConnectorRemovalPreflightError(CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE)
+
         raw_gateway_removals = self.manifest.artifacts.get(
             "gateway_rule_removals",
             [],
@@ -2414,21 +2824,31 @@ class DeploymentPlanner:
 
         # Plan connectors only through one exact bound cluster.
         connector_data = self.manifest.artifacts.get("connectors", [])
-        if connector_data:
+        if connector_data or connector_targets is not None:
             if self.connect_deployer is None:
                 raise ConnectClusterBindingError(
                     "Live Connector planning requires a bound Connect deployer"
                 )
             connector_binding = self.connect_deployer.require_cluster_binding()
-            if isinstance(self.project, StreamtProject):
+            if connector_targets is not None:
+                configured_binding = connector_targets.binding
+                if connector_binding != configured_binding:
+                    raise ConnectClusterBindingError(
+                        "Connect deployer binding does not match removal preflight"
+                    )
+            elif isinstance(self.project, StreamtProject):
                 configured_binding = self._connect_binding_from_project()
                 if connector_binding != configured_binding:
                     raise ConnectClusterBindingError(
                         "Connect deployer binding does not match project runtime configuration"
                     )
-            connector_artifacts = self._resolved_connector_artifacts(
-                connector_binding,
-                resolver=self.connect_deployer.resolve_connector_artifact,
+            connector_artifacts = (
+                list(connector_targets.desired_connectors)
+                if connector_targets is not None
+                else self._resolved_connector_artifacts(
+                    connector_binding,
+                    resolver=self.connect_deployer.resolve_connector_artifact,
+                )
             )
             for artifact in connector_artifacts:
                 change = self.connect_deployer.plan_connector(artifact)

@@ -14,10 +14,9 @@ from click.testing import CliRunner, Result
 
 from streamt.cli import main
 from streamt.cli.connector_removal_guard import (
-    CONNECTOR_REMOVAL_UNAVAILABLE_DATA,
-    CONNECTOR_REMOVAL_UNAVAILABLE_MESSAGE,
+    CONNECTOR_REMOVAL_REVIEW_MESSAGE,
+    CONNECTOR_REMOVAL_REVIEW_SUGGESTION,
 )
-from streamt.compiler.manifest import Manifest
 
 _RUNTIME_FACTORIES = (
     "make_deployment_state_service",
@@ -33,7 +32,11 @@ _COMMAND_CASES = [
     pytest.param("plan", [], id="plan-online"),
     pytest.param("apply", [], id="apply-direct"),
     pytest.param("apply", ["--dry-run"], id="apply-dry-run"),
-    pytest.param("apply", ["--plan", "reviewed.json"], id="apply-reviewed"),
+    pytest.param(
+        "apply",
+        ["--plan", "reviewed.json", "--dry-run"],
+        id="apply-reviewed-dry-run",
+    ),
     pytest.param("apply", ["--target", "orders"], id="apply-target"),
     pytest.param("apply", ["--select", "tag:critical"], id="apply-select"),
 ]
@@ -49,9 +52,7 @@ def _write_project(path: Path, *, removal: bool) -> None:
             "kafka": {"bootstrap_servers": "broker.invalid:9092"},
             "connect": {
                 "default": "primary-connect",
-                "clusters": {
-                    "primary-connect": {"rest_url": "https://connect.invalid"}
-                },
+                "clusters": {"primary-connect": {"rest_url": "https://connect.invalid"}},
             },
         },
     }
@@ -71,17 +72,6 @@ def _write_project(path: Path, *, removal: bool) -> None:
     )
 
 
-def _malformed_manifest() -> Manifest:
-    return Manifest(
-        version="1.0.0",
-        project_name="payments",
-        artifacts=cast(
-            dict[str, list[dict[str, object]]],
-            {"connector_removals": {"endpoint": _SECRET}},
-        ),
-    )
-
-
 def _payload(result: Result) -> dict[str, object]:
     payload = json.loads(result.stdout)
     assert isinstance(payload, dict)
@@ -92,8 +82,6 @@ def _invoke_with_runtime_forbidden(
     path: Path,
     command: str,
     extra_args: list[str],
-    *,
-    malformed_manifest: bool,
 ) -> tuple[Result, list[MagicMock]]:
     with ExitStack() as stack:
         factories = [
@@ -115,13 +103,6 @@ def _invoke_with_runtime_forbidden(
                 ),
             )
         )
-        if malformed_manifest:
-            stack.enter_context(
-                patch(
-                    "streamt.compiler.Compiler.compile",
-                    return_value=_malformed_manifest(),
-                )
-            )
         if command == "apply" and "--plan" in extra_args:
             stack.enter_context(
                 patch(
@@ -137,20 +118,17 @@ def _invoke_with_runtime_forbidden(
 
 
 @pytest.mark.parametrize(("command", "extra_args"), _COMMAND_CASES)
-@pytest.mark.parametrize("malformed_manifest", [False, True], ids=["declared", "malformed"])
-def test_connector_removal_is_fail_closed_before_state_provider_or_planner(
+def test_connector_removal_requires_reviewed_workflow_before_state_or_planner(
     tmp_path: Path,
     command: str,
     extra_args: list[str],
-    malformed_manifest: bool,
 ) -> None:
-    _write_project(tmp_path, removal=not malformed_manifest)
+    _write_project(tmp_path, removal=True)
 
     result, factories = _invoke_with_runtime_forbidden(
         tmp_path,
         command,
         extra_args,
-        malformed_manifest=malformed_manifest,
     )
 
     assert result.exit_code == 1, result.output
@@ -158,21 +136,45 @@ def test_connector_removal_is_fail_closed_before_state_provider_or_planner(
     assert payload["errors"] == [
         {
             "code": "E418_REVIEWED_PLAN_REQUIRED",
-            "message": CONNECTOR_REMOVAL_UNAVAILABLE_MESSAGE,
-            "suggestion": (
-                "Remove lifecycle.connector_removals before running plan or apply."
-            ),
+            "message": CONNECTOR_REMOVAL_REVIEW_MESSAGE,
+            "suggestion": CONNECTOR_REMOVAL_REVIEW_SUGGESTION,
         }
     ]
-    assert payload["data"] == CONNECTOR_REMOVAL_UNAVAILABLE_DATA
+    assert payload["data"] == {
+        "policy": "connector_removal",
+        "required_workflow": "reviewed_plan",
+        "connector_removals": 1,
+    }
     assert _SECRET not in result.output
+    for factory in factories:
+        factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_args"),
+    [
+        pytest.param("plan", ["--out", "reviewed.json"], id="plan"),
+        pytest.param("apply", ["--plan", "reviewed.json"], id="apply"),
+    ],
+)
+def test_authorized_workflow_requires_postgres_before_state_or_runtime(
+    tmp_path: Path,
+    command: str,
+    extra_args: list[str],
+) -> None:
+    _write_project(tmp_path, removal=True)
+
+    result, factories = _invoke_with_runtime_forbidden(
+        tmp_path,
+        command,
+        extra_args,
+    )
+
+    assert result.exit_code == 1, result.output
+    payload = _payload(result)
     errors = payload["errors"]
     assert isinstance(errors, list)
-    first_error = errors[0]
-    assert isinstance(first_error, dict)
-    message = first_error["message"]
-    assert isinstance(message, str)
-    assert "reviewed" not in message.lower()
-    assert "postgres" not in result.output.lower()
+    assert errors[0]["code"] == "E421_REMOTE_STATE_REQUIRED"
+    assert "W106" not in result.output
     for factory in factories:
         factory.assert_not_called()

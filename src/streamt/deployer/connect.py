@@ -28,7 +28,9 @@ _FINGERPRINT_PREFIX = "sha256:"
 _CONNECT_BINDING_VERSION = 1
 _CLUSTER_ALIAS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _CONNECT_BACKEND_IDENTITY = re.compile(
-    r"^kafka-connect:v1:[A-Za-z0-9][A-Za-z0-9._-]{0,127}:sha256:[0-9a-f]{64}$"
+    r"^kafka-connect:v1:"
+    r"(?P<cluster_alias>[A-Za-z0-9][A-Za-z0-9._-]{0,127}):"
+    r"(?P<endpoint_fingerprint>sha256:[0-9a-f]{64})$"
 )
 _PRESENTABLE_CONFIG_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -53,9 +55,7 @@ def _is_fingerprint(value: object) -> bool:
     if not isinstance(value, str) or not value.startswith(_FINGERPRINT_PREFIX):
         return False
     digest = value.removeprefix(_FINGERPRINT_PREFIX)
-    return len(digest) == 64 and all(
-        character in "0123456789abcdef" for character in digest
-    )
+    return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
 
 
 def _reject_duplicate_json_keys(
@@ -140,13 +140,21 @@ class ConnectClusterBinding:
             endpoint_fingerprint=_sha256(normalized_endpoint),
         )
 
+    @classmethod
+    def from_backend_identity(cls, value: object) -> ConnectClusterBinding:
+        """Recover the non-secret binding encoded by one canonical backend identity."""
+        match = _CONNECT_BACKEND_IDENTITY.fullmatch(value) if isinstance(value, str) else None
+        if match is None:
+            raise ConnectClusterBindingError("Invalid Connect backend identity")
+        return cls(
+            cluster_alias=match.group("cluster_alias"),
+            endpoint_fingerprint=match.group("endpoint_fingerprint"),
+        )
+
     @property
     def backend_identity(self) -> str:
         """Return the canonical, endpoint-free backend identity string."""
-        return (
-            f"kafka-connect:v{self.version}:{self.cluster_alias}:"
-            f"{self.endpoint_fingerprint}"
-        )
+        return f"kafka-connect:v{self.version}:{self.cluster_alias}:{self.endpoint_fingerprint}"
 
 
 def is_connect_backend_identity(value: object) -> bool:
@@ -803,9 +811,7 @@ class ConnectDeployer:
         )
 
         # Check for removed keys and warn
-        removed_keys = [
-            key for key, evidence in changes.items() if evidence["change"] == "removed"
-        ]
+        removed_keys = [key for key, evidence in changes.items() if evidence["change"] == "removed"]
         if removed_keys:
             logger.warning(
                 f"Connector '{artifact.name}' will have config keys removed: {removed_keys}"

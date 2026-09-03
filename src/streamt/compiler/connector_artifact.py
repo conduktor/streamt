@@ -8,11 +8,38 @@ from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
     ConnectorArtifactFormatError,
+    ConnectorRemovalArtifact,
 )
 
 _REQUIRED_FIELDS = frozenset({"name", "connector_class", "topics", "cluster", "config"})
 _OPTIONAL_FIELDS = frozenset({"ownership"})
 _RESERVED_CONFIG_FIELDS = frozenset({"name", "connector.class", "topics"})
+_REMOVAL_FIELDS = frozenset({"logicalOwner", "name", "cluster"})
+# Slice 2 fail-closed boundary: remove only after Slice 4 makes every resolved
+# target yield an exact removal assessment and action.
+CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE = (
+    "Connector removal planning is not available in this build"
+)
+
+
+class ConnectorRemovalArtifactFormatError(ValueError):
+    """A compiled Connector removal is not one exact secret-neutral artifact."""
+
+
+class ConnectorRemovalPreflightError(ValueError):
+    """A Connector removal cannot be resolved without provider access."""
+
+
+class ConnectorRemovalClusterReferenceError(ConnectorRemovalPreflightError):
+    """A Connector removal does not name the effective default cluster."""
+
+
+class ConnectorRemovalRuntimeRequiredError(ConnectorRemovalPreflightError):
+    """A Connector removal has no usable Kafka Connect runtime."""
+
+
+class ConnectorRemovalStateAuthorityError(ValueError):
+    """The initial PostgreSQL-v2 state authority proof failed."""
 
 
 def _require_nonempty_string(value: object, *, field: str) -> str:
@@ -135,7 +162,38 @@ def parse_compiled_connector_artifact(value: object) -> ConnectorArtifact:
     )
 
 
+def parse_compiled_connector_removal_artifact(
+    value: object,
+) -> ConnectorRemovalArtifact:
+    """Parse one exact ``ConnectorRemovalArtifact.to_dict()`` representation."""
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ConnectorRemovalArtifactFormatError(
+            "compiled Connector removal artifact must be an object"
+        )
+    if set(value) != _REMOVAL_FIELDS:
+        raise ConnectorRemovalArtifactFormatError(
+            "compiled Connector removal artifact must have exact fields"
+        )
+    try:
+        return ConnectorRemovalArtifact(
+            logical_owner=value["logicalOwner"],
+            connector_name=value["name"],
+            cluster_alias=value["cluster"],
+        )
+    except (TypeError, ValueError):
+        raise ConnectorRemovalArtifactFormatError(
+            "compiled Connector removal artifact contains an invalid identity"
+        ) from None
+
+
 __all__ = [
+    "CONNECTOR_REMOVAL_PLANNING_UNAVAILABLE_MESSAGE",
     "ConnectorArtifactFormatError",
+    "ConnectorRemovalArtifactFormatError",
+    "ConnectorRemovalClusterReferenceError",
+    "ConnectorRemovalPreflightError",
+    "ConnectorRemovalRuntimeRequiredError",
+    "ConnectorRemovalStateAuthorityError",
     "parse_compiled_connector_artifact",
+    "parse_compiled_connector_removal_artifact",
 ]
