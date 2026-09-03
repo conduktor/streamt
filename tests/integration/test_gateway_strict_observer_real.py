@@ -34,6 +34,8 @@ _ADMIN_URL_ENV = "STREAMT_TEST_GATEWAY_ADMIN_URL"
 _ADMIN_USER_ENV = "STREAMT_TEST_GATEWAY_ADMIN_USER"
 _ADMIN_PASSWORD_ENV = "STREAMT_TEST_GATEWAY_ADMIN_PASSWORD"
 _KAFKA_BOOTSTRAP_ENV = "STREAMT_TEST_KAFKA_BOOTSTRAP_SERVERS"
+_TOPIC_VISIBILITY_TIMEOUT_SECONDS = 15
+_TOPIC_VISIBILITY_POLL_SECONDS = 0.2
 
 
 def _delete_for_cleanup(
@@ -58,6 +60,50 @@ def _delete_for_cleanup(
         return f"cleanup request returned HTTP {response.status_code}"
     finally:
         response.close()
+
+
+def _await_gateway_topic_visibility(
+    session: requests.Session,
+    alias_endpoint: str,
+    physical_names: tuple[str, ...],
+    suffix: str,
+) -> None:
+    """Require Gateway to resolve every newly created Kafka fixture topic."""
+    deadline = time.monotonic() + _TOPIC_VISIBILITY_TIMEOUT_SECONDS
+    for index, physical_name in enumerate(physical_names):
+        probe_alias = f"test-topic-ready-{suffix}-{index}"
+        while True:
+            response = session.put(
+                alias_endpoint,
+                json={
+                    "kind": "AliasTopic",
+                    "apiVersion": "gateway/v2",
+                    "metadata": {"name": probe_alias},
+                    "spec": {"physicalName": physical_name},
+                },
+                timeout=10,
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                status_code = response.status_code
+            finally:
+                response.close()
+            if status_code in {200, 201}:
+                break
+            if status_code != 404:
+                pytest.fail(f"Gateway topic-visibility probe returned HTTP {status_code}")
+            if time.monotonic() >= deadline:
+                pytest.fail("Gateway did not observe newly created Kafka fixture topics")
+            time.sleep(_TOPIC_VISIBILITY_POLL_SECONDS)
+
+        cleanup_failure = _delete_for_cleanup(
+            session,
+            alias_endpoint,
+            {"name": probe_alias, "vCluster": "passthrough"},
+        )
+        if cleanup_failure is not None:
+            pytest.fail(f"Gateway topic-visibility probe {cleanup_failure}")
 
 
 @pytest.mark.integration
@@ -88,6 +134,12 @@ def test_gateway_315_strict_snapshot_observes_default_scope_exactly_once() -> No
             [NewTopic(physical_name, num_partitions=1, replication_factor=1)]
         )[physical_name].result(timeout=15)
         topic_created = True
+        _await_gateway_topic_visibility(
+            setup,
+            alias_endpoint,
+            (physical_name,),
+            suffix,
+        )
         created = setup.put(
             alias_endpoint,
             json={
@@ -273,6 +325,12 @@ def test_gateway_315_alias_only_adoption_uses_two_read_only_snapshots() -> None:
         for name in topic_names:
             futures[name].result(timeout=15)
             created_topics.append(name)
+        _await_gateway_topic_visibility(
+            cleanup,
+            alias_endpoint,
+            topic_names,
+            suffix,
+        )
 
         with GatewayDeployer(
             admin_url=admin_url,
@@ -542,6 +600,12 @@ def test_gateway_315_exact_managed_delete_removes_only_target_aggregate(
         for name in topic_names:
             futures[name].result(timeout=15)
             created_topics.append(name)
+        _await_gateway_topic_visibility(
+            cleanup,
+            alias_endpoint,
+            topic_names,
+            suffix,
+        )
 
         with GatewayDeployer(
             admin_url=admin_url,
