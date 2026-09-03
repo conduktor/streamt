@@ -8,8 +8,10 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import BinaryIO, NoReturn, Optional
 
 import click
 import yaml
@@ -46,6 +48,14 @@ class _OpenLineageCommandError(ValueError):
 
 class _BackstageCommandError(ValueError):
     """A secret-neutral Backstage command failure with a stable location."""
+
+    def __init__(self, message: str, *, location: str) -> None:
+        super().__init__(message)
+        self.location = location
+
+
+class _DataHubCommandError(ValueError):
+    """A secret-neutral DataHub command failure with a stable location."""
 
     def __init__(self, message: str, *, location: str) -> None:
         super().__init__(message)
@@ -845,6 +855,253 @@ def docs_backstage(
         )
 
 
+@docs.command("datahub")
+@click.option("--catalog-id", help="Stable DataHub DataFlow identity")
+@click.option("--fabric", help="Exact uppercase DataHub FabricType")
+@click.option(
+    "--kafka-platform-instance",
+    help="Kafka platform instance matching DataHub ingestion",
+)
+@click.option("--gateway-platform-id", help="Explicit Gateway DataHub platform ID")
+@click.option(
+    "--gateway-platform-instance",
+    help="Explicit Gateway DataHub platform instance",
+)
+@click.option(
+    "--output-file",
+    type=click.Path(),
+    help="Atomically write canonical DataHub MCP JSON to this file",
+)
+@click.option("--project-dir", "-p", type=click.Path(), help="Path to project directory")
+@click.option("--env", "-e", "environment", help="Target environment")
+@click.pass_context
+def docs_datahub(
+    ctx: click.Context,
+    catalog_id: str | None,
+    fabric: str | None,
+    kafka_platform_instance: str | None,
+    gateway_platform_id: str | None,
+    gateway_platform_instance: str | None,
+    output_file: str | None,
+    project_dir: str | None,
+    environment: str | None,
+) -> None:
+    """Export deterministic offline DataHub Metadata Change Proposals."""
+    fmt = make_formatter(ctx, "docs datahub")
+    try:
+        from streamt.compiler import Compiler
+        from streamt.core.environment import EnvironmentError
+        from streamt.core.parser import EnvVarError, ParseError, ProjectParser
+        from streamt.integrations.catalog.datahub import (
+            DataHubIdentityConfig,
+            DataHubValidationError,
+            require_datahub_fabric,
+        )
+        from streamt.integrations.catalog.datahub_export import (
+            DataHubExportError,
+            generate_datahub_catalog,
+        )
+        from streamt.integrations.catalog.model import (
+            CatalogProjectionError,
+            build_catalog_snapshot,
+        )
+    except Exception:
+        _fail_datahub_command(
+            fmt,
+            _DataHubCommandError(
+                "Could not initialize DataHub export",
+                location="export",
+            ),
+            location="export",
+        )
+
+    parser_warnings: list[tuple[str, str, str]] = []
+
+    def parser_warning(_message: str) -> None:
+        parser_warnings.append(
+            (
+                "W000_WARNING",
+                "Project parsing emitted a compatibility warning",
+                "project",
+            )
+        )
+
+    try:
+        # The complete primitive identity preflight intentionally precedes path
+        # resolution, project parsing, compiler construction, and output I/O.
+        if catalog_id is None:
+            raise _DataHubCommandError(
+                "DataHub catalog ID is required",
+                location="catalog_id",
+            )
+        if fabric is None:
+            raise _DataHubCommandError(
+                "DataHub fabric is required",
+                location="fabric",
+            )
+        exact_config = DataHubIdentityConfig(
+            catalog_id=catalog_id,
+            fabric=require_datahub_fabric(fabric),
+            kafka_platform_instance=kafka_platform_instance,
+            gateway_platform_id=gateway_platform_id,
+            gateway_platform_instance=gateway_platform_instance,
+        )
+
+        project_path = get_project_path(project_dir)
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=parser_warning,
+        )
+        project = parser.parse()
+        effective_environment = (
+            parser.env_config.environment.name
+            if parser.env_config is not None
+            else environment
+            if environment is not None
+            else "default"
+        )
+
+        compiler = Compiler(project)
+        try:
+            compiler.compile(dry_run=True)
+        except Exception:
+            raise _DataHubCommandError(
+                "Could not compile project for DataHub export",
+                location="models",
+            ) from None
+
+        snapshot = build_catalog_snapshot(
+            project,
+            compiler.resolved_models,
+            compiler.compiled_models,
+            effective_environment,
+        )
+        export = generate_datahub_catalog(
+            snapshot,
+            exact_config.catalog_id,
+            exact_config.fabric,
+            exact_config.kafka_platform_instance,
+            exact_config.gateway_platform_id,
+            exact_config.gateway_platform_instance,
+        )
+
+        # Materialize and count every validated value before touching stdout or
+        # the destination. This keeps all fallible export bookkeeping on the
+        # safe side of the atomic-replace boundary.
+        export_proposals = export.proposals
+        proposals = json.loads(export.json_text)
+        if not isinstance(proposals, list):
+            raise _DataHubCommandError(
+                "Generated DataHub proposals are invalid",
+                location="proposals",
+            )
+        warnings = [*parser_warnings]
+        warnings.extend(
+            (warning.code, warning.message, warning.location) for warning in export.warnings
+        )
+        warnings.sort(key=lambda item: (item[2], item[0]))
+        entity_urns: dict[str, set[str]] = {
+            "dataFlow": set(),
+            "dataset": set(),
+            "dataJob": set(),
+        }
+        aspect_counts = {
+            "dataFlowInfo": 0,
+            "datasetProperties": 0,
+            "dataPlatformInstance": 0,
+            "dataJobInfo": 0,
+            "dataJobInputOutput": 0,
+        }
+        for proposal in export_proposals:
+            entity_urns[proposal.entity_type].add(proposal.entity_urn)
+            aspect_counts[proposal.aspect_name] += 1
+
+        warning_messages = [
+            _capture_datahub_warning(fmt, code, message, location=location)
+            for code, message, location in warnings
+        ]
+        target = Path(output_file) if output_file is not None else None
+        rendered_output_file = str(target) if target is not None else None
+        fmt.set_data(
+            {
+                "standard": "DataHub MCP",
+                "release": "1.7.0",
+                "api_version": "MetadataChangeProposal",
+                "proposals": proposals,
+                "counts": {
+                    "proposals": len(proposals),
+                    "entities": {
+                        entity_type: len(urns) for entity_type, urns in entity_urns.items()
+                    },
+                    "aspects": aspect_counts,
+                },
+                "output_file": rendered_output_file,
+            }
+        )
+
+        if target is not None:
+            try:
+                _atomic_write_datahub(target, export.json_bytes)
+            except Exception:
+                raise _DataHubCommandError(
+                    "Could not write DataHub output file atomically",
+                    location="output_file",
+                ) from None
+        elif fmt.format == "text" and not fmt.quiet:
+            try:
+                click.echo(export.json_text, nl=False)
+            except OSError:
+                raise _DataHubCommandError(
+                    "Could not write DataHub catalog to stdout",
+                    location="stdout",
+                ) from None
+
+        if fmt.format == "text" and not fmt.quiet:
+            for message in warning_messages:
+                fmt.stderr.print(f"[yellow]WARNING[/yellow]: {message}")
+        if not fmt.quiet:
+            fmt.flush()
+
+    except (EnvVarError, EnvironmentError, ParseError):
+        _fail_datahub_command(
+            fmt,
+            _DataHubCommandError(
+                "Could not parse project for DataHub export",
+                location="project",
+            ),
+            location="project",
+        )
+    except DataHubValidationError as error:
+        _fail_datahub_command(fmt, error, location=error.location)
+    except CatalogProjectionError as error:
+        _fail_datahub_command(
+            fmt,
+            _DataHubCommandError(
+                "Could not build catalog snapshot",
+                location=error.location,
+            ),
+            location=error.location,
+        )
+    except DataHubExportError as error:
+        _fail_datahub_command(
+            fmt,
+            _DataHubCommandError(
+                "Could not generate DataHub catalog",
+                location=error.location,
+            ),
+            location=error.location,
+        )
+    except _DataHubCommandError as error:
+        _fail_datahub_command(fmt, error, location=error.location)
+    except Exception:
+        generic = _DataHubCommandError(
+            "Could not generate validated DataHub export",
+            location="proposals",
+        )
+        _fail_datahub_command(fmt, generic, location=generic.location)
+
+
 def _require_odcs_option(
     value: str | None,
     *,
@@ -964,6 +1221,61 @@ def _atomic_write_backstage(path: Path, content: bytes) -> None:
                 pass
 
 
+def _atomic_write_datahub(path: Path, content: bytes) -> None:
+    """Atomically replace canonical DataHub JSON through deterministic private staging."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.streamt-datahub.tmp"
+    with _lock_datahub_output_directory(path.parent):
+        # A previous process can only leave this exact file after terminating;
+        # live writers of this adapter hold the directory lock.
+        temp_path.unlink(missing_ok=True)
+        owns_temp = False
+        try:
+            with _open_datahub_staging(temp_path) as temp_file:
+                owns_temp = True
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, path)
+            owns_temp = False
+        finally:
+            if owns_temp:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
+@contextmanager
+def _lock_datahub_output_directory(path: Path) -> Iterator[None]:
+    """Serialize deterministic staging without creating another lock artifact."""
+    import fcntl
+
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _open_datahub_staging(path: Path) -> BinaryIO:
+    """Create one exact same-directory staging path with owner-only permissions."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        return os.fdopen(descriptor, "wb")
+    except Exception:
+        os.close(descriptor)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _option_or_environment(option: str | None, environment_name: str) -> str | None:
     """Apply exact option-over-environment precedence without truthiness fallback."""
     return option if option is not None else os.environ.get(environment_name)
@@ -1014,6 +1326,51 @@ def _fail_backstage_command(
     )
     fmt.print_error(safe_message)
     fmt.flush()
+    raise click.exceptions.Exit(1)
+
+
+def _capture_datahub_warning(
+    fmt: OutputFormatter,
+    code: str,
+    message: str,
+    *,
+    location: str,
+) -> str:
+    """Capture one safe warning before output and return its display text."""
+    safe_message = redact_sensitive_text(message)
+    fmt.add_warning(
+        StructuredWarning(
+            code=code,
+            message=safe_message,
+            location=location,
+        )
+    )
+    return safe_message
+
+
+def _fail_datahub_command(
+    fmt: OutputFormatter,
+    error: Exception,
+    *,
+    location: str,
+) -> NoReturn:
+    """Emit one redacted E508 error and exit non-zero."""
+    safe_message = redact_sensitive_text(error)
+    result = fmt.get_result()
+    result.data.clear()
+    result.errors.clear()
+    result.warnings.clear()
+    fmt.set_status("ok")
+    fmt.add_error(
+        StructuredError(
+            code=ErrorCode.DATAHUB_INVALID,
+            message=safe_message,
+            location=location,
+        )
+    )
+    fmt.print_error(safe_message)
+    if not fmt.quiet:
+        fmt.flush()
     raise click.exceptions.Exit(1)
 
 
