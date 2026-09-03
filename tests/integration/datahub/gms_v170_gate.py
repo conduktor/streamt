@@ -634,13 +634,15 @@ def parse_entity_response(
         (name for prefix, name in _SERVER_KEY_ASPECTS.items() if urn.startswith(prefix)),
         None,
     )
-    allowed_aspects = set(expected_aspects)
-    if key_aspect is not None:
-        allowed_aspects.add(key_aspect)
+    expected_names = set(expected_aspects)
+    returned_names = set(aspects)
+    if not expected_names <= returned_names:
+        raise PollPendingError("Expected aspects have not converged")
+    allowed_aspects = expected_names | ({key_aspect} if key_aspect is not None else set())
     _require(
-        set(aspects) == allowed_aspects,
+        returned_names <= allowed_aspects,
         "readback_invalid",
-        "entitiesV2 returned a missing or unexpected aspect",
+        "entitiesV2 returned an unexpected aspect",
     )
     returned: dict[str, Any] = {}
     for name, expected in expected_aspects.items():

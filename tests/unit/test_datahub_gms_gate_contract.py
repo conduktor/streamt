@@ -352,6 +352,17 @@ def test_entities_v2_parser_compares_exact_semantic_value() -> None:
         },
     }
     assert gate.parse_entity_response(response, urn, expected) == expected
+    response["aspects"].pop("dataJobKey")
+    assert gate.parse_entity_response(response, urn, expected) == expected
+    response["aspects"].pop("dataJobInfo")
+    with pytest.raises(gate.PollPendingError):
+        gate.parse_entity_response(response, urn, expected)
+
+    response["aspects"]["dataJobInfo"] = {
+        "name": "dataJobInfo",
+        "version": 0,
+        "value": expected["dataJobInfo"],
+    }
     response["aspects"]["dataJobInfo"]["value"] = {"name": "normalized"}
     with pytest.raises(gate.PollPendingError):
         gate.parse_entity_response(response, urn, expected)
