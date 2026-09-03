@@ -18,7 +18,8 @@ are not enabled.
 | PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, confirmed v1-to-v2 migration, and reviewed recovery | Ordinary plan/apply/adopt and recovery through the exact v2 writer | Requires `streamt[postgres]`, `writer_dsn_env`, an exact v2 catalog/ACL, and a direct standalone primary. The owner/admin credential is never a runtime fallback. Version 1 remains administrative only. PostgreSQL 14 and 18 run real-server, command, ACL, mutation, recovery, and process-concurrency gates. All poolers and every HA/failover topology are unsupported. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
 | Open Data Contract Standard (ODCS) | ODCS 3.1.0 project-wide schema export | No | No | One parsed project becomes one offline-validated contract containing every declared source and model. Quality, SLA, team, role, server, import, catalog publication, runtime enrichment, and per-model documents are not supported. |
-| Backstage Software Catalog | Backstage v1.54.2 core `System`, `Resource`, and `Component` export | No | No | Deterministic multi-document YAML is validated offline from one dry-run compile. Exact direct dependencies, explicit owners, cluster refs, and contract state are supported. The wheel/sdist schema gate, isolated-wheel smoke, and `@backstage/catalog-model@1.10.0` parity gate cover the packaged path. Backstage API publication, DataHub export, Conduktor Console publication, and deployed-runtime claims are unsupported. |
+| Backstage Software Catalog | Backstage v1.54.2 core `System`, `Resource`, and `Component` export | No | No | Deterministic multi-document YAML is validated offline from one dry-run compile. Exact direct dependencies, explicit owners, cluster refs, and contract state are supported. The wheel/sdist schema gate, isolated-wheel smoke, and `@backstage/catalog-model@1.10.0` parity gate cover the packaged path. Backstage API publication, live catalog synchronization, Conduktor Console publication, and deployed-runtime claims are unsupported. DataHub metadata-file export is a separate command and identity contract. |
+| DataHub | DataHub v1.7.0 simplified-MCP metadata-file export | No | No | Deterministic canonical JSON is generated from one dry-run compile and validated without a runtime DataHub dependency. It maps one DataFlow, native Dataset URNs, actual DataJobs, and direct Dataset lineage; contract state is only a custom property. Python 3.10-3.12 installed-wheel gates run without the SDK, then separate exact-SDK environments validate the same artifacts with the metadata-file reader; the official file-source CLI dry run runs on Python 3.11. There is no GMS call, publisher, server acceptance claim, live synchronization, state, or deletion. |
 | OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` and durable `apply` `RunEvent` pairs | No | Opt-in apply-command telemetry | Static metadata and command events are validated offline against pinned official schemas plus local invariants. An apply run reuses its durable operation UUID and START timestamp, then reports COMPLETE only after ownership state commits and the operation marker clears. Explicit bounded File/HTTP transports are best effort; delivery cannot change deployment or recovery truth. Events describe the finite streamt command only—deployed Flink, Gateway, Connect, and Kafka resource lifecycles remain unobserved. |
 
 ## Not supported as deployment backends
@@ -43,9 +44,9 @@ unlock:
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
-4. Additional catalog boundaries: a separately specified DataHub export and
-   evidence-backed Conduktor Console metadata publication. Offline Backstage
-   core-entity export is already supported.
+4. Additional catalog boundaries: separately specified publication and
+   synchronization workflows for the supported offline Backstage and DataHub
+   artifacts, plus evidence-backed Conduktor Console metadata publication.
 5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
    actions for runtime policy evaluation.
 

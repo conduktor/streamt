@@ -5,6 +5,46 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
+## Unreleased — offline DataHub v1.7.0 metadata-file export
+
+`streamt docs datahub` now exports deterministic simplified DataHub Metadata
+Change Proposals from one offline dry-run compile. One project becomes a
+DataFlow, sources and physical topic outputs become Datasets with native
+DataHub identities, and actual Flink, Gateway, and Connect processes become
+DataJobs with exact direct Dataset lineage. Process-free topics do not invent
+jobs, and sink jobs do not invent destination datasets.
+
+Callers supply an exact stable catalog ID and uppercase DataHub FabricType. A
+Kafka platform instance is optional and must match the identity used by
+DataHub Kafka ingestion. Gateway virtual topics require an explicit DataHub
+platform ID and instance; streamt does not invent or bootstrap a Conduktor
+Gateway platform. Contract state is represented only by the
+`streamt.contract.status` custom property. The export does not copy an ODCS
+document or claim a native DataHub DataContract, schema, or assertion.
+
+Text output is canonical UTF-8 JSON; global JSON output uses the ordinary
+streamt envelope; and `--output-file` validates and builds all bytes before an
+atomic replacement. Invalid input, identity collisions, mapping, validation,
+serialization, and file failures use `E508_DATAHUB_INVALID` without a partial
+artifact. Sink destinations, exposures, tags, and owners remain deliberately
+omitted with `W115_DATAHUB_SINK_OUTPUT_OMITTED` through
+`W118_DATAHUB_OWNER_OMITTED`.
+
+Production streamt has no DataHub dependency or optional extra. Python
+3.10-3.12 release lanes run the installed wheel without the SDK, compare exact
+source and wheel bytes, and then validate both Kafka-instance variants in a
+separate environment containing exact `acryl-datahub==1.7.0`. The SDK wrapper
+and metadata-file reader run on every lane; the official file-source CLI
+dry-run runs on Python 3.11 with telemetry and network access disabled. CI run
+`33775922977` passed this complete release gate.
+
+This support boundary ends at an offline DataHub v1.7.0 metadata file. streamt
+does not contact GMS, publish, read, reconcile, delete, verify platform or
+entity existence, or claim live-server lineage behavior. Generated files
+intentionally disclose catalog identities, physical names, descriptions,
+contract state, and topology, so review their destination permissions. See
+[DataHub catalog export](datahub-catalog.md) for the exact boundary.
+
 ## Unreleased — offline Backstage Software Catalog export
 
 `streamt docs backstage` now exports deterministic Backstage `System`,
@@ -34,13 +74,15 @@ and independently validate representative YAML with
 not a runtime dependency.
 
 This is a static design-metadata export, not evidence of deployment, health, or
-runtime lifecycle. It does not publish to Backstage. DataHub export and
-Conduktor Console metadata publication remain unsupported and require separate
-contracts. Generated files intentionally disclose catalog metadata—including
-logical and physical names, owners, clusters, descriptions, tags, and
-dependencies—so review their contents and destination permissions before
-sharing them. See [Backstage Software Catalog export](backstage-catalog.md) for
-the supported boundary.
+runtime lifecycle. It does not publish to Backstage. The supported offline
+DataHub metadata-file export is a separate command with a separate identity
+contract; neither export enables catalog synchronization. Conduktor Console
+metadata publication also remains unsupported and requires its own contract.
+Generated files intentionally disclose catalog metadata—including logical and
+physical names, owners, clusters, descriptions, tags, and dependencies—so
+review their contents and destination permissions before sharing them. See
+[Backstage Software Catalog export](backstage-catalog.md) for the supported
+boundary.
 
 ## Unreleased — durable OpenLineage apply telemetry
 

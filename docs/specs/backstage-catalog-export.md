@@ -1,8 +1,9 @@
 # Backstage Software Catalog export
 
 Status: implemented and supported for the exact offline core-entity export
-boundary defined here. Backstage publication, DataHub export, and Conduktor
-Console publication remain unsupported.
+boundary defined here. Backstage publication and Conduktor Console publication
+remain unsupported. DataHub metadata-file export is separately specified and
+supported; it is not part of this command or contract.
 
 This specification defines a pure, offline projection of one compiled streamt
 project and effective environment into core Backstage Software Catalog entities.
@@ -769,11 +770,12 @@ this specification authorizes only Backstage core export.
 
 ### DataHub
 
-A future DataHub adapter may consume the neutral snapshot. It requires its own
-normative identity/URN mapping, schema and lineage semantics, authentication,
-API compatibility, idempotency, publication safety, and real integration gates.
-Backstage entity refs and generated names must not enter the neutral model merely
-to make that future adapter convenient.
+The separately specified DataHub v1.7.0 adapter now consumes the neutral
+snapshot and exports an offline simplified-MCP metadata file under its own
+identity, URN, lineage, validation, and compatibility contract. It does not
+inherit Backstage entity refs or generated names. Authentication, publication,
+idempotency, server reconciliation, deletion, and real-GMS acceptance remain
+outside both offline export contracts.
 
 ### Conduktor Console
 

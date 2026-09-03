@@ -125,6 +125,7 @@ nav:
     - AsyncAPI Export: reference/asyncapi.md
     - ODCS Export: reference/odcs.md
     - Backstage Catalog Export: reference/backstage-catalog.md
+    - DataHub Catalog Export: reference/datahub-catalog.md
     - OpenLineage Export: reference/openlineage.md
     - YAML Schema: reference/yaml-schema.md
     - Flink Options: reference/flink-options.md

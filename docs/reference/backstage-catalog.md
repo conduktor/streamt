@@ -147,8 +147,10 @@ projects, environments, topics and aliases, owners, clusters, descriptions,
 tags, and dependencies. Review the file and its destination permissions before
 committing or sharing it.
 
-DataHub export, Backstage API publication, and Conduktor Console metadata
-publication remain deferred. None is enabled by this command or implied by a
-successful export. See the [normative specification](../specs/backstage-catalog-export.md)
-and [implementation plan](../plans/2026-09-02-backstage-catalog-export.md) for
-the exact validation, identity, and release contracts.
+The supported offline DataHub metadata-file export is a separate command with
+its own identity and validation contract; it is not enabled or implied by this
+Backstage export. Backstage API publication, DataHub publication and live
+synchronization, and Conduktor Console metadata publication remain deferred.
+See the [normative specification](../specs/backstage-catalog-export.md) and
+[implementation plan](../plans/2026-09-02-backstage-catalog-export.md) for the
+exact validation, identity, and release contracts.

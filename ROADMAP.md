@@ -145,8 +145,11 @@ plane.
 - [x] Export deterministic Backstage v1.54.2 core catalog entities from one
       offline compile, with pinned validation, canonical YAML, installed-wheel
       coverage, and independent `@backstage/catalog-model@1.10.0` parity.
-- [ ] Add a separately specified portable DataHub export without leaking
-      Backstage identity or serialization into the neutral catalog model.
+- [x] Export deterministic DataHub v1.7.0 simplified Metadata Change
+      Proposals from the neutral catalog model, with dependency-free
+      validation, canonical JSON, isolated-wheel coverage, and an independent
+      SDK/metadata-file oracle. Live publication and real-GMS acceptance remain
+      separate work.
 - [ ] Publish metadata to Conduktor Console only after verifying and specifying
       an official supported API, authentication, idempotency, review, deletion,
       and recovery contract.

@@ -17,7 +17,8 @@ partially compatible contracts.
 
 Implemented through the exact offline Backstage core-entity boundary. The
 normative specification is frozen and this plan is reconciled to its
-2026-09-02 contract. DataHub export and Conduktor Console publication remain
+2026-09-02 contract. The offline DataHub metadata-file export has since landed
+under its separate specification. Conduktor Console publication remains
 separate, unimplemented work.
 
 | Slice | Status | Landed evidence |
@@ -50,8 +51,9 @@ The agreed first product boundary is:
 - no catalog network client, provider mutation, deployment state access, or
   deployed-runtime observation.
 
-DataHub mapping and Conduktor Console publication are explicitly deferred. A
-successful Backstage export must not be described as support for either one.
+DataHub mapping and Conduktor Console publication are outside this Backstage
+plan. The separately supported offline DataHub command is not enabled or
+implied by a successful Backstage export; Console publication remains deferred.
 
 ## Normative dependency and reconciliation gate
 
@@ -117,7 +119,8 @@ entity documents, deterministic serialization, codes, and documented mapping.
 - reading an existing Backstage catalog to infer ownership or identity;
 - Conduktor Console publication or use of Console topic-creation APIs as a
   metadata substitute;
-- DataHub Metadata Change Proposal generation or emitter integration;
+- DataHub Metadata Change Proposal generation or emitter integration in this
+  Backstage command; the separate offline DataHub command owns that format;
 - catalog ingestion configuration, locations, refresh jobs, or authentication;
 - copying generated SQL, connection configuration, endpoints, credentials,
   state locations, operation history, or provider observations into metadata;
@@ -579,11 +582,12 @@ tests, package scripts, or CI.
    publishes to a catalog nor observes deployment/runtime lifecycle.
 4. Record the wheel/source-distribution resource gate, isolated-wheel smoke,
    and Backstage Node parity gate in support and release documentation.
-5. Do not mark the existing combined Phase 2 roadmap item complete. Split it
-   into truthful sub-items, or annotate Backstage export as complete while
-   leaving DataHub export and Conduktor Console publication unchecked.
+5. Keep roadmap claims separated: Backstage and the later DataHub offline
+   exports may be marked complete only under their own passed gates, while
+   Conduktor Console publication remains unchecked.
 6. Link the normative specification, this execution plan, and reference page
-   without making a future Console/DataHub design normative by implication.
+   without making a future Console or live-publication design normative by
+   implication.
 
 ### Gate
 
@@ -667,13 +671,14 @@ still run them and remain green:
   inspection run outside the checkout.
 - [x] Every representative emitted entity is checked by
   `@backstage/catalog-model@1.10.0` with release-test-only `yaml@2.8.1`.
-- [x] Public docs and the roadmap leave DataHub and Conduktor Console
-  publication explicitly deferred.
+- [x] Public docs and the roadmap keep DataHub and Conduktor Console
+  publication explicitly separate from offline export support.
 
 Console publication requires a separate evidence-backed specification naming
 a supported metadata-only API, authentication/TLS/timeout behavior, external
 identity and ownership rules, reviewed mutation semantics, idempotency and
-delete policy, and recovery behavior. DataHub requires a separate mapping and
-versioned Metadata Change Proposal/aspect contract. Neither may reuse the
-Backstage serializer or claim support merely because both can consume the same
-neutral projection.
+delete policy, and recovery behavior. The later offline DataHub exporter owns
+its separate versioned Metadata Change Proposal/aspect contract and does not
+reuse the Backstage serializer. DataHub publication still requires its own
+server, authorization, idempotency, deletion, and recovery contract; neither
+offline exporter implies it merely because both consume the neutral projection.

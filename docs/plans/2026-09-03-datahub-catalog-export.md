@@ -2,22 +2,23 @@
 
 ## Objective and status
 
-Implement the proposed dependency-free, deterministic offline DataHub MCP
-export in [`DataHub catalog export`](../specs/datahub-catalog-export.md).
+Implement the dependency-free, deterministic offline DataHub MCP export in
+[`DataHub catalog export`](../specs/datahub-catalog-export.md).
 
-Status on 2026-09-03: implementation through the dependency-free mapper has
-landed. CLI, distribution gates, and public documentation remain pending;
-roadmap, support matrix, CLI reference, and release notes must not claim
-support until all gates below pass.
+Status on 2026-09-03: the dependency-free mapper, CLI, distribution and
+compatibility gates have landed. CI run `33775922977` passed the complete
+Python 3.10-3.12 release workflow. Public documentation and roadmap
+reconciliation are complete; publication and real-GMS behavior remain outside
+this plan.
 
 | Slice | Status | Exit evidence |
 | --- | --- | --- |
 | 0 — v1.7 oracle | Complete | `24aefdb`; frozen URN/aspect vectors and offline reader result |
 | 1 — identity and validator | Complete | `ffe1107`; dependency-free focused tests |
 | 2 — mapper | Complete | `9b20848`; exact mapping/topology/warning tests |
-| 3 — CLI/output | Not started | canonical raw/JSON/file tests |
-| 4 — package/oracle gates | Not started | isolated wheel and SDK/file-source oracle |
-| 5 — public docs | Deferred | truth updates only after green gates |
+| 3 — CLI/output | Complete | `76cb008`; canonical raw/JSON/file and atomic-failure tests |
+| 4 — package/oracle gates | Complete | `0976fb2`; isolated wheels plus SDK, reader, and Python 3.11 file-source CLI oracle |
+| 5 — public docs | Complete | public guide example gate, strict site build, CLI/support/release references, roadmap, and status reconciliation after green CI run `33775922977` |
 
 The specification owns the wire contract. Conflicts must be resolved there
 before code lands; tests must not establish a third contract.
@@ -277,7 +278,7 @@ tags, native contracts, multiple instances, publication, state, deletion, and
 Conduktor Console publication deferred.
 
 ```text
-pytest -q tests/unit/test_doc_yaml_validation.py <focused-datahub-doc-tests>
+pytest -q tests/unit/test_docs_datahub_example.py tests/unit/test_doc_yaml_validation.py
 mkdocs build --strict
 git diff --check
 ```

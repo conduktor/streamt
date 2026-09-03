@@ -1,7 +1,8 @@
 # DataHub catalog export
 
-Status: proposed. No DataHub export or publication support may be claimed until
-the release gates in this specification pass.
+Status: implemented and supported for the exact offline DataHub v1.7.0
+metadata-file boundary defined here. The release gates have passed; DataHub
+publication and server acceptance remain unsupported.
 
 This specification defines a deterministic, offline export of one compiled
 streamt project as a JSON array of simplified DataHub Metadata Change
@@ -483,7 +484,7 @@ is no partial result.
 
 ## Acceptance and release-oracle boundary
 
-Before offline export support is claimed, tests prove all project shapes and
+Offline export support is gated by tests that prove all project shapes and
 warning counts; direct-only inputs/existing outputs/empty sink outputs;
 contract allowlist; every pinned encoded/complete URN bound; exact SDK URN
 parity for reserved characters; Kafka no-instance/instance and required

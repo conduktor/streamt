@@ -16,6 +16,7 @@ Complete reference for all streamt CLI commands.
 | Package artifacts + manifest + checksums | `build` | No |
 | View data lineage | `lineage` | No |
 | Export Backstage catalog entities | `docs backstage` | No |
+| Export DataHub metadata-file proposals | `docs datahub` | No |
 | Export OpenLineage design metadata | `docs openlineage` | No |
 | Declare existing Kafka topics as external sources | `import` | **Yes** |
 | See what would change on deploy | `plan` | **Yes** |
@@ -1811,6 +1812,88 @@ The command performs one dry-run compile and does not read deployment state,
 contact providers, or publish to Backstage, DataHub, or Conduktor Console. See
 [Backstage Software Catalog export](backstage-catalog.md) for the exact entity,
 ownership, output, and sensitivity boundaries.
+
+#### docs datahub
+
+Export deterministic, offline-validated DataHub v1.7.0 simplified Metadata
+Change Proposals as canonical JSON.
+
+```bash
+streamt docs datahub [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--catalog-id ID` | Exact caller-owned DataFlow ID; semantically required |
+| `--fabric FABRIC` | Exact uppercase DataHub v1.7.0 FabricType; semantically required |
+| `--kafka-platform-instance ID` | Optional Kafka platform instance matching DataHub Kafka ingestion identity |
+| `--gateway-platform-id ID` | Explicit bare DataHub platform ID; required with the instance when Gateway datasets exist |
+| `--gateway-platform-instance ID` | Explicit Gateway platform instance; required with the platform ID when Gateway datasets exist |
+| `--output-file PATH` | Atomically replace this file with canonical MCP JSON |
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target streamt environment; it does not imply the DataHub fabric |
+
+Supported fabrics are exactly `DEV`, `TEST`, `QA`, `UAT`, `EI`, `PRE`, `STG`,
+`NON_PROD`, `PROD`, `CORP`, `RVW`, `PRD`, `TST`, `SIT`, `SBX`, `SANDBOX`, and
+`CERT`.
+
+```bash
+# Write canonical simplified MCP JSON to stdout
+streamt docs datahub \
+  --catalog-id payments-prod \
+  --fabric PROD \
+  --kafka-platform-instance kafka-main
+
+# Supply an explicit platform and instance for Gateway virtual topics
+streamt docs datahub \
+  --catalog-id payments-prod \
+  --fabric PROD \
+  --kafka-platform-instance kafka-main \
+  --gateway-platform-id conduktor-gateway \
+  --gateway-platform-instance gateway-prod \
+  --output-file datahub-mcps.json
+
+# Return proposals, entity/aspect counts, and warnings in the normal envelope
+streamt --output json docs datahub \
+  --catalog-id payments-prod \
+  --fabric PROD
+```
+
+One project becomes one `dataFlow`; sources and topic outputs become native
+DataHub `dataset` URNs; actual Flink, Gateway, and Connect processes become
+`dataJob` entities with exact direct Dataset lineage. Process-free topics do
+not invent jobs, and Connect sinks do not invent destination datasets. A model
+contract contributes only `streamt.contract.status` with `declared` or
+`enforced`; this is not an ODCS document, native DataHub DataContract, schema,
+or assertion.
+
+Text mode without a file reserves stdout for the canonical JSON array and puts
+warnings on stderr. With `--output-file`, text stdout is empty. Global JSON
+mode returns `standard`, pinned release and API metadata, proposals, exact
+entity/aspect counts, and `output_file` under `data`; warnings use the normal
+top-level array. `--quiet` suppresses raw output and warning text.
+
+The bounded omission warnings are:
+
+| Code | Meaning |
+|------|---------|
+| `W115_DATAHUB_SINK_OUTPUT_OMITTED` | A sink DataJob is emitted without an invented destination Dataset |
+| `W116_DATAHUB_EXPOSURE_OMITTED` | One exposure occurrence is omitted |
+| `W117_DATAHUB_TAGS_OMITTED` | One declaration's tag mapping is deferred |
+| `W118_DATAHUB_OWNER_OMITTED` | One declaration's ownership mapping is deferred |
+
+Invalid identity, mapping, validation, serialization, or file output fails
+closed with `E508_DATAHUB_INVALID` and no partial artifact.
+
+This command is an offline metadata-file export. It constructs no DataHub,
+Kafka, Gateway, deployment-state, or subprocess client and has no runtime
+`acryl-datahub` dependency. Release gates validate the bytes with the exact
+DataHub 1.7.0 SDK, wrapper, and metadata-file reader, but streamt does not call
+GMS, ingest the file, publish or reconcile entities, verify platform existence,
+or claim live-server lineage behavior. See [DataHub catalog export](datahub-catalog.md)
+for identity, mapping, warning, and sensitivity details.
 
 #### docs openlineage
 
