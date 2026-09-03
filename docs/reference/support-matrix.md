@@ -18,7 +18,7 @@ are not enabled.
 | PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, confirmed v1-to-v2 migration, and reviewed recovery | Ordinary plan/apply/adopt and recovery through the exact v2 writer | Requires `streamt[postgres]`, `writer_dsn_env`, an exact v2 catalog/ACL, and a direct standalone primary. The owner/admin credential is never a runtime fallback. Version 1 remains administrative only. PostgreSQL 14 and 18 run real-server, command, ACL, mutation, recovery, and process-concurrency gates. All poolers and every HA/failover topology are unsupported. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
 | Open Data Contract Standard (ODCS) | ODCS 3.1.0 project-wide schema export | No | No | One parsed project becomes one offline-validated contract containing every declared source and model. Quality, SLA, team, role, server, import, catalog publication, runtime enrichment, and per-model documents are not supported. |
-| OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` `RunEvent` pairs | No | No | Static metadata and command events are validated offline against pinned official schemas plus local invariants. Explicit bounded File/HTTP transports are supported. `apply` and deployed Flink, Gateway, and Connect processes emit no telemetry. |
+| OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` and durable `apply` `RunEvent` pairs | No | Opt-in apply-command telemetry | Static metadata and command events are validated offline against pinned official schemas plus local invariants. An apply run reuses its durable operation UUID and START timestamp, then reports COMPLETE only after ownership state commits and the operation marker clears. Explicit bounded File/HTTP transports are best effort; delivery cannot change deployment or recovery truth. Events describe the finite streamt command only—deployed Flink, Gateway, Connect, and Kafka resource lifecycles remain unobserved. |
 
 ## Not supported as deployment backends
 
@@ -42,8 +42,7 @@ unlock:
    output, and Flink Kubernetes Operator resources.
 3. Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
-4. OpenLineage durable apply-command telemetry, Conduktor Console metadata
-   publication, and portable catalog exports.
+4. Conduktor Console metadata publication and portable catalog exports.
 5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
    actions for runtime policy evaluation.
 

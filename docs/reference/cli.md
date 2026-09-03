@@ -493,6 +493,10 @@ streamt apply [OPTIONS]
 | `--confirm` | Skip confirmation prompt for protected environments |
 | `--confirm-env ENV` | Non-interactive confirm: pass environment name to verify (for agents/CI) |
 | `--force` | Allow destructive operations when environment policy does not already permit them |
+| `--emit-openlineage` | Emit one validated finite apply-command lifecycle through an explicit transport |
+| `--openlineage-job-namespace NAMESPACE` | Job namespace; falls back to `OPENLINEAGE_NAMESPACE` |
+| `--openlineage-kafka-namespace KAFKA-URI` | Validated shared Kafka namespace option; apply emits no datasets |
+| `--openlineage-gateway-namespace KAFKA-URI` | Validated shared Gateway namespace option; apply emits no datasets |
 
 **Examples:**
 
@@ -520,6 +524,11 @@ streamt apply --select tag:critical
 
 # Apply the reviewed plan; target/select cannot be added after review
 streamt apply --env staging --plan staging.plan.json
+
+# Emit the finite durable apply lifecycle through an explicit File/HTTP transport
+streamt apply --env prod --plan prod.plan.json --confirm-env prod \
+  --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
 ```
 
 A reviewed plan records the project, environment fingerprint, manifest
@@ -532,6 +541,60 @@ ownership state, resource actions, or ownership decisions. Offline plans record
 `state: null` and cannot authorize apply.
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
+
+#### OpenLineage apply telemetry
+
+OpenLineage emission is strictly opt-in: transport environment variables do
+not enable it without `--emit-openlineage`. The namespace options take
+precedence over `OPENLINEAGE_NAMESPACE`,
+`STREAMT_OPENLINEAGE_KAFKA_NAMESPACE`, and
+`STREAMT_OPENLINEAGE_GATEWAY_NAMESPACE`, respectively, after project `.env`
+loading. The job namespace is required and is never inferred. Explicit Kafka
+and Gateway namespace values are validated for the shared CLI contract, but
+apply emits no input or output datasets.
+
+Runtime emission requires an explicit bounded File or synchronous HTTP
+transport. For example, `/etc/streamt/openlineage.yml` can contain:
+
+```yaml
+# streamt:skip
+transport:
+  type: file
+  log_file_path: /var/log/streamt/openlineage.jsonl
+```
+
+Then run:
+
+```bash
+OPENLINEAGE_CONFIG=/etc/streamt/openlineage.yml \
+  streamt apply --env prod --plan prod.plan.json --confirm-env prod \
+  --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
+```
+
+An HTTP transport uses the same syntax documented in the
+[OpenLineage integration reference](openlineage.md#runtime-transport-configuration).
+
+The run ID is exactly the UUIDv4 persisted in the durable apply intent, and
+START uses that intent's exact `started_at` time. START follows durable
+`begin_operation` and precedes the first provider mutation. COMPLETE follows a
+confirmed ownership-state commit and durable marker clear. Runtime failure,
+unknown commit, authority loss before confirmed commit, or a recovery-required
+outcome produces FAIL; interruption after START produces ABORT. A verified
+post-commit authority-release failure remains COMPLETE even though the CLI
+returns `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` with `committed: true`.
+
+Parse, validation, confirmation, review, safety, planning, existing-recovery,
+final-drift, telemetry-preflight, and `--dry-run` exits before the durable
+operation begins emit no RunEvent. After START, delivery and transport-close
+failures add only `W112_OPENLINEAGE_EMIT_FAILED`; they never alter apply output,
+rollback, recovery truth, exit status, or the original exception.
+
+These events describe only the finite streamt control-plane command. They
+contain no deployment actions, plan or state details, infrastructure datasets,
+credentials, or runtime lifecycle claims. COMPLETE does not mean that a
+submitted Flink, Gateway, Connect, or Kafka workload finished or processed
+data. See [OpenLineage integration](openlineage.md) for the complete boundary.
 
 #### Remove an exact Gateway rule
 
@@ -1748,9 +1811,10 @@ serialized before event output begins. Failures use
 
 This command exports static `DatasetEvent` and `JobEvent` records from one
 dry-run compile. It performs no live-service or deployment-state reads and does
-not emit `RunEvent` records. Separately, `test --emit-openlineage` supports a
-finite command-run pair through an explicit File or HTTP transport. Ordinary
-compile/apply and deployed Flink, Gateway, or Connect processes do not emit
+not emit `RunEvent` records. Separately, explicitly enabled `apply
+--emit-openlineage` and `test --emit-openlineage` support finite command-run
+pairs through an explicit File or HTTP transport. Ordinary compile, apply
+without the flag, and deployed Flink, Gateway, or Connect processes do not emit
 OpenLineage telemetry. See [OpenLineage integration](openlineage.md) for exact
 mapping, transport, namespace, validation, and security boundaries.
 

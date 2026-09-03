@@ -3,10 +3,13 @@
 ## Status
 
 The design-time `DatasetEvent` and `JobEvent` export and the explicitly enabled
-finite `test` command `RunEvent` lifecycle are supported against executable
-acceptance gates. The remaining normative contract for durable `apply` command
-telemetry is proposed and must not be described as supported until its separate
-acceptance requirements are executable.
+finite `test` and durable `apply` command `RunEvent` lifecycles are implemented
+against executable acceptance gates. The isolated-wheel and real PostgreSQL
+14/18 apply gates pass in the full Python 3.10–3.12 CI workflow as of
+2026-09-02.
+
+Field lineage and the OpenLineage 1.53 explicit `lineage` facet remain deferred
+until Slice 6's correctness requirements are met.
 
 Neither static export nor finite command telemetry is deployed Apache Flink
 runtime telemetry.
@@ -23,7 +26,7 @@ The integration exposes only those facts:
 - design-time `DatasetEvent` records for declared Kafka datasets;
 - design-time `JobEvent` records for declared streamt model processes;
 - finite `RunEvent` pairs for explicitly enabled `test` commands;
-- later, finite `RunEvent` pairs across durable `apply` operations.
+- finite `RunEvent` pairs across durable `apply` operations.
 
 The integration does not infer deployed Flink run identity, completion, record
 counts, connector destination identities, or data-processing facts that streamt
@@ -95,7 +98,7 @@ field-lineage slice is implemented, it must separately pin this artifact:
 | `docs openlineage` | `DatasetEvent`, `JobEvent` | Explicit design-time export only |
 | ordinary `compile` | None | Compilation remains local and side-effect free |
 | `plan` | None | A desired/live diff is not a data-processing run |
-| `apply --emit-openlineage` | Later `RunEvent` pair | The finite streamt control-plane command, not deployed Flink |
+| `apply --emit-openlineage` | Supported `RunEvent` pair | The finite streamt control-plane command, not deployed Flink |
 | `test --emit-openlineage` | Supported `RunEvent` pair | The finite streamt test invocation |
 | `observe` and `status` | None | Flink status and IDs do not establish an OpenLineage run cycle |
 | deployed Flink, Gateway, or Connect process | None | streamt does not observe a correlated runtime lifecycle |
@@ -408,8 +411,9 @@ No progress text or warning line may precede or follow the structured envelope.
 
 ## Runtime command events
 
-Runtime support is opt-in and is implemented only after static export and the
-transport boundary pass their own gates.
+Runtime support is opt-in and uses the validated static identity/event and
+bounded transport foundations. Transport environment variables alone never
+enable command telemetry.
 
 The shared options are:
 
@@ -439,7 +443,12 @@ dry-run exits that occur before a durable operation begins.
 
 The START boundary is after `begin_operation` succeeds and before the first
 runtime mutation. COMPLETE is created only after the state compare-and-swap
-succeeds and the durable operation marker is cleared. Execution failure or a
+succeeds and the durable operation marker is cleared. A verified post-commit
+authority-release failure therefore remains COMPLETE: the durable commit and
+marker clear succeeded even though the CLI separately returns
+`E426_STATE_RELEASE_FAILED_AFTER_COMMIT` with `committed: true`. It must not be
+reported as FAIL or replayed as an uncommitted operation. Execution failure,
+an unknown commit, authority loss before confirmed commit, or another
 recovery-required path produces FAIL. `KeyboardInterrupt` after START produces
 ABORT. All events for the run use the same run and job identities.
 

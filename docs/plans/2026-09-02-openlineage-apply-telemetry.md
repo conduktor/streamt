@@ -13,12 +13,16 @@ or treat infrastructure resources as datasets.
 
 ## Status — 2026-09-02
 
-Ready for implementation. The event model, namespace resolver, offline
-validator, File/HTTP transports, and finite `streamt test` lifecycle are already
-shipped. No dependency, event schema, state schema, or transport change is
-required.
+Implemented in `5b4ab25`, with the isolated-wheel, source-distribution, and real
+PostgreSQL 14/18 executable release gates added in `a9386d6`. The event model,
+namespace resolver, offline validator, File/HTTP transports, and finite
+`streamt test` lifecycle were reused without a dependency, event schema, state
+schema, or transport change.
 
-The work is split into three independently reviewable logical chunks:
+The local acceptance matrix and the full Python 3.10–3.12 workflow pass,
+including isolated-wheel, source-distribution, and real PostgreSQL 14/18 gates.
+
+The work was split into three independently reviewable logical chunks:
 
 1. command lifecycle wiring and exhaustive local acceptance tests;
 2. installed-wheel and real PostgreSQL composition gates;
@@ -102,6 +106,8 @@ use fresh durable operation/run UUIDs.
 
 ## Chunk 1: command lifecycle and local acceptance
 
+Status: complete in `5b4ab25`.
+
 ### Source
 
 - Update `src/streamt/cli/commands/apply.py` only.
@@ -145,6 +151,9 @@ Add `tests/unit/test_openlineage_apply_command.py` and prove:
 
 ## Chunk 2: distribution and PostgreSQL composition
 
+Status: complete. Executable gates landed in `a9386d6`, were stabilized in
+`62a74de` and `2ca58e9`, and pass in the final combined CI workflow.
+
 ### Installed wheel
 
 Add `tests/package/openlineage_apply_wheel_smoke.py` and run it from the clean
@@ -181,7 +190,12 @@ bounded HTTP delivery.
 
 ## Chunk 3: public contract and roadmap closure
 
-Only after chunks 1 and 2 pass, update:
+Status: complete. Implementation truth is closed in the normative
+specification, implementation plans, public reference documentation, support
+matrix, release notes, and roadmap. Strict documentation and the combined CI
+workflow pass.
+
+After chunks 1 and 2 have executable gates, update:
 
 - `docs/specs/openlineage-integration.md` with implementation status and the
   explicit verified post-commit release classification;

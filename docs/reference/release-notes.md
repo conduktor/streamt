@@ -5,6 +5,42 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
+## Unreleased — durable OpenLineage apply telemetry
+
+`streamt apply --emit-openlineage` can now emit a validated OpenLineage 1.53.0
+START/COMPLETE, START/FAIL, or START/ABORT pair through an explicitly configured
+bounded File or HTTP transport. The run ID is the exact durable deployment
+operation UUID, and START uses the same timestamp as the persisted operation
+intent. Zero-action applies still create a durable operation and emit a normal
+START/COMPLETE pair. OpenLineage environment variables alone never enable
+emission.
+
+All ordinary parsing, review, confirmation, safety, planning, dry-run, and final
+state-drift gates run before OpenLineage preflight and durable begin. START is
+attempted after the operation intent is durable and before progress or provider
+mutation. COMPLETE is attempted only after ownership state commits and the
+operation marker clears; runtime or uncertain-commit failures use FAIL, and an
+interruption after START uses ABORT. A verified authority-release failure after
+commit retains COMPLETE while the command preserves its existing committed
+error result.
+
+Delivery remains deliberately best effort. START, terminal, and transport-close
+failures add only `W112_OPENLINEAGE_EMIT_FAILED`; they cannot change provider
+mutation, rollback, state, recovery markers, or exit status. Apply events contain
+no datasets, actions, reviewed plans, artifacts, provider identities, runtime
+configuration, or exception text. They describe the finite streamt control-plane
+command, not the lifecycle of a submitted Flink job or any deployed Gateway,
+Kafka Connect, or Kafka resource.
+
+The release gate verifies every pinned OpenLineage schema resource by decoded
+size and checksum in both the wheel and source distribution. A repository-free
+installed-wheel smoke test performs a real durable local apply through the File
+transport and proves that START's run ID matches the in-progress operation
+record before mutation, followed by COMPLETE and committed ownership state.
+Real PostgreSQL 14 and 18 composition gates cover direct and reviewed success,
+recovery-required failure, and transport-failure independence for the version-2
+state backend.
+
 ## Unreleased — exact alias-only Gateway adoption
 
 `streamt adopt --kind gateway_rule` can now claim one compiled adopted

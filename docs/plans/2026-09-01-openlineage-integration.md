@@ -28,8 +28,20 @@ Slice 4 is complete. An explicitly enabled finite `streamt test` invocation
 preflights a validated aggregate run, emits only the selected sample-test Kafka
 inputs, and attempts START plus exactly one truthful terminal event. Delivery
 and close failures are fixed `W112_OPENLINEAGE_EMIT_FAILED` warnings and do not
-change the test result. Apply telemetry and its durable operation boundaries
-remain in slice 5.
+change the test result.
+
+Slice 5 is complete in `5b4ab25`, with isolated-wheel, source-distribution, and
+real PostgreSQL 14/18 executable gates added in `a9386d6`. An explicitly enabled
+`streamt apply` run reuses its durable operation UUID and timestamp, attempts
+START after durable begin and before mutation, and chooses its terminal event
+from the existing state/recovery truth. A verified post-commit authority-release
+failure remains COMPLETE because the state commit and marker clear succeeded,
+while the CLI retains `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` with
+`committed: true`. The isolated-wheel, source-distribution, real PostgreSQL
+14/18, and full Python 3.10–3.12 release workflow now pass.
+
+Slice 6 remains deferred. No current OpenLineage support claim includes field
+lineage or the explicit OpenLineage 1.53 `lineage` facet.
 
 The target is OpenLineage 1.53.0 at signed release commit
 `8ad5c14c63fbab63fedd8ff42f9a208d86ad07fe`. The core schema retains its
@@ -158,7 +170,7 @@ The CLI tests must include:
   read occurs.
 - Text and structured output remain machine-consumable.
 - Only after this gate may documentation call static OpenLineage export
-  supported. Runtime telemetry remains planned.
+  supported. Runtime telemetry was added separately in slices 4 and 5.
 
 ## Slice 3: bounded File and HTTP transport
 
@@ -175,8 +187,8 @@ event. The dedicated synchronous HTTP adapter disables environment inheritance,
 redirects, and adapter retries; enforces TLS and timeout bounds; closes every
 response; and performs at most the one explicitly configured retry. Delivery
 and close failures expose fixed secret-neutral errors. Slice 4 consumes this
-boundary only behind the explicit test-command emission flag; no apply command
-hook exists yet.
+boundary behind the explicit test-command emission flag, and Slice 5 now uses
+the same boundary for explicitly enabled apply telemetry.
 
 The File/HTTP boundary does not use `openlineage-python`. streamt already owns
 the validated event dictionaries and has `requests` as a core dependency. A
@@ -298,6 +310,12 @@ Tests must prove:
 
 ## Slice 5: durable apply-command RunEvents
 
+Progress: complete in `5b4ab25`; the distribution and real PostgreSQL release
+gates were added in `a9386d6` and stabilized in `62a74de` and `2ca58e9`. The
+full Python 3.10–3.12, isolated-wheel, source-distribution, and PostgreSQL 14/18
+workflow passes. The implementation does not broaden the durable operation
+model or transport failure policy.
+
 ### Scope
 
 - Add the shared OpenLineage runtime options and narrowly scoped hooks to
@@ -309,6 +327,9 @@ Tests must prove:
   action.
 - Attempt COMPLETE only after state compare-and-swap and durable operation
   clear.
+- Preserve COMPLETE when authority release raises the verified post-commit
+  `E426_STATE_RELEASE_FAILED_AFTER_COMMIT`: state commit and marker clear are
+  already durable, and the structured result remains `committed: true`.
 - Attempt FAIL on execution/recovery-required failures and ABORT on
   `KeyboardInterrupt` after START.
 - Keep event delivery outside the state lock where the lifecycle boundary
@@ -347,6 +368,9 @@ Tests must prove:
   telemetry supported.
 
 ## Slice 6: proven field lineage with the 1.53 explicit lineage facet
+
+Progress: deferred. Table-level static export and finite command RunEvents do
+not imply field lineage, and no `lineage` facet is currently emitted.
 
 ### Scope
 

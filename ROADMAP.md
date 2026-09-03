@@ -136,8 +136,12 @@ plane.
 - [x] Emit opt-in OpenLineage `RunEvent` telemetry for finite `streamt test`
       invocations without presenting it as deployed Flink, Gateway, or Connect
       runtime telemetry.
-- [ ] Emit opt-in OpenLineage `RunEvent` telemetry across the durable
-      `streamt apply` operation boundary.
+- [x] Emit opt-in OpenLineage `RunEvent` telemetry across the durable
+      `streamt apply` operation boundary. START reuses the durable operation
+      UUID and timestamp; terminal truth follows commit/recovery state, including
+      COMPLETE for verified post-commit `E426` release failures. Local,
+      isolated-wheel, source-distribution, and real PostgreSQL 14/18 executable
+      gates pass in the full Python 3.10–3.12 release workflow.
 - [ ] Publish catalog metadata to Conduktor Console and support portable exports
       for Backstage/DataHub-style catalogs.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.

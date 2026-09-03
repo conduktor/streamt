@@ -7,9 +7,9 @@ event sequence before any event bytes are written.
 
 The static command does not connect to Kafka, Schema Registry, Flink, Connect,
 Gateway administration, deployment state, an OpenLineage backend, or any other
-network service. Separately, `streamt test --emit-openlineage` can send a
-validated finite command lifecycle through an explicitly configured bounded
-File or HTTP transport.
+network service. Separately, explicitly enabled `streamt apply` and `streamt
+test` commands can send validated finite command lifecycles through an
+explicitly configured bounded File or HTTP transport.
 
 ## Complete project example
 
@@ -182,6 +182,59 @@ produces FAIL; interruption produces ABORT. The pair keeps the same run, job,
 facets, and inputs. FAIL contains only a fixed generic error-message facet—test
 assertion details, SQL, configuration, and credentials are never copied.
 
+## Durable apply-command run events
+
+Apply telemetry is strictly opt-in. Transport environment variables alone do
+not enable it:
+
+```bash
+streamt apply --env prod \
+  --plan prod.plan.json \
+  --confirm-env prod \
+  --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
+```
+
+The four runtime options are `--emit-openlineage`,
+`--openlineage-job-namespace`, `--openlineage-kafka-namespace`, and
+`--openlineage-gateway-namespace`. A namespace option overrides its matching
+environment value. Project and environment-specific `.env` files are loaded
+before those values are selected. The job namespace falls back to
+`OPENLINEAGE_NAMESPACE` and has no inferred default. Explicit Kafka and Gateway
+namespaces fall back to `STREAMT_OPENLINEAGE_KAFKA_NAMESPACE` and
+`STREAMT_OPENLINEAGE_GATEWAY_NAMESPACE`; supplied values are validated, but an
+apply run does not derive or emit dataset identities.
+
+One durable apply operation produces a job named
+`streamt/{project-segment}/commands/apply` with job type `BATCH` / `STREAMT` /
+`COMMAND`. Its OpenLineage run ID is exactly the UUIDv4 already persisted in
+the deployment `OperationIntent`, and START uses that intent's exact durable
+`started_at` time. START is attempted only after the intent is durably written
+and before the first planner action or provider mutation.
+
+COMPLETE is attempted immediately after ownership state is successfully
+committed and the durable operation marker is cleared. A verified commit whose
+state-authority release subsequently fails still truthfully emits COMPLETE;
+the CLI separately returns `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` with
+`committed: true`, and the operation must not be replayed. A runtime failure,
+unknown commit, authority loss before confirmed commit, or recovery-required
+outcome produces FAIL after streamt makes its existing best effort to persist
+the conservative recovery marker. `KeyboardInterrupt` after START produces
+ABORT. FAIL contains only the fixed generic message `streamt apply command did
+not complete successfully`.
+
+Parse, validation, confirmation, review, safety, planning, existing-recovery,
+final state-drift, OpenLineage-preflight, and `--dry-run` exits that occur
+before `begin_operation` emit no RunEvent. A zero-action apply does begin and
+complete a durable operation, so it emits a normal START/COMPLETE pair. Each
+later apply has a fresh durable operation and run UUID.
+
+Apply RunEvents describe only the finite streamt control-plane command. They
+contain no inputs or outputs and no action, plan, artifact, SQL, provider,
+state-location, runtime-configuration, or credential data. COMPLETE does not
+claim that a submitted Flink job or another deployed streaming workload
+finished, reached RUNNING, or processed any data.
+
 ## Runtime transport configuration
 
 Runtime emission requires either an explicit UTF-8 YAML file named by
@@ -198,7 +251,8 @@ transport:
 
 ```bash
 OPENLINEAGE_CONFIG=/etc/streamt/openlineage.yml \
-  streamt test --emit-openlineage \
+  streamt apply --env prod --plan prod.plan.json --confirm-env prod \
+  --emit-openlineage \
   --openlineage-job-namespace https://lineage.example/namespaces/prod
 ```
 
@@ -211,6 +265,10 @@ export OPENLINEAGE__TRANSPORT__ENDPOINT=api/v1/lineage
 export OPENLINEAGE__TRANSPORT__TIMEOUT=5
 export OPENLINEAGE__TRANSPORT__VERIFY=true
 export OPENLINEAGE__TRANSPORT__RETRY__TOTAL=1
+
+streamt apply --env prod --plan prod.plan.json --confirm-env prod \
+  --emit-openlineage \
+  --openlineage-job-namespace https://lineage.example/namespaces/prod
 ```
 
 Optional API-key authentication requires HTTPS plus
@@ -227,11 +285,12 @@ are legacy `OPENLINEAGE_URL` and `OPENLINEAGE_API_KEY`. An explicit
 `OPENLINEAGE_DISABLED=true` conflicts with `--emit-openlineage`.
 
 Namespace, event, and transport preflight failures are fatal
-`E506_OPENLINEAGE_INVALID` errors before samples are consumed. After START is
-attempted, delivery and close are best effort: failures add the bounded,
+`E506_OPENLINEAGE_INVALID` errors before samples are consumed or apply can
+write its durable intent and mutate a provider. After START is attempted,
+delivery and close are best effort: failures add only the bounded,
 secret-neutral `W112_OPENLINEAGE_EMIT_FAILED` warning without changing a real
-pass/fail result, exit code, or original exception. There is no required-
-delivery mode or durable outbox.
+test/apply result, rollback, recovery marker, exit code, or original exception.
+There is no required-delivery mode or durable outbox.
 
 ## Validation and security boundary
 
@@ -252,12 +311,12 @@ location when available; no partial event stream is emitted.
 ## Intentional non-support
 
 Static export does not emit `RunEvent` records. Ordinary `compile`, `plan`, and
-`apply` do not emit OpenLineage telemetry. Runtime command events are currently
-limited to explicitly enabled finite `test` invocations, and streamt does not
-claim lifecycle telemetry for deployed Flink, Gateway, Kafka Connect, or topic
-processes. Apply telemetry, field lineage, live schema enrichment, connector-
-specific sink datasets, catalog sync, round-trip editing, required delivery,
-and transports beyond File/HTTP remain unsupported.
+`apply` without `--emit-openlineage` do not emit OpenLineage telemetry. Runtime
+command events are limited to explicitly enabled finite `apply` and `test`
+invocations. streamt does not claim lifecycle telemetry for deployed Flink,
+Gateway, Kafka Connect, or topic processes. Field lineage, live schema
+enrichment, connector-specific sink datasets, catalog sync, round-trip editing,
+required delivery, and transports beyond File/HTTP remain unsupported.
 
 See the [normative integration contract](../specs/openlineage-integration.md)
 for the complete event, facet, identity, and future-runtime design.
