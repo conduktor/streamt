@@ -5,15 +5,16 @@
 Implement the proposed dependency-free, deterministic offline DataHub MCP
 export in [`DataHub catalog export`](../specs/datahub-catalog-export.md).
 
-Status on 2026-09-03: proposed; no implementation has landed. Roadmap, support
-matrix, CLI reference, and release notes must not claim support until all gates
-below pass.
+Status on 2026-09-03: implementation through the dependency-free mapper has
+landed. CLI, distribution gates, and public documentation remain pending;
+roadmap, support matrix, CLI reference, and release notes must not claim
+support until all gates below pass.
 
 | Slice | Status | Exit evidence |
 | --- | --- | --- |
-| 0 — v1.7 oracle | Not started | frozen URN/aspect vectors and offline reader result |
-| 1 — identity and validator | Not started | dependency-free focused tests |
-| 2 — mapper | Not started | exact mapping/topology/warning tests |
+| 0 — v1.7 oracle | Complete | `24aefdb`; frozen URN/aspect vectors and offline reader result |
+| 1 — identity and validator | Complete | `ffe1107`; dependency-free focused tests |
+| 2 — mapper | Complete | `9b20848`; exact mapping/topology/warning tests |
 | 3 — CLI/output | Not started | canonical raw/JSON/file tests |
 | 4 — package/oracle gates | Not started | isolated wheel and SDK/file-source oracle |
 | 5 — public docs | Deferred | truth updates only after green gates |
@@ -142,11 +143,14 @@ Do not update or rely on the user-owned `uv.lock`.
 
 ### Ownership
 
-- mapper portion of `src/streamt/integrations/catalog/datahub.py`
+- `src/streamt/integrations/catalog/datahub_export.py` for the mapper and
+  immutable export result; identity construction and closed validation remain
+  in `src/streamt/integrations/catalog/datahub.py`
 - `tests/unit/test_datahub_export.py`
 
-Slice 1 lands first because both slices touch `datahub.py`. Do not edit the
-neutral model, CLI, Backstage adapter, packaging, or docs.
+Slice 1 lands first because the mapper depends on its identity records and
+closed validator. Do not edit the neutral model, CLI, Backstage adapter,
+packaging, or docs.
 
 ### Work
 
@@ -180,9 +184,9 @@ neutral model, CLI, Backstage adapter, packaging, or docs.
 ### Gate
 
 ```text
-pytest -q tests/unit/test_datahub_export.py
-ruff check src/streamt/integrations/catalog/datahub.py tests/unit/test_datahub_export.py
-mypy src/streamt/integrations/catalog/datahub.py
+pytest -q tests/unit/test_datahub_export.py tests/unit/test_datahub_validation.py
+ruff check src/streamt/integrations/catalog/datahub.py src/streamt/integrations/catalog/datahub_export.py tests/unit/test_datahub_export.py
+mypy src/streamt/integrations/catalog/datahub.py src/streamt/integrations/catalog/datahub_export.py
 ```
 
 ## Slice 3 — canonical CLI and atomic output
