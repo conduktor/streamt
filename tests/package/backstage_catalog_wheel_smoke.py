@@ -261,6 +261,14 @@ def _assert_installed_wheel(checkout: Path) -> None:
     assert Path(sys.executable).with_name("streamt").is_file()
 
 
+def _assert_source_checkout(checkout: Path) -> None:
+    checkout_source = (checkout / "src").resolve()
+    imported_module = Path(streamt.__file__).resolve()
+    assert checkout_source in imported_module.parents, imported_module
+    assert checkout != Path.cwd()
+    assert checkout not in Path.cwd().parents
+
+
 def _deny_external_access() -> None:
     def fail(*_args: object, **_kwargs: object) -> None:
         raise AssertionError(
@@ -541,13 +549,47 @@ def _assert_secret_neutral(rendered: str, *, checkout: Path) -> None:
         assert value not in rendered, value
 
 
+def _write_source_baseline() -> None:
+    checkout = Path(os.environ["STREAMT_CHECKOUT"]).resolve()
+    baseline_path = Path(os.environ["STREAMT_BACKSTAGE_SOURCE_BASELINE_PATH"]).resolve()
+    _assert_source_checkout(checkout)
+    assert checkout != baseline_path
+    assert checkout not in baseline_path.parents
+    assert baseline_path.parent.is_dir()
+
+    with tempfile.TemporaryDirectory(prefix="streamt-backstage-source-") as raw_root:
+        root = Path(raw_root)
+        project_dir = root / "project"
+        project_dir.mkdir()
+        owner_map = root / "owners.json"
+        _write_project(project_dir)
+        _write_owner_map(owner_map)
+
+        _deny_external_access()
+        result = _invoke(*_common_arguments(project_dir, owner_map))
+        canonical = result.stdout
+        assert canonical.startswith("---\n")
+        assert canonical.endswith("\n")
+        assert canonical.count("---\n") == 8
+        _assert_secret_neutral(
+            canonical + "\n" + result.stderr,
+            checkout=checkout,
+        )
+        baseline_path.write_bytes(canonical.encode("utf-8"))
+
+
 def _exercise_installed_export() -> None:
     checkout = Path(os.environ["STREAMT_CHECKOUT"]).resolve()
     parity_path = Path(os.environ["STREAMT_BACKSTAGE_PARITY_PATH"]).resolve()
+    baseline_path = Path(os.environ["STREAMT_BACKSTAGE_SOURCE_BASELINE_PATH"]).resolve()
     _assert_installed_wheel(checkout)
     assert checkout != parity_path
     assert checkout not in parity_path.parents
     assert parity_path.parent.is_dir()
+    assert baseline_path.is_file()
+    assert checkout != baseline_path
+    assert checkout not in baseline_path.parents
+    assert baseline_path != parity_path
 
     with tempfile.TemporaryDirectory(prefix="streamt-backstage-wheel-") as raw_root:
         root = Path(raw_root)
@@ -575,6 +617,7 @@ def _exercise_installed_export() -> None:
         assert "\n...\n" not in canonical
         assert "&id" not in canonical
         assert "*id" not in canonical
+        assert canonical.encode("utf-8") == baseline_path.read_bytes()
 
         structured = _invoke(
             "-o",
@@ -624,5 +667,9 @@ def _exercise_installed_export() -> None:
 
 
 if __name__ == "__main__":
-    _exercise_installed_export()
-    print("installed-wheel Backstage catalog export passed")
+    if os.environ.get("STREAMT_BACKSTAGE_SOURCE_MODE") == "1":
+        _write_source_baseline()
+        print("source-checkout Backstage catalog baseline passed")
+    else:
+        _exercise_installed_export()
+        print("installed-wheel Backstage catalog export passed")

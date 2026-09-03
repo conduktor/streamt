@@ -278,10 +278,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Python
+      - name: Setup minimum supported Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: '3.10'
 
       - name: Build distributions
         run: |
@@ -434,11 +434,19 @@ jobs:
           set -euo pipefail
 
           isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-backstage-wheel-XXXXXX")"
+          source_baseline_path="${RUNNER_TEMP}/streamt-backstage-catalog-source.yaml"
           parity_path="${RUNNER_TEMP}/streamt-backstage-catalog-parity.yaml"
           cp tests/package/backstage_catalog_wheel_smoke.py "${isolated_root}/"
           cd "${isolated_root}"
+          env \
+            PYTHONPATH="${GITHUB_WORKSPACE}/src" \
+            STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_BACKSTAGE_SOURCE_BASELINE_PATH="${source_baseline_path}" \
+            STREAMT_BACKSTAGE_SOURCE_MODE=1 \
+            /tmp/streamt-wheel-smoke/bin/python backstage_catalog_wheel_smoke.py
           env -u PYTHONPATH \
             STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_BACKSTAGE_SOURCE_BASELINE_PATH="${source_baseline_path}" \
             STREAMT_BACKSTAGE_PARITY_PATH="${parity_path}" \
             /tmp/streamt-wheel-smoke/bin/python -I backstage_catalog_wheel_smoke.py
           printf 'STREAMT_BACKSTAGE_PARITY_PATH=%s\n' "${parity_path}" >> "${GITHUB_ENV}"
