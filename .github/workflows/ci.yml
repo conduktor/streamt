@@ -241,6 +241,18 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_ordinary_factory_commands_real.py"
           cp tests/postgres/test_postgres_openlineage_apply_real.py \
             "${test_root}/tests/postgres/test_postgres_openlineage_apply_real.py"
+          cp tests/postgres/test_postgres_connector_removal_commands_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_removal_commands_real.py"
+          cp tests/postgres/test_postgres_connector_recovery_commands_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_recovery_commands_real.py"
+          cp tests/postgres/test_postgres_connector_removal_concurrency_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_removal_concurrency_real.py"
+          cp tests/postgres/test_postgres_connector_delete_404_recovery_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_delete_404_recovery_real.py"
+          cp tests/postgres/test_postgres_connector_recovery_mixed_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_recovery_mixed_real.py"
+          cp tests/postgres/test_postgres_connector_removal_process_contention_real.py \
+            "${test_root}/tests/postgres/test_postgres_connector_removal_process_contention_real.py"
 
           cd "${test_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
@@ -269,6 +281,12 @@ jobs:
             tests/postgres/test_postgres_recovery_commands_real.py \
             tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             tests/postgres/test_postgres_openlineage_apply_real.py \
+            tests/postgres/test_postgres_connector_removal_commands_real.py \
+            tests/postgres/test_postgres_connector_recovery_commands_real.py \
+            tests/postgres/test_postgres_connector_removal_concurrency_real.py \
+            tests/postgres/test_postgres_connector_delete_404_recovery_real.py \
+            tests/postgres/test_postgres_connector_recovery_mixed_real.py \
+            tests/postgres/test_postgres_connector_removal_process_contention_real.py \
             -m postgres --tb=short
 
   package:

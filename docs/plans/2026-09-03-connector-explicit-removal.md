@@ -2,7 +2,7 @@
 
 ## Status and objective
 
-Status: in progress through Slice 6. The reserved codes, strict declaration,
+Status: in progress through Slice 7. The reserved codes, strict declaration,
 compiled artifact, PostgreSQL-v2 authority gate, provider-free identity/state
 preflight, exact Connector action evidence, strict live planning matrix, and
 managed observed-delete boundary are implemented. Reviewed plans use v5 and
@@ -20,8 +20,12 @@ reviewed recovery now binds durable v3 evidence to the current runtime before
 provider access, shares one planner-owned observation with retained removal
 claims, and atomically resolves exact absent or prior-present state under the
 PostgreSQL operation lock. The workflow remains undocumented as supported until
-the remaining real PostgreSQL, installed-wheel, and real Connect release gates
-pass.
+the remaining dedicated installed-executable, real Connect, documentation, and
+repository-wide release gates pass. PostgreSQL 14 and 18 now exercise the
+public reviewed lifecycle, literal DELETE-time 404 and response-loss recovery,
+mixed-action exact-subset recovery, physical writer-session loss, and a bounded
+two-process same-address contention race; the same command suite also runs from
+the isolated installed wheel in CI.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as
@@ -613,7 +617,7 @@ resources.
 - [x] Add PostgreSQL-v2-only CLI authorization and destructive warning.
 - [x] Add exact Connector-specific state projection.
 - [x] Add tombstone-independent reviewed recovery.
-- [ ] Pass PostgreSQL 14/18 command and concurrency gates.
+- [x] Pass PostgreSQL 14/18 command and concurrency gates.
 - [ ] Pass installed-wheel lifecycle/recovery gate.
 - [ ] Pass focused real Connect deletion/preservation gate.
 - [ ] Update existing reference documentation only after implementation passes.
