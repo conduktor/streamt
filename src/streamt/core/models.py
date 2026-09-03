@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Literal, Optional
@@ -348,11 +349,56 @@ class GatewayRuleRemovalDeclaration(BaseModel):
         return value
 
 
+def _validate_connector_removal_text(
+    value: str,
+    *,
+    field_name: str,
+    forbid_slash: bool = False,
+) -> str:
+    """Validate one bounded, secret-neutral Connector removal identity."""
+    if not value.strip():
+        raise ValueError(f"{field_name} must not be empty or whitespace-only")
+    if forbid_slash and "/" in value:
+        raise ValueError(f"{field_name} must not contain '/'")
+    if any(unicodedata.category(character) in {"Cc", "Cs"} for character in value):
+        raise ValueError(f"{field_name} must not contain control or surrogate characters")
+    return value
+
+
+class ConnectorRemovalDeclaration(BaseModel):
+    """Affirmative intent to remove one exact Kafka Connect connector."""
+
+    logical_owner: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    cluster: str = Field(min_length=1, max_length=128)
+
+    @field_validator("logical_owner")
+    @classmethod
+    def validate_logical_owner(cls, value: str) -> str:
+        return _validate_connector_removal_text(
+            value,
+            field_name="logical_owner",
+            forbid_slash=True,
+        )
+
+    @field_validator("name", "cluster")
+    @classmethod
+    def validate_provider_identity(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_connector_removal_text(
+            value,
+            field_name=info.field_name or "value",
+        )
+
+
 class LifecycleConfig(BaseModel):
     """Explicit project lifecycle transitions."""
 
     gateway_rule_removals: list[GatewayRuleRemovalDeclaration] = Field(
         default_factory=list
+    )
+    connector_removals: list[ConnectorRemovalDeclaration] = Field(
+        default_factory=list,
+        max_length=256,
     )
 
     @model_validator(mode="after")
@@ -386,6 +432,21 @@ class LifecycleConfig(BaseModel):
                         f"duplicate Gateway rule removal {label} {value!r}"
                     )
                 seen[label].add(value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_connector_removals(self) -> LifecycleConfig:
+        seen_owners: set[str] = set()
+        seen_provider_targets: set[tuple[str, str]] = set()
+        for removal in self.connector_removals:
+            if removal.logical_owner in seen_owners:
+                raise ValueError("duplicate Connector removal logical_owner")
+            seen_owners.add(removal.logical_owner)
+
+            provider_target = (removal.cluster, removal.name)
+            if provider_target in seen_provider_targets:
+                raise ValueError("duplicate Connector removal (cluster, name) pair")
+            seen_provider_targets.add(provider_target)
         return self
 
 

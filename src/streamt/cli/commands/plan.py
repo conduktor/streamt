@@ -8,6 +8,9 @@ from typing import Optional
 
 import click
 
+from streamt.cli.connector_removal_guard import (
+    enforce_connector_removals_unavailable,
+)
 from streamt.cli.helpers import (
     check_required_deployers,
     close_deployers,
@@ -22,6 +25,7 @@ from streamt.cli.helpers import (
     redact_sensitive_text,
 )
 from streamt.core.errors import ErrorCode
+from streamt.core.models import StreamtProject
 from streamt.deployer.connect import ConnectorChange, secret_neutral_connector_changes
 from streamt.deployer.gateway import GatewayRuleChange, secret_neutral_gateway_changes
 from streamt.deployer.operation_actions import operation_actions_from_planned
@@ -111,6 +115,14 @@ def plan(
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
+        enforce_connector_removals_unavailable(
+            (
+                project.lifecycle.connector_removals
+                if isinstance(project, StreamtProject)
+                else []
+            ),
+            fmt,
+        )
         parsed_environment = parser.env_config.environment.name if parser.env_config else None
         effective_environment = (
             parsed_environment
@@ -129,6 +141,10 @@ def plan(
 
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
+        enforce_connector_removals_unavailable(
+            manifest.artifacts.get("connector_removals", []),
+            fmt,
+        )
         prior_state: LocalState | None = None
         state_reference: StateReference | None = None
         reviewed_plan: ReviewedPlanFile | None = None

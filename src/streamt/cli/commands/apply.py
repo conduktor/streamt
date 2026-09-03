@@ -13,6 +13,9 @@ from typing import Literal, Optional, cast
 
 import click
 
+from streamt.cli.connector_removal_guard import (
+    enforce_connector_removals_unavailable,
+)
 from streamt.cli.helpers import (
     check_required_deployers,
     close_deployers,
@@ -34,6 +37,7 @@ from streamt.core.deployment_state import (
 )
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
+from streamt.core.models import StreamtProject
 from streamt.deployer.operation_actions import operation_actions_from_planned
 from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
 from streamt.deployer.state import (
@@ -502,6 +506,14 @@ def apply(
             warn_callback=lambda msg: fmt.print(msg),
         )
         project = parser.parse()
+        enforce_connector_removals_unavailable(
+            (
+                project.lifecycle.connector_removals
+                if isinstance(project, StreamtProject)
+                else []
+            ),
+            fmt,
+        )
 
         env_config = parser.env_config
         if env_config and env_config.requires_reviewed_plan and not reviewed_plan_path:
@@ -620,6 +632,10 @@ def apply(
         )
         compiler = Compiler(project)
         manifest = compiler.compile()
+        enforce_connector_removals_unavailable(
+            manifest.artifacts.get("connector_removals", []),
+            fmt,
+        )
         _enforce_gateway_removal_apply_authorization(
             manifest=manifest,
             target=target,

@@ -21,6 +21,7 @@ from streamt.compiler.gateway_artifact import (
 from streamt.compiler.manifest import (
     ArtifactOwnership,
     ConnectorArtifact,
+    ConnectorRemovalArtifact,
     FlinkJobArtifact,
     GatewayRuleArtifact,
     GatewayRuleRemovalArtifact,
@@ -100,6 +101,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.flink_jobs: list[FlinkJobArtifact] = []
         self.test_jobs: list[FlinkJobArtifact] = []
         self.connectors: list[ConnectorArtifact] = []
+        self.connector_removals: list[ConnectorRemovalArtifact] = []
         self.gateway_rules: list[GatewayRuleArtifact] = []
         self.gateway_rule_removals: list[GatewayRuleRemovalArtifact] = []
 
@@ -172,6 +174,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.flink_jobs = []
         self.test_jobs = []
         self.connectors = []
+        self.connector_removals = []
         self.gateway_rules = []
         self.gateway_rule_removals = []
         self.resolved_models = empty_resolved_models()
@@ -218,6 +221,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         # KAFKA-2: Auto-create dead-letter topics from test on_failure DLQ actions
         self._compile_dlq_topics()
 
+        self._compile_connector_removals()
         self._compile_gateway_rule_removals()
 
         compiled_models = freeze_compiled_models(
@@ -233,6 +237,46 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             self._write_artifacts()
 
         return manifest, compiled_models
+
+    def _compile_connector_removals(self) -> None:
+        """Compile Connector tombstones without runtime, state, or provider access."""
+        seen_owners: set[str] = set()
+        seen_provider_targets: set[tuple[str, str]] = set()
+        desired_owners: set[str] = set()
+        desired_provider_targets: set[tuple[str, str]] = set()
+        default_cluster = (
+            self.project.runtime.connect.default
+            if self.project.runtime.connect is not None
+            else None
+        )
+
+        for connector in self.connectors:
+            ownership = ArtifactOwnership.from_dict(connector.ownership)
+            if ownership is not None and ownership.project == self.project.project.name:
+                desired_owners.add(ownership.owner_name)
+            effective_cluster = connector.cluster or default_cluster
+            if effective_cluster is not None:
+                desired_provider_targets.add((effective_cluster, connector.name))
+
+        for declaration in self.project.lifecycle.connector_removals:
+            provider_target = (declaration.cluster, declaration.name)
+            if declaration.logical_owner in seen_owners:
+                raise CompileError("Duplicate Connector removal logical_owner")
+            if provider_target in seen_provider_targets:
+                raise CompileError("Duplicate Connector removal (cluster, name) pair")
+            if declaration.logical_owner in desired_owners:
+                raise CompileError("Desired Connector and removal claim the same logical resource")
+            if provider_target in desired_provider_targets:
+                raise CompileError("Desired Connector and removal claim the same provider target")
+            seen_owners.add(declaration.logical_owner)
+            seen_provider_targets.add(provider_target)
+            self.connector_removals.append(
+                ConnectorRemovalArtifact(
+                    logical_owner=declaration.logical_owner,
+                    connector_name=declaration.name,
+                    cluster_alias=declaration.cluster,
+                )
+            )
 
     def _compile_gateway_rule_removals(self) -> None:
         """Compile strict lifecycle tombstones without creating desired rules."""
@@ -671,6 +715,10 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         if self.gateway_rule_removals:
             artifacts["gateway_rule_removals"] = [
                 removal.to_dict() for removal in self.gateway_rule_removals
+            ]
+        if self.connector_removals:
+            artifacts["connector_removals"] = [
+                removal.to_dict() for removal in self.connector_removals
             ]
         return Manifest(
             version=self.project.project.version or "0.0.0",

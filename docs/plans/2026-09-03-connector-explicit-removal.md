@@ -2,7 +2,10 @@
 
 ## Status and objective
 
-Status: proposed; no implementation is claimed.
+Status: in progress. The reserved codes, strict declaration, compiled artifact,
+and fail-closed plan/apply boundary are implemented. Connector-removal
+preflight, planning, reviewed authorization, mutation, recovery, and release
+gates remain open; no deletion capability is claimed yet.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as

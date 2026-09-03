@@ -151,6 +151,71 @@ class ConnectorArtifact:
         }, self.ownership)
 
 
+def _require_connector_removal_text(
+    value: object,
+    *,
+    field_name: str,
+    max_length: int,
+    forbid_slash: bool = False,
+) -> str:
+    """Defensively validate an immutable compiled Connector removal field."""
+    import unicodedata
+
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length:
+        raise ValueError(f"Connector removal {field_name} is invalid")
+    if forbid_slash and "/" in value:
+        raise ValueError(f"Connector removal {field_name} is invalid")
+    if any(unicodedata.category(character) in {"Cc", "Cs"} for character in value):
+        raise ValueError(f"Connector removal {field_name} is invalid")
+    return value
+
+
+@dataclass(frozen=True)
+class ConnectorRemovalArtifact:
+    """Immutable, secret-neutral identity for one explicit Connector removal."""
+
+    logical_owner: str
+    connector_name: str
+    cluster_alias: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "logical_owner",
+            _require_connector_removal_text(
+                self.logical_owner,
+                field_name="logical_owner",
+                max_length=128,
+                forbid_slash=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "connector_name",
+            _require_connector_removal_text(
+                self.connector_name,
+                field_name="name",
+                max_length=256,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "cluster_alias",
+            _require_connector_removal_text(
+                self.cluster_alias,
+                field_name="cluster",
+                max_length=128,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "logicalOwner": self.logical_owner,
+            "name": self.connector_name,
+            "cluster": self.cluster_alias,
+        }
+
+
 @dataclass
 class GatewayRuleArtifact:
     """Compiled Gateway rule artifact."""

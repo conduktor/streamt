@@ -369,6 +369,37 @@
       "title": "ConnectionConfig",
       "type": "object"
     },
+    "ConnectorRemovalDeclaration": {
+      "additionalProperties": false,
+      "description": "Affirmative intent to remove one exact Kafka Connect connector.",
+      "properties": {
+        "logical_owner": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Logical Owner",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "cluster": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Cluster",
+          "type": "string"
+        }
+      },
+      "required": [
+        "logical_owner",
+        "name",
+        "cluster"
+      ],
+      "title": "ConnectorRemovalDeclaration",
+      "type": "object"
+    },
     "ConsoleConfig": {
       "additionalProperties": false,
       "description": "Conduktor Console configuration.",
@@ -1784,6 +1815,14 @@
             "$ref": "#/$defs/GatewayRuleRemovalDeclaration"
           },
           "title": "Gateway Rule Removals",
+          "type": "array"
+        },
+        "connector_removals": {
+          "items": {
+            "$ref": "#/$defs/ConnectorRemovalDeclaration"
+          },
+          "maxItems": 256,
+          "title": "Connector Removals",
           "type": "array"
         }
       },
