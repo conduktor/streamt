@@ -63,7 +63,7 @@ jobs:
             exit 1
           fi
 
-          python - <<'PY'
+          python3 - <<'PY'
           import os
           import pathlib
           import sys
@@ -92,7 +92,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           import sys
@@ -237,7 +237,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           import sys
@@ -313,7 +313,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           import sys
