@@ -260,6 +260,7 @@ or silently dropped.
 Every entity has these exact annotations:
 
 ```yaml
+# streamt:skip -- Backstage annotation fragment, not streamt project YAML
 streamt.dev/catalog-id: <catalog-id>
 streamt.dev/project: <exact project name>
 streamt.dev/environment: <effective environment>
@@ -289,6 +290,7 @@ optional value.
 The single System has:
 
 ```yaml
+# streamt:skip -- Backstage System fragment, not streamt project YAML
 spec:
   owner: <default-owner-ref>
   domain: <domain-ref>  # only when explicitly supplied
@@ -302,6 +304,7 @@ The exporter does not invent a System type. `domain` is omitted when no
 Every Resource has:
 
 ```yaml
+# streamt:skip -- Backstage Resource fragment, not streamt project YAML
 spec:
   type: <kafka-topic|kafka-virtual-topic>
   owner: <resolved-owner-ref>
@@ -320,6 +323,7 @@ no producer dependency: streamt must not invent a data-producing process.
 Every Component has:
 
 ```yaml
+# streamt:skip -- Backstage Component fragment, not streamt project YAML
 spec:
   type: data-pipeline
   lifecycle: <explicit lifecycle>
