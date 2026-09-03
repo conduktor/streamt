@@ -69,3 +69,41 @@ Do not edit the encoded payloads by hand. An update must pin an official
 release and commit, reproduce gzip with `mtime=0`, update every decoded size and
 checksum above, and keep integrity, package-resource, and no-network tests. The
 validator deliberately has no remote schema fallback.
+
+## Backstage Software Catalog 1.54.2
+
+The seven `backstage-1.54.2-*.json.gz.b64` resources are deterministic
+gzip-compressed, base64-encoded copies of the exact Draft 7 schema closure used
+to validate the `System`, `Resource`, and `Component` core entity kinds. They
+come from the [`backstage/backstage`](https://github.com/backstage/backstage)
+repository and are loaded through a closed local registry keyed by their
+original bare `$id` values.
+
+- Upstream release: `v1.54.2`
+- Annotated tag object: `ce02b5e8f4721dd1379f9614f0b2a3c9c8597462`
+- Upstream commit: `4bfa231152c6e454a2728850f63c6feb3d396191`
+- Catalog model package at that commit: `@backstage/catalog-model@1.10.0`
+- Total uncompressed schema size: `19460` bytes
+- License: Apache License 2.0
+
+| Resource suffix | Upstream path below `packages/catalog-model/src/schema` | Official `$id` | Bytes | SHA-256 after decoding and decompressing |
+| --- | --- | --- | ---: | --- |
+| `entity` | `Entity.schema.json` | `Entity` | 1804 | `b4e741f821e6006b179f0112ae98a8856286f95593e7dc16fb6fdd8aaaba51fc` |
+| `entity-envelope` | `EntityEnvelope.schema.json` | `EntityEnvelope` | 1775 | `855ec6c05e3f4d328752349c9bd4888436744db716e8713ff3f58399419b7539` |
+| `entity-meta` | `EntityMeta.schema.json` | `EntityMeta` | 4642 | `d19d6329386fcf5016687b7cb07f71bc9e51d7ad1b54f616c29aefa5ac978616` |
+| `common` | `shared/common.schema.json` | `common` | 3644 | `7b99ac97e6ae64795836ef4291f859701291bc1880578e6ee7502ec19cc15665` |
+| `system-v1alpha1` | `kinds/System.v1alpha1.schema.json` | `SystemV1alpha1` | 2148 | `9ad7bf11e4db9d1b9b6d4c976ffa5393cd6c02d36cb1b23f1efc3a9c4b072afe` |
+| `resource-v1alpha1` | `kinds/Resource.v1alpha1.schema.json` | `ResourceV1alpha1` | 2114 | `1cea27c74540638d8b44cad0b222c93a887e5a4609f28d6e9bb882ab43d7859e` |
+| `component-v1alpha1` | `kinds/Component.v1alpha1.schema.json` | `ComponentV1alpha1` | 3333 | `9ff892085ddaf78243ead1cdcf24f03eb5f9af16dffbed189fae4ab0806a8d56` |
+
+`backstage-1.54.2-LICENSE.txt` and `backstage-1.54.2-NOTICE.txt` are exact
+copies of the upstream root license and notice at the pinned commit. Their
+SHA-256 digests are respectively
+`e3620220d6f8a43cb5c968720f86d4e7c6e97847ee61a9c7694039896efb869b`
+and `36395569b3867d0769a40ffb908709c0b5fbfd79bf4b827856dd34feeed644ba`.
+
+Do not edit the encoded payloads by hand. An update must pin an official
+release and commit, reproduce gzip with `mtime=0`, update every decoded size
+and checksum above, retain the upstream license and notice, and keep the
+integrity and no-network tests. These files are Draft 7 schemas; validating
+them as Draft 2020-12 changes `$id` fragment semantics and is unsupported.
