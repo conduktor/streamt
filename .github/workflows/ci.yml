@@ -476,6 +476,55 @@ jobs:
           validator_output="$(node validate.cjs < "${STREAMT_BACKSTAGE_PARITY_PATH}")"
           test -z "${validator_output}"
 
+      - name: Smoke-test installed DataHub catalog export offline
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-datahub-wheel-XXXXXX")"
+          baseline_dir="${RUNNER_TEMP}/streamt-datahub-source-baselines"
+          artifact_dir="${RUNNER_TEMP}/streamt-datahub-mcp-artifacts"
+          mkdir -p "${baseline_dir}" "${artifact_dir}"
+          cp tests/package/datahub_catalog_wheel_smoke.py "${isolated_root}/"
+          cd "${isolated_root}"
+          env \
+            PYTHONPATH="${GITHUB_WORKSPACE}/src" \
+            STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_DATAHUB_BASELINE_DIR="${baseline_dir}" \
+            STREAMT_DISTRIBUTIONS_DIR="${GITHUB_WORKSPACE}/dist" \
+            STREAMT_DATAHUB_SOURCE_MODE=1 \
+            /tmp/streamt-wheel-smoke/bin/python datahub_catalog_wheel_smoke.py
+          env -u PYTHONPATH \
+            STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_DATAHUB_BASELINE_DIR="${baseline_dir}" \
+            STREAMT_DATAHUB_ARTIFACT_DIR="${artifact_dir}" \
+            /tmp/streamt-wheel-smoke/bin/python -I datahub_catalog_wheel_smoke.py
+          test -s "${artifact_dir}/with-instance.json"
+          test -s "${artifact_dir}/without-kafka-instance.json"
+          printf 'STREAMT_DATAHUB_ARTIFACT_DIR=%s\n' "${artifact_dir}" >> "${GITHUB_ENV}"
+
+      - name: Upload DataHub MCP oracle artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: datahub-catalog-mcp-artifacts
+          path: ${{ env.STREAMT_DATAHUB_ARTIFACT_DIR }}/
+          if-no-files-found: error
+
+      - name: Upload wheel for DataHub compatibility matrix
+        uses: actions/upload-artifact@v7
+        with:
+          name: datahub-streamt-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+      - name: Upload Python 3.10 DataHub source baselines
+        uses: actions/upload-artifact@v7
+        with:
+          name: datahub-catalog-source-baselines
+          path: ${{ runner.temp }}/streamt-datahub-source-baselines/
+          if-no-files-found: error
+
       - name: Smoke-test installed PostgreSQL extra
         run: |
           python -m venv /tmp/streamt-postgres-wheel-smoke
@@ -495,6 +544,100 @@ jobs:
           PY
           cd /tmp
           /tmp/streamt-postgres-wheel-smoke/bin/python -c 'import psycopg; from streamt.deployer.postgres_state import PostgresStateAdministration; assert psycopg.__version__'
+
+  datahub-release-oracle:
+    name: DataHub 1.7.0 oracle (Python ${{ matrix.python-version }})
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download built streamt wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: datahub-streamt-wheel
+          path: ${{ runner.temp }}/streamt-datahub-wheel
+
+      - name: Download Python 3.10 source baselines
+        uses: actions/download-artifact@v8
+        with:
+          name: datahub-catalog-source-baselines
+          path: ${{ runner.temp }}/streamt-datahub-source-baselines
+
+      - name: Download Python 3.10 installed-wheel reference artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: datahub-catalog-mcp-artifacts
+          path: ${{ runner.temp }}/streamt-datahub-reference-artifacts
+
+      - name: Re-run installed-wheel parity without DataHub
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          isolated_root="$(mktemp -d "${RUNNER_TEMP}/streamt-datahub-lane-XXXXXX")"
+          wheel_venv="${isolated_root}/wheel-venv"
+          run_dir="${isolated_root}/run"
+          artifact_dir="${isolated_root}/artifacts"
+          mkdir -p "${run_dir}" "${artifact_dir}"
+          wheels=("${RUNNER_TEMP}/streamt-datahub-wheel"/*.whl)
+          if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "Expected exactly one downloaded streamt wheel" >&2
+            exit 1
+          fi
+
+          python -m venv "${wheel_venv}"
+          "${wheel_venv}/bin/python" -m pip install --upgrade pip
+          "${wheel_venv}/bin/python" -m pip install --progress-bar off "${wheels[0]}"
+          "${wheel_venv}/bin/python" -m pip check
+          cp tests/package/datahub_catalog_wheel_smoke.py "${run_dir}/"
+          cd "${run_dir}"
+          env -u PYTHONPATH \
+            STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            STREAMT_DATAHUB_BASELINE_DIR="${RUNNER_TEMP}/streamt-datahub-source-baselines" \
+            STREAMT_DATAHUB_ARTIFACT_DIR="${artifact_dir}" \
+            "${wheel_venv}/bin/python" -I datahub_catalog_wheel_smoke.py
+
+          cmp "${artifact_dir}/with-instance.json" \
+            "${RUNNER_TEMP}/streamt-datahub-reference-artifacts/with-instance.json"
+          cmp "${artifact_dir}/without-kafka-instance.json" \
+            "${RUNNER_TEMP}/streamt-datahub-reference-artifacts/without-kafka-instance.json"
+          printf 'STREAMT_DATAHUB_LANE_ARTIFACT_DIR=%s\n' "${artifact_dir}" >> "${GITHUB_ENV}"
+
+      - name: Validate lane artifacts with exact official DataHub release
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          oracle_root="$(mktemp -d "${RUNNER_TEMP}/streamt-datahub-oracle-XXXXXX")"
+          oracle_venv="${oracle_root}/venv"
+          python -m venv "${oracle_venv}"
+          "${oracle_venv}/bin/python" -m pip install --upgrade pip
+          "${oracle_venv}/bin/python" -m pip install \
+            --progress-bar off 'acryl-datahub==1.7.0'
+          "${oracle_venv}/bin/python" -m pip check
+          "${oracle_venv}/bin/python" \
+            tests/package/datahub_catalog_v170_oracle.py --self-test
+          "${oracle_venv}/bin/python" \
+            tests/package/datahub_catalog_v170_oracle.py \
+            --artifact "${STREAMT_DATAHUB_LANE_ARTIFACT_DIR}/with-instance.json"
+          "${oracle_venv}/bin/python" \
+            tests/package/datahub_catalog_v170_oracle.py \
+            --artifact "${STREAMT_DATAHUB_LANE_ARTIFACT_DIR}/without-kafka-instance.json"
 
   docs:
     runs-on: ubuntu-latest
