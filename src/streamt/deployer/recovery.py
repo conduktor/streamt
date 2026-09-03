@@ -28,8 +28,6 @@ RecoveryResolution = Literal[
 RecoveryTargetPresence = Literal["present", "absent"]
 RecoveryAcceptedState = Literal["prior", "candidate"]
 
-CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE = "Connector recovery is not available in this build"
-
 _CHECKSUM_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TIMESTAMP_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"

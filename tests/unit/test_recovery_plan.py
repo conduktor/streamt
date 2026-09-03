@@ -246,18 +246,28 @@ def _gateway_snapshot(
     )
 
 
-def _connector_snapshot() -> RecoverySnapshotEvidence:
+def _connector_snapshot(
+    *,
+    with_progress: bool = False,
+    store_backend: str = "postgres",
+    ownership: str = "managed",
+    physical_name: str = CONNECTOR_NAME,
+    artifact_checksum_value: str = CHECKSUM,
+    backend_identity: str = CONNECTOR_BACKEND,
+    extra_resources: dict[str, ManagedResourceRecord] | None = None,
+) -> RecoverySnapshotEvidence:
     state = LocalState(
         project="payments",
         environment="prod",
         serial=1,
         resources={
             CONNECTOR_RESOURCE: ManagedResourceRecord(
-                physical_name=CONNECTOR_NAME,
-                ownership="managed",
-                artifact_checksum=CHECKSUM,
-                backend=CONNECTOR_BACKEND,
-            )
+                physical_name=physical_name,
+                ownership=ownership,  # type: ignore[arg-type]
+                artifact_checksum=artifact_checksum_value,
+                backend=backend_identity,
+            ),
+            **(extra_resources or {}),
         },
     )
     action = OperationAction(
@@ -292,11 +302,24 @@ def _connector_snapshot() -> RecoverySnapshotEvidence:
             reviewed_plan_checksum=None,
             actions=(action,),
         ),
+        progress=(
+            OperationProgress(
+                operation_id=BLOCKED_OPERATION_ID,
+                action_index=0,
+                resource_id=action.resource_id,
+                action=action.action,
+                status="started",
+                succeeded=None,
+                recorded_at="2026-09-02T12:01:00Z",
+            ),
+        )
+        if with_progress
+        else (),
     )
     return RecoverySnapshotEvidence.from_operation_snapshot(
         OperationSnapshot(
             state=StateObservation(
-                store=StateStoreIdentity(backend="postgres", store_id=STORE_ID),
+                store=StateStoreIdentity(backend=store_backend, store_id=STORE_ID),
                 address=_address(),
                 state=state,
                 revision=StateRevision("provider-state-revision"),
@@ -481,11 +504,10 @@ def test_v2_recovery_plan_rejects_v3_snapshot_at_construction_and_load(
         RecoveryPlanFile.load(path)
 
 
-def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_closed(
+def test_v3_connector_recovery_round_trips_for_all_exact_resolutions(
     tmp_path: Path,
 ) -> None:
     snapshot = _connector_snapshot()
-    action = snapshot.control.intent.actions[0]  # type: ignore[union-attr]
     abandoned = RecoveryPlanFile.create(
         resolution="abandoned_before_mutation",
         recovery_operation_id=RECOVERY_OPERATION_ID,
@@ -498,11 +520,13 @@ def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_c
     assert abandoned.format_version == 3
     assert RecoveryPlanFile.load(path) == abandoned
 
+    live_snapshot = _connector_snapshot(with_progress=True)
+    live_action = live_snapshot.control.intent.actions[0]  # type: ignore[union-attr]
     live_cases = (
         (
             "rolled_back",
             RecoveryTargetEvidence(
-                action=action,
+                action=live_action,
                 presence="present",
                 accepted_as="prior",
                 fingerprint=CONNECTOR_CURRENT_FINGERPRINT,
@@ -512,7 +536,7 @@ def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_c
         (
             "observed",
             RecoveryTargetEvidence(
-                action=action,
+                action=live_action,
                 presence="absent",
                 accepted_as="candidate",
                 fingerprint=CONNECTOR_ABSENCE_FINGERPRINT,
@@ -521,9 +545,131 @@ def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_c
         ),
     )
     for resolution, target, candidate in live_cases:
-        with pytest.raises(RecoveryPlanError, match="not available in this build"):
+        plan = RecoveryPlanFile.create(
+            resolution=resolution,  # type: ignore[arg-type]
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=live_snapshot,
+            targets=(target,),
+            candidate_state=candidate,
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+        path = tmp_path / f"{resolution}-connector.recovery.json"
+        plan.save(path)
+        assert RecoveryPlanFile.load(path) == plan
+        deletions = plan.managed_connector_deletions()
+        assert len(deletions) == (1 if resolution == "observed" else 0)
+        if deletions:
+            assert deletions[0].resource_id == CONNECTOR_RESOURCE
+            assert deletions[0].backend_identity == CONNECTOR_BACKEND
+            assert deletions[0].connector_name == CONNECTOR_NAME
+            assert deletions[0].prior_artifact_checksum == CHECKSUM
+
+
+def test_live_connector_recovery_requires_postgres_and_exact_prior_record() -> None:
+    for snapshot, expected in (
+        (_connector_snapshot(with_progress=True, store_backend="local"), "PostgreSQL"),
+        (_connector_snapshot(with_progress=True, ownership="adopted"), "prior managed"),
+        (_connector_snapshot(with_progress=True, physical_name="other"), "prior managed"),
+        (
+            _connector_snapshot(
+                with_progress=True,
+                artifact_checksum_value="sha256:" + "9" * 64,
+            ),
+            "prior managed",
+        ),
+    ):
+        intent = snapshot.control.intent
+        assert intent is not None
+        evidence = intent.actions[0].connector_evidence
+        assert evidence is not None
+        target = RecoveryTargetEvidence(
+            action=intent.actions[0],
+            presence="absent",
+            accepted_as="candidate",
+            fingerprint=evidence.desired.fingerprint,
+        )
+        with pytest.raises(RecoveryPlanError, match=expected):
             RecoveryPlanFile.create(
-                resolution=resolution,  # type: ignore[arg-type]
+                resolution="observed",
+                recovery_operation_id=RECOVERY_OPERATION_ID,
+                snapshot=snapshot,
+                targets=(target,),
+                candidate_state=LocalState(
+                    project="payments",
+                    environment="prod",
+                    serial=2,
+                ),
+                environment_fingerprint=CHECKSUM,
+                manifest_checksum=CHECKSUM,
+            )
+
+
+def test_connector_recovery_rejects_legacy_sibling_provider_claim() -> None:
+    sibling_resource = resource_id(
+        "payments",
+        "prod",
+        "connector",
+        "legacy_archive_orders",
+    )
+    sibling = ManagedResourceRecord(
+        physical_name=CONNECTOR_NAME,
+        ownership="managed",
+        artifact_checksum="sha256:" + "9" * 64,
+        backend="kafka-connect",
+    )
+    snapshot = _connector_snapshot(
+        with_progress=True,
+        extra_resources={sibling_resource: sibling},
+    )
+    intent = snapshot.control.intent
+    assert intent is not None
+    evidence = intent.actions[0].connector_evidence
+    assert evidence is not None
+
+    with pytest.raises(RecoveryPlanError, match="invalid prior provider identity"):
+        RecoveryPlanFile.create(
+            resolution="observed",
+            recovery_operation_id=RECOVERY_OPERATION_ID,
+            snapshot=snapshot,
+            targets=(
+                RecoveryTargetEvidence(
+                    action=intent.actions[0],
+                    presence="absent",
+                    accepted_as="candidate",
+                    fingerprint=evidence.desired.fingerprint,
+                ),
+            ),
+            candidate_state=LocalState(
+                project="payments",
+                environment="prod",
+                serial=2,
+                resources={sibling_resource: sibling},
+            ),
+            environment_fingerprint=CHECKSUM,
+            manifest_checksum=CHECKSUM,
+        )
+
+
+def test_connector_candidate_requires_started_progress_and_exact_state_removal() -> None:
+    for with_progress, candidate, expected in (
+        (False, LocalState(project="payments", environment="prod", serial=2), "never started"),
+        (True, _connector_snapshot(with_progress=True).state, "must remove"),
+    ):
+        snapshot = _connector_snapshot(with_progress=with_progress)
+        intent = snapshot.control.intent
+        assert intent is not None
+        evidence = intent.actions[0].connector_evidence
+        assert evidence is not None
+        target = RecoveryTargetEvidence(
+            action=intent.actions[0],
+            presence="absent",
+            accepted_as="candidate",
+            fingerprint=evidence.desired.fingerprint,
+        )
+        with pytest.raises(RecoveryPlanError, match=expected):
+            RecoveryPlanFile.create(
+                resolution="observed",
                 recovery_operation_id=RECOVERY_OPERATION_ID,
                 snapshot=snapshot,
                 targets=(target,),
@@ -532,17 +678,87 @@ def test_v3_abandoned_connector_recovery_round_trips_but_live_resolutions_fail_c
                 manifest_checksum=CHECKSUM,
             )
 
-        payload = abandoned.to_dict()
-        payload["resolution"] = resolution
-        payload["targets"] = [target.to_dict()]
-        payload["candidate_state"] = None if candidate is None else candidate.to_dict()
-        payload["environment_fingerprint"] = CHECKSUM
-        payload["manifest_checksum"] = CHECKSUM
-        _resign(payload)
-        rejected = tmp_path / f"{resolution}-connector.recovery.json"
-        rejected.write_text(json.dumps(payload), encoding="utf-8")
-        with pytest.raises(RecoveryPlanError, match="not available in this build"):
-            RecoveryPlanFile.load(rejected)
+
+def test_mixed_observed_recovery_removes_only_started_connector_candidate() -> None:
+    connector_snapshot = _connector_snapshot(with_progress=True)
+    connector_intent = connector_snapshot.control.intent
+    assert connector_intent is not None
+    connector_action = connector_intent.actions[0]
+    connector_evidence = connector_action.connector_evidence
+    assert connector_evidence is not None
+    topic_action = replace(_action(), index=1)
+    prior = LocalState(
+        project="payments",
+        environment="prod",
+        serial=1,
+        resources={
+            **connector_snapshot.state.resources,
+            _resource(): _record(partitions=3),
+        },
+    )
+    intent = OperationIntent(
+        operation_id=BLOCKED_OPERATION_ID,
+        kind="apply",
+        started_at="2026-09-02T12:00:00Z",
+        actor="operator",
+        prior_state_serial=prior.serial,
+        prior_state_checksum=state_checksum(prior),
+        reviewed_plan_checksum=None,
+        actions=(connector_action, topic_action),
+    )
+    control = OperationControlState(
+        address=_address(),
+        status="in_progress",
+        intent=intent,
+        progress=connector_snapshot.control.progress,
+    )
+    snapshot = RecoverySnapshotEvidence.from_operation_snapshot(
+        OperationSnapshot(
+            state=StateObservation(
+                store=StateStoreIdentity(backend="postgres", store_id=STORE_ID),
+                address=_address(),
+                state=prior,
+                revision=StateRevision("provider-state-revision"),
+            ),
+            control=ControlObservation(
+                control=control,
+                revision=StateRevision("provider-control-revision"),
+            ),
+        )
+    )
+    candidate = LocalState(
+        project="payments",
+        environment="prod",
+        serial=2,
+        resources={_resource(): _record(partitions=3)},
+    )
+    plan = RecoveryPlanFile.create(
+        resolution="observed",
+        recovery_operation_id=RECOVERY_OPERATION_ID,
+        snapshot=snapshot,
+        targets=(
+            RecoveryTargetEvidence(
+                action=connector_action,
+                presence="absent",
+                accepted_as="candidate",
+                fingerprint=connector_evidence.desired.fingerprint,
+            ),
+            RecoveryTargetEvidence(
+                action=topic_action,
+                presence="present",
+                accepted_as="prior",
+                fingerprint=CHECKSUM,
+            ),
+        ),
+        candidate_state=candidate,
+        environment_fingerprint=CHECKSUM,
+        manifest_checksum=CHECKSUM,
+    )
+
+    assert plan.candidate_state == candidate
+    assert tuple(
+        deletion.resource_id for deletion in plan.managed_connector_deletions()
+    ) == (CONNECTOR_RESOURCE,)
 
 
 def test_v2_recovery_checksum_covers_action_evidence(tmp_path: Path) -> None:

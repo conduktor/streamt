@@ -187,12 +187,15 @@ class _RecoveryRuntime:
             make_kafka_deployer,
             make_sr_deployer,
         )
+        from streamt.deployer.connect import ConnectClusterBinding
         from streamt.deployer.planner import DeploymentPlanner
         from streamt.deployer.recovery_observer import (
             DeploymentPlanRecoveryObserver,
+            preflight_connector_recovery_binding,
             preflight_recovery_intent,
         )
         from streamt.deployer.state import ResourceIdentity
+        from streamt.deployer.state_backend import OperationAction
         from streamt.output import OutputFormatter
 
         if resolution == "abandoned_before_mutation":
@@ -215,6 +218,27 @@ class _RecoveryRuntime:
             if ResourceIdentity.parse(action.resource_id).kind == "gateway_rule"
             and action.action in {"create", "update", "delete", "adopt"}
         )
+        connector_recovery_actions: tuple[OperationAction, ...] = ()
+        if any(action.connector_evidence is not None for action in recovery_actions):
+            connect_config = project.runtime.connect
+            if connect_config is None or connect_config.default is None:
+                raise ValueError("Current recovery Connect runtime binding is unavailable")
+            cluster = connect_config.clusters.get(connect_config.default)
+            if cluster is None:
+                raise ValueError("Current recovery Connect runtime binding is unavailable")
+            try:
+                connector_binding = ConnectClusterBinding.from_endpoint(
+                    connect_config.default,
+                    cluster.rest_url,
+                )
+            except Exception:
+                raise ValueError(
+                    "Current recovery Connect runtime binding is invalid"
+                ) from None
+            connector_recovery_actions = preflight_connector_recovery_binding(
+                evidence,
+                connector_binding,
+            )
 
         # Deployer construction failures are intentionally accumulated in a private,
         # quiet formatter.  RecoveryService exposes one generic sanitized evidence
@@ -255,6 +279,7 @@ class _RecoveryRuntime:
             )
             plan = planner.plan(
                 gateway_recovery_actions=gateway_recovery_actions,
+                connector_recovery_actions=connector_recovery_actions,
             )
             return DeploymentPlanRecoveryObserver(
                 planner=planner,

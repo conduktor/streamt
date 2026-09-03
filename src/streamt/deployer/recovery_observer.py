@@ -1,14 +1,17 @@
-"""Fail-closed recovery evidence derived from one already-fresh deployment plan.
+"""Fail-closed recovery evidence derived from fresh provider observations.
 
-This module deliberately does not call a deployer.  The caller is responsible for
-building ``plan`` immediately before invoking the observer while holding the state
-operation lock.  Only the live state retained on that plan is considered here.
+Ordinary and Gateway targets use the live state retained on an already-fresh plan.
+A managed Connector deletion is the deliberate exception: its current manifest may
+no longer contain either the desired artifact or tombstone, so its exact target is
+resolved from durable version-3 action evidence and observed once through the
+planner's already-bound Connect deployer.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -19,6 +22,8 @@ from streamt.compiler.manifest import (
     GatewayRuleArtifact,
 )
 from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectClusterBindingError,
     ManagedConnectorObservation,
     is_connect_backend_identity,
 )
@@ -28,13 +33,15 @@ from streamt.deployer.gateway import (
     is_gateway_backend_identity,
     plan_managed_gateway_rule,
 )
-from streamt.deployer.planner import DeploymentPlan, DeploymentPlanner
+from streamt.deployer.planner import (
+    ConnectorRecoveryObservation,
+    DeploymentPlan,
+    DeploymentPlanner,
+)
 from streamt.deployer.recovery import (
-    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
-    contains_connector_recovery_action,
 )
 from streamt.deployer.recovery_service import RecoveryLiveObservation
 from streamt.deployer.state import (
@@ -47,6 +54,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     GatewayActionSurfaceEvidence,
     OperationAction,
 )
@@ -72,6 +81,8 @@ _SUPPORTED_ACTIONS: dict[_Kind, frozenset[str]] = {
     "gateway_rule": frozenset({"create", "update", "delete", "adopt"}),
 }
 _DELETE_ACTIONS = frozenset({"delete", "cancel"})
+_CONNECTOR_RECOVERY_INVALID = "has invalid exact Connector recovery evidence"
+_CONNECTOR_RECOVERY_OBSERVATION_FAILED = "Connector recovery live observation failed"
 
 
 @dataclass(frozen=True)
@@ -84,10 +95,104 @@ class _MappedChange:
     backend_identity: str | None
 
 
+@dataclass(frozen=True)
+class _ConnectorRecoveryTarget:
+    """One provider-free validated Connector deletion recovery target."""
+
+    action: OperationAction
+    binding: ConnectClusterBinding
+    prior_record: ManagedResourceRecord
+    mutation_started: bool
+
+
 def _target_error(action: OperationAction, reason: str) -> RecoveryObservationError:
     # OperationAction has already validated the text and RecoveryTargetEvidence later
     # validates its URI.  No provider value or exception text is ever interpolated.
     return RecoveryObservationError(f"Recovery target {action.resource_id} {reason}")
+
+
+def _connector_recovery_target(
+    *,
+    action: OperationAction,
+    snapshot: RecoverySnapshotEvidence,
+) -> _ConnectorRecoveryTarget:
+    """Validate durable Connector deletion authority without provider access."""
+    evidence = action.connector_evidence
+    intent = snapshot.control.intent
+    try:
+        if (
+            snapshot.control.control_version != 3
+            or intent is None
+            or intent.kind != "apply"
+            or type(action) is not OperationAction
+            or type(action.index) is not int
+            or type(action.resource_id) is not str
+            or type(action.action) is not str
+            or action.action != "delete"
+            or type(evidence) is not ConnectorActionEvidence
+            or type(evidence.version) is not int
+            or type(evidence.backend_identity) is not str
+            or type(evidence.connector_name) is not str
+            or type(evidence.prior_artifact_checksum) is not str
+            or type(evidence.current) is not ConnectorActionSurfaceEvidence
+            or type(evidence.current.exists) is not bool
+            or type(evidence.current.fingerprint) is not str
+            or type(evidence.desired) is not ConnectorActionSurfaceEvidence
+            or type(evidence.desired.exists) is not bool
+            or type(evidence.desired.fingerprint) is not str
+        ):
+            raise ValueError
+        binding = ConnectClusterBinding.from_backend_identity(evidence.backend_identity)
+        if type(binding) is not ConnectClusterBinding:
+            raise ValueError
+        prior = snapshot.state.resources.get(action.resource_id)
+        if type(prior) is not ManagedResourceRecord or (
+            type(prior.physical_name) is not str
+            or type(prior.ownership) is not str
+            or type(prior.artifact_checksum) is not str
+            or type(prior.backend) is not str
+            or prior.ownership != "managed"
+            or prior.physical_name != evidence.connector_name
+            or prior.backend != evidence.backend_identity
+            or prior.artifact_checksum != evidence.prior_artifact_checksum
+        ):
+            raise ValueError
+        for other_resource_id, record in snapshot.state.resources.items():
+            if type(other_resource_id) is not str:
+                raise ValueError
+            other_identity = ResourceIdentity.parse(other_resource_id)
+            if other_identity.kind != "connector" or other_resource_id == action.resource_id:
+                continue
+            if (
+                type(record) is not ManagedResourceRecord
+                or type(record.physical_name) is not str
+                or type(record.ownership) is not str
+                or type(record.artifact_checksum) is not str
+                or type(record.backend) is not str
+            ):
+                raise ValueError
+            try:
+                other_binding = ConnectClusterBinding.from_backend_identity(record.backend)
+            except ConnectClusterBindingError:
+                raise ValueError from None
+            if (
+                record.physical_name == evidence.connector_name
+                and other_binding.endpoint_fingerprint == binding.endpoint_fingerprint
+            ):
+                raise ValueError
+    except Exception:
+        raise _target_error(action, _CONNECTOR_RECOVERY_INVALID) from None
+    return _ConnectorRecoveryTarget(
+        action=action,
+        binding=binding,
+        prior_record=prior,
+        mutation_started=any(
+            progress.action_index == action.index
+            and progress.resource_id == action.resource_id
+            and progress.action == action.action
+            for progress in snapshot.control.progress
+        ),
+    )
 
 
 def _canonical_fingerprint(value: object) -> str:
@@ -225,9 +330,6 @@ def preflight_recovery_intent(
         raise RecoveryObservationError(
             "Recovery intent prior state evidence does not match the recovery snapshot"
         )
-    if contains_connector_recovery_action(intent.actions):
-        raise RecoveryObservationError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
-
     action_ids: set[str] = set()
     for action in intent.actions:
         try:
@@ -262,7 +364,45 @@ def preflight_recovery_intent(
             raise _target_error(action, "is not part of an adoption intent")
         if kind == "gateway_rule" and action.gateway_evidence is None:
             raise _target_error(action, "has no exact Gateway action evidence")
+        if kind == "connector" and action.action == "delete":
+            _connector_recovery_target(action=action, snapshot=snapshot)
     return intent.actions
+
+
+def preflight_connector_recovery_binding(
+    snapshot: RecoverySnapshotEvidence,
+    binding: ConnectClusterBinding,
+) -> tuple[OperationAction, ...]:
+    """Bind all durable Connector deletions to one runtime-derived cluster.
+
+    The caller derives ``binding`` from current parsed project configuration, so
+    this helper can run before a Connect deployer is constructed.  It performs no
+    provider access and returns only the exact Connector delete actions.
+    """
+    actions = preflight_recovery_intent(snapshot)
+    connector_actions = tuple(
+        action
+        for action in actions
+        if ResourceIdentity.parse(action.resource_id).kind == "connector"
+        and action.action == "delete"
+    )
+    if not connector_actions:
+        return ()
+    first = connector_actions[0]
+    if type(binding) is not ConnectClusterBinding:
+        raise _target_error(first, _CONNECTOR_RECOVERY_INVALID)
+
+    locators: set[tuple[str, str]] = set()
+    for action in connector_actions:
+        target = _connector_recovery_target(action=action, snapshot=snapshot)
+        evidence = action.connector_evidence
+        if type(evidence) is not ConnectorActionEvidence or target.binding != binding:
+            raise _target_error(action, _CONNECTOR_RECOVERY_INVALID)
+        locator = (target.binding.endpoint_fingerprint, evidence.connector_name)
+        if locator in locators:
+            raise _target_error(action, _CONNECTOR_RECOVERY_INVALID)
+        locators.add(locator)
+    return connector_actions
 
 
 def _identity_for_change(
@@ -696,6 +836,239 @@ def _gateway_surface(
     )
 
 
+def _connector_recovery_targets(
+    *,
+    planner: DeploymentPlanner,
+    actions: tuple[OperationAction, ...],
+    snapshot: RecoverySnapshotEvidence,
+) -> dict[str, _ConnectorRecoveryTarget]:
+    """Bind every durable Connector deletion target before any live read."""
+    connector_actions = tuple(
+        action
+        for action in actions
+        if ResourceIdentity.parse(action.resource_id).kind == "connector"
+        and action.action == "delete"
+    )
+    if not connector_actions:
+        return {}
+
+    first = connector_actions[0]
+    try:
+        configured_binding = planner._connect_binding_from_project()
+        deployer = planner.connect_deployer
+        if deployer is None:
+            raise ValueError
+        deployer_binding = deployer.require_cluster_binding()
+        if (
+            type(configured_binding) is not ConnectClusterBinding
+            or type(deployer_binding) is not ConnectClusterBinding
+            or deployer_binding != configured_binding
+        ):
+            raise ValueError
+    except Exception:
+        raise _target_error(first, _CONNECTOR_RECOVERY_INVALID) from None
+
+    bound_actions = preflight_connector_recovery_binding(snapshot, configured_binding)
+    targets: dict[str, _ConnectorRecoveryTarget] = {}
+    for action in bound_actions:
+        target = _connector_recovery_target(action=action, snapshot=snapshot)
+        targets[action.resource_id] = target
+    return targets
+
+
+def _strict_connector_recovery_observation(
+    *,
+    action: OperationAction,
+    value: object,
+) -> ManagedConnectorObservation:
+    """Detach one exact base observation without trusting subclasses or aliases."""
+    try:
+        if type(value) is not ManagedConnectorObservation:
+            raise ValueError
+        binding = value.binding
+        if (
+            type(binding) is not ConnectClusterBinding
+            or type(binding.version) is not int
+            or type(binding.cluster_alias) is not str
+            or type(binding.endpoint_fingerprint) is not str
+            or type(value.name) is not str
+            or type(value.exists) is not bool
+            or type(value.config) is not tuple
+        ):
+            raise ValueError
+        config: list[tuple[str, str | bool | int | float]] = []
+        for entry in value.config:
+            if type(entry) is not tuple or len(entry) != 2:
+                raise ValueError
+            key, scalar = entry
+            if type(key) is not str or type(scalar) not in (str, bool, int, float):
+                raise ValueError
+            if type(scalar) is float and not math.isfinite(scalar):
+                raise ValueError
+            config.append((key, scalar))
+        return ManagedConnectorObservation(
+            binding=ConnectClusterBinding(
+                cluster_alias=binding.cluster_alias,
+                endpoint_fingerprint=binding.endpoint_fingerprint,
+                version=binding.version,
+            ),
+            name=value.name,
+            exists=value.exists,
+            config=tuple(config),
+        )
+    except Exception:
+        raise _target_error(action, _CONNECTOR_RECOVERY_OBSERVATION_FAILED) from None
+
+
+def _connector_reconstructed_checksum(
+    *,
+    action: OperationAction,
+    observation: ManagedConnectorObservation,
+    state: LocalState,
+) -> str:
+    """Reconstruct the prior managed artifact using only durable identity and live config."""
+    evidence = action.connector_evidence
+    try:
+        if type(evidence) is not ConnectorActionEvidence or not observation.exists:
+            raise ValueError
+        identity = ResourceIdentity.parse(action.resource_id)
+        config = observation.config_dict()
+        connector_class = config.get("connector.class")
+        topics = config.get("topics")
+        if type(connector_class) is not str or type(topics) is not str:
+            raise ValueError
+        artifact = parse_compiled_connector_artifact(
+            {
+                "name": evidence.connector_name,
+                "connector_class": connector_class,
+                "topics": topics.split(","),
+                "cluster": observation.binding.cluster_alias,
+                "config": config,
+                "ownership": ArtifactOwnership(
+                    project=state.project,
+                    owner_type="model",
+                    owner_name=identity.logical_name,
+                    mode="managed",
+                ).to_dict(),
+            }
+        )
+        return artifact_checksum(artifact.to_dict())
+    except Exception:
+        raise _target_error(action, _CONNECTOR_RECOVERY_OBSERVATION_FAILED) from None
+
+
+def _observe_connector_recovery_target(
+    *,
+    action: OperationAction,
+    target: _ConnectorRecoveryTarget,
+    resolution: RecoveryResolution,
+    raw_observation: object,
+    prior_state: LocalState,
+    candidate_resources: dict[str, ManagedResourceRecord],
+) -> RecoveryTargetEvidence:
+    """Classify one strict Connector observation already retained by the plan."""
+    observation = _strict_connector_recovery_observation(
+        action=action,
+        value=raw_observation,
+    )
+    evidence = action.connector_evidence
+    if type(evidence) is not ConnectorActionEvidence:  # pragma: no cover - preflight narrows this
+        raise _target_error(action, _CONNECTOR_RECOVERY_INVALID)
+    if (
+        observation.binding != target.binding
+        or observation.name != evidence.connector_name
+    ):
+        raise _target_error(action, _CONNECTOR_RECOVERY_OBSERVATION_FAILED)
+
+    try:
+        fingerprint = observation.fingerprint
+    except Exception:
+        raise _target_error(action, _CONNECTOR_RECOVERY_OBSERVATION_FAILED) from None
+    if not observation.exists:
+        if (
+            fingerprint != evidence.desired.fingerprint
+            or resolution == "rolled_back"
+            or not target.mutation_started
+        ):
+            raise _target_error(action, "does not exactly match prior Connector surface")
+        accepted_as: Literal["prior", "candidate"] = "candidate"
+        candidate_resources.pop(action.resource_id, None)
+    else:
+        if fingerprint != evidence.current.fingerprint:
+            raise _target_error(
+                action,
+                "matches neither exact current nor desired Connector surface",
+            )
+        checksum = _connector_reconstructed_checksum(
+            action=action,
+            observation=observation,
+            state=prior_state,
+        )
+        if (
+            checksum != evidence.prior_artifact_checksum
+            or checksum != target.prior_record.artifact_checksum
+        ):
+            raise _target_error(action, "does not exactly match prior Connector state")
+        accepted_as = "prior"
+
+    return RecoveryTargetEvidence(
+        action=action,
+        presence="present" if observation.exists else "absent",
+        accepted_as=accepted_as,
+        fingerprint=fingerprint,
+    )
+
+
+def _connector_observation_map(
+    plan: DeploymentPlan,
+    actions: tuple[OperationAction, ...],
+) -> dict[str, ManagedConnectorObservation]:
+    """Require exactly one planner-retained observation per Connector target."""
+    connector_action_ids = {
+        action.resource_id
+        for action in actions
+        if ResourceIdentity.parse(action.resource_id).kind == "connector"
+        and action.action == "delete"
+    }
+    raw_observations = getattr(plan, "connector_recovery_observations", ())
+    if type(raw_observations) is not tuple:
+        raise RecoveryObservationError(
+            "Fresh Connector recovery observations must be an exact tuple"
+        )
+
+    observations: dict[str, ManagedConnectorObservation] = {}
+    for entry in raw_observations:
+        if (
+            type(entry) is not ConnectorRecoveryObservation
+            or type(entry.resource_id) is not str
+            or type(entry.observation) is not ManagedConnectorObservation
+        ):
+            raise RecoveryObservationError(
+                "Fresh Connector recovery observations are partial"
+            )
+        if entry.resource_id in observations:
+            raise RecoveryObservationError(
+                "Fresh Connector recovery observations contain a duplicate target"
+            )
+        observations[entry.resource_id] = entry.observation
+
+    extras = set(observations) - connector_action_ids
+    if extras:
+        raise RecoveryObservationError(
+            "Fresh Connector recovery observations contain an unrelated target"
+        )
+    missing = connector_action_ids - set(observations)
+    if missing:
+        missing_action = next(
+            action for action in actions if action.resource_id in missing
+        )
+        raise _target_error(
+            missing_action,
+            "has no matching fresh Connector observation",
+        )
+    return observations
+
+
 def _gateway_observation_map(
     plan: DeploymentPlan,
     actions: tuple[OperationAction, ...],
@@ -953,8 +1326,9 @@ def _observe_gateway_target(
 class DeploymentPlanRecoveryObserver:
     """Implement ``RecoveryTargetObserver`` using one already-fresh live plan.
 
-    Constructing or invoking this object performs no provider calls.  The plan must
-    have been built against exactly the snapshot state supplied to recovery.
+    Constructing and invoking this object perform no provider calls. Connector and
+    Gateway observations are retained on the already-fresh plan. The planner and
+    plan must be bound to the supplied snapshot.
     """
 
     planner: DeploymentPlanner
@@ -980,6 +1354,12 @@ class DeploymentPlanRecoveryObserver:
             raise RecoveryObservationError(
                 "Fresh recovery plan was not built against the recovery state snapshot"
             )
+        connector_targets = _connector_recovery_targets(
+            planner=self.planner,
+            actions=actions,
+            snapshot=snapshot,
+        )
+        connector_observations = _connector_observation_map(self.plan, actions)
         mapped_changes = _mapped_changes(self.plan, prior_state)
         gateway_observations = _gateway_observation_map(self.plan, actions)
         gateway_manifest_changes = _gateway_manifest_changes(self.plan, prior_state)
@@ -999,6 +1379,19 @@ class DeploymentPlanRecoveryObserver:
         for action in actions:
             identity = ResourceIdentity.parse(action.resource_id)
             kind = cast(_Kind, identity.kind)
+            connector_target = connector_targets.get(action.resource_id)
+            if connector_target is not None:
+                evidence.append(
+                    _observe_connector_recovery_target(
+                        action=action,
+                        target=connector_target,
+                        resolution=resolution,
+                        raw_observation=connector_observations[action.resource_id],
+                        prior_state=prior_state,
+                        candidate_resources=candidate_resources,
+                    )
+                )
+                continue
             if kind == "gateway_rule":
                 evidence.append(
                     _observe_gateway_target(

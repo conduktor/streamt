@@ -32,9 +32,17 @@ from streamt.core.models import ProjectInfo, StreamtProject
 from streamt.core.parser import ProjectParser
 from streamt.core.runtime import (
     ConduktorConfig,
+    ConnectClusterConfig,
+    ConnectConfig,
     GatewayConfig,
     KafkaConfig,
     RuntimeConfig,
+)
+from streamt.deployer.connect import (
+    ConnectClusterBinding,
+    ConnectDeployer,
+    ManagedConnectorObservation,
+    managed_connector_absence_fingerprint,
 )
 from streamt.deployer.gateway import (
     GatewayBackendBinding,
@@ -62,6 +70,8 @@ from streamt.deployer.state import (
     resource_id,
 )
 from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
     ControlObservation,
     DeploymentStateService,
     GatewayActionEvidence,
@@ -102,6 +112,17 @@ GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
     virtual_cluster=GATEWAY_VCLUSTER,
 )
 GATEWAY_CONFIG_SECRET = "gateway-config-secret-9281"
+CONNECT_ENDPOINT = "https://connect.example.test"
+CONNECT_BINDING = ConnectClusterBinding.from_endpoint("primary", CONNECT_ENDPOINT)
+CONNECTOR_RESOURCE = resource_id(
+    "recovery-test",
+    "default",
+    "connector",
+    "orders_connector",
+)
+CONNECTOR_NAME = "orders-sink"
+CONNECTOR_PRIOR_CHECKSUM = "sha256:" + "d" * 64
+CONNECTOR_CURRENT_FINGERPRINT = "sha256:" + "e" * 64
 
 
 def _write_project(path: Path) -> None:
@@ -172,6 +193,111 @@ def _gateway_project(
                 )
             ),
         ),
+    )
+
+
+def _connector_project(*, endpoint: str = CONNECT_ENDPOINT) -> StreamtProject:
+    return StreamtProject(
+        project=ProjectInfo(name="recovery-test"),
+        runtime=RuntimeConfig(
+            kafka=KafkaConfig(bootstrap_servers="broker.invalid:9092"),
+            connect=ConnectConfig(
+                default="primary",
+                clusters={
+                    "primary": ConnectClusterConfig(rest_url=endpoint),
+                },
+            ),
+        ),
+    )
+
+
+def _connector_recovery_snapshot(
+    *,
+    binding: ConnectClusterBinding = CONNECT_BINDING,
+) -> RecoverySnapshotEvidence:
+    state = LocalState(
+        project="recovery-test",
+        environment="default",
+        serial=4,
+        resources={
+            CONNECTOR_RESOURCE: ManagedResourceRecord(
+                physical_name=CONNECTOR_NAME,
+                ownership="managed",
+                artifact_checksum=CONNECTOR_PRIOR_CHECKSUM,
+                backend=binding.backend_identity,
+            ),
+        },
+    )
+    action = OperationAction(
+        index=0,
+        resource_id=CONNECTOR_RESOURCE,
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=binding.backend_identity,
+            connector_name=CONNECTOR_NAME,
+            prior_artifact_checksum=CONNECTOR_PRIOR_CHECKSUM,
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint=CONNECTOR_CURRENT_FINGERPRINT,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=managed_connector_absence_fingerprint(
+                    binding.backend_identity,
+                    CONNECTOR_NAME,
+                ),
+            ),
+        ),
+    )
+    address = StateAddress(
+        namespace="default",
+        project="recovery-test",
+        environment="default",
+    )
+    intent = OperationIntent(
+        operation_id=BLOCKED_OPERATION_ID,
+        kind="apply",
+        started_at="2026-09-02T12:00:00Z",
+        actor="prior-runner",
+        prior_state_serial=state.serial,
+        prior_state_checksum=state_checksum(state),
+        reviewed_plan_checksum=MANIFEST_CHECKSUM,
+        actions=(action,),
+    )
+    control = OperationControlState(
+        address=address,
+        status="in_progress",
+        intent=intent,
+        progress=(
+            OperationProgress(
+                operation_id=BLOCKED_OPERATION_ID,
+                action_index=0,
+                resource_id=action.resource_id,
+                action=action.action,
+                status="started",
+                succeeded=None,
+                recorded_at="2026-09-02T12:01:00Z",
+            ),
+        ),
+        control_version=3,
+    )
+    return RecoverySnapshotEvidence.from_operation_snapshot(
+        OperationSnapshot(
+            state=StateObservation(
+                store=StateStoreIdentity(
+                    backend="postgres",
+                    store_id="00000000-0000-4000-8000-000000000203",
+                ),
+                address=address,
+                state=state,
+                revision=StateRevision("state-revision"),
+            ),
+            control=ControlObservation(
+                control=control,
+                revision=StateRevision("control-revision"),
+            ),
+        )
     )
 
 
@@ -1289,6 +1415,89 @@ def test_recovery_runtime_rejects_legacy_gateway_before_deployer_construction(
         )
 
     make_gateway.assert_not_called()
+
+
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_recovery_runtime_rejects_changed_connector_binding_before_any_deployer(
+    resolution: RecoveryResolution,
+) -> None:
+    changed_endpoint = "https://changed-connect.example.test"
+    snapshot = _connector_recovery_snapshot()
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _connector_project(endpoint=changed_endpoint),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch(
+            "streamt.cli.helpers.make_sr_deployer",
+            side_effect=AssertionError("provider deployer constructed"),
+        ) as make_schema_registry,
+        patch(
+            "streamt.cli.helpers.make_connect_deployer",
+            side_effect=AssertionError("Connect deployer constructed"),
+        ) as make_connect,
+        pytest.raises(ValueError) as failure,
+    ):
+        _RecoveryRuntime(Path("/not-read"), None).observe_recovery_targets(
+            resolution=resolution,
+            snapshot=snapshot,
+        )
+
+    make_schema_registry.assert_not_called()
+    make_connect.assert_not_called()
+    assert CONNECT_ENDPOINT not in str(failure.value)
+    assert changed_endpoint not in str(failure.value)
+
+
+def test_recovery_runtime_observes_connector_delete_without_manifest_tombstone() -> None:
+    snapshot = _connector_recovery_snapshot()
+    connect = MagicMock(spec=ConnectDeployer)
+    connect.require_cluster_binding.return_value = CONNECT_BINDING
+    connect.observe_managed_connector.return_value = ManagedConnectorObservation(
+        binding=CONNECT_BINDING,
+        name=CONNECTOR_NAME,
+        exists=False,
+    )
+    kafka = MagicMock(spec=KafkaDeployer)
+
+    with (
+        patch.object(
+            _RecoveryRuntime,
+            "_compile",
+            return_value=(
+                _connector_project(),
+                Manifest(version="1", project_name="recovery-test"),
+                "default",
+            ),
+        ),
+        patch("streamt.cli.helpers.make_sr_deployer", return_value=None),
+        patch("streamt.cli.helpers.make_kafka_deployer", return_value=kafka),
+        patch("streamt.cli.helpers.make_flink_deployer", return_value=None),
+        patch("streamt.cli.helpers.make_connect_deployer", return_value=connect),
+        patch("streamt.cli.helpers.make_gateway_deployer", return_value=None),
+    ):
+        observed = _RecoveryRuntime(
+            Path("/not-read"),
+            None,
+        ).observe_recovery_targets(
+            resolution="observed",
+            snapshot=snapshot,
+        )
+
+    connect.observe_managed_connector.assert_called_once_with(CONNECTOR_NAME)
+    assert observed.targets[0].accepted_as == "candidate"
+    assert observed.targets[0].presence == "absent"
+    assert observed.candidate_state == LocalState(
+        project="recovery-test",
+        environment="default",
+        serial=5,
+    )
 
 
 def test_recovery_runtime_rejects_gateway_backend_evidence_before_live_reads() -> None:

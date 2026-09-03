@@ -38,6 +38,7 @@ from streamt.deployer.connect import (
     ConnectClusterBinding,
     ConnectClusterBindingError,
     ConnectDeployer,
+    ConnectManagedObservationError,
     ConnectorChange,
     ConnectorState,
     ManagedConnectorObservation,
@@ -45,6 +46,7 @@ from streamt.deployer.connect import (
     is_connect_backend_identity,
     managed_connector_absence_fingerprint,
     secret_neutral_connector_changes,
+    secret_neutral_connector_config_diff,
 )
 from streamt.deployer.flink import FlinkDeployer, FlinkJobChange
 from streamt.deployer.gateway import (
@@ -674,6 +676,25 @@ class GatewayRecoveryObservation:
         if type(self.observation) is not ManagedGatewayRuleObservation:
             raise StateIdentityError(
                 "Gateway recovery observation requires an exact managed surface"
+            )
+
+
+@dataclass(frozen=True)
+class ConnectorRecoveryObservation:
+    """One exact live Connector observation bound to a durable action identity."""
+
+    resource_id: str
+    observation: ManagedConnectorObservation = field(repr=False)
+
+    def __post_init__(self) -> None:
+        identity = ResourceIdentity.parse(self.resource_id)
+        if identity.kind != "connector":
+            raise StateIdentityError(
+                "Connector recovery observation requires a connector identity"
+            )
+        if type(self.observation) is not ManagedConnectorObservation:
+            raise StateIdentityError(
+                "Connector recovery observation requires an exact managed surface"
             )
 
 
@@ -1392,6 +1413,12 @@ class DeploymentPlan:
         compare=False,
         kw_only=True,
     )
+    connector_recovery_observations: tuple[ConnectorRecoveryObservation, ...] = field(
+        default_factory=tuple,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
     impact_radius: list[ImpactEntry] = field(default_factory=list)
     ownership_requirements: list[OwnershipRequirement] = field(default_factory=list)
     safety_blockers: list[SafetyBlocker] = field(default_factory=list)
@@ -1413,6 +1440,13 @@ class DeploymentPlan:
             for observation in self.gateway_recovery_observations
         ):
             raise StateIdentityError("deployment plan Gateway recovery observations are invalid")
+        if not isinstance(self.connector_recovery_observations, tuple) or any(
+            type(observation) is not ConnectorRecoveryObservation
+            for observation in self.connector_recovery_observations
+        ):
+            raise StateIdentityError(
+                "deployment plan Connector recovery observations are invalid"
+            )
         if (
             self.connector_removal_assessments
             or self.gateway_removal_assessments
@@ -2417,6 +2451,262 @@ class DeploymentPlanner:
             artifacts.append(artifact)
         return artifacts
 
+    @staticmethod
+    def _plan_connector_from_observation(
+        artifact: ConnectorArtifact,
+        binding: ConnectClusterBinding,
+        current: ManagedConnectorObservation,
+    ) -> ConnectorChange:
+        """Plan one bound Connector without performing a second live read."""
+        if (
+            type(artifact) is not ConnectorArtifact
+            or type(binding) is not ConnectClusterBinding
+            or type(current) is not ManagedConnectorObservation
+            or type(current.binding) is not ConnectClusterBinding
+            or current.binding != binding
+            or current.name != artifact.name
+            or artifact.cluster != binding.cluster_alias
+        ):
+            raise ConnectClusterBindingError(
+                "Connector observation does not match its exact planning target"
+            )
+        if not current.exists:
+            return ConnectorChange(
+                connector_name=artifact.name,
+                action="create",
+                current=current,
+                desired=artifact,
+                backend_identity=binding.backend_identity,
+            )
+        desired_config = artifact.to_dict().get("config")
+        if not isinstance(desired_config, dict):
+            raise ConnectManagedObservationError(
+                "Resolved connector artifact has an invalid config object"
+            )
+        changes = secret_neutral_connector_config_diff(
+            current.config_dict(),
+            desired_config,
+        )
+        return ConnectorChange(
+            connector_name=artifact.name,
+            action="update" if changes else "none",
+            current=current,
+            desired=artifact,
+            changes=changes,
+            backend_identity=binding.backend_identity,
+        )
+
+    def _validated_connector_recovery_actions(
+        self,
+        *,
+        actions: tuple[OperationAction, ...],
+        binding: ConnectClusterBinding,
+        artifacts: tuple[ConnectorArtifact, ...],
+        removals: tuple[ResolvedConnectorRemoval, ...],
+    ) -> tuple[OperationAction, ...]:
+        """Validate durable Connector deletion targets before any provider read."""
+        if type(actions) is not tuple or any(
+            type(action) is not OperationAction for action in actions
+        ):
+            raise StateIdentityError(
+                "Connector recovery actions must be an exact immutable action tuple"
+            )
+        if type(binding) is not ConnectClusterBinding:
+            raise StateIdentityError(
+                "Connector recovery requires an exact runtime binding"
+            )
+
+        desired_resources: dict[str, tuple[str, str]] = {}
+        desired_locators: dict[tuple[str, str], str] = {}
+        for artifact in artifacts:
+            if type(artifact) is not ConnectorArtifact:
+                raise StateIdentityError(
+                    "Connector recovery desired targets are not exact compiled artifacts"
+                )
+            ownership = ArtifactOwnership.from_dict(artifact.ownership)
+            logical_owner = ownership.owner_name if ownership is not None else artifact.name
+            target_resource_id = resource_id(
+                self.project_name,
+                self.environment,
+                "connector",
+                logical_owner,
+            )
+            locator = _connector_provider_locator(binding, artifact.name)
+            if target_resource_id in desired_resources or locator in desired_locators:
+                raise StateIdentityError(
+                    "Connector recovery desired targets contain an identity collision"
+                )
+            desired_resources[target_resource_id] = locator
+            desired_locators[locator] = target_resource_id
+
+        removal_resources: dict[str, tuple[str, str]] = {}
+        removal_locators: dict[tuple[str, str], str] = {}
+        for removal in removals:
+            if type(removal) is not ResolvedConnectorRemoval:
+                raise StateIdentityError(
+                    "Connector recovery removal targets are not exact resolved values"
+                )
+            locator = _connector_provider_locator(
+                removal.binding,
+                removal.connector_name,
+            )
+            if removal.resource_id in removal_resources or locator in removal_locators:
+                raise StateIdentityError(
+                    "Connector recovery removal targets contain an identity collision"
+                )
+            removal_resources[removal.resource_id] = locator
+            removal_locators[locator] = removal.resource_id
+
+        if not actions:
+            return actions
+        if type(self.prior_state) is not LocalState:
+            raise StateIdentityError(
+                "Connector recovery requires authoritative prior ownership state"
+            )
+
+        action_resources: set[str] = set()
+        action_locators: set[tuple[str, str]] = set()
+        for action in actions:
+            evidence = action.connector_evidence
+            try:
+                identity = ResourceIdentity.parse(action.resource_id)
+                if (
+                    type(action.index) is not int
+                    or action.index < 0
+                    or type(action.resource_id) is not str
+                    or type(action.action) is not str
+                    or action.action != "delete"
+                    or action.gateway_evidence is not None
+                    or type(evidence) is not ConnectorActionEvidence
+                    or type(evidence.version) is not int
+                    or type(evidence.backend_identity) is not str
+                    or type(evidence.connector_name) is not str
+                    or type(evidence.prior_artifact_checksum) is not str
+                    or type(evidence.current) is not ConnectorActionSurfaceEvidence
+                    or type(evidence.current.exists) is not bool
+                    or type(evidence.current.fingerprint) is not str
+                    or type(evidence.desired) is not ConnectorActionSurfaceEvidence
+                    or type(evidence.desired.exists) is not bool
+                    or type(evidence.desired.fingerprint) is not str
+                ):
+                    raise ValueError
+                evidence_binding = ConnectClusterBinding.from_backend_identity(
+                    evidence.backend_identity
+                )
+                ConnectorActionEvidence(
+                    version=evidence.version,
+                    backend_identity=evidence.backend_identity,
+                    connector_name=evidence.connector_name,
+                    prior_artifact_checksum=evidence.prior_artifact_checksum,
+                    current=ConnectorActionSurfaceEvidence(
+                        exists=evidence.current.exists,
+                        fingerprint=evidence.current.fingerprint,
+                    ),
+                    desired=ConnectorActionSurfaceEvidence(
+                        exists=evidence.desired.exists,
+                        fingerprint=evidence.desired.fingerprint,
+                    ),
+                )
+            except Exception:
+                raise StateIdentityError(
+                    "Connector recovery action requires exact durable deletion evidence"
+                ) from None
+            if (
+                identity.project != self.project_name
+                or identity.environment != self.environment
+                or identity.kind != "connector"
+            ):
+                raise StateIdentityError(
+                    "Connector recovery action belongs to another resource address"
+                )
+            if evidence_binding != binding:
+                raise StateIdentityError(
+                    "Connector recovery action belongs to another provider binding"
+                )
+            locator = _connector_provider_locator(binding, evidence.connector_name)
+            if action.resource_id in action_resources:
+                raise StateIdentityError(
+                    "Connector recovery actions contain a duplicate canonical resource"
+                )
+            if locator in action_locators:
+                raise StateIdentityError(
+                    "Connector recovery actions contain a duplicate provider locator"
+                )
+            action_resources.add(action.resource_id)
+            action_locators.add(locator)
+
+            if (
+                action.resource_id in desired_resources
+                or locator in desired_locators
+            ):
+                raise StateIdentityError(
+                    "Connector recovery delete target collides with a desired Connector"
+                )
+
+            retained_resource_locator = removal_resources.get(action.resource_id)
+            retained_locator_resource = removal_locators.get(locator)
+            if (
+                retained_resource_locator is not None
+                or retained_locator_resource is not None
+            ) and (
+                retained_resource_locator != locator
+                or retained_locator_resource != action.resource_id
+            ):
+                raise StateIdentityError(
+                    "Connector recovery target collides with a retained removal"
+                )
+
+            prior_record = self.prior_state.resources.get(action.resource_id)
+            if (
+                type(prior_record) is not ManagedResourceRecord
+                or type(prior_record.physical_name) is not str
+                or type(prior_record.ownership) is not str
+                or type(prior_record.artifact_checksum) is not str
+                or type(prior_record.backend) is not str
+                or prior_record.ownership != "managed"
+                or prior_record.physical_name != evidence.connector_name
+                or prior_record.backend != evidence.backend_identity
+                or prior_record.artifact_checksum != evidence.prior_artifact_checksum
+            ):
+                raise StateIdentityError(
+                    "Connector recovery mutation requires exact managed prior ownership"
+                )
+
+            for other_resource_id, other_record in self.prior_state.resources.items():
+                try:
+                    other_identity = ResourceIdentity.parse(other_resource_id)
+                except StateError:
+                    raise StateIdentityError(
+                        "Connector recovery prior state contains invalid identity evidence"
+                    ) from None
+                if (
+                    other_identity.kind != "connector"
+                    or other_resource_id == action.resource_id
+                ):
+                    continue
+                if type(other_record) is not ManagedResourceRecord:
+                    raise StateIdentityError(
+                        "Connector recovery prior state contains invalid ownership evidence"
+                    )
+                try:
+                    other_binding = ConnectClusterBinding.from_backend_identity(
+                        other_record.backend
+                    )
+                except ConnectClusterBindingError:
+                    if other_record.physical_name == evidence.connector_name:
+                        raise StateIdentityError(
+                            "Connector recovery prior state contains an ambiguous provider claim"
+                        ) from None
+                    continue
+                if (
+                    other_record.physical_name == evidence.connector_name
+                    and other_binding.endpoint_fingerprint == binding.endpoint_fingerprint
+                ):
+                    raise StateIdentityError(
+                        "Connector recovery prior state contains a conflicting provider claim"
+                    )
+        return actions
+
     def _gateway_binding_from_project(self) -> GatewayBackendBinding:
         """Resolve the exact configured Gateway endpoint and effective vCluster."""
         if not isinstance(self.project, StreamtProject):
@@ -2933,6 +3223,7 @@ class DeploymentPlanner:
         self,
         *,
         gateway_recovery_actions: tuple[OperationAction, ...] = (),
+        connector_recovery_actions: tuple[OperationAction, ...] = (),
     ) -> DeploymentPlan:
         """Create a deployment plan."""
         plan = DeploymentPlan()
@@ -2952,6 +3243,61 @@ class DeploymentPlanner:
             if connector_removals_requested(raw_connector_removals)
             else None
         )
+
+        # Connector identities are a whole-manifest preflight. Resolve every
+        # desired, retained-removal, and durable recovery claim before any
+        # provider can be read. An exact recovery/removal pair is intentionally
+        # allowed because an interrupted deletion may retain its tombstone.
+        if type(connector_recovery_actions) is not tuple:
+            raise StateIdentityError(
+                "Connector recovery actions must be an exact immutable action tuple"
+            )
+        connector_data = self.manifest.artifacts.get("connectors", [])
+        configured_connector_binding: ConnectClusterBinding | None = None
+        preflight_connector_artifacts: tuple[ConnectorArtifact, ...] = ()
+        connector_removals: tuple[ResolvedConnectorRemoval, ...] = ()
+        validated_connector_recovery_actions: tuple[OperationAction, ...] = ()
+        preflight_deployer_binding: ConnectClusterBinding | None = None
+        if connector_targets is not None or connector_recovery_actions:
+            configured_connector_binding = (
+                connector_targets.binding
+                if connector_targets is not None
+                else self._connect_binding_from_project()
+            )
+            preflight_connector_artifacts = (
+                connector_targets.desired_connectors
+                if connector_targets is not None
+                else tuple(
+                    self._resolved_connector_artifacts(
+                        configured_connector_binding,
+                    )
+                )
+            )
+            connector_removals = (
+                connector_targets.removals if connector_targets is not None else ()
+            )
+            validated_connector_recovery_actions = (
+                self._validated_connector_recovery_actions(
+                    actions=connector_recovery_actions,
+                    binding=configured_connector_binding,
+                    artifacts=preflight_connector_artifacts,
+                    removals=connector_removals,
+                )
+            )
+            if self.connect_deployer is None:
+                raise ConnectClusterBindingError(
+                    "Live Connector planning requires a bound Connect deployer"
+                )
+            deployer_binding = self.connect_deployer.require_cluster_binding()
+            if type(deployer_binding) is not ConnectClusterBinding:
+                raise ConnectClusterBindingError(
+                    "Connect deployer returned an invalid exact cluster binding"
+                )
+            if deployer_binding != configured_connector_binding:
+                raise ConnectClusterBindingError(
+                    "Connect deployer binding does not match project runtime configuration"
+                )
+            preflight_deployer_binding = deployer_binding
 
         raw_gateway_removals = self.manifest.artifacts.get(
             "gateway_rule_removals",
@@ -3078,22 +3424,29 @@ class DeploymentPlanner:
                     logger.error("Malformed flink_job artifact: %s in %s", e, job_data)
 
         # Plan connectors only through one exact bound cluster.
-        connector_data = self.manifest.artifacts.get("connectors", [])
-        if connector_data or connector_targets is not None:
+        if (
+            connector_data
+            or connector_targets is not None
+            or validated_connector_recovery_actions
+        ):
             if self.connect_deployer is None:
                 raise ConnectClusterBindingError(
                     "Live Connector planning requires a bound Connect deployer"
                 )
-            connector_binding = self.connect_deployer.require_cluster_binding()
+            connector_binding = (
+                preflight_deployer_binding
+                if preflight_deployer_binding is not None
+                else self.connect_deployer.require_cluster_binding()
+            )
             if type(connector_binding) is not ConnectClusterBinding:
                 raise ConnectClusterBindingError(
                     "Connect deployer returned an invalid exact cluster binding"
                 )
-            if connector_targets is not None:
-                configured_binding = connector_targets.binding
+            if configured_connector_binding is not None:
+                configured_binding = configured_connector_binding
                 if connector_binding != configured_binding:
                     raise ConnectClusterBindingError(
-                        "Connect deployer binding does not match removal preflight"
+                        "Connect deployer binding does not match Connector preflight"
                     )
             elif isinstance(self.project, StreamtProject):
                 configured_binding = self._connect_binding_from_project()
@@ -3102,15 +3455,88 @@ class DeploymentPlanner:
                         "Connect deployer binding does not match project runtime configuration"
                     )
             connector_artifacts = (
-                list(connector_targets.desired_connectors)
-                if connector_targets is not None
+                list(preflight_connector_artifacts)
+                if configured_connector_binding is not None
                 else self._resolved_connector_artifacts(
                     connector_binding,
                     resolver=self.connect_deployer.resolve_connector_artifact,
                 )
             )
+            observations: dict[
+                tuple[str, str],
+                ManagedConnectorObservation,
+            ] = {}
+
+            def observe_connector(connector_name: str) -> ManagedConnectorObservation:
+                locator = _connector_provider_locator(
+                    connector_binding,
+                    connector_name,
+                )
+                if locator in observations:
+                    return observations[locator]
+                try:
+                    current = self.connect_deployer.observe_managed_connector(
+                        connector_name
+                    )
+                except Exception:
+                    message = (
+                        "Connector removal live observation failed"
+                        if connector_targets is not None
+                        else "Connector recovery live observation failed"
+                    )
+                    error_type = (
+                        ConnectorRemovalPreflightError
+                        if connector_targets is not None
+                        else StateIdentityError
+                    )
+                    raise error_type(message) from None
+                if (
+                    type(current) is not ManagedConnectorObservation
+                    or type(current.binding) is not ConnectClusterBinding
+                    or type(current.binding.version) is not int
+                    or type(current.binding.cluster_alias) is not str
+                    or type(current.binding.endpoint_fingerprint) is not str
+                    or type(current.name) is not str
+                    or type(current.exists) is not bool
+                    or type(current.config) is not tuple
+                    or current.binding != connector_binding
+                    or current.name != connector_name
+                    or any(
+                        type(entry) is not tuple
+                        or len(entry) != 2
+                        or type(entry[0]) is not str
+                        or type(entry[1]) not in (str, bool, int, float)
+                        for entry in current.config
+                    )
+                ):
+                    message = (
+                        "Connector removal observation does not match its exact target"
+                        if connector_targets is not None
+                        else "Connector recovery observation does not match its exact target"
+                    )
+                    error_type = (
+                        ConnectorRemovalPreflightError
+                        if connector_targets is not None
+                        else StateIdentityError
+                    )
+                    raise error_type(message)
+                observations[locator] = current
+                return current
+
+            use_shared_observations = (
+                connector_targets is not None
+                or bool(validated_connector_recovery_actions)
+            )
             for artifact in connector_artifacts:
-                change = self.connect_deployer.plan_connector(artifact)
+                change = (
+                    self._plan_connector_from_observation(
+                        artifact,
+                        connector_binding,
+                        observe_connector(artifact.name),
+                    )
+                    if use_shared_observations
+                    else self.connect_deployer.plan_connector(artifact)
+                )
                 if (
                     change.backend_identity != connector_binding.backend_identity
                     or change.desired != artifact
@@ -3132,49 +3558,30 @@ class DeploymentPlanner:
                 plan.connector_changes.append(change)
 
             if connector_targets is not None:
-                observations: dict[
-                    tuple[str, str],
-                    ManagedConnectorObservation,
-                ] = {}
-
-                def observe_connector_removal(
-                    removal: ResolvedConnectorRemoval,
-                ) -> ManagedConnectorObservation:
-                    locator = _connector_provider_locator(
-                        removal.binding,
-                        removal.connector_name,
-                    )
-                    if locator in observations:
-                        return observations[locator]
-                    try:
-                        current = self.connect_deployer.observe_managed_connector(
-                            removal.connector_name
-                        )
-                    except Exception:
-                        raise ConnectorRemovalPreflightError(
-                            "Connector removal live observation failed"
-                        ) from None
-                    if (
-                        type(current) is not ManagedConnectorObservation
-                        or type(current.binding) is not ConnectClusterBinding
-                        or current.binding != removal.binding
-                        or current.name != removal.connector_name
-                    ):
-                        raise ConnectorRemovalPreflightError(
-                            "Connector removal observation does not match its exact target"
-                        )
-                    observations[locator] = current
-                    return current
-
                 removal_assessments: list[ConnectorRemovalAssessment] = []
                 for removal in connector_targets.removals:
                     self._append_planned_connector_removal(
                         plan,
                         removal,
-                        observe_connector_removal(removal),
+                        observe_connector(removal.connector_name),
                         removal_assessments,
                     )
                 plan.connector_removal_assessments = tuple(removal_assessments)
+
+            recovery_observations: list[ConnectorRecoveryObservation] = []
+            for action in validated_connector_recovery_actions:
+                evidence = action.connector_evidence
+                if evidence is None:  # pragma: no cover - strict preflight narrows this
+                    raise StateIdentityError(
+                        "Connector recovery action requires exact durable evidence"
+                    )
+                recovery_observations.append(
+                    ConnectorRecoveryObservation(
+                        resource_id=action.resource_id,
+                        observation=observe_connector(evidence.connector_name),
+                    )
+                )
+            plan.connector_recovery_observations = tuple(recovery_observations)
 
         # Plan all Gateway rules from one exact, complete two-list snapshot.
         if gateway_rules or gateway_removals or validated_gateway_recovery_actions:

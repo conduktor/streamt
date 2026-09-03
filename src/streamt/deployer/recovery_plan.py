@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import cast
 
 from streamt import __version__
+from streamt.deployer.connect import ConnectClusterBinding, ConnectClusterBindingError
 from streamt.deployer.recovery import (
-    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoveryResolutionRecord,
     RecoverySnapshotEvidence,
@@ -23,8 +23,19 @@ from streamt.deployer.recovery import (
     _reject_unsafe_text,
     contains_connector_recovery_action,
 )
-from streamt.deployer.state import LocalState, ManagedResourceRecord, StateError
-from streamt.deployer.state_backend import OperationAction, state_checksum
+from streamt.deployer.state import (
+    LocalState,
+    ManagedConnectorResourceDeletion,
+    ManagedResourceRecord,
+    ResourceIdentity,
+    StateError,
+)
+from streamt.deployer.state_backend import (
+    ConnectorActionEvidence,
+    ConnectorActionSurfaceEvidence,
+    OperationAction,
+    state_checksum,
+)
 
 RECOVERY_PLAN_FILE_KIND = "streamt.recovery-plan"
 RECOVERY_PLAN_FILE_VERSION = 3
@@ -218,7 +229,14 @@ class RecoveryPlanFile:
             contains_connector_recovery_action((target.action,)) for target in self.targets
         )
         if connector_recovery and self.resolution != "abandoned_before_mutation":
-            raise RecoveryPlanError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
+            if self.format_version != 3 or snapshot_control_version != 3:
+                raise RecoveryPlanError(
+                    "Connector recovery requires recovery plan and control version 3"
+                )
+            if self.snapshot.store.backend != "postgres":
+                raise RecoveryPlanError(
+                    "Connector recovery requires PostgreSQL state authority"
+                )
         if (
             self.resolution != "abandoned_before_mutation"
             and tuple(target.action for target in self.targets) != intent.actions
@@ -255,6 +273,12 @@ class RecoveryPlanFile:
                     # RecoveryTargetEvidence already binds it to the accepted
                     # durable current surface and fingerprint.
                     self._validate_gateway_prior_ownership(
+                        target,
+                        self.snapshot.state.resources.get(target.action.resource_id),
+                    )
+                    continue
+                if target.action.connector_evidence is not None:
+                    self._validate_connector_prior_ownership(
                         target,
                         self.snapshot.state.resources.get(target.action.resource_id),
                     )
@@ -333,6 +357,135 @@ class RecoveryPlanFile:
             raise RecoveryPlanError(
                 "Gateway recovery adoption candidate requires adopted ownership evidence"
             )
+
+    def _validate_connector_prior_ownership(
+        self,
+        target: RecoveryTargetEvidence,
+        prior_record: object | None,
+    ) -> ManagedConnectorResourceDeletion:
+        """Bind a Connector delete to one exact prior managed ownership record."""
+        connector_evidence = target.action.connector_evidence
+        if (
+            type(target.action) is not OperationAction
+            or type(target.action.index) is not int
+            or type(target.action.resource_id) is not str
+            or type(target.action.action) is not str
+            or type(connector_evidence) is not ConnectorActionEvidence
+            or type(connector_evidence.version) is not int
+            or type(connector_evidence.backend_identity) is not str
+            or type(connector_evidence.connector_name) is not str
+            or type(connector_evidence.prior_artifact_checksum) is not str
+            or type(connector_evidence.current) is not ConnectorActionSurfaceEvidence
+            or type(connector_evidence.current.exists) is not bool
+            or type(connector_evidence.current.fingerprint) is not str
+            or type(connector_evidence.desired) is not ConnectorActionSurfaceEvidence
+            or type(connector_evidence.desired.exists) is not bool
+            or type(connector_evidence.desired.fingerprint) is not str
+        ):
+            raise RecoveryPlanError(
+                "Connector recovery deletion requires exact action evidence"
+            )
+        if (
+            type(prior_record) is not ManagedResourceRecord
+            or type(prior_record.physical_name) is not str
+            or type(prior_record.ownership) is not str
+            or type(prior_record.artifact_checksum) is not str
+            or type(prior_record.backend) is not str
+            or prior_record.ownership != "managed"
+            or prior_record.backend != connector_evidence.backend_identity
+            or prior_record.physical_name != connector_evidence.connector_name
+            or prior_record.artifact_checksum
+            != connector_evidence.prior_artifact_checksum
+        ):
+            raise RecoveryPlanError(
+                "Connector recovery deletion requires exact prior managed ownership evidence"
+            )
+        try:
+            deletion_binding = ConnectClusterBinding.from_backend_identity(
+                connector_evidence.backend_identity
+            )
+        except (ConnectClusterBindingError, StateError):
+            raise RecoveryPlanError(
+                "Connector recovery deletion has invalid prior provider identity"
+            ) from None
+        matching_provider_records = []
+        for resource_id, record in self.snapshot.state.resources.items():
+            try:
+                identity = ResourceIdentity.parse(resource_id)
+            except StateError:
+                raise RecoveryPlanError(
+                    "Connector recovery deletion has invalid prior provider identity"
+                ) from None
+            if identity.kind != "connector":
+                continue
+            if type(record) is not ManagedResourceRecord:
+                raise RecoveryPlanError(
+                    "Connector recovery deletion has invalid prior provider identity"
+                )
+            try:
+                record_binding = ConnectClusterBinding.from_backend_identity(
+                    record.backend
+                )
+            except ConnectClusterBindingError:
+                raise RecoveryPlanError(
+                    "Connector recovery deletion has invalid prior provider identity"
+                ) from None
+            if (
+                record_binding.endpoint_fingerprint
+                == deletion_binding.endpoint_fingerprint
+                and record.physical_name == connector_evidence.connector_name
+            ):
+                matching_provider_records.append(resource_id)
+        if matching_provider_records != [target.action.resource_id]:
+            raise RecoveryPlanError(
+                "Connector recovery deletion requires one exact prior provider identity"
+            )
+        return ManagedConnectorResourceDeletion(
+            resource_id=target.action.resource_id,
+            backend_identity=connector_evidence.backend_identity,
+            connector_name=connector_evidence.connector_name,
+            prior_artifact_checksum=connector_evidence.prior_artifact_checksum,
+        )
+
+    def managed_connector_deletions(
+        self,
+    ) -> tuple[ManagedConnectorResourceDeletion, ...]:
+        """Return exact deletion claims proved by observed absent Connector targets."""
+        if self.resolution != "observed":
+            return ()
+        deletions: list[ManagedConnectorResourceDeletion] = []
+        provider_ids: set[tuple[str, str]] = set()
+        for target in self.targets:
+            connector_evidence = target.action.connector_evidence
+            if connector_evidence is None or target.accepted_as != "candidate":
+                continue
+            if target.presence != "absent":
+                raise RecoveryPlanError(
+                    "Connector recovery deletion candidate requires exact absence"
+                )
+            if not any(
+                progress.action_index == target.action.index
+                and progress.status == "started"
+                for progress in self.snapshot.control.progress
+            ):
+                raise RecoveryPlanError(
+                    "Connector recovery cannot remove ownership for an action that never started"
+                )
+            deletion = self._validate_connector_prior_ownership(
+                target,
+                self.snapshot.state.resources.get(target.action.resource_id),
+            )
+            binding = ConnectClusterBinding.from_backend_identity(
+                deletion.backend_identity
+            )
+            provider_id = (binding.endpoint_fingerprint, deletion.connector_name)
+            if provider_id in provider_ids:
+                raise RecoveryPlanError(
+                    "Connector recovery contains a duplicate provider identity"
+                )
+            provider_ids.add(provider_id)
+            deletions.append(deletion)
+        return tuple(deletions)
 
     def _validate_prior_state(self, serial: int, checksum: str) -> None:
         if self.snapshot.state.serial != serial or self.snapshot.state_checksum != checksum:
@@ -421,10 +574,27 @@ class RecoveryPlanFile:
                         candidate_record,
                     )
                 continue
+            if target.action.connector_evidence is not None:
+                self._validate_connector_prior_ownership(target, prior_record)
+                if target.accepted_as == "candidate":
+                    if candidate_record is not None:
+                        raise RecoveryPlanError(
+                            "Connector recovery deletion candidate must remove its "
+                            "ownership record"
+                        )
+                elif candidate_record != prior_record:
+                    raise RecoveryPlanError(
+                        "Connector recovery target accepted as prior must retain its "
+                        "prior ownership record"
+                    )
+                continue
             if target.presence != expected_presence:
                 raise RecoveryPlanError(
                     "Observed recovery target presence does not match its accepted state"
                 )
+        # Constructing the claims is part of validation: only exact absent,
+        # started Connector actions may authorize ownership removal.
+        self.managed_connector_deletions()
 
     @classmethod
     def create(
@@ -557,57 +727,23 @@ class RecoveryPlanFile:
                     pass
 
     @classmethod
-    def load(cls, path: Path) -> RecoveryPlanFile:
-        """Load a regular file without following symlinks and validate every field."""
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    def from_dict(cls, value: object) -> RecoveryPlanFile:
+        """Parse, checksum, validate, and detach one in-memory plan envelope."""
         try:
-            file_descriptor = os.open(Path(path), flags)
-        except OSError as error:
-            raise RecoveryPlanError("Cannot read recovery plan file") from error
-        try:
-            file_stat = os.fstat(file_descriptor)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise RecoveryPlanError("Recovery plan path must be a regular file")
-            if file_stat.st_size > MAX_RECOVERY_PLAN_FILE_BYTES:
+            canonical = json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            if len(canonical.encode("utf-8")) > MAX_RECOVERY_PLAN_FILE_BYTES:
                 raise RecoveryPlanError("Recovery plan exceeds the 10 MiB size limit")
-            with os.fdopen(file_descriptor, mode="r", encoding="utf-8") as handle:
-                file_descriptor = -1
-                raw = handle.read(MAX_RECOVERY_PLAN_FILE_BYTES + 1)
+            value = json.loads(canonical)
         except RecoveryPlanError:
             raise
-        except (OSError, UnicodeError) as error:
-            raise RecoveryPlanError("Cannot read recovery plan file") from error
-        finally:
-            if file_descriptor >= 0:
-                os.close(file_descriptor)
-        if len(raw.encode("utf-8")) > MAX_RECOVERY_PLAN_FILE_BYTES:
-            raise RecoveryPlanError("Recovery plan exceeds the 10 MiB size limit")
-
-        def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-            result: dict[str, object] = {}
-            for key, value in pairs:
-                if key in result:
-                    raise RecoveryPlanError(
-                        f"Recovery plan contains duplicate field {key!r}"
-                    )
-                result[key] = value
-            return result
-
-        def reject_constant(value: str) -> object:
-            raise RecoveryPlanError(
-                f"Recovery plan contains non-finite number {value!r}"
-            )
-
-        try:
-            value = json.loads(
-                raw,
-                object_pairs_hook=reject_duplicates,
-                parse_constant=reject_constant,
-            )
-        except RecoveryPlanError:
-            raise
-        except json.JSONDecodeError as error:
-            raise RecoveryPlanError("Recovery plan is not valid UTF-8 JSON") from error
+        except (TypeError, ValueError, UnicodeError):
+            raise RecoveryPlanError("Recovery plan evidence is invalid") from None
         data = _strict_object(
             value,
             label="file root",
@@ -696,6 +832,60 @@ class RecoveryPlanFile:
             raise
         except StateError as error:
             raise RecoveryPlanError("Recovery plan evidence is invalid") from error
+
+    @classmethod
+    def load(cls, path: Path) -> RecoveryPlanFile:
+        """Load a regular file without following symlinks and validate every field."""
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            file_descriptor = os.open(Path(path), flags)
+        except OSError as error:
+            raise RecoveryPlanError("Cannot read recovery plan file") from error
+        try:
+            file_stat = os.fstat(file_descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RecoveryPlanError("Recovery plan path must be a regular file")
+            if file_stat.st_size > MAX_RECOVERY_PLAN_FILE_BYTES:
+                raise RecoveryPlanError("Recovery plan exceeds the 10 MiB size limit")
+            with os.fdopen(file_descriptor, mode="r", encoding="utf-8") as handle:
+                file_descriptor = -1
+                raw = handle.read(MAX_RECOVERY_PLAN_FILE_BYTES + 1)
+        except RecoveryPlanError:
+            raise
+        except (OSError, UnicodeError) as error:
+            raise RecoveryPlanError("Cannot read recovery plan file") from error
+        finally:
+            if file_descriptor >= 0:
+                os.close(file_descriptor)
+        if len(raw.encode("utf-8")) > MAX_RECOVERY_PLAN_FILE_BYTES:
+            raise RecoveryPlanError("Recovery plan exceeds the 10 MiB size limit")
+
+        def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise RecoveryPlanError(
+                        f"Recovery plan contains duplicate field {key!r}"
+                    )
+                result[key] = value
+            return result
+
+        def reject_constant(value: str) -> object:
+            raise RecoveryPlanError(
+                f"Recovery plan contains non-finite number {value!r}"
+            )
+
+        try:
+            value = json.loads(
+                raw,
+                object_pairs_hook=reject_duplicates,
+                parse_constant=reject_constant,
+            )
+        except RecoveryPlanError:
+            raise
+        except json.JSONDecodeError as error:
+            raise RecoveryPlanError("Recovery plan is not valid UTF-8 JSON") from error
+        return cls.from_dict(value)
 
     def make_resolution_record(
         self,

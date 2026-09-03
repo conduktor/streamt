@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Protocol, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,8 +18,20 @@ from streamt.compiler.manifest import (
     SchemaArtifact,
     TopicArtifact,
 )
+from streamt.core.deployment_state import (
+    PostgresConnectionConfig,
+    PostgresDeploymentStateConfig,
+)
+from streamt.core.models import ProjectInfo, StreamtProject
+from streamt.core.runtime import (
+    ConnectClusterConfig,
+    ConnectConfig,
+    KafkaConfig,
+    RuntimeConfig,
+)
 from streamt.deployer.connect import (
     ConnectClusterBinding,
+    ConnectDeployer,
     ConnectorChange,
     ConnectorState,
     ManagedConnectorObservation,
@@ -41,10 +54,15 @@ from streamt.deployer.planner import (
     GatewayRecoveryObservation,
     OwnershipRequirement,
 )
-from streamt.deployer.recovery import RecoveryResolution, RecoverySnapshotEvidence
+from streamt.deployer.recovery import (
+    RecoveryResolution,
+    RecoverySnapshotEvidence,
+    RecoveryTargetEvidence,
+)
 from streamt.deployer.recovery_observer import (
     DeploymentPlanRecoveryObserver,
     RecoveryObservationError,
+    preflight_connector_recovery_binding,
     preflight_recovery_intent,
 )
 from streamt.deployer.recovery_service import RecoveryLiveObservation
@@ -53,6 +71,7 @@ from streamt.deployer.state import (
     LocalState,
     ManagedResourceRecord,
     OwnershipMode,
+    StateIdentityError,
     artifact_checksum,
     resource_id,
 )
@@ -66,6 +85,7 @@ from streamt.deployer.state_backend import (
     OperationControlState,
     OperationIntent,
     OperationKind,
+    OperationProgress,
     OperationSnapshot,
     StateAddress,
     StateObservation,
@@ -89,6 +109,15 @@ GATEWAY_BINDING = GatewayBackendBinding.from_endpoint(
 )
 GATEWAY_ENDPOINT = "https://gateway.example.test"
 GATEWAY_SECRET = "gateway-recovery-secret-7219"
+CONNECT_ENDPOINT = "https://connect.example.test/api"
+
+
+class _ConnectorObservationSubclass(ManagedConnectorObservation):
+    pass
+
+
+class _StringSubclass(str):
+    pass
 
 
 class _Artifact(Protocol):
@@ -140,6 +169,85 @@ def _connector_observation(
         exists=exists,
         config=tuple(sorted(raw_config.items())) if exists else (),
     )
+
+
+def _connect_project(*, endpoint: str = CONNECT_ENDPOINT) -> StreamtProject:
+    return StreamtProject(
+        project=ProjectInfo(name=PROJECT),
+        runtime=RuntimeConfig(
+            kafka=KafkaConfig(bootstrap_servers="broker:9092"),
+            connect=ConnectConfig(
+                default=CONNECT_BINDING.cluster_alias,
+                clusters={
+                    CONNECT_BINDING.cluster_alias: ConnectClusterConfig(
+                        rest_url=endpoint,
+                    )
+                },
+            ),
+        ),
+        deployment_state=PostgresDeploymentStateConfig(
+            backend="postgres",
+            namespace="platform",
+            postgres=PostgresConnectionConfig(
+                dsn_env="STREAMT_TEST_ADMIN_DSN",
+                writer_dsn_env="STREAMT_TEST_WRITER_DSN",
+            ),
+        ),
+    )
+
+
+def _connector_delete_action(
+    artifact: ConnectorArtifact,
+    current: ManagedConnectorObservation,
+    *,
+    index: int = 0,
+) -> OperationAction:
+    return OperationAction(
+        index=index,
+        resource_id=resource_id(
+            PROJECT,
+            ENVIRONMENT,
+            "connector",
+            cast(ArtifactOwnership, artifact.ownership).owner_name,
+        ),
+        action="delete",
+        connector_evidence=ConnectorActionEvidence(
+            version=1,
+            backend_identity=CONNECT_BACKEND,
+            connector_name=artifact.name,
+            prior_artifact_checksum=artifact_checksum(artifact.to_dict()),
+            current=ConnectorActionSurfaceEvidence(
+                exists=True,
+                fingerprint=current.fingerprint,
+            ),
+            desired=ConnectorActionSurfaceEvidence(
+                exists=False,
+                fingerprint=managed_connector_absence_fingerprint(
+                    CONNECT_BACKEND,
+                    artifact.name,
+                ),
+            ),
+        ),
+    )
+
+
+def _connector_recovery_planner(
+    state: LocalState,
+    observation: object,
+    *,
+    project: StreamtProject | None = None,
+) -> tuple[DeploymentPlanner, MagicMock]:
+    deployer = MagicMock(spec=ConnectDeployer)
+    deployer.require_cluster_binding.return_value = CONNECT_BINDING
+    deployer.observe_managed_connector.return_value = observation
+    planner = DeploymentPlanner(
+        Manifest(version="1", project_name=PROJECT),
+        connect_deployer=deployer,
+        project=project or _connect_project(),
+        prior_state=state,
+        environment=ENVIRONMENT,
+    )
+    return planner, deployer
 
 
 def _gateway_artifact(
@@ -196,6 +304,7 @@ def _snapshot(
     *,
     kind: OperationKind = "apply",
     control_version: int = 2,
+    progress: tuple[OperationProgress, ...] = (),
 ) -> RecoverySnapshotEvidence:
     address = StateAddress(namespace="platform", project=PROJECT, environment=ENVIRONMENT)
     intent = OperationIntent(
@@ -212,6 +321,7 @@ def _snapshot(
         address=address,
         status="in_progress",
         intent=intent,
+        progress=progress,
         control_version=control_version,
     )
     return RecoverySnapshotEvidence.from_operation_snapshot(
@@ -286,11 +396,46 @@ def _observe(
     resolution: RecoveryResolution = "observed",
     intent_kind: OperationKind = "apply",
     planner: DeploymentPlanner | None = None,
+    connector_started: bool = True,
 ) -> RecoveryLiveObservation:
-    observer = DeploymentPlanRecoveryObserver(planner or _planner(state), plan)
+    effective_planner = planner or _planner(state)
+    progress = tuple(
+        OperationProgress(
+            operation_id=OPERATION_ID,
+            action_index=action.index,
+            resource_id=action.resource_id,
+            action=action.action,
+            status="started",
+            succeeded=None,
+            recorded_at="2026-09-02T12:00:01Z",
+        )
+        for action in actions
+        if connector_started and action.connector_evidence is not None
+    )
+    snapshot = _snapshot(
+        state,
+        actions,
+        kind=intent_kind,
+        control_version=(
+            3 if any(action.connector_evidence is not None for action in actions) else 2
+        ),
+        progress=progress,
+    )
+    connector_actions = tuple(
+        action for action in actions if action.connector_evidence is not None
+    )
+    if connector_actions and not plan.connector_recovery_observations:
+        preflight_connector_recovery_binding(
+            snapshot,
+            effective_planner._connect_binding_from_project(),
+        )
+        plan = effective_planner.plan(
+            connector_recovery_actions=connector_actions,
+        )
+    observer = DeploymentPlanRecoveryObserver(effective_planner, plan)
     return observer.observe_recovery_targets(
         resolution=resolution,
-        snapshot=_snapshot(state, actions, kind=intent_kind),
+        snapshot=snapshot,
     )
 
 
@@ -2064,39 +2209,426 @@ def test_preflight_accepts_gateway_adopt_with_exact_action_evidence() -> None:
     assert preflight_recovery_intent(snapshot) == (action,)
 
 
-def test_preflight_rejects_connector_recovery_before_live_planning() -> None:
-    connector_name = "archive-orders-sink"
-    action = OperationAction(
-        index=0,
-        resource_id=resource_id(
-            PROJECT,
-            ENVIRONMENT,
-            "connector",
-            "archive_orders",
-        ),
-        action="delete",
-        connector_evidence=ConnectorActionEvidence(
-            version=1,
-            backend_identity=CONNECT_BINDING.backend_identity,
-            connector_name=connector_name,
-            prior_artifact_checksum="sha256:" + "6" * 64,
-            current=ConnectorActionSurfaceEvidence(
-                exists=True,
-                fingerprint="sha256:" + "7" * 64,
-            ),
-            desired=ConnectorActionSurfaceEvidence(
-                exists=False,
-                fingerprint=managed_connector_absence_fingerprint(
-                    CONNECT_BINDING.backend_identity,
-                    connector_name,
-                ),
-            ),
+def test_preflight_accepts_exact_v3_connector_delete_without_live_planning() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+
+    assert preflight_recovery_intent(
+        _snapshot(state, (action,), control_version=3)
+    ) == (action,)
+
+
+def test_connector_delete_recovery_uses_durable_target_without_manifest_artifact() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1", "orders.v2"],
+        config={"tasks.max": 2},
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    absent = _connector_observation(artifact, exists=False)
+    planner, deployer = _connector_recovery_planner(state, absent)
+
+    result = _observe(
+        state,
+        DeploymentPlan(),
+        (action,),
+        planner=planner,
+    )
+
+    assert result.targets == (
+        RecoveryTargetEvidence(
+            action=action,
+            presence="absent",
+            accepted_as="candidate",
+            fingerprint=action.connector_evidence.desired.fingerprint,  # type: ignore[union-attr]
         ),
     )
-    snapshot = _snapshot(_state(), (action,), control_version=3)
+    assert result.candidate_state == _state(serial=8)
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
 
-    with pytest.raises(RecoveryObservationError, match="not available in this build"):
-        preflight_recovery_intent(snapshot)
+
+def test_connector_delete_recovery_does_not_accept_absence_before_mutation_started() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    planner, deployer = _connector_recovery_planner(
+        state,
+        _connector_observation(artifact, exists=False),
+    )
+
+    with pytest.raises(RecoveryObservationError, match="prior Connector surface"):
+        _observe(
+            state,
+            DeploymentPlan(),
+            (action,),
+            planner=planner,
+            connector_started=False,
+        )
+
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
+
+
+def test_connector_recovery_binding_preflight_rejects_conflicting_locators() -> None:
+    artifact = ConnectorArtifact(
+        name="shared-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    action = _connector_delete_action(artifact, _connector_observation(artifact))
+    retired_alias = ConnectClusterBinding.from_endpoint("retired", CONNECT_ENDPOINT)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            ),
+            resource_id(PROJECT, ENVIRONMENT, "connector", "audit_orders"): _record(
+                replace(artifact, ownership=_ownership("audit_orders")),
+                physical_name=artifact.name,
+                backend=retired_alias.backend_identity,
+            ),
+        }
+    )
+
+    with pytest.raises(RecoveryObservationError, match="invalid exact Connector"):
+        preflight_connector_recovery_binding(
+            _snapshot(state, (action,), control_version=3),
+            CONNECT_BINDING,
+        )
+
+
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_connector_delete_recovery_accepts_exact_reconstructible_prior(
+    resolution: RecoveryResolution,
+) -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1", "orders.v2"],
+        config={"tasks.max": 2},
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    planner, deployer = _connector_recovery_planner(state, current)
+
+    result = _observe(
+        state,
+        DeploymentPlan(),
+        (action,),
+        resolution=resolution,
+        planner=planner,
+    )
+
+    assert result.targets[0].presence == "present"
+    assert result.targets[0].accepted_as == "prior"
+    assert result.targets[0].fingerprint == current.fingerprint
+    assert result.candidate_state == (state if resolution == "observed" else None)
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
+
+
+@pytest.mark.parametrize(
+    ("record_change", "expected"),
+    [
+        ({"ownership": "adopted"}, "invalid exact Connector"),
+        ({"physical_name": "other-sink"}, "invalid exact Connector"),
+        ({"backend": "kafka-connect"}, "invalid exact Connector"),
+        ({"artifact_checksum": "sha256:" + "a" * 64}, "invalid exact Connector"),
+    ],
+)
+def test_connector_delete_recovery_rejects_changed_prior_state_before_provider_access(
+    record_change: dict[str, str],
+    expected: str,
+) -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    record = _record(artifact, physical_name=artifact.name, backend=CONNECT_BACKEND)
+    state = _state(
+        {
+            action.resource_id: replace(
+                record,
+                **record_change,  # type: ignore[arg-type]
+            )
+        }
+    )
+    planner, deployer = _connector_recovery_planner(state, current)
+
+    with pytest.raises(RecoveryObservationError, match=expected):
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+    deployer.observe_managed_connector.assert_not_called()
+
+
+@pytest.mark.parametrize("corruption", ["evidence", "prior_record"])
+def test_connector_recovery_preflight_rejects_non_exact_durable_scalars(
+    corruption: str,
+) -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    record = _record(
+        artifact,
+        physical_name=artifact.name,
+        backend=CONNECT_BACKEND,
+    )
+    if corruption == "evidence":
+        evidence = action.connector_evidence
+        assert evidence is not None
+        object.__setattr__(
+            evidence.current,
+            "fingerprint",
+            _StringSubclass(evidence.current.fingerprint),
+        )
+    else:
+        object.__setattr__(record, "backend", _StringSubclass(record.backend))
+    state = _state({action.resource_id: record})
+
+    with pytest.raises(RecoveryObservationError, match="invalid exact Connector"):
+        preflight_recovery_intent(
+            _snapshot(state, (action,), control_version=3),
+        )
+
+
+def test_connector_delete_recovery_rejects_runtime_binding_before_provider_access() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    planner, deployer = _connector_recovery_planner(
+        state,
+        current,
+        project=_connect_project(endpoint="https://other-connect.example.test/api"),
+    )
+
+    with pytest.raises(RecoveryObservationError, match="invalid exact Connector"):
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+    deployer.observe_managed_connector.assert_not_called()
+
+
+@pytest.mark.parametrize("corruption", ["binding", "subclass"])
+def test_connector_delete_recovery_rejects_non_exact_observation(
+    corruption: str,
+) -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    if corruption == "binding":
+        observation: object = _connector_observation(
+            artifact,
+            binding=ConnectClusterBinding.from_endpoint(
+                CONNECT_BINDING.cluster_alias,
+                "https://other-connect.example.test/api",
+            ),
+        )
+    else:
+        observation = _ConnectorObservationSubclass(
+            binding=current.binding,
+            name=current.name,
+            exists=current.exists,
+            config=current.config,
+        )
+    planner, deployer = _connector_recovery_planner(state, observation)
+
+    with pytest.raises(StateIdentityError, match="does not match its exact target"):
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
+
+
+def test_connector_delete_recovery_rejects_third_surface() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        config={"tasks.max": 2},
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    changed = _connector_observation(replace(artifact, config={"tasks.max": 3}))
+    planner, deployer = _connector_recovery_planner(state, changed)
+
+    with pytest.raises(RecoveryObservationError, match="neither exact current nor desired"):
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
+
+
+def test_connector_delete_recovery_rejects_unreconstructible_prior() -> None:
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    evidence = action.connector_evidence
+    assert evidence is not None
+    mismatched_checksum = "sha256:" + "a" * 64
+    action = replace(
+        action,
+        connector_evidence=replace(
+            evidence,
+            prior_artifact_checksum=mismatched_checksum,
+        ),
+    )
+    state = _state(
+        {
+            action.resource_id: ManagedResourceRecord(
+                physical_name=artifact.name,
+                ownership="managed",
+                artifact_checksum=mismatched_checksum,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    planner, _deployer = _connector_recovery_planner(state, current)
+
+    with pytest.raises(RecoveryObservationError, match="prior Connector state"):
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+
+def test_connector_delete_recovery_sanitizes_observation_failure() -> None:
+    secret = "provider-secret-9931"
+    artifact = ConnectorArtifact(
+        name="archive-orders-sink",
+        connector_class="example.Sink",
+        topics=["orders.v1"],
+        cluster=CONNECT_BINDING.cluster_alias,
+        ownership=_ownership("archive_orders"),
+    )
+    current = _connector_observation(artifact)
+    action = _connector_delete_action(artifact, current)
+    state = _state(
+        {
+            action.resource_id: _record(
+                artifact,
+                physical_name=artifact.name,
+                backend=CONNECT_BACKEND,
+            )
+        }
+    )
+    planner, deployer = _connector_recovery_planner(state, current)
+    deployer.observe_managed_connector.side_effect = RuntimeError(secret)
+
+    with pytest.raises(StateIdentityError) as error:
+        _observe(state, DeploymentPlan(), (action,), planner=planner)
+
+    assert str(error.value).endswith("Connector recovery live observation failed")
+    assert secret not in str(error.value)
+    deployer.observe_managed_connector.assert_called_once_with(artifact.name)
 
 
 @pytest.mark.parametrize("mismatch", ["serial", "checksum"])

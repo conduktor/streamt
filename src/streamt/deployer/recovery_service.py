@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Protocol
 
 from streamt.deployer.recovery import (
-    CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE,
     RecoveryResolution,
     RecoverySnapshotEvidence,
     RecoveryTargetEvidence,
@@ -94,9 +93,7 @@ class RecoveryService:
             if snapshot.control.control.status == "clear":
                 raise RecoveryServiceError("Recovery planning requires an active blocked operation")
             evidence = RecoverySnapshotEvidence.from_operation_snapshot(snapshot)
-
-            if resolution != "abandoned_before_mutation":
-                self._reject_deferred_connector_recovery(evidence)
+            self._require_connector_recovery_authority(evidence, resolution=resolution)
 
             if resolution == "abandoned_before_mutation":
                 live = RecoveryLiveObservation(targets=(), candidate_state=None)
@@ -151,12 +148,11 @@ class RecoveryService:
             evidence_checksum=confirm_evidence_checksum,
         )
         self._require_plan_identity(plan)
-        if plan.resolution != "abandoned_before_mutation":
-            self._reject_deferred_connector_recovery(
-                plan.snapshot,
-                targets=plan.targets,
-            )
-
+        self._require_connector_recovery_authority(
+            plan.snapshot,
+            resolution=plan.resolution,
+            format_version=plan.format_version,
+        )
         with self.state.operation() as operation:
             current = operation.observe()
             self._require_snapshot_identity(current)
@@ -226,17 +222,27 @@ class RecoveryService:
             )
 
     @staticmethod
-    def _reject_deferred_connector_recovery(
+    def _require_connector_recovery_authority(
         snapshot: RecoverySnapshotEvidence,
         *,
-        targets: tuple[RecoveryTargetEvidence, ...] = (),
+        resolution: RecoveryResolution,
+        format_version: int = 3,
     ) -> None:
         intent = snapshot.control.intent
-        actions = (() if intent is None else intent.actions) + tuple(
-            target.action for target in targets
-        )
-        if contains_connector_recovery_action(actions):
-            raise RecoveryServiceError(CONNECTOR_RECOVERY_UNAVAILABLE_MESSAGE)
+        if (
+            resolution == "abandoned_before_mutation"
+            or intent is None
+            or not contains_connector_recovery_action(intent.actions)
+        ):
+            return
+        if (
+            format_version != 3
+            or snapshot.control.control_version != 3
+            or snapshot.store.backend != "postgres"
+        ):
+            raise RecoveryServiceError(
+                "Connector recovery requires version-3 evidence and PostgreSQL state authority"
+            )
 
     @staticmethod
     def _require_context_matches_plan(
@@ -253,11 +259,22 @@ class RecoveryService:
 
     @staticmethod
     def _validated_plan(plan_or_path: RecoveryPlanFile | Path) -> RecoveryPlanFile:
-        plan = (
-            plan_or_path
-            if isinstance(plan_or_path, RecoveryPlanFile)
-            else RecoveryPlanFile.load(plan_or_path)
-        )
+        if type(plan_or_path) is RecoveryPlanFile:
+            if not plan_or_path.evidence_checksum:
+                raise RecoveryPlanError("Recovery plan requires integrity evidence")
+            # Frozen dataclasses can still contain mutable nested mappings. Round-trip
+            # an in-memory value through the strict wire parser so execution rechecks
+            # its checksum and detaches it from caller-owned state.
+            try:
+                plan = RecoveryPlanFile.from_dict(plan_or_path.to_dict())
+            except RecoveryPlanError:
+                raise
+            except Exception:
+                raise RecoveryPlanError("Recovery plan evidence is invalid") from None
+        elif isinstance(plan_or_path, Path):
+            plan = RecoveryPlanFile.load(plan_or_path)
+        else:
+            raise RecoveryPlanError("Recovery plan must be an exact plan value or path")
         if not plan.evidence_checksum:
             raise RecoveryPlanError("Recovery plan requires integrity evidence")
         return plan

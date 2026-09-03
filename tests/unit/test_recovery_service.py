@@ -182,7 +182,11 @@ def _snapshot(
     )
 
 
-def _connector_snapshot() -> OperationSnapshot:
+def _connector_snapshot(
+    *,
+    with_progress: bool = True,
+    store_backend: str = "postgres",
+) -> OperationSnapshot:
     prior_checksum = "sha256:" + "e" * 64
     prior = LocalState(
         project="payments",
@@ -232,8 +236,63 @@ def _connector_snapshot() -> OperationSnapshot:
             reviewed_plan_checksum=None,
             actions=(action,),
         ),
+        progress=(
+            OperationProgress(
+                operation_id=BLOCKED_OPERATION_ID,
+                action_index=0,
+                resource_id=action.resource_id,
+                action=action.action,
+                status="started",
+                succeeded=None,
+                recorded_at="2026-09-02T12:01:00Z",
+            ),
+        )
+        if with_progress
+        else (),
     )
-    return _snapshot(state=prior, control=control)
+    return _snapshot(
+        state=prior,
+        control=control,
+        store=StateStoreIdentity(backend=store_backend, store_id=STORE_ID),
+    )
+
+
+def _connector_live(
+    snapshot: OperationSnapshot,
+    resolution: RecoveryResolution,
+) -> RecoveryLiveObservation:
+    intent = snapshot.control.control.intent
+    assert intent is not None
+    action = intent.actions[0]
+    evidence = action.connector_evidence
+    assert evidence is not None
+    if resolution == "observed":
+        return RecoveryLiveObservation(
+            targets=(
+                RecoveryTargetEvidence(
+                    action=action,
+                    presence="absent",
+                    accepted_as="candidate",
+                    fingerprint=evidence.desired.fingerprint,
+                ),
+            ),
+            candidate_state=LocalState(
+                project="payments",
+                environment="prod",
+                serial=snapshot.state.state.serial + 1,
+            ),
+        )
+    return RecoveryLiveObservation(
+        targets=(
+            RecoveryTargetEvidence(
+                action=action,
+                presence="present",
+                accepted_as="prior",
+                fingerprint=evidence.current.fingerprint,
+            ),
+        ),
+        candidate_state=None,
+    )
 
 
 def _target(*, accepted_as: str) -> RecoveryTargetEvidence:
@@ -503,14 +562,40 @@ def test_create_abandoned_plan_does_not_observe_runtime_or_context(tmp_path: Pat
 
 
 @pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
-def test_create_live_connector_recovery_fails_before_context_or_observer(
+def test_create_live_connector_recovery_uses_exact_observer_evidence(
     tmp_path: Path,
     resolution: RecoveryResolution,
 ) -> None:
-    backend = _FakeBackend(_connector_snapshot())
+    snapshot = _connector_snapshot()
+    backend = _FakeBackend(snapshot)
     observer = _Observer(
         backend.log,
-        RecoveryLiveObservation(targets=(), candidate_state=None),
+        _connector_live(snapshot, resolution),
+    )
+    destination = tmp_path / f"{resolution}.json"
+
+    plan = _service(backend).create_plan(
+        resolution=resolution,
+        destination=destination,
+        observer=observer,
+        context_reader=_ContextReader(backend.log),
+    )
+
+    assert destination.exists()
+    assert plan.targets == _connector_live(snapshot, resolution).targets
+    assert observer.calls == [(resolution, plan.snapshot)]
+
+
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_create_live_connector_recovery_rejects_local_authority_before_reads(
+    tmp_path: Path,
+    resolution: RecoveryResolution,
+) -> None:
+    snapshot = _connector_snapshot(store_backend="local")
+    backend = _FakeBackend(snapshot)
+    observer = _Observer(
+        backend.log,
+        _connector_live(snapshot, resolution),
         error=AssertionError("must not observe Connector recovery"),
     )
     context = _ContextReader(
@@ -518,7 +603,7 @@ def test_create_live_connector_recovery_fails_before_context_or_observer(
         error=AssertionError("must not read Connector recovery context"),
     )
 
-    with pytest.raises(RecoveryServiceError, match="not available in this build"):
+    with pytest.raises(RecoveryServiceError, match="PostgreSQL state authority"):
         _service(backend).create_plan(
             resolution=resolution,
             destination=tmp_path / f"{resolution}.json",
@@ -968,36 +1053,56 @@ def test_execute_abandoned_never_calls_supplied_observer_or_context() -> None:
     assert "context" not in backend.log
 
 
-def test_execute_handcrafted_live_connector_recovery_cannot_observe_or_finalize() -> None:
+@pytest.mark.parametrize("resolution", ["observed", "rolled_back"])
+def test_execute_live_connector_recovery_revalidates_and_finalizes(
+    resolution: RecoveryResolution,
+) -> None:
     snapshot = _connector_snapshot()
-    abandoned = RecoveryPlanFile.create(
-        resolution="abandoned_before_mutation",
+    live = _connector_live(snapshot, resolution)
+    plan = RecoveryPlanFile.create(
+        resolution=resolution,
         recovery_operation_id=RECOVERY_OPERATION_ID,
         snapshot=RecoverySnapshotEvidence.from_operation_snapshot(snapshot),
-        targets=(),
+        targets=live.targets,
+        candidate_state=live.candidate_state,
+        environment_fingerprint=ENVIRONMENT_FINGERPRINT,
+        manifest_checksum=MANIFEST_CHECKSUM,
     )
-    object.__setattr__(abandoned, "resolution", "observed")
     backend = _FakeBackend(snapshot)
-    observer = _Observer(
-        backend.log,
-        RecoveryLiveObservation(targets=(), candidate_state=None),
-        error=AssertionError("must not observe Connector recovery"),
-    )
-    context = _ContextReader(
-        backend.log,
-        error=AssertionError("must not read Connector recovery context"),
+    result = _execute(
+        _service(backend),
+        plan,
+        observer=_Observer(backend.log, live),
+        context_reader=_ContextReader(backend.log),
     )
 
-    with pytest.raises(RecoveryServiceError, match="not available in this build"):
+    expected_state = live.candidate_state or snapshot.state.state
+    assert result.state.state == expected_state
+    assert result.control.control.status == "clear"
+    assert backend.finalize_calls[0][3] == live.candidate_state
+
+
+def test_execute_rejects_mutated_in_memory_candidate_checksum_before_state_access() -> None:
+    plan = _plan()
+    candidate = cast(LocalState, plan.candidate_state)
+    candidate.resources[_resource()] = _record(partitions=9)
+    backend = _FakeBackend(_snapshot())
+
+    with pytest.raises(RecoveryPlanError, match="checksum"):
         _execute(
             _service(backend),
-            abandoned,
-            observer=observer,
-            context_reader=context,
+            plan,
+            observer=_Observer(
+                backend.log,
+                RecoveryLiveObservation(
+                    targets=plan.targets,
+                    candidate_state=candidate,
+                ),
+            ),
+            context_reader=_ContextReader(backend.log),
         )
 
     assert backend.log == []
-    assert observer.calls == []
     assert backend.finalize_calls == []
 
 

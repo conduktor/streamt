@@ -2,7 +2,7 @@
 
 ## Status and objective
 
-Status: in progress through Slice 5. The reserved codes, strict declaration,
+Status: in progress through Slice 6. The reserved codes, strict declaration,
 compiled artifact, PostgreSQL-v2 authority gate, provider-free identity/state
 preflight, exact Connector action evidence, strict live planning matrix, and
 managed observed-delete boundary are implemented. Reviewed plans use v5 and
@@ -15,11 +15,13 @@ online PostgreSQL-v2 reviewed workflow, reject partial paths before provider
 access, emit the aggregate destructive warning, persist an exact durable
 action, and remove ownership only from a successfully completed exact delete.
 Uncertain mutation produces fixed E428 output, retains ownership, stops later
-actions, and records recovery without rollback mutation. Non-abandoned
-Connector recovery remains hard-stopped at model, preflight, and service
-boundaries until Slice 6 adds exact recovery observation. The workflow remains
-undocumented as supported until its recovery, real PostgreSQL, installed-wheel,
-and real Connect release gates pass.
+actions, and records recovery without rollback mutation. Tombstone-independent
+reviewed recovery now binds durable v3 evidence to the current runtime before
+provider access, shares one planner-owned observation with retained removal
+claims, and atomically resolves exact absent or prior-present state under the
+PostgreSQL operation lock. The workflow remains undocumented as supported until
+the remaining real PostgreSQL, installed-wheel, and real Connect release gates
+pass.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as
@@ -610,7 +612,7 @@ resources.
 - [x] Add managed observed DELETE plus bounded absence postcondition.
 - [x] Add PostgreSQL-v2-only CLI authorization and destructive warning.
 - [x] Add exact Connector-specific state projection.
-- [ ] Add tombstone-independent reviewed recovery.
+- [x] Add tombstone-independent reviewed recovery.
 - [ ] Pass PostgreSQL 14/18 command and concurrency gates.
 - [ ] Pass installed-wheel lifecycle/recovery gate.
 - [ ] Pass focused real Connect deletion/preservation gate.
