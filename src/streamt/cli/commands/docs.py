@@ -44,6 +44,14 @@ class _OpenLineageCommandError(ValueError):
         self.location = location
 
 
+class _BackstageCommandError(ValueError):
+    """A secret-neutral Backstage command failure with a stable location."""
+
+    def __init__(self, message: str, *, location: str) -> None:
+        super().__init__(message)
+        self.location = location
+
+
 class _ODCSSafeDumper(yaml.SafeDumper):
     """Safe YAML dumper that never emits aliases into standalone documents."""
 
@@ -542,6 +550,272 @@ def docs_openlineage(
         )
 
 
+@docs.command("backstage")
+@click.option("--catalog-id", help="Stable catalog identity")
+@click.option("--catalog-namespace", help="Explicit Backstage entity namespace")
+@click.option("--default-owner-ref", help="Full default Group or User entity reference")
+@click.option("--lifecycle", help="Explicit Backstage Component lifecycle")
+@click.option("--owner-map", type=click.Path(), help="Strict version-1 owner-map JSON file")
+@click.option("--kafka-cluster-ref", help="Full Kafka cluster Resource reference")
+@click.option("--gateway-cluster-ref", help="Full Gateway cluster Resource reference")
+@click.option("--domain-ref", help="Full Domain reference for the generated System")
+@click.option(
+    "--output-file",
+    type=click.Path(),
+    help="Atomically write canonical Backstage YAML to this file",
+)
+@click.option("--project-dir", "-p", type=click.Path(exists=True), help="Path to project directory")
+@click.option("--env", "-e", "environment", help="Target environment")
+@click.pass_context
+def docs_backstage(
+    ctx: click.Context,
+    catalog_id: str | None,
+    catalog_namespace: str | None,
+    default_owner_ref: str | None,
+    lifecycle: str | None,
+    owner_map: str | None,
+    kafka_cluster_ref: str | None,
+    gateway_cluster_ref: str | None,
+    domain_ref: str | None,
+    output_file: str | None,
+    project_dir: str | None,
+    environment: str | None,
+) -> None:
+    """Export deterministic core Backstage Software Catalog entities."""
+    from streamt.compiler import Compiler
+    from streamt.core.environment import EnvironmentError
+    from streamt.core.parser import EnvVarError, ParseError, ProjectParser
+    from streamt.integrations.catalog.backstage import (
+        BackstageExportError,
+        generate_backstage_catalog,
+    )
+    from streamt.integrations.catalog.backstage_validation import (
+        BACKSTAGE_RELEASE,
+        BackstageResourceError,
+        BackstageValidationError,
+    )
+    from streamt.integrations.catalog.inputs import (
+        CatalogInputError,
+        load_owner_map,
+        require_catalog_id,
+        require_catalog_namespace,
+        require_entity_ref,
+        require_lifecycle,
+        validate_owner_map,
+    )
+    from streamt.integrations.catalog.model import (
+        CatalogProjectionError,
+        build_catalog_snapshot,
+    )
+
+    fmt = make_formatter(ctx, "docs backstage")
+    project_path = get_project_path(project_dir)
+
+    def parser_warning(message: str) -> None:
+        _emit_backstage_warning(
+            fmt,
+            "W000_WARNING",
+            _normalize_parser_warning(message),
+        )
+
+    try:
+        # This complete adapter-input preflight intentionally precedes project
+        # parsing and compiler construction.
+        exact_catalog_id = require_catalog_id(catalog_id)
+        exact_namespace = require_catalog_namespace(catalog_namespace)
+        exact_default_owner = require_entity_ref(
+            default_owner_ref,
+            allowed_kinds=frozenset({"group", "user"}),
+            location="default_owner_ref",
+        )
+        exact_lifecycle = require_lifecycle(lifecycle)
+        exact_owner_map = (
+            load_owner_map(Path(owner_map))
+            if owner_map is not None
+            else validate_owner_map({"version": 1, "owners": {}})
+        )
+        exact_kafka_cluster = (
+            require_entity_ref(
+                kafka_cluster_ref,
+                allowed_kinds=frozenset({"resource"}),
+                location="kafka_cluster_ref",
+            )
+            if kafka_cluster_ref is not None
+            else None
+        )
+        exact_gateway_cluster = (
+            require_entity_ref(
+                gateway_cluster_ref,
+                allowed_kinds=frozenset({"resource"}),
+                location="gateway_cluster_ref",
+            )
+            if gateway_cluster_ref is not None
+            else None
+        )
+        exact_domain = (
+            require_entity_ref(
+                domain_ref,
+                allowed_kinds=frozenset({"domain"}),
+                location="domain_ref",
+            )
+            if domain_ref is not None
+            else None
+        )
+
+        parser = ProjectParser(
+            project_path,
+            environment=environment,
+            warn_callback=parser_warning,
+        )
+        project = parser.parse()
+        effective_environment = (
+            parser.env_config.environment.name
+            if parser.env_config is not None
+            else environment if environment is not None else "default"
+        )
+
+        compiler = Compiler(project)
+        try:
+            compiler.compile(dry_run=True)
+        except Exception:
+            raise _BackstageCommandError(
+                "Could not compile project for Backstage export",
+                location="models",
+            ) from None
+
+        snapshot = build_catalog_snapshot(
+            project,
+            compiler.resolved_models,
+            compiler.compiled_models,
+            effective_environment,
+        )
+        export = generate_backstage_catalog(
+            snapshot,
+            exact_catalog_id,
+            exact_namespace,
+            exact_default_owner.canonical,
+            exact_lifecycle,
+            exact_owner_map,
+            exact_kafka_cluster.canonical if exact_kafka_cluster is not None else None,
+            exact_gateway_cluster.canonical if exact_gateway_cluster is not None else None,
+            exact_domain.canonical if exact_domain is not None else None,
+        )
+
+        rendered_output_file: str | None = None
+        if output_file is not None:
+            target = Path(output_file)
+            try:
+                _atomic_write_backstage(target, export.yaml_bytes)
+            except Exception:
+                raise _BackstageCommandError(
+                    "Could not write Backstage output file atomically",
+                    location="output_file",
+                ) from None
+            rendered_output_file = str(target)
+        elif fmt.format == "text" and not fmt.quiet:
+            try:
+                click.echo(export.yaml, nl=False)
+            except OSError:
+                raise _BackstageCommandError(
+                    "Could not write Backstage catalog to stdout",
+                    location="stdout",
+                ) from None
+
+        for warning in export.warnings:
+            _emit_backstage_warning(
+                fmt,
+                warning.code,
+                warning.message,
+                location=warning.location,
+            )
+
+        entities = list(export.entities)
+        counts = {"System": 0, "Resource": 0, "Component": 0}
+        for entity in entities:
+            kind = entity.get("kind")
+            if isinstance(kind, str) and kind in counts:
+                counts[kind] += 1
+        fmt.set_data(
+            {
+                "standard": "Backstage Software Catalog",
+                "release": BACKSTAGE_RELEASE,
+                "api_version": "backstage.io/v1alpha1",
+                "entities": entities,
+                "counts": counts,
+                "output_file": rendered_output_file,
+            }
+        )
+        fmt.flush()
+
+    except (EnvVarError, ParseError, EnvironmentError) as error:
+        _fail_backstage_command(fmt, error, ErrorCode.PARSE_ERROR)
+    except CatalogInputError as error:
+        _fail_backstage_command(
+            fmt,
+            error,
+            ErrorCode.BACKSTAGE_INVALID,
+            location=error.location,
+        )
+    except CatalogProjectionError as error:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Could not build catalog snapshot",
+                location=error.location,
+            ),
+            ErrorCode.BACKSTAGE_INVALID,
+            location=error.location,
+        )
+    except BackstageExportError as error:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Could not generate Backstage catalog",
+                location=error.location,
+            ),
+            ErrorCode.BACKSTAGE_INVALID,
+            location=error.location,
+        )
+    except BackstageResourceError:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Could not load pinned Backstage schemas",
+                location="entities",
+            ),
+            ErrorCode.BACKSTAGE_INVALID,
+            location="entities",
+        )
+    except BackstageValidationError:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Generated Backstage entities failed validation",
+                location="entities",
+            ),
+            ErrorCode.BACKSTAGE_INVALID,
+            location="entities",
+        )
+    except _BackstageCommandError as error:
+        _fail_backstage_command(
+            fmt,
+            error,
+            ErrorCode.BACKSTAGE_INVALID,
+            location=error.location,
+        )
+    except Exception:
+        generic = _BackstageCommandError(
+            "Could not generate validated Backstage export",
+            location="entities",
+        )
+        _fail_backstage_command(
+            fmt,
+            generic,
+            ErrorCode.BACKSTAGE_INVALID,
+            location=generic.location,
+        )
+
+
 def _require_odcs_option(
     value: str | None,
     *,
@@ -635,6 +909,32 @@ def _atomic_write_openlineage(path: Path, content: str) -> None:
                 pass
 
 
+def _atomic_write_backstage(path: Path, content: bytes) -> None:
+    """Atomically replace a canonical Backstage YAML path via same-dir staging."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _option_or_environment(option: str | None, environment_name: str) -> str | None:
     """Apply exact option-over-environment precedence without truthiness fallback."""
     return option if option is not None else os.environ.get(environment_name)
@@ -645,6 +945,47 @@ def _normalize_parser_warning(message: str) -> str:
     if message.startswith(_PARSER_WARNING_PREFIX):
         return message[len(_PARSER_WARNING_PREFIX) :]
     return message
+
+
+def _emit_backstage_warning(
+    fmt: OutputFormatter,
+    code: str,
+    message: str,
+    *,
+    location: str | None = None,
+) -> None:
+    """Capture warnings once per mapper record without contaminating raw stdout."""
+    safe_message = redact_sensitive_text(message)
+    fmt.add_warning(
+        StructuredWarning(
+            code=code,
+            message=safe_message,
+            location=location,
+        )
+    )
+    if fmt.format == "text" and not fmt.quiet:
+        fmt.stderr.print(f"[yellow]WARNING[/yellow]: {safe_message}")
+
+
+def _fail_backstage_command(
+    fmt: OutputFormatter,
+    error: Exception,
+    code: str,
+    *,
+    location: str | None = None,
+) -> NoReturn:
+    """Emit one redacted structured Backstage error and exit non-zero."""
+    safe_message = redact_sensitive_text(error)
+    fmt.add_error(
+        StructuredError(
+            code=code,
+            message=safe_message,
+            location=location,
+        )
+    )
+    fmt.print_error(safe_message)
+    fmt.flush()
+    raise click.exceptions.Exit(1)
 
 
 def _emit_openlineage_warning(
