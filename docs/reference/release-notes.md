@@ -5,7 +5,14 @@ description: Current public release boundaries and operator actions
 
 # Release notes
 
-## Unreleased — offline DataHub v1.7.0 metadata-file export
+## 0.1.0a1 release candidate
+
+This first public alpha is not published yet. The entries below describe the
+candidate currently being prepared and remain subject to the exact-SHA release
+gate in the
+[first public alpha release plan](../plans/2026-09-03-first-alpha-release.md).
+
+### Offline DataHub v1.7.0 metadata-file export
 
 `streamt docs datahub` now exports deterministic simplified DataHub Metadata
 Change Proposals from one offline dry-run compile. One project becomes a
@@ -55,7 +62,7 @@ identities, physical names, descriptions, contract state, and topology, so
 review their destination permissions. See
 [DataHub catalog export](datahub-catalog.md) for the exact boundary.
 
-## Unreleased — offline Backstage Software Catalog export
+### Offline Backstage Software Catalog export
 
 `streamt docs backstage` now exports deterministic Backstage `System`,
 `Resource`, and `Component` core entities from one offline dry-run compile.
@@ -94,7 +101,7 @@ review their contents and destination permissions before sharing them. See
 [Backstage Software Catalog export](backstage-catalog.md) for the supported
 boundary.
 
-## Unreleased — durable OpenLineage apply telemetry
+### Durable OpenLineage apply telemetry
 
 `streamt apply --emit-openlineage` can now emit a validated OpenLineage 1.53.0
 START/COMPLETE, START/FAIL, or START/ABORT pair through an explicitly configured
@@ -130,7 +137,7 @@ Real PostgreSQL 14 and 18 composition gates cover direct and reviewed success,
 recovery-required failure, and transport-failure independence for the version-2
 state backend.
 
-## Unreleased — exact alias-only Gateway adoption
+### Exact alias-only Gateway adoption
 
 `streamt adopt --kind gateway_rule` can now claim one compiled adopted
 Conduktor Gateway rule without changing the provider. The initial boundary is
@@ -155,7 +162,7 @@ isolated-wheel, and Conduktor Gateway 3.15 gates prove state-only behavior and
 zero mutation requests. Full adoption of rules with Interceptors remains
 unsupported.
 
-## Unreleased — explicit reviewed Gateway rule removal
+### Explicit reviewed Gateway rule removal
 
 Projects can now request removal of one exact managed Gateway rule with a
 `lifecycle.gateway_rule_removals` tombstone. The tombstone copies the prior
@@ -186,7 +193,7 @@ boundary and any ambiguous or third-state evidence fails closed. Broad
 discovery and deletion by manifest absence remain unsupported; Gateway
 adoption is a separate explicit alias-only workflow.
 
-## Unreleased — exact Kafka Connect adoption
+### Exact Kafka Connect adoption
 
 `streamt adopt --kind connector` can now claim one compiled adopted Connector
 without changing it. An omitted cluster or an explicit cluster equal to the
@@ -212,7 +219,7 @@ adoption remains deferred. This boundary is covered by source tests, an
 isolated-wheel command smoke test, a real Connect observer test, and the
 existing PostgreSQL 14/18 release gates.
 
-## Unreleased — PostgreSQL v2 deployment state
+### PostgreSQL v2 deployment state
 
 PostgreSQL schema version 2 is now selectable for online `plan`, direct and
 reviewed `apply`, `adopt`, `state recovery-plan`, and `state recover`.

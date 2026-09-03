@@ -300,10 +300,10 @@ class TestCLI:
     def test_version(self):
         """Version command should work."""
         runner = CliRunner()
-        result = runner.invoke(main, ["--version"])
+        result = runner.invoke(main, ["--version"], prog_name="streamt")
 
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert result.output == "streamt, version 0.1.0a1\n"
 
     def test_missing_project_file(self):
         """Should fail gracefully when project file is missing."""

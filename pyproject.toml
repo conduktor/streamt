@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "streamt"
-version = "0.1.0"
+version = "0.1.0a1"
 description = "dbt for streaming - declarative streaming pipelines"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 authors = [
     { name = "streamt contributors" }
 ]
@@ -21,6 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "click>=8.0",
@@ -63,6 +65,8 @@ streamt = "streamt.cli:main"
 Homepage = "https://conduktor.github.io/streamt"
 Documentation = "https://conduktor.github.io/streamt"
 Repository = "https://github.com/conduktor/streamt"
+Issues = "https://github.com/conduktor/streamt/issues"
+Changelog = "https://conduktor.github.io/streamt/reference/release-notes/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/streamt"]

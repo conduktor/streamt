@@ -4,13 +4,12 @@
 
 **dbt for streaming** — Declarative streaming pipelines with Kafka, Flink, and Connect
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)]()
-[![Tests](https://img.shields.io/badge/tests-1126%20passed-brightgreen.svg)]()
+[![Python 3.10–3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/conduktor/streamt/blob/main/LICENSE)
 [![CI](https://github.com/conduktor/streamt/actions/workflows/ci.yml/badge.svg)](https://github.com/conduktor/streamt/actions)
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)]()
 
-[Documentation](docs/) • [Getting Started](#quick-start) • [Examples](#examples) • [Local Development](LOCAL_DEVELOPMENT.md) • [Community](https://conduktor.io/slack)
+[Documentation](https://conduktor.github.io/streamt/) • [Getting Started](#quick-start) • [Examples](https://github.com/conduktor/streamt/tree/main/examples) • [Local Development](https://github.com/conduktor/streamt/blob/main/LOCAL_DEVELOPMENT.md) • [Community](https://conduktor.io/slack)
 
 </div>
 
@@ -435,6 +434,6 @@ Apache 2.0
 
 <div align="center">
 
-**[Documentation](docs/)** • **[Examples](examples/)** • **[Local Development](LOCAL_DEVELOPMENT.md)** • **[Community](https://conduktor.io/slack)**
+**[Documentation](https://conduktor.github.io/streamt/)** • **[Examples](https://github.com/conduktor/streamt/tree/main/examples)** • **[Local Development](https://github.com/conduktor/streamt/blob/main/LOCAL_DEVELOPMENT.md)** • **[Community](https://conduktor.io/slack)**
 
 </div>

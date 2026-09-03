@@ -9,7 +9,7 @@ This guide covers installing streamt and setting up your local development envir
 
 ## Requirements
 
-- **Python 3.10+** — streamt uses modern Python features
+- **Python 3.10–3.14** — the tested alpha interpreter range
 - **pip** or **uv** — for package management
 - **Git** — required while the alpha is installed directly from the repository
 - **Docker** (optional) — for local Kafka, Flink, and Connect
@@ -88,7 +88,7 @@ streamt --version
 You should see output like:
 
 ```
-streamt version 0.1.0
+streamt, version 0.1.0a1
 ```
 
 ## Local Development Environment

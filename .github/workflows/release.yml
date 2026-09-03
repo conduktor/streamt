@@ -3,6 +3,12 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing exact version tag to rehearse on TestPyPI
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,27 +17,37 @@ jobs:
   build:
     name: Build and verify distributions
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+      RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
 
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Verify release commit is on main
-        run: |
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor HEAD origin/main
+          persist-credentials: false
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
-      - name: Verify tag matches package version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+      - name: Verify exact tag, commit, version, and main ancestry
+        shell: bash
         run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" && "${RELEASE_IS_PRERELEASE}" != "true" ]]; then
+            echo "The first alpha must be published as a GitHub prerelease" >&2
+            exit 1
+          fi
+
           python - <<'PY'
           import os
           import pathlib
@@ -42,13 +58,134 @@ jobs:
           version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
           if tag != f"v{version}":
               sys.exit(f"release tag {tag!r} must equal package version tag v{version}")
+          with pathlib.Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as environment:
+              environment.write(f"RELEASE_VERSION={version}\n")
+          PY
+
+          git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"
+          release_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+          test "${release_sha}" = "${tag_sha}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${release_sha}" origin/main
+          printf 'RELEASE_SHA=%s\n' "${release_sha}" >> "${GITHUB_ENV}"
+
+      - name: Require successful full CI for the exact release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          release_sha = os.environ["RELEASE_SHA"]
+          query = urllib.parse.urlencode(
+              {
+                  "branch": "main",
+                  "event": "push",
+                  "head_sha": release_sha,
+                  "status": "completed",
+                  "per_page": 100,
+              }
+          )
+          url = (
+              f"https://api.github.com/repos/{repository}/actions/workflows/ci.yml/runs?{query}"
+          )
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+
+          successful_runs = [
+              run
+              for run in payload.get("workflow_runs", [])
+              if run.get("conclusion") == "success"
+              and run.get("event") == "push"
+              and run.get("head_branch") == "main"
+              and run.get("head_sha") == release_sha
+          ]
+          if not successful_runs:
+              sys.exit(f"no successful full CI run found for release commit {release_sha}")
+          newest = max(successful_runs, key=lambda run: run["run_attempt"])
+          print(f"verified exact-SHA CI run: {newest['html_url']}")
           PY
 
       - name: Build and inspect distributions
         run: |
           python -m pip install --upgrade pip build twine
           python -m build
-          python -m twine check dist/*
+          python -m twine check --strict dist/*
+
+      - name: Record distribution SHA-256 digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum dist/*
+
+      - name: Install and verify wheel and source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wheels=(dist/*.whl)
+          source_distributions=(dist/*.tar.gz)
+          if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "Expected exactly one wheel" >&2
+            exit 1
+          fi
+          if [[ ${#source_distributions[@]} -ne 1 || ! -f "${source_distributions[0]}" ]]; then
+            echo "Expected exactly one source distribution" >&2
+            exit 1
+          fi
+
+          artifacts=("${wheels[0]}" "${source_distributions[0]}")
+          for index in "${!artifacts[@]}"; do
+            artifact="$(realpath "${artifacts[${index}]}")"
+            venv="${RUNNER_TEMP}/streamt-release-${index}"
+            python -m venv "${venv}"
+            "${venv}/bin/python" -m pip install --upgrade pip
+            "${venv}/bin/python" -m pip install --progress-bar off "${artifact}"
+            "${venv}/bin/python" -m pip check
+            cd "${RUNNER_TEMP}"
+            env -u PYTHONPATH \
+              RELEASE_VERSION="${RELEASE_VERSION}" \
+              RELEASE_CHECKOUT="${GITHUB_WORKSPACE}" \
+              "${venv}/bin/python" -I - <<'PY'
+          import importlib.metadata
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          import streamt
+
+          expected = os.environ["RELEASE_VERSION"]
+          checkout = Path(os.environ["RELEASE_CHECKOUT"]).resolve()
+          installed_module = Path(streamt.__file__).resolve()
+          assert checkout not in installed_module.parents, installed_module
+          assert importlib.metadata.version("streamt") == expected
+          assert streamt.__version__ == expected
+          completed = subprocess.run(
+              [str(Path(sys.executable).with_name("streamt")), "--version"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          assert completed.stdout == f"streamt, version {expected}\n"
+          assert completed.stderr == ""
+          PY
+            cd "${GITHUB_WORKSPACE}"
+          done
 
       - name: Upload release distributions
         uses: actions/upload-artifact@v7
@@ -61,7 +198,9 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: build
+    if: github.event_name == 'release' && github.event.release.prerelease == true
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/project/streamt/
@@ -76,5 +215,30 @@ jobs:
           path: dist/
 
       - name: Publish distributions with trusted publishing
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Reviewed release/v1 commit; keep credential-bearing actions immutable.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
 
+  publish-testpypi:
+    name: Rehearse publication on TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/streamt/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download verified rehearsal distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: python-distributions
+          path: dist/
+
+      - name: Publish distributions to TestPyPI with trusted publishing
+        # Reviewed release/v1 commit; keep credential-bearing actions immutable.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          repository-url: https://test.pypi.org/legacy/
