@@ -82,8 +82,10 @@ Changing it intentionally changes every generated entity identity.
 used for every generated entity. The exporter never uses Backstage's implicit
 `default` namespace.
 
-`--lifecycle` is copied exactly to every generated processing Component after
-Backstage value validation. Environment is not lifecycle. The exporter must not
+`--lifecycle` is copied exactly to every generated processing Component. It MUST
+contain 1 to 256 Unicode code points, include at least one non-whitespace
+character, and contain no Unicode control or surrogate code point. Environment
+is not lifecycle. The exporter must not
 derive lifecycle from an environment name, project name, ownership mode, or
 deployment configuration.
 
@@ -116,10 +118,33 @@ Implicit kinds and namespaces are forbidden:
 - domain: `domain:<namespace>/<name>`.
 
 Kinds in input references MUST be lowercase exactly as shown. Namespace and
-name components MUST pass the pinned Backstage validation rules. Whitespace,
-fragments, query strings, empty components, and alternate kinds are rejected.
-The exporter validates reference syntax only. Offline export cannot prove that
-an externally referenced entity exists or that the caller may use it.
+name components MUST pass the pinned Backstage validation rules. The complete
+reference, including namespace and name, MUST already be lowercase canonical
+text; the exporter never case-folds it on the caller's behalf. Whitespace,
+fragments, query strings, empty components, uppercase characters, and alternate
+kinds are rejected. The exporter validates reference syntax only. Offline export
+cannot prove that an externally referenced entity exists or that the caller may
+use it.
+
+### Pinned field formats
+
+The official kind schemas intentionally leave several catalog policy formats
+open. This exporter freezes the corresponding Backstage `v1.54.2` field policy
+for portable offline output:
+
+- an entity name is at most 63 characters and matches
+  `^[A-Za-z0-9](?:[-_.]?[A-Za-z0-9])*$`;
+- the explicit catalog namespace and every external-reference namespace or name
+  are at most 63 characters and match
+  `^[a-z0-9](?:[-_.]?[a-z0-9])*$`;
+- a tag is at most 63 characters and matches
+  `^[a-z0-9:+#]+(?:-[a-z0-9:+#]+)*$`; and
+- exporter annotation keys are the exact allowlist in this specification.
+  Annotation values must be strings containing no Unicode control or surrogate
+  code point.
+
+Lengths are measured in Unicode code points. These checks are local semantic
+validation in addition to the pinned JSON Schemas.
 
 ### Owner resolution
 
@@ -141,8 +166,11 @@ MUST be the integer `1`. `owners` MUST be an object from distinct, non-empty
 streamt owner labels to full owner references. A parser that preserves duplicate
 JSON keys is required; duplicate keys at either level are errors. Empty labels,
 empty references, non-string values, invalid Unicode, excessive file size or
-nesting, and invalid references are errors. The implementation MUST establish
-documented, bounded size and nesting limits and test each boundary.
+nesting, and invalid references are errors. The UTF-8 file is limited to
+1,048,576 bytes, JSON nesting depth to 4, the `owners` object to 10,000 entries,
+each owner label to 256 Unicode code points, and each reference to 256 Unicode
+code points. Every limit is inclusive. A byte-order mark and unpaired Unicode
+surrogate are invalid.
 
 Resolution is exact and case-sensitive:
 
@@ -192,13 +220,17 @@ The neutral snapshot contains only:
 - dataset transport kind (`kafka` or `gateway`);
 - process kind (`flink`, `gateway`, or `connect`) when compilation produced one;
 - exact direct logical dataset dependencies;
-- whether a model contract is absent, declared, or enforced; and
-- enough typed identity to distinguish sources, model outputs, and processes.
+- whether a model contract is absent, declared, or enforced;
+- enough typed identity to distinguish sources, model outputs, and processes;
+  and
+- each exposure's exact logical name, solely to emit one bounded omission
+  warning per declaration. Duplicate exposure declarations remain separate
+  omissions and MUST NOT make projection fail.
 
-It contains no clock value, UUID, source path, environment-variable value,
-endpoint, credential, provider identifier, or deployment evidence. Any new
-field requires a privacy review and an update to this specification before it
-can affect an adapter.
+It contains no other exposure field, clock value, UUID, source path,
+environment-variable value, endpoint, credential, provider identifier, or
+deployment evidence. Any new field requires a privacy review and an update to
+this specification before it can affect an adapter.
 
 ## Backstage entity mapping
 
@@ -383,7 +415,12 @@ same physical Resource identity, export fails; the adapter MUST NOT merge them.
 
 ### Readable prefix
 
-The readable stem is derived only for display:
+The readable stem is derived only for display. Its input is frozen by entity
+kind: the System uses `catalog_id`, a Component uses its model logical name, and
+a Resource uses its physical topic or alias name. No other display field may
+affect `metadata.name`.
+
+The stem algorithm is:
 
 1. apply Unicode NFKD to the logical display value;
 2. encode ASCII while dropping non-ASCII code points;
@@ -444,10 +481,14 @@ The snapshot builder validates:
 - exact existing direct dependency targets;
 - absence of self-dependencies and cycles;
 - required non-blank physical names; and
-- complete owner resolution inputs.
+- copied, non-blank human owner labels when declarations provide them.
 
 Compilation remains the authority for project semantics. The catalog builder
 must not repair or reinterpret an invalid compiler result.
+
+Complete resolution through `--default-owner-ref` and the owner map belongs to
+the Backstage adapter and closed semantic validation, never to the neutral
+projection.
 
 ### Backstage schema validation
 
@@ -605,13 +646,15 @@ particular it MUST NOT emit or hash into visible output:
   endpoints, environment-variable names or values, credentials, tokens, or
   certificates;
 - raw or compiled SQL, macro definitions, parameters, source locations, local
-  paths, or exception representations;
+  paths, or exception representations, except that structured output reports
+  the exact caller-supplied `--output-file` path as intentional command
+  metadata;
 - connector class, connector config, external sink destination, consumer
   credentials, or provider response content;
 - schema bodies, schema subjects, columns, classifications, masking rules,
   security policies, assertions, test definitions, or sample data;
-- exposure contents, consumer groups, access rules, SLAs, or inferred
-  consumers;
+- exposure contents other than the exact logical name needed for its omission
+  warning, consumer groups, access rules, SLAs, or inferred consumers;
 - manifest artifacts, checksums, reviewed actions, deployment ownership,
   recovery history, state addresses, state revisions, or live observations; or
 - generated timestamps, UUIDs, machine names, usernames, or process metadata.
@@ -622,8 +665,11 @@ endpoints. Digests use only the identity seeds listed above; they are not a
 mechanism for leaking otherwise forbidden values.
 
 Fixtures containing sentinel secrets in every forbidden surface must prove the
-sentinels are absent from YAML, JSON, warnings, error messages, filenames,
-temporary files, and test snapshots. Exception paths receive the same scan.
+sentinels are absent from YAML, JSON, warnings, error messages, generated
+temporary filenames, and test snapshots. Exception paths receive the same
+scan. A caller-chosen output path is outside that assertion because it is an
+explicit input echoed by contract; the exporter must never derive any other
+path from project content.
 
 ## Failure atomicity and determinism
 

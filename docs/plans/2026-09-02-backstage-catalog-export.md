@@ -86,9 +86,11 @@ changing the normative wire contract:
 
 The owner-map grammar is already exact: strict JSON with only integer
 `version: 1` and an `owners` object, with duplicate-key detection at every
-level and exact case-sensitive owner labels. The implementation must choose,
-document, and boundary-test conservative numeric file-size and nesting limits;
-it must not treat the file as YAML.
+level and exact case-sensitive owner labels. The frozen inclusive limits are
+1,048,576 UTF-8 bytes, nesting depth 4, 10,000 owner entries, 256 code points
+per label, and 256 code points per reference. The parser must reject a byte
+order mark and unpaired surrogate, boundary-test every limit, and never treat
+the file as YAML.
 
 None of these names is public Python API. Compatibility attaches to the CLI,
 entity documents, deterministic serialization, codes, and documented mapping.
@@ -260,10 +262,10 @@ No other agent edits the package `__init__.py` during this slice.
 6. Produce stable logical keys independent of Backstage syntax. Reject missing
    targets, generated-key collisions, duplicate physical identities, and any
    compiler/project disagreement before returning a snapshot.
-7. Emit only the specified warnings for sink outputs and exposures that cannot
-   be represented exactly. Warnings are immutable projection results with
-   stable code, safe message, and declaration location; they never contain
-   configuration values.
+7. Retain only exact exposure logical names for later omission warnings,
+   preserving duplicate declarations as separate omissions. The mapper emits
+   only the specified sink/exposure warnings with stable safe locations; they
+   never contain other exposure fields or connector configuration values.
 
 ### Acceptance
 
