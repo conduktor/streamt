@@ -638,6 +638,7 @@ def test_ci_runs_both_real_gms_variants_with_bounded_cleanup() -> None:
     assert "port datahub-gms-quickstart 8080" in source
     assert '"127.0.0.1:${port}"' in source
     assert "down --volumes --remove-orphans" in source
+    assert "jq -s 'map({Service, State, Health, ExitCode})'" in source
     assert source.count("--profile quickstart-backend") >= 2
     assert "label=com.docker.compose.project=${project}" in source
     assert "docker system prune" not in source

@@ -886,7 +886,9 @@ jobs:
             fi
 
             compose_bounded 20s ps --all --format json \
-              > "${evidence}/compose-status.json" 2>&1 || true
+              2> "${evidence}/compose-status-error.txt" \
+              | jq -s 'map({Service, State, Health, ExitCode})' \
+              > "${evidence}/compose-status.json" || true
             compose_bounded 30s logs --no-color --timestamps --tail 300 \
               kafka-broker mysql opensearch system-update-quickstart \
               datahub-gms-quickstart 2>&1 | tail -c 1048576 \
