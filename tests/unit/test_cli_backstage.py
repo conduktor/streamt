@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import socket
+import tempfile
 from contextlib import ExitStack
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -133,6 +135,36 @@ spec:
   dependsOn:
   - resource:infra/kafka-main
 """
+
+
+class _FailingBinaryTemporaryFile:
+    """Delegate to one real staging file while failing at a selected I/O step."""
+
+    def __init__(self, wrapped: Any, stage: str) -> None:
+        self._wrapped = wrapped
+        self._stage = stage
+        self.name = wrapped.name
+
+    def __enter__(self) -> _FailingBinaryTemporaryFile:
+        self._wrapped.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> object:
+        return self._wrapped.__exit__(*args)
+
+    def write(self, content: bytes) -> int:
+        if self._stage == "write":
+            self._wrapped.write(content[:1])
+            raise OSError("ATOMIC_WRITE_SECRET_MUST_NOT_APPEAR")
+        return cast(int, self._wrapped.write(content))
+
+    def flush(self) -> None:
+        if self._stage == "flush":
+            raise OSError("ATOMIC_FLUSH_SECRET_MUST_NOT_APPEAR")
+        self._wrapped.flush()
+
+    def fileno(self) -> int:
+        return cast(int, self._wrapped.fileno())
 
 
 def test_help_exposes_exact_surface_and_preserves_adjacent_docs_commands() -> None:
@@ -462,10 +494,7 @@ def test_exactly_one_dry_run_compile_and_no_runtime_clients_or_network(
     assert not (tmp_path / "generated").exists()
 
 
-def test_output_file_json_quiet_and_atomic_failure_contract(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_output_file_json_and_quiet_contract(tmp_path: Path) -> None:
     _write_project(tmp_path, _project())
     target = tmp_path / "nested" / "catalog.yaml"
     result = CliRunner().invoke(
@@ -487,12 +516,75 @@ def test_output_file_json_quiet_and_atomic_failure_contract(
     assert quiet.stdout == quiet.stderr == ""
     assert quiet_target.read_text(encoding="utf-8") == EXPECTED_YAML
 
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["path_prepare", "create_open", "write", "flush", "fsync", "replace"],
+)
+def test_every_atomic_file_failure_preserves_destination_and_cleans_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    _write_project(tmp_path, _project())
+    target = tmp_path / "output" / "catalog.yaml"
+    target.parent.mkdir()
     target.write_text("original\n", encoding="utf-8")
-    monkeypatch.setattr(
-        os,
-        "replace",
-        lambda *_args: (_ for _ in ()).throw(OSError("WRITE_SECRET_MUST_NOT_APPEAR")),
-    )
+    real_mkdir = Path.mkdir
+    real_named_temporary_file = tempfile.NamedTemporaryFile
+
+    if failure_stage == "path_prepare":
+
+        def fail_target_parent(
+            path: Path,
+            mode: int = 0o777,
+            parents: bool = False,
+            exist_ok: bool = False,
+        ) -> None:
+            if path == target.parent:
+                raise PermissionError("ATOMIC_PATH_SECRET_MUST_NOT_APPEAR")
+            real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+        monkeypatch.setattr(Path, "mkdir", fail_target_parent)
+    elif failure_stage == "create_open":
+
+        def fail_staging_open(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError("ATOMIC_OPEN_SECRET_MUST_NOT_APPEAR")
+
+        monkeypatch.setattr(
+            tempfile,
+            "NamedTemporaryFile",
+            fail_staging_open,
+        )
+    elif failure_stage in {"write", "flush"}:
+
+        def wrap_staging_file(*args: Any, **kwargs: Any) -> object:
+            return _FailingBinaryTemporaryFile(
+                real_named_temporary_file(*args, **kwargs),
+                failure_stage,
+            )
+
+        monkeypatch.setattr(
+            tempfile,
+            "NamedTemporaryFile",
+            wrap_staging_file,
+        )
+    elif failure_stage == "fsync":
+        monkeypatch.setattr(
+            os,
+            "fsync",
+            lambda _fd: (_ for _ in ()).throw(
+                OSError("ATOMIC_FSYNC_SECRET_MUST_NOT_APPEAR")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "replace",
+            lambda *_args: (_ for _ in ()).throw(
+                OSError("ATOMIC_REPLACE_SECRET_MUST_NOT_APPEAR")
+            ),
+        )
+
     failed = CliRunner().invoke(
         main,
         ["--output", "json", *_command(tmp_path, "--output-file", str(target))],
@@ -504,12 +596,53 @@ def test_output_file_json_quiet_and_atomic_failure_contract(
         "message": "Could not write Backstage output file atomically",
         "location": "output_file",
     }
-    assert "WRITE_SECRET" not in failed.stdout + failed.stderr
+    assert "ATOMIC_" not in failed.stdout + failed.stderr
     assert target.read_text(encoding="utf-8") == "original\n"
     assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
 
 
-def test_parse_compile_projection_and_mapper_errors_are_safe(tmp_path: Path) -> None:
+def test_parser_warnings_preserve_multiplicity_without_forwarding_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_project(tmp_path, _project())
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "LOCAL_PATH_SECRET_MUST_NOT_APPEAR.sql").write_text(
+        "SELECT 'SQL_FILE_SECRET_MUST_NOT_APPEAR'",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STREAMT_ENV", "IGNORED_ENV_SECRET_MUST_NOT_APPEAR")
+
+    result = CliRunner().invoke(main, ["--output", "json", *_command(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["warnings"] == [
+        {
+            "code": "W000_WARNING",
+            "message": "Project parsing emitted a compatibility warning",
+            "location": "project",
+        },
+        {
+            "code": "W000_WARNING",
+            "message": "Project parsing emitted a compatibility warning",
+            "location": "project",
+        },
+    ]
+    assert result.stderr == ""
+    for secret in (
+        "LOCAL_PATH_SECRET",
+        "SQL_FILE_SECRET",
+        "IGNORED_ENV_SECRET",
+    ):
+        assert secret not in result.stdout + result.stderr
+
+
+def test_parse_environment_compile_projection_and_mapper_errors_are_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _write_project(tmp_path, _project())
     broken = tmp_path / "broken"
     broken.mkdir()
@@ -518,7 +651,42 @@ def test_parse_compile_projection_and_mapper_errors_are_safe(tmp_path: Path) -> 
         main,
         ["--output", "json", *_command(broken)],
     )
-    assert json.loads(parse_result.stdout)["errors"][0]["code"] == "E501_PARSE_ERROR"
+    assert json.loads(parse_result.stdout)["errors"][0] == {
+        "code": "E501_PARSE_ERROR",
+        "message": "Could not parse project for Backstage export",
+        "location": "project",
+    }
+
+    missing_environment = _project()
+    missing_environment["runtime"] = {
+        "kafka": {"bootstrap_servers": "${BACKSTAGE_ENV_NAME_SECRET_MUST_NOT_APPEAR}"}
+    }
+    _write_project(tmp_path, missing_environment)
+    monkeypatch.delenv("BACKSTAGE_ENV_NAME_SECRET_MUST_NOT_APPEAR", raising=False)
+    environment_result = CliRunner().invoke(
+        main,
+        ["--output", "json", *_command(tmp_path)],
+    )
+    assert json.loads(environment_result.stdout)["errors"][0] == {
+        "code": "E501_PARSE_ERROR",
+        "message": "Project environment configuration is incomplete",
+        "location": "environment",
+    }
+
+    _write_project(tmp_path, _project())
+    selection_result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            "json",
+            *_command(tmp_path, "--env", "CALLER_ENV_SECRET_MUST_NOT_APPEAR"),
+        ],
+    )
+    assert json.loads(selection_result.stdout)["errors"][0] == {
+        "code": "E501_PARSE_ERROR",
+        "message": "Could not resolve project environment for Backstage export",
+        "location": "environment",
+    }
 
     with patch.object(
         Compiler,
@@ -571,14 +739,27 @@ def test_parse_compile_projection_and_mapper_errors_are_safe(tmp_path: Path) -> 
         "location": "entities",
     }
     combined = (
-        compile_result.stdout
+        parse_result.stdout
+        + parse_result.stderr
+        + environment_result.stdout
+        + environment_result.stderr
+        + selection_result.stdout
+        + selection_result.stderr
+        + compile_result.stdout
         + compile_result.stderr
         + projection_result.stdout
         + projection_result.stderr
         + mapper_result.stdout
         + mapper_result.stderr
     )
-    for secret in ("COMPILE_SECRET", "PROJECTION_SECRET", "MAPPER_SECRET"):
+    for secret in (
+        "PARSE_SECRET",
+        "BACKSTAGE_ENV_NAME_SECRET",
+        "CALLER_ENV_SECRET",
+        "COMPILE_SECRET",
+        "PROJECTION_SECRET",
+        "MAPPER_SECRET",
+    ):
         assert secret not in combined
 
 

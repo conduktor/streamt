@@ -611,11 +611,12 @@ def docs_backstage(
     fmt = make_formatter(ctx, "docs backstage")
     project_path = get_project_path(project_dir)
 
-    def parser_warning(message: str) -> None:
+    def parser_warning(_message: str) -> None:
         _emit_backstage_warning(
             fmt,
             "W000_WARNING",
-            _normalize_parser_warning(message),
+            "Project parsing emitted a compatibility warning",
+            location="project",
         )
 
     try:
@@ -747,8 +748,36 @@ def docs_backstage(
         )
         fmt.flush()
 
-    except (EnvVarError, ParseError, EnvironmentError) as error:
-        _fail_backstage_command(fmt, error, ErrorCode.PARSE_ERROR)
+    except EnvVarError:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Project environment configuration is incomplete",
+                location="environment",
+            ),
+            ErrorCode.PARSE_ERROR,
+            location="environment",
+        )
+    except EnvironmentError:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Could not resolve project environment for Backstage export",
+                location="environment",
+            ),
+            ErrorCode.PARSE_ERROR,
+            location="environment",
+        )
+    except ParseError:
+        _fail_backstage_command(
+            fmt,
+            _BackstageCommandError(
+                "Could not parse project for Backstage export",
+                location="project",
+            ),
+            ErrorCode.PARSE_ERROR,
+            location="project",
+        )
     except CatalogInputError as error:
         _fail_backstage_command(
             fmt,
