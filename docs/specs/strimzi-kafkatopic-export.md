@@ -532,8 +532,17 @@ the Quay child reference plus the frozen config-digest pseudo-reference. A
 Docker Desktop/containerd load delta is exactly the config pseudo-reference
 plus two bare, same-date, calendar-valid
 `import-YYYY-MM-DD@sha256:<digest>` references: one for the selected child and
-one distinct outer digest. Operator and Kafka MUST use the same representation,
-and discovered references and digests MUST not overlap across the two loads.
+one distinct outer digest. Linux OCI conversion, as observed in evidence run
+`33899306524`, has the same exact three-name delta but neither import digest is
+the selected child. Operator and Kafka MUST use the same one of the three
+representations (`classic`, `desktop`, or `oci-converted`). Import sources MUST
+be disjoint across loads. Each current inner/outer digest MUST be disjoint from
+every prior inner/outer and layer digest, and each current layer digest MUST be
+disjoint from prior inner/outer digests. All current transformed and layer
+digests MUST also be disjoint from the selected node, operator, and Kafka
+manifest/config identities. Layer digests MAY repeat across operator and Kafka:
+the pinned images on both supported Linux platforms legitimately share
+immutable rootfs layers.
 
 Before classifying either load, the gate MUST write its already validated,
 lexicographically sorted before and after inventories as
@@ -554,24 +563,50 @@ the fixed marker at staging. A nonzero result, nonempty stderr, runner
 exception, subprocess timeout, or exhausted global deadline during any
 selected import's read has the same marker-only result; a partial import
 diagnostic set is never staged. JSON `NaN`, `Infinity`, and `-Infinity` are
-invalid at this and every other gate JSON input boundary. These files are
-evidence only and MUST NOT widen or replace the unchanged load classifier.
+invalid at this and every other gate JSON input boundary. These files are both
+staged evidence and the retained, validated inputs to the explicit three-way
+load classifier; they do not authorize any fourth or partial representation.
 
-For the Desktop form, the gate MUST read the exact outer content by digest.
+An OCI-converted pair is accepted only when both source suffixes equal the SHA-256
+of their exact raw content and the contents are exactly one inner OCI manifest
+and one outer OCI index. The inner object has only `schemaVersion`,
+`mediaType`, `config`, and `layers`: schema version 2, OCI manifest media type,
+a closed OCI config descriptor containing the exact frozen config digest and
+positive non-boolean size, and a nonempty ordered layer list. Every layer is a
+closed descriptor with OCI uncompressed-layer media type, a unique valid
+SHA-256 digest, and positive non-boolean size. The outer object has only
+`schemaVersion`, `mediaType`, and `manifests`: schema version 2, OCI index media
+type, and one closed OCI-manifest descriptor pointing to the inner raw digest
+with size exactly equal to the inner raw byte length. Extra annotations or
+fields fail closed.
+
+For OCI conversion the gate also reads the frozen config digest with bounded
+`ctr content get`, requires zero status, empty stderr, and raw SHA-256 equality,
+and writes canonical `ctr-load-<I>-config.json` evidence. The parsed config may
+contain normal image-config root fields, but `rootfs` MUST exist and contain
+exactly `{type: "layers", diff_ids: [...]}`. Its ordered, valid SHA-256
+`diff_ids` MUST equal the ordered inner layer digests, and the inner config
+descriptor size MUST equal the config raw byte length. Config evidence obeys
+the same marker-only parse/secret/write failure boundary.
+
+For the Desktop form, the gate MUST additionally validate its previously
+reviewed exact-child outer shape by reading the exact outer content by digest.
 The raw content SHA-256 MUST equal that outer digest and decode as a closed OCI
 image index with schema version 2 and exactly one Docker schema-2 manifest
 descriptor. That descriptor MUST identify the frozen child, have a positive
 integer size, and contain exactly the locked Quay source annotation for
-`strimzi/operator` or `strimzi/kafka`. The gate MUST tag the child import to the
-exact Quay child, re-enumerate the names, remove only the two discovered import
+`strimzi/operator` or `strimzi/kafka`. For either imported form, the gate MUST
+tag the validated inner import to the exact Quay child, re-enumerate the names,
+remove only the two discovered import
 references with `ctr images rm` (never `--sync` or content deletion), and prove
 the resulting relevant name set is exactly the prior inventory plus the target
 and frozen config pseudo-reference. The pre-removal recheck closes accidental
 target expansion; its narrow observation-to-removal race is excluded by the
 gate's exclusive ownership of the unique, disposable, pre-workload node.
 
-If and only if both loads used the Desktop form, the gate MUST restart
-containerd exactly once, wait boundedly for that exact Kubernetes Node to be
+If and only if both loads used the same imported form (`desktop` or
+`oci-converted`), the gate MUST restart containerd exactly once, wait boundedly
+for that exact Kubernetes Node to be
 Ready, and repeat Docker attachment, loopback-port, empty IPv4/IPv6 default
 route, positive local TCP, and negative external TCP controls. It MUST then
 prove the normalized `ctr -q` inventory did not change. The final CRI record
@@ -639,7 +674,8 @@ artifact staging and upload. Evidence candidates MUST remain outside a fresh
 upload directory. The exact evidence inventory includes one
 `ctr-load-<I>-{before,after}.txt` pair per attempted load (four files on the
 complete two-load path), zero to two conditional sorted
-`ctr-load-<I>-import-<J>.json` files per attempted load, and `ctr-images.txt`, a
+`ctr-load-<I>-import-<J>.json` files per attempted load, one conditional
+`ctr-load-<I>-config.json` for each OCI-converted load, and `ctr-images.txt`, a
 bounded, secret-scanned, lexicographically sorted canonicalization of
 `docker exec <exact-node> ctr --namespace=k8s.io images list -q`; capture MUST
 attempt it on success and failure paths, including when the node or kubeconfig

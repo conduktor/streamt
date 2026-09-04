@@ -439,11 +439,13 @@ class ProcessResult:
 
 @dataclass(frozen=True)
 class CtrImportPair:
+    representation: str
     date: str
     child_source: str
     child_digest: str
     outer_source: str
     outer_digest: str
+    layer_digests: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -2197,11 +2199,199 @@ def _valid_ctr_import_source(source: str, child_reference: str) -> bool:
     return parsed is not None and parsed[1] == child_reference.rsplit("@", 1)[1]
 
 
+def _classify_oci_converted_imports(
+    imports: Sequence[tuple[str, str, str]],
+    content_results: Mapping[str, ProcessResult],
+    config_result: ProcessResult | None,
+    *,
+    selected_child_digest: str,
+    config_digest: str,
+) -> CtrImportPair:
+    sources = {item[0] for item in imports}
+    transformed_digests = {item[2] for item in imports}
+    _require(
+        len(imports) == 2
+        and set(content_results) == sources
+        and transformed_digests.isdisjoint({selected_child_digest, config_digest}),
+        "ctr_content_invalid",
+        "OCI-converted import content inventory is invalid",
+    )
+    parsed: list[tuple[tuple[str, str, str], ProcessResult, dict[str, Any]]] = []
+    for item in imports:
+        result = content_results[item[0]]
+        _require(
+            isinstance(result, ProcessResult)
+            and result.returncode == 0
+            and result.stderr == b""
+            and f"sha256:{hashlib.sha256(result.stdout).hexdigest()}" == item[2],
+            "ctr_content_invalid",
+            "OCI-converted import content identity changed",
+        )
+        value = _parse_json_bytes(result.stdout, code="ctr_content_invalid")
+        _require(
+            isinstance(value, dict),
+            "ctr_content_invalid",
+            "OCI-converted import content is not an object",
+        )
+        parsed.append((item, result, cast(dict[str, Any], value)))
+
+    inner_candidates = [
+        item
+        for item in parsed
+        if item[2].get("mediaType") == "application/vnd.oci.image.manifest.v1+json"
+    ]
+    outer_candidates = [
+        item
+        for item in parsed
+        if item[2].get("mediaType") == "application/vnd.oci.image.index.v1+json"
+    ]
+    _require(
+        len(inner_candidates) == 1 and len(outer_candidates) == 1,
+        "ctr_content_invalid",
+        "OCI-converted imports do not contain one manifest and one index",
+    )
+    inner_item, inner_result, inner_value = inner_candidates[0]
+    outer_item, _outer_result, outer_value = outer_candidates[0]
+    _require(
+        isinstance(config_result, ProcessResult)
+        and config_result.returncode == 0
+        and config_result.stderr == b""
+        and f"sha256:{hashlib.sha256(config_result.stdout).hexdigest()}" == config_digest,
+        "ctr_content_invalid",
+        "OCI-converted config content identity changed",
+    )
+    assert isinstance(config_result, ProcessResult)
+    config_content_value = _parse_json_bytes(
+        config_result.stdout,
+        code="ctr_content_invalid",
+    )
+    _require(
+        isinstance(config_content_value, dict),
+        "ctr_content_invalid",
+        "OCI-converted config content is not an object",
+    )
+    config_content = cast(dict[str, Any], config_content_value)
+    _require(
+        "rootfs" in config_content,
+        "ctr_content_invalid",
+        "OCI-converted config rootfs is absent",
+    )
+    rootfs = _mapping(
+        config_content["rootfs"],
+        keys={"type", "diff_ids"},
+        code="ctr_content_invalid",
+    )
+    diff_ids = _sequence(rootfs["diff_ids"], code="ctr_content_invalid")
+    _require(
+        rootfs["type"] == "layers"
+        and all(isinstance(item, str) and _SHA256.fullmatch(item) is not None for item in diff_ids),
+        "ctr_content_invalid",
+        "OCI-converted config rootfs closure changed",
+    )
+
+    inner = _mapping(
+        inner_value,
+        keys={"schemaVersion", "mediaType", "config", "layers"},
+        code="ctr_content_invalid",
+    )
+    config = _mapping(
+        inner["config"],
+        keys={"mediaType", "digest", "size"},
+        code="ctr_content_invalid",
+    )
+    layers = _sequence(inner["layers"], code="ctr_content_invalid")
+    _require(
+        inner["schemaVersion"] == 2
+        and not isinstance(inner["schemaVersion"], bool)
+        and inner["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+        and config["mediaType"] == "application/vnd.oci.image.config.v1+json"
+        and config["digest"] == config_digest
+        and isinstance(config["size"], int)
+        and not isinstance(config["size"], bool)
+        and config["size"] == len(config_result.stdout)
+        and bool(layers),
+        "ctr_content_invalid",
+        "OCI-converted inner manifest closure changed",
+    )
+    layer_digests: list[str] = []
+    for raw_layer in layers:
+        layer = _mapping(
+            raw_layer,
+            keys={"mediaType", "digest", "size"},
+            code="ctr_content_invalid",
+        )
+        _require(
+            layer["mediaType"] == "application/vnd.oci.image.layer.v1.tar"
+            and isinstance(layer["digest"], str)
+            and _SHA256.fullmatch(layer["digest"]) is not None
+            and isinstance(layer["size"], int)
+            and not isinstance(layer["size"], bool)
+            and layer["size"] > 0,
+            "ctr_content_invalid",
+            "OCI-converted layer descriptor changed",
+        )
+        layer_digests.append(cast(str, layer["digest"]))
+    _require(
+        len(layer_digests) == len(set(layer_digests))
+        and layer_digests == diff_ids
+        and set(layer_digests).isdisjoint(
+            {
+                selected_child_digest,
+                config_digest,
+                inner_item[2],
+                outer_item[2],
+            }
+        ),
+        "ctr_content_invalid",
+        "OCI-converted layers do not match config diff IDs",
+    )
+
+    outer = _mapping(
+        outer_value,
+        keys={"schemaVersion", "mediaType", "manifests"},
+        code="ctr_content_invalid",
+    )
+    manifests = _sequence(outer["manifests"], code="ctr_content_invalid")
+    _require(
+        outer["schemaVersion"] == 2
+        and not isinstance(outer["schemaVersion"], bool)
+        and outer["mediaType"] == "application/vnd.oci.image.index.v1+json"
+        and len(manifests) == 1,
+        "ctr_content_invalid",
+        "OCI-converted outer index closure changed",
+    )
+    descriptor = _mapping(
+        manifests[0],
+        keys={"mediaType", "digest", "size"},
+        code="ctr_content_invalid",
+    )
+    _require(
+        descriptor["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+        and descriptor["digest"] == inner_item[2]
+        and isinstance(descriptor["size"], int)
+        and not isinstance(descriptor["size"], bool)
+        and descriptor["size"] == len(inner_result.stdout),
+        "ctr_content_invalid",
+        "OCI-converted outer descriptor changed",
+    )
+    return CtrImportPair(
+        representation="oci-converted",
+        date=inner_item[1],
+        child_source=inner_item[0],
+        child_digest=inner_item[2],
+        outer_source=outer_item[0],
+        outer_digest=outer_item[2],
+        layer_digests=tuple(layer_digests),
+    )
+
+
 def _classify_ctr_image_load(
     before: frozenset[str],
     after: frozenset[str],
     child_reference: str,
     config_digest: str,
+    content_results: Mapping[str, ProcessResult],
+    config_result: ProcessResult | None = None,
 ) -> CtrImportPair | None:
     _require(
         _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None,
@@ -2221,6 +2411,11 @@ def _classify_ctr_image_load(
     )
     added = after - before
     if added == {child_reference, config_digest}:
+        _require(
+            not content_results,
+            "ctr_content_invalid",
+            "Classic image load unexpectedly retained import content",
+        )
         return None
     _require(
         config_digest in added and len(added) == 3,
@@ -2241,19 +2436,33 @@ def _classify_ctr_image_load(
         len(imports) == 2
         and imports[0][1] == imports[1][1]
         and len({item[2] for item in imports}) == 2
-        and child_digest in {item[2] for item in imports}
         and config_digest not in {item[2] for item in imports},
         "ctr_inventory_invalid",
         "ctr import identities are not the exact paired representation",
     )
+    _require(
+        set(content_results) == {item[0] for item in imports},
+        "ctr_content_invalid",
+        "ctr import content inventory changed",
+    )
+    if child_digest not in {item[2] for item in imports}:
+        return _classify_oci_converted_imports(
+            imports,
+            content_results,
+            config_result,
+            selected_child_digest=child_digest,
+            config_digest=config_digest,
+        )
     child = next(item for item in imports if item[2] == child_digest)
     outer = next(item for item in imports if item[2] != child_digest)
     return CtrImportPair(
+        representation="desktop",
         date=child[1],
         child_source=child[0],
         child_digest=child[2],
         outer_source=outer[0],
         outer_digest=outer[2],
+        layer_digests=(),
     )
 
 
@@ -2286,7 +2495,9 @@ def _validate_ctr_outer_content(
     child_reference: str,
 ) -> None:
     _require(
-        _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None
+        pair.representation == "desktop"
+        and not pair.layer_digests
+        and _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None
         and child_reference.rsplit("@", 1)[1] == pair.child_digest,
         "ctr_content_invalid",
         "ctr child identity is invalid",
@@ -2334,15 +2545,44 @@ def _validate_ctr_outer_content(
     )
 
 
+def _valid_ctr_import_pair(pair: CtrImportPair) -> bool:
+    parsed_child = _parse_ctr_import_source(pair.child_source)
+    parsed_outer = _parse_ctr_import_source(pair.outer_source)
+    base_valid = (
+        parsed_child == (pair.date, pair.child_digest)
+        and parsed_outer == (pair.date, pair.outer_digest)
+        and pair.child_source != pair.outer_source
+        and pair.child_digest != pair.outer_digest
+    )
+    if pair.representation == "desktop":
+        return base_valid and not pair.layer_digests
+    if pair.representation != "oci-converted" or not pair.layer_digests:
+        return False
+    return (
+        base_valid
+        and len(pair.layer_digests) == len(set(pair.layer_digests))
+        and all(_SHA256.fullmatch(item) is not None for item in pair.layer_digests)
+        and set(pair.layer_digests).isdisjoint({pair.child_digest, pair.outer_digest})
+    )
+
+
 def _ctr_image_tag_command(
     docker: Path,
     node_name: str,
-    source: str,
+    pair: CtrImportPair,
     child_reference: str,
 ) -> tuple[str, ...]:
     _validate_dns_label(node_name, code="ctr_tag_invalid")
+    parsed_source = _parse_ctr_import_source(pair.child_source)
     _require(
-        _valid_ctr_import_source(source, child_reference),
+        _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None
+        and _valid_ctr_import_pair(pair)
+        and parsed_source is not None
+        and parsed_source[1] == pair.child_digest
+        and (
+            pair.representation == "oci-converted"
+            or _valid_ctr_import_source(pair.child_source, child_reference)
+        ),
         "ctr_tag_invalid",
         "ctr tag source is invalid",
     )
@@ -2354,7 +2594,7 @@ def _ctr_image_tag_command(
         "--namespace=k8s.io",
         "images",
         "tag",
-        source,
+        pair.child_source,
         child_reference,
     )
 
@@ -2377,10 +2617,7 @@ def _ctr_images_remove_command(
 ) -> tuple[str, ...]:
     _validate_dns_label(node_name, code="ctr_remove_invalid")
     _require(
-        _parse_ctr_import_source(pair.child_source) == (pair.date, pair.child_digest)
-        and _parse_ctr_import_source(pair.outer_source) == (pair.date, pair.outer_digest)
-        and pair.child_source != pair.outer_source
-        and pair.child_digest != pair.outer_digest,
+        _valid_ctr_import_pair(pair),
         "ctr_remove_invalid",
         "ctr removal identities are invalid",
     )
@@ -3995,6 +4232,30 @@ def _ctr_import_content_evidence(source: str, result: ProcessResult) -> bytes:
     )
 
 
+def _ctr_config_content_evidence(config_digest: str, result: ProcessResult) -> bytes:
+    _require(
+        _SHA256.fullmatch(config_digest) is not None
+        and result.returncode == 0
+        and result.stderr == b""
+        and f"sha256:{hashlib.sha256(result.stdout).hexdigest()}" == config_digest,
+        "ctr_content_invalid",
+        "ctr config content identity changed",
+    )
+    content = _parse_json_bytes(result.stdout, code="ctr_content_invalid")
+    _require(
+        isinstance(content, dict),
+        "ctr_content_invalid",
+        "ctr config content is not a JSON object",
+    )
+    return _canonical_json_bytes(
+        {
+            "content": content,
+            "raw_content_sha256": config_digest,
+            "source": config_digest,
+        }
+    )
+
+
 def _validate_index_manifest(
     value: Any,
     *,
@@ -5589,8 +5850,10 @@ def _execute_gate(
         )
         ctr_names = _parse_ctr_image_names(ctr_inventory.stdout)
         import_pairs: list[CtrImportPair] = []
-        load_modes: list[bool] = []
+        load_modes: list[str] = []
         selected_digests = {
+            images.node_manifest_digest,
+            images.node_config_digest,
             images.operator_manifest_digest,
             images.operator_config_digest,
             images.kafka_manifest_digest,
@@ -5657,6 +5920,7 @@ def _execute_gate(
                 "ctr_inventory_invalid",
                 "ctr image load added too many import identities",
             )
+            import_content_results: dict[str, ProcessResult] = {}
             for import_index, source in enumerate(import_sources):
                 try:
                     parsed_source = _parse_ctr_import_source(source)
@@ -5681,6 +5945,41 @@ def _execute_gate(
                         _ctr_import_content_evidence(source, import_content),
                         bundle.gate_contract.confidential_sentinels,
                     )
+                    import_content_results[source] = import_content
+                except Exception:
+                    capture_rejected = True
+                    raise
+            config_content_result: ProcessResult | None = None
+            added_import_digests = {
+                parsed[1]
+                for source in import_sources
+                if (parsed := _parse_ctr_import_source(source)) is not None
+            }
+            if len(import_sources) == 2 and reference.rsplit("@", 1)[1] not in added_import_digests:
+                try:
+                    config_content_result = _run_checked_before(
+                        _ctr_content_get_command(
+                            docker,
+                            targets.node_name,
+                            config_digest,
+                        ),
+                        cwd=runtime,
+                        environment=environment,
+                        deadline=execution_deadline,
+                        cap=30,
+                        runner=runner,
+                        monotonic=monotonic,
+                        code="ctr_content_invalid",
+                    )
+                    _evidence_write(
+                        candidate,
+                        f"ctr-load-{load_index}-config.json",
+                        _ctr_config_content_evidence(
+                            config_digest,
+                            config_content_result,
+                        ),
+                        bundle.gate_contract.confidential_sentinels,
+                    )
                 except Exception:
                     capture_rejected = True
                     raise
@@ -5689,40 +5988,61 @@ def _execute_gate(
                 post_load_names,
                 reference,
                 config_digest,
+                import_content_results,
+                config_content_result,
             )
-            load_modes.append(import_pair is not None)
+            load_modes.append("classic" if import_pair is None else import_pair.representation)
             if import_pair is not None:
+                pair_core_digests = {
+                    import_pair.child_digest,
+                    import_pair.outer_digest,
+                }
+                pair_layer_digests = set(import_pair.layer_digests)
+                pair_digests = pair_core_digests | pair_layer_digests
+                selected_identity_valid = (
+                    import_pair.representation == "desktop"
+                    and import_pair.child_digest == reference.rsplit("@", 1)[1]
+                    and import_pair.outer_digest not in selected_digests
+                ) or (
+                    import_pair.representation == "oci-converted"
+                    and pair_digests.isdisjoint(selected_digests)
+                )
                 _require(
-                    import_pair.outer_digest not in selected_digests
+                    import_pair.representation in {"desktop", "oci-converted"}
+                    and selected_identity_valid
                     and all(
                         import_pair.child_source not in {prior.child_source, prior.outer_source}
                         and import_pair.outer_source not in {prior.child_source, prior.outer_source}
-                        and import_pair.outer_digest != prior.outer_digest
+                        and pair_core_digests.isdisjoint(
+                            {prior.child_digest, prior.outer_digest} | set(prior.layer_digests)
+                        )
+                        and pair_layer_digests.isdisjoint({prior.child_digest, prior.outer_digest})
                         for prior in import_pairs
                     ),
                     "ctr_inventory_invalid",
                     "ctr import pairs overlap selected image identities",
                 )
-                outer_content = _run_checked_before(
-                    _ctr_content_get_command(
-                        docker,
-                        targets.node_name,
-                        import_pair.outer_digest,
-                    ),
-                    cwd=runtime,
-                    environment=environment,
-                    deadline=execution_deadline,
-                    cap=30,
-                    runner=runner,
-                    monotonic=monotonic,
-                    code="ctr_content_invalid",
-                )
-                _validate_ctr_outer_content(outer_content, import_pair, reference)
+                if import_pair.representation == "desktop":
+                    outer_content = _run_checked_before(
+                        _ctr_content_get_command(
+                            docker,
+                            targets.node_name,
+                            import_pair.outer_digest,
+                        ),
+                        cwd=runtime,
+                        environment=environment,
+                        deadline=execution_deadline,
+                        cap=30,
+                        runner=runner,
+                        monotonic=monotonic,
+                        code="ctr_content_invalid",
+                    )
+                    _validate_ctr_outer_content(outer_content, import_pair, reference)
                 tagged = _run_checked_before(
                     _ctr_image_tag_command(
                         docker,
                         targets.node_name,
-                        import_pair.child_source,
+                        import_pair,
                         reference,
                     ),
                     cwd=runtime,
@@ -5793,7 +6113,7 @@ def _execute_gate(
                 ctr_names = post_load_names
 
         _require(
-            load_modes in ([False, False], [True, True]),
+            len(load_modes) == 2 and load_modes[0] == load_modes[1],
             "ctr_inventory_invalid",
             "Pinned images used mixed ctr storage representations",
         )

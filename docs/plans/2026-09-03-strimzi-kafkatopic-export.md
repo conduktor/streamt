@@ -497,10 +497,17 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    adds only the exact Quay child plus its frozen config pseudo-reference. The
    all-Docker-Desktop representation adds only the config pseudo-reference and
    two bare, same-date, calendar-valid `import-YYYY-MM-DD@sha256:<digest>`
-   references: one child digest and one distinct outer digest. Reject mixed
-   modes and shared import identities across operator and Kafka.
+   references: one child digest and one distinct outer digest. Linux OCI
+   conversion from evidence run `33899306524` has the same exact delta but
+   neither import is the selected child. Require both images to use exactly one
+   common mode (`classic`, `desktop`, or `oci-converted`). Reject shared import
+   sources; current inner/outer overlap with prior inner/outer or layers;
+   current-layer overlap with prior inner/outer; and any transformed/layer
+   overlap with selected node/operator/Kafka manifest or config identities.
+   Explicitly allow layer-layer reuse across images because the pinned operator
+   and Kafka images share immutable rootfs layers on both supported platforms.
 
-   Before the unchanged classifier runs, persist the already validated sorted
+   Before the three-way classifier runs, persist the already validated sorted
    before and after inventories as `ctr-load-<I>-before.txt` and
    `ctr-load-<I>-after.txt` (`I=0` operator, `I=1` Kafka). Select no more than
    two newly added names matching the strict bare, calendar-valid import
@@ -513,20 +520,40 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    exhaustion, non-finite/invalid/duplicate-key JSON, secret-scan failure, or
    write failure makes final evidence marker-only; never stage a partial import
    diagnostic set. Reject `NaN` and both infinities at every JSON input
-   boundary. These diagnostics do not participate in classification.
+   boundary. Retain these validated results as classifier inputs; they are not
+   passive evidence and do not admit a fourth or partial mode.
 
-   For each Desktop delta, read the outer content by digest, require its raw
+   In converted mode, require source-suffix/raw-hash equality and exactly one
+   closed OCI manifest plus one closed OCI index. The manifest has a closed OCI
+   config descriptor
+   for the frozen config and a nonempty ordered list of closed, unique,
+   positive-sized OCI uncompressed-layer descriptors. The index contains one
+   closed positive-sized OCI-manifest descriptor to the inner digest, with size
+   exactly equal to the inner raw length. Reject every extra field, annotation,
+   alternate media type, invalid digest, boolean/nonpositive size, or partial
+   shape.
+
+   For a converted candidate, boundedly read the frozen config content, require
+   zero status, empty stderr, and raw hash equality, and write canonical
+   `ctr-load-<I>-config.json`. Allow normal image-config root fields but require
+   a closed `rootfs` equal in shape to `{type: layers, diff_ids: [...]}`; its
+   ordered diff IDs must exactly equal the inner ordered layer digests, and the
+   inner config descriptor size must equal the config raw length. Apply the
+   same marker-only safety boundary as other load diagnostics.
+
+   For each Desktop delta, separately validate the reviewed exact-child outer
+   content by digest, require its raw
    SHA-256 to equal that digest, and validate a closed schema-version-2 OCI
    index containing exactly one positive-sized Docker schema-2 descriptor to
    the frozen child with the exact corresponding Quay source annotation. Tag
-   the child import to the exact target, re-enumerate, then remove only the two
+   the validated inner import to the exact target, re-enumerate, then remove only the two
    discovered import references using `ctr images rm` without `--sync` or
    content deletion. Require the post-removal names to be exactly the prior
    inventory plus the target and config pseudo-reference. The unique,
    disposable, pre-workload node provides exclusive ownership across the
    otherwise unavoidable final validation-to-removal interval.
 
-   After both Desktop images are normalized, restart containerd exactly once,
+   After both same-mode imported images are normalized, restart containerd exactly once,
    wait boundedly for the exact Kubernetes Node to report Ready, and repeat
    node attachment, loopback API publication, dual-stack empty default-route,
    positive local TCP, and negative external TCP checks. Prove the normalized
@@ -596,8 +623,8 @@ events, broker descriptions/configs, generated YAML checksums, and poll
 timeline. The exact load-diagnostic inventory is one sorted before/after pair
 per attempted load (four files on the complete two-load path), plus zero to two
 sorted canonical import-content JSON files per attempted load, under the names
-frozen in step 5. `ctr-images.txt` is attempted even when the node or kubeconfig
-is
+frozen in step 5, plus one config JSON file per converted load. `ctr-images.txt`
+is attempted even when the node or kubeconfig is
 absent. Its closed transform permits at most 4,096 LF-delimited, 512-byte
 printable-ASCII references, rejects control/URI/credential/query/fragment/
 backslash forms, requires an exact lowercase SHA-256 after every `@`, and sorts

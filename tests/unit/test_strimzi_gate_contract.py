@@ -1312,11 +1312,13 @@ def test_ctr_image_normalization_commands_have_an_exact_bounded_surface() -> Non
     source = _ctr_import_key(images.kafka_child_reference)
     outer = "import-2026-09-04@sha256:" + "a" * 64
     pair = gate.CtrImportPair(
+        representation="desktop",
         date="2026-09-04",
         child_source=source,
         child_digest=images.kafka_manifest_digest,
         outer_source=outer,
         outer_digest="sha256:" + "a" * 64,
+        layer_digests=(),
     )
 
     assert gate._ctr_images_list_command(docker, node) == (
@@ -1329,7 +1331,7 @@ def test_ctr_image_normalization_commands_have_an_exact_bounded_surface() -> Non
         "list",
         "-q",
     )
-    assert gate._ctr_image_tag_command(docker, node, source, images.kafka_child_reference) == (
+    assert gate._ctr_image_tag_command(docker, node, pair, images.kafka_child_reference) == (
         str(docker),
         "exec",
         node,
@@ -1380,9 +1382,26 @@ def test_ctr_image_normalization_commands_have_an_exact_bounded_surface() -> Non
             gate._ctr_image_tag_command(
                 docker,
                 node,
-                invalid_source,
+                dataclasses.replace(pair, child_source=invalid_source),
                 images.kafka_child_reference,
             )
+    invalid_pairs = (
+        dataclasses.replace(pair, representation="unknown"),
+        dataclasses.replace(pair, layer_digests=("sha256:" + "f" * 64,)),
+        dataclasses.replace(pair, representation="oci-converted", layer_digests=()),
+    )
+    for invalid_pair in invalid_pairs:
+        with pytest.raises(gate.GateError):
+            gate._ctr_image_tag_command(
+                docker,
+                node,
+                invalid_pair,
+                images.kafka_child_reference,
+            )
+        with pytest.raises(gate.GateError):
+            gate._ctr_images_remove_command(docker, node, invalid_pair)
+    with pytest.raises(gate.GateError):
+        gate._ctr_image_tag_command(docker, node, pair, "not-a-child-reference")
 
 
 def test_ctr_image_load_delta_accepts_only_frozen_classic_or_desktop_shapes() -> None:
@@ -1397,6 +1416,7 @@ def test_ctr_image_load_delta_accepts_only_frozen_classic_or_desktop_shapes() ->
             classic,
             child,
             images.operator_config_digest,
+            {},
         )
         is None
     )
@@ -1404,17 +1424,24 @@ def test_ctr_image_load_delta_accepts_only_frozen_classic_or_desktop_shapes() ->
     imported = _ctr_import_key(child)
     outer = "import-2026-09-04@sha256:" + "b" * 64
     desktop = before | {imported, outer, images.operator_config_digest}
+    desktop_contents = {
+        imported: gate.ProcessResult(0, b"{}", b""),
+        outer: gate.ProcessResult(0, b"{}", b""),
+    }
     assert gate._classify_ctr_image_load(
         before,
         desktop,
         child,
         images.operator_config_digest,
+        desktop_contents,
     ) == gate.CtrImportPair(
+        representation="desktop",
         date="2026-09-04",
         child_source=imported,
         child_digest=images.operator_manifest_digest,
         outer_source=outer,
         outer_digest="sha256:" + "b" * 64,
+        layer_digests=(),
     )
 
 
@@ -1471,8 +1498,13 @@ def test_ctr_image_load_delta_rejects_every_partial_or_ambiguous_shape(mutation:
     else:
         assert mutation == "outer-is-config"
         after = baseline | {child_import, f"import-2026-09-04@{config}", config}
+    content_results = {
+        name: gate.ProcessResult(0, b"{}", b"")
+        for name in after - before
+        if gate._parse_ctr_import_source(name) is not None
+    }
     with pytest.raises(gate.GateError):
-        gate._classify_ctr_image_load(before, after, child, config)
+        gate._classify_ctr_image_load(before, after, child, config, content_results)
 
 
 @pytest.mark.parametrize(
@@ -1598,6 +1630,330 @@ def test_ctr_load_diagnostic_records_a_content_addressed_manifest_index_chain() 
     ]
 
 
+def _oci_converted_fixture(
+    seed: str,
+    mutation: str | None = None,
+    *,
+    shared_first_layer: str | None = None,
+) -> dict[str, Any]:
+    layers = [
+        "sha256:" + hashlib.sha256(f"{seed}-layer-{index}".encode()).hexdigest()
+        for index in range(2)
+    ]
+    if shared_first_layer is not None:
+        layers[0] = shared_first_layer
+    config_value: dict[str, Any] = {
+        "architecture": "amd64",
+        "os": "linux",
+        "rootfs": {"type": "layers", "diff_ids": list(layers)},
+    }
+    if mutation == "config-rootfs-missing":
+        config_value.pop("rootfs")
+    elif mutation == "config-rootfs-extra":
+        config_value["rootfs"]["extra"] = "value"
+    elif mutation == "config-rootfs-type":
+        config_value["rootfs"]["type"] = "other"
+    elif mutation == "config-diff-reordered":
+        config_value["rootfs"]["diff_ids"].reverse()
+    elif mutation == "config-diff-wrong":
+        config_value["rootfs"]["diff_ids"][0] = "sha256:" + "e" * 64
+    config_raw = gate._canonical_json_bytes(config_value)
+    config_digest = f"sha256:{hashlib.sha256(config_raw).hexdigest()}"
+
+    inner_value: dict[str, Any] = {
+        "config": {
+            "digest": config_digest,
+            "mediaType": "application/vnd.oci.image.config.v1+json",
+            "size": len(config_raw),
+        },
+        "layers": [
+            {
+                "digest": digest,
+                "mediaType": "application/vnd.oci.image.layer.v1.tar",
+                "size": index + 100,
+            }
+            for index, digest in enumerate(layers)
+        ],
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "schemaVersion": 2,
+    }
+    if mutation == "inner-extra":
+        inner_value["extra"] = "value"
+    elif mutation == "inner-schema":
+        inner_value["schemaVersion"] = True
+    elif mutation == "inner-media":
+        inner_value["mediaType"] = "application/vnd.docker.distribution.manifest.v2+json"
+    elif mutation == "config-descriptor-extra":
+        inner_value["config"]["extra"] = "value"
+    elif mutation == "config-descriptor-media":
+        inner_value["config"]["mediaType"] = "application/vnd.docker.container.image.v1+json"
+    elif mutation == "config-descriptor-digest":
+        inner_value["config"]["digest"] = "sha256:" + "f" * 64
+    elif mutation == "config-descriptor-size":
+        inner_value["config"]["size"] = len(config_raw) + 1
+    elif mutation == "config-descriptor-size-bool":
+        inner_value["config"]["size"] = True
+    elif mutation == "layers-empty":
+        inner_value["layers"] = []
+    elif mutation == "layer-extra":
+        inner_value["layers"][0]["extra"] = "value"
+    elif mutation == "layer-media":
+        inner_value["layers"][0]["mediaType"] = "application/vnd.oci.image.layer.v1.tar+gzip"
+    elif mutation == "layer-digest":
+        inner_value["layers"][0]["digest"] = "not-a-digest"
+    elif mutation == "layer-size":
+        inner_value["layers"][0]["size"] = 0
+    elif mutation == "layer-size-bool":
+        inner_value["layers"][0]["size"] = True
+    elif mutation == "layer-duplicate":
+        inner_value["layers"][1] = copy.deepcopy(inner_value["layers"][0])
+    inner_raw = gate._canonical_json_bytes(inner_value)
+    inner_digest = f"sha256:{hashlib.sha256(inner_raw).hexdigest()}"
+
+    outer_value: dict[str, Any] = {
+        "manifests": [
+            {
+                "digest": inner_digest,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "size": len(inner_raw),
+            }
+        ],
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "schemaVersion": 2,
+    }
+    if mutation == "outer-extra":
+        outer_value["extra"] = "value"
+    elif mutation == "outer-schema":
+        outer_value["schemaVersion"] = True
+    elif mutation == "outer-media":
+        outer_value["mediaType"] = "application/vnd.docker.distribution.manifest.list.v2+json"
+    elif mutation == "manifests-empty":
+        outer_value["manifests"] = []
+    elif mutation == "manifests-extra":
+        outer_value["manifests"].append(copy.deepcopy(outer_value["manifests"][0]))
+    elif mutation == "outer-descriptor-extra":
+        outer_value["manifests"][0]["annotations"] = {"unexpected": "value"}
+    elif mutation == "outer-descriptor-media":
+        outer_value["manifests"][0]["mediaType"] = (
+            "application/vnd.docker.distribution.manifest.v2+json"
+        )
+    elif mutation == "outer-descriptor-digest":
+        outer_value["manifests"][0]["digest"] = "sha256:" + "f" * 64
+    elif mutation == "outer-descriptor-size":
+        outer_value["manifests"][0]["size"] = len(inner_raw) + 1
+    elif mutation == "outer-descriptor-size-bool":
+        outer_value["manifests"][0]["size"] = True
+    outer_raw = gate._canonical_json_bytes(outer_value)
+    outer_digest = f"sha256:{hashlib.sha256(outer_raw).hexdigest()}"
+    inner_source = f"import-2026-09-04@{inner_digest}"
+    outer_source = f"import-2026-09-04@{outer_digest}"
+    contents = {
+        inner_source: gate.ProcessResult(
+            0,
+            inner_raw + (b" " if mutation == "inner-hash" else b""),
+            b"",
+        ),
+        outer_source: gate.ProcessResult(
+            0,
+            outer_raw + (b" " if mutation == "outer-hash" else b""),
+            b"",
+        ),
+    }
+    config_result = gate.ProcessResult(
+        0,
+        config_raw + (b" " if mutation == "config-hash" else b""),
+        b"",
+    )
+    return {
+        "config_digest": config_digest,
+        "config_result": config_result,
+        "contents": contents,
+        "inner_digest": inner_digest,
+        "inner_source": inner_source,
+        "layers": tuple(layers),
+        "outer_digest": outer_digest,
+        "outer_source": outer_source,
+    }
+
+
+def _oci_converted_platform(
+    *,
+    shared_layer: bool = False,
+    prior_layer_overlap: str | None = None,
+    current_layer_overlap: str | None = None,
+) -> Any:
+    kafka_base = _oci_converted_fixture("kafka")
+    prior_overlap_digest = (
+        kafka_base[f"{prior_layer_overlap}_digest"] if prior_layer_overlap is not None else None
+    )
+    operator = _oci_converted_fixture(
+        "operator",
+        shared_first_layer=prior_overlap_digest,
+    )
+    current_overlap_digest = (
+        operator[f"{current_layer_overlap}_digest"] if current_layer_overlap is not None else None
+    )
+    kafka = (
+        _oci_converted_fixture(
+            "kafka",
+            shared_first_layer=(operator["layers"][0] if shared_layer else current_overlap_digest),
+        )
+        if shared_layer or current_layer_overlap is not None
+        else kafka_base
+    )
+    return dataclasses.replace(
+        _frozen_platform(),
+        operator_config_digest=operator["config_digest"],
+        kafka_config_digest=kafka["config_digest"],
+    )
+
+
+def test_ctr_classifier_accepts_exact_content_addressed_oci_conversion() -> None:
+    images = _platform()
+    fixture = _oci_converted_fixture("operator")
+    baseline = frozenset({"registry.k8s.io/pause@sha256:" + "a" * 64})
+    after = baseline | {
+        fixture["config_digest"],
+        fixture["inner_source"],
+        fixture["outer_source"],
+    }
+    pair = gate._classify_ctr_image_load(
+        baseline,
+        after,
+        images.operator_child_reference,
+        fixture["config_digest"],
+        fixture["contents"],
+        fixture["config_result"],
+    )
+    assert pair == gate.CtrImportPair(
+        representation="oci-converted",
+        date="2026-09-04",
+        child_source=fixture["inner_source"],
+        child_digest=fixture["inner_digest"],
+        outer_source=fixture["outer_source"],
+        outer_digest=fixture["outer_digest"],
+        layer_digests=fixture["layers"],
+    )
+    assert pair is not None
+    assert gate._ctr_image_tag_command(
+        Path("/locked/docker"),
+        "streamt-strimzi-123456789abc-kind-control-plane",
+        pair,
+        images.operator_child_reference,
+    )[-2:] == (pair.child_source, images.operator_child_reference)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "config-rootfs-missing",
+        "config-rootfs-extra",
+        "config-rootfs-type",
+        "config-diff-reordered",
+        "config-diff-wrong",
+        "config-hash",
+        "inner-extra",
+        "inner-schema",
+        "inner-media",
+        "inner-hash",
+        "config-descriptor-extra",
+        "config-descriptor-media",
+        "config-descriptor-digest",
+        "config-descriptor-size",
+        "config-descriptor-size-bool",
+        "layers-empty",
+        "layer-extra",
+        "layer-media",
+        "layer-digest",
+        "layer-size",
+        "layer-size-bool",
+        "layer-duplicate",
+        "outer-extra",
+        "outer-schema",
+        "outer-media",
+        "outer-hash",
+        "manifests-empty",
+        "manifests-extra",
+        "outer-descriptor-extra",
+        "outer-descriptor-media",
+        "outer-descriptor-digest",
+        "outer-descriptor-size",
+        "outer-descriptor-size-bool",
+    ],
+)
+def test_ctr_classifier_rejects_every_nonexact_oci_conversion(mutation: str) -> None:
+    images = _platform()
+    fixture = _oci_converted_fixture("operator", mutation)
+    baseline = frozenset({"registry.k8s.io/pause@sha256:" + "a" * 64})
+    after = baseline | {
+        fixture["config_digest"],
+        fixture["inner_source"],
+        fixture["outer_source"],
+    }
+    with pytest.raises(gate.GateError):
+        gate._classify_ctr_image_load(
+            baseline,
+            after,
+            images.operator_child_reference,
+            fixture["config_digest"],
+            fixture["contents"],
+            fixture["config_result"],
+        )
+
+
+def test_ctr_classifier_rejects_partial_content_and_selected_identity_overlap() -> None:
+    images = _platform()
+    fixture = _oci_converted_fixture("operator")
+    baseline = frozenset({"registry.k8s.io/pause@sha256:" + "a" * 64})
+    after = baseline | {
+        fixture["config_digest"],
+        fixture["inner_source"],
+        fixture["outer_source"],
+    }
+    content_variants = (
+        {},
+        {fixture["inner_source"]: fixture["contents"][fixture["inner_source"]]},
+        {
+            **fixture["contents"],
+            "import-2026-09-04@sha256:" + "f" * 64: gate.ProcessResult(0, b"{}", b""),
+        },
+    )
+    for contents in content_variants:
+        with pytest.raises(gate.GateError):
+            gate._classify_ctr_image_load(
+                baseline,
+                after,
+                images.operator_child_reference,
+                fixture["config_digest"],
+                contents,
+                fixture["config_result"],
+            )
+    for config_result in (
+        None,
+        gate.ProcessResult(9, fixture["config_result"].stdout, b""),
+        gate.ProcessResult(0, fixture["config_result"].stdout, b"warning"),
+    ):
+        with pytest.raises(gate.GateError):
+            gate._classify_ctr_image_load(
+                baseline,
+                after,
+                images.operator_child_reference,
+                fixture["config_digest"],
+                fixture["contents"],
+                config_result,
+            )
+    selected_layer_reference = "quay.io/strimzi/operator@" + fixture["layers"][0]
+    with pytest.raises(gate.GateError):
+        gate._classify_ctr_image_load(
+            baseline,
+            after,
+            selected_layer_reference,
+            fixture["config_digest"],
+            fixture["contents"],
+            fixture["config_result"],
+        )
+
+
 def test_ctr_load_diagnostic_rejects_unsafe_or_ambiguous_import_content() -> None:
     source = "import-2026-09-04@sha256:" + "a" * 64
     invalid = (
@@ -1657,11 +2013,13 @@ def _ctr_pair_for_payload(child_reference: str, payload: bytes) -> Any:
     child_digest = child_reference.rsplit("@", 1)[1]
     outer_digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     return gate.CtrImportPair(
+        representation="desktop",
         date="2026-09-04",
         child_source=f"import-2026-09-04@{child_digest}",
         child_digest=child_digest,
         outer_source=f"import-2026-09-04@{outer_digest}",
         outer_digest=outer_digest,
+        layer_digests=(),
     )
 
 
@@ -4967,6 +5325,9 @@ def _install_lifecycle_fakes(
     failure: str | None = None,
     cleanup_failure: bool = False,
     ctr_mode: str = "desktop",
+    oci_shared_layer: bool = False,
+    oci_prior_layer_overlap: str | None = None,
+    oci_current_layer_overlap: str | None = None,
 ) -> dict[str, Any]:
     bundle = gate._load_fixture_bundle()
     docker = Path("/bin/echo").resolve(strict=True)
@@ -5163,17 +5524,67 @@ def _install_lifecycle_fakes(
     ctr_names = {"registry.k8s.io/pause@sha256:" + "a" * 64}
     content_payloads: dict[str, bytes] = {}
     import_pairs: dict[str, Any] = {}
+    oci_kafka_base = _oci_converted_fixture("kafka")
+    prior_overlap_digest = (
+        oci_kafka_base[f"{oci_prior_layer_overlap}_digest"]
+        if oci_prior_layer_overlap is not None
+        else None
+    )
+    oci_operator_fixture = _oci_converted_fixture(
+        "operator",
+        shared_first_layer=prior_overlap_digest,
+    )
     for reference in (images.operator_child_reference, images.kafka_child_reference):
-        child_digest = reference.rsplit("@", 1)[1]
-        content_payloads[child_digest] = gate._canonical_json_bytes(
-            {
-                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-                "schemaVersion": 2,
-            }
+        is_operator = reference == images.operator_child_reference
+        selected_mode = (
+            "oci-converted"
+            if ctr_mode == "oci-converted" or (ctr_mode == "oci-desktop-mixed" and is_operator)
+            else "desktop"
         )
-        payload = _ctr_outer_payload(reference)
-        pair = _ctr_pair_for_payload(reference, payload)
-        content_payloads[pair.outer_digest] = payload
+        if selected_mode == "oci-converted":
+            fixture = (
+                oci_operator_fixture
+                if is_operator
+                else _oci_converted_fixture(
+                    "kafka",
+                    shared_first_layer=(
+                        oci_operator_fixture["layers"][0]
+                        if oci_shared_layer
+                        else (
+                            oci_operator_fixture[f"{oci_current_layer_overlap}_digest"]
+                            if oci_current_layer_overlap is not None
+                            else None
+                        )
+                    ),
+                )
+            )
+            expected_config = (
+                images.operator_config_digest if is_operator else images.kafka_config_digest
+            )
+            assert fixture["config_digest"] == expected_config
+            pair = gate.CtrImportPair(
+                representation="oci-converted",
+                date="2026-09-04",
+                child_source=fixture["inner_source"],
+                child_digest=fixture["inner_digest"],
+                outer_source=fixture["outer_source"],
+                outer_digest=fixture["outer_digest"],
+                layer_digests=fixture["layers"],
+            )
+            for source, result in fixture["contents"].items():
+                content_payloads[source.rsplit("@", 1)[1]] = result.stdout
+            content_payloads[expected_config] = fixture["config_result"].stdout
+        else:
+            child_digest = reference.rsplit("@", 1)[1]
+            content_payloads[child_digest] = gate._canonical_json_bytes(
+                {
+                    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                    "schemaVersion": 2,
+                }
+            )
+            payload = _ctr_outer_payload(reference)
+            pair = _ctr_pair_for_payload(reference, payload)
+            content_payloads[pair.outer_digest] = payload
         import_pairs[reference] = pair
 
     def runner(command: list[str], **_kwargs: Any) -> Any:
@@ -5223,10 +5634,10 @@ def _install_lifecycle_fakes(
                 if reference == images.operator_child_reference
                 else images.kafka_config_digest
             )
-            use_desktop = ctr_mode == "desktop" or (
+            use_import = ctr_mode in {"desktop", "oci-converted", "oci-desktop-mixed"} or (
                 ctr_mode == "mixed" and reference == images.operator_child_reference
             )
-            if use_desktop:
+            if use_import:
                 outer_source = (
                     import_pairs[images.operator_child_reference].outer_source
                     if failure == "ctr-pair-overlap" and reference == images.kafka_child_reference
@@ -5774,13 +6185,13 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
         gate._ctr_image_tag_command(
             Path(ctr_tag_commands[0][0]),
             f"{harness['prefix']}-kind-control-plane",
-            _ctr_import_key(images.operator_child_reference),
+            operator_pair,
             images.operator_child_reference,
         ),
         gate._ctr_image_tag_command(
             Path(ctr_tag_commands[0][0]),
             f"{harness['prefix']}-kind-control-plane",
-            _ctr_import_key(images.kafka_child_reference),
+            kafka_pair,
             images.kafka_child_reference,
         ),
     ]
@@ -5819,6 +6230,170 @@ def test_classic_lifecycle_never_tags_removes_or_restarts_containerd(
     assert harness["events"].count("route-inventory--6") == 2
     assert harness["events"].count("egress-probe") == 1
     assert harness["events"].index("cri-final") < harness["events"].index("namespace-create")
+
+
+def test_oci_converted_lifecycle_tags_validated_inner_and_preserves_final_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = _oci_converted_platform()
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        images,
+        ctr_mode="oci-converted",
+    )
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    assert (
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+        == 0
+    )
+    assert harness["events"].count("containerd-restart") == 1
+    assert harness["events"].index("cri-final") < harness["events"].index("namespace-create")
+    assert {path.name for path in arguments.evidence_upload.glob("ctr-load-*-config.json")} == {
+        "ctr-load-0-config.json",
+        "ctr-load-1-config.json",
+    }
+    for load_index, (reference, seed) in enumerate(
+        (
+            (images.operator_child_reference, "operator"),
+            (images.kafka_child_reference, "kafka"),
+        )
+    ):
+        fixture = _oci_converted_fixture(seed)
+        config_evidence = json.loads(
+            (arguments.evidence_upload / f"ctr-load-{load_index}-config.json").read_bytes()
+        )
+        assert config_evidence == {
+            "content": json.loads(fixture["config_result"].stdout),
+            "raw_content_sha256": fixture["config_digest"],
+            "source": fixture["config_digest"],
+        }
+        assert f"ctr-tag:{reference}" in harness["events"]
+        tag = next(
+            command
+            for command in harness["commands"]
+            if len(command) == 9 and command[6] == "tag" and command[-1] == reference
+        )
+        assert tag[-2:] == (fixture["inner_source"], reference)
+
+
+def test_oci_converted_lifecycle_allows_shared_layers_across_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = _oci_converted_platform(shared_layer=True)
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        images,
+        ctr_mode="oci-converted",
+        oci_shared_layer=True,
+    )
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    assert (
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+        == 0
+    )
+    assert harness["events"].count("containerd-restart") == 1
+    assert harness["events"].index("cri-final") < harness["events"].index("namespace-create")
+
+
+def test_lifecycle_rejects_mixed_desktop_and_oci_converted_modes_before_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    images = _oci_converted_platform()
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        images,
+        ctr_mode="oci-desktop-mixed",
+    )
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    with pytest.raises(gate.GateError) as captured:
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+    assert captured.value.code == "ctr_inventory_invalid"
+    assert "containerd-restart" not in harness["events"]
+    assert "namespace-create" not in harness["events"]
+
+
+@pytest.mark.parametrize("prior_layer_overlap", ["inner", "outer"])
+def test_lifecycle_rejects_current_transformed_digest_overlapping_prior_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_layer_overlap: str,
+) -> None:
+    images = _oci_converted_platform(prior_layer_overlap=prior_layer_overlap)
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        images,
+        ctr_mode="oci-converted",
+        oci_prior_layer_overlap=prior_layer_overlap,
+    )
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    with pytest.raises(gate.GateError) as captured:
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+    assert captured.value.code == "ctr_inventory_invalid"
+    assert "containerd-restart" not in harness["events"]
+    assert "namespace-create" not in harness["events"]
+    assert "cleanup-kind" in harness["events"]
+    assert "stage" in harness["events"]
+
+
+@pytest.mark.parametrize("current_layer_overlap", ["inner", "outer"])
+def test_lifecycle_rejects_current_layer_overlapping_prior_transformed_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current_layer_overlap: str,
+) -> None:
+    images = _oci_converted_platform(current_layer_overlap=current_layer_overlap)
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        images,
+        ctr_mode="oci-converted",
+        oci_current_layer_overlap=current_layer_overlap,
+    )
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    with pytest.raises(gate.GateError) as captured:
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+    assert captured.value.code == "ctr_inventory_invalid"
+    assert "containerd-restart" not in harness["events"]
+    assert "namespace-create" not in harness["events"]
+    assert "cleanup-kind" in harness["events"]
+    assert "stage" in harness["events"]
 
 
 def test_lifecycle_rejects_mixed_ctr_modes_before_restart_or_apply(
