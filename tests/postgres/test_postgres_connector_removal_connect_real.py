@@ -140,7 +140,6 @@ def _request(
 def _wait_for_status(url: str, expected: int) -> requests.Response:
     deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
     latest: requests.Response | None = None
-    deadline = time.monotonic() + _CLEANUP_STEP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
             latest = _request("GET", url)
@@ -152,6 +151,34 @@ def _wait_for_status(url: str, expected: int) -> requests.Response:
         time.sleep(0.25)
     status = None if latest is None else latest.status_code
     pytest.fail(f"real service did not reach expected HTTP status; last status={status}")
+
+
+def _wait_for_connector_stable(name: str) -> None:
+    """Wait until Connect has completed the rebalance caused by fixture creation."""
+    base_url = _connector_url(name)
+    deadline = time.monotonic() + _POLL_TIMEOUT_SECONDS
+    latest: tuple[int | None, int | None] = (None, None)
+    consecutive_ready = 0
+    while time.monotonic() < deadline:
+        try:
+            document = _request("GET", base_url)
+            status = _request("GET", f"{base_url}/status")
+        except requests.RequestException:
+            consecutive_ready = 0
+            time.sleep(0.25)
+            continue
+        latest = (document.status_code, status.status_code)
+        if latest == (200, 200):
+            consecutive_ready += 1
+            if consecutive_ready == 2:
+                return
+        else:
+            consecutive_ready = 0
+        time.sleep(0.25)
+    pytest.fail(
+        "real Connect fixture did not stabilize after creation; "
+        f"last statuses={latest}"
+    )
 
 
 def _connector_url(name: str) -> str:
@@ -173,7 +200,7 @@ def _create_connector(
             },
         )
         if response.status_code == 201:
-            _wait_for_status(_connector_url(artifact.name), 200)
+            _wait_for_connector_stable(artifact.name)
             return
         if response.status_code == 409:
             time.sleep(0.25)
