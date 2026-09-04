@@ -209,3 +209,76 @@ def test_ci_produces_one_pinned_immutable_distribution_handoff() -> None:
     upload_index = step_names.index("Upload exact release-candidate distributions")
     install_index = step_names.index("Install wheel in a clean environment")
     assert build_index < upload_index < install_index
+
+
+def test_ci_runs_strimzi_package_parity_on_every_supported_python() -> None:
+    workflow = _ci_workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    parity = jobs["strimzi-package-parity"]
+    assert isinstance(parity, dict)
+    assert parity["needs"] == "package"
+    assert parity["runs-on"] == "ubuntu-latest"
+    assert parity["timeout-minutes"] == "20"
+    assert parity["strategy"] == {
+        "fail-fast": "false",
+        "matrix": {"python-version": ["3.10", "3.11", "3.12", "3.13", "3.14"]},
+    }
+    assert "if" not in parity
+    assert "continue-on-error" not in parity
+
+    steps = parity["steps"]
+    assert isinstance(steps, list)
+    for step in steps:
+        assert isinstance(step, dict)
+        assert "if" not in step
+        assert "continue-on-error" not in step
+    checkout = _step(steps, "Checkout")
+    setup = _step(steps, "Setup Python")
+    download = _step(steps, "Download exact release-candidate distributions")
+    execute = _step(steps, "Verify source, wheel, and direct-sdist Strimzi parity")
+    assert checkout["uses"] == (
+        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+    )
+    assert setup["uses"] == (
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+    )
+    assert setup["with"] == {"python-version": "${{ matrix.python-version }}"}
+    assert download["uses"] == (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    )
+    assert download["with"] == {
+        "name": "python-distributions-${{ github.run_attempt }}",
+        "path": "dist/",
+    }
+    assert execute["timeout-minutes"] == "15"
+    command = execute["run"]
+    assert isinstance(command, str)
+    assert "tests/package/strimzi_package_smoke.py" in command
+    assert '--wheel "${wheels[0]}"' in command
+    assert '--sdist "${source_distributions[0]}"' in command
+    assert '--source-root "${GITHUB_WORKSPACE}"' in command
+    assert "Expected exactly one wheel" in command
+    assert "Expected exactly one source distribution" in command
+    assert "|| true" not in command
+
+
+def test_release_consumes_the_same_attempt_named_artifact_after_full_ci() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    build = jobs["build"]
+    assert isinstance(build, dict)
+    steps = build["steps"]
+    assert isinstance(steps, list)
+    ci = _step(steps, "Require successful full CI for the exact release commit")
+    download = _step(steps, "Download the exact distributions tested by CI")
+    assert isinstance(ci["run"], str)
+    assert 'run.get("conclusion") == "success"' in ci["run"]
+    assert 'output.write(f"run_attempt={newest[\'run_attempt\']}\\n")' in ci["run"]
+    assert download["with"] == {
+        "name": "python-distributions-${{ steps.ci.outputs.run_attempt }}",
+        "path": "dist/",
+        "run-id": "${{ steps.ci.outputs.run_id }}",
+        "github-token": "${{ github.token }}",
+    }

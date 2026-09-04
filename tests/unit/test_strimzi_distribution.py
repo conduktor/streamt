@@ -61,6 +61,7 @@ _FORBIDDEN_TOP_LEVEL_PACKAGES = {
     "pyhelm",
     "strimzi",
 }
+_PACKAGE_SMOKE = Path(__file__).parents[1] / "package" / "strimzi_package_smoke.py"
 
 
 def _resource_member(
@@ -336,3 +337,51 @@ def test_built_wheel_and_source_distribution_preserve_frozen_boundary(
         _assert_wheel_contract(wheel)
     with tarfile.open(source_distributions[0], "r:gz") as source_distribution:
         _assert_source_distribution_contract(source_distribution)
+
+
+def test_package_parity_harness_self_test_is_secret_neutral() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(_PACKAGE_SMOKE), "--self-test"],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert completed.stdout == completed.stderr == ""
+
+
+def test_package_parity_harness_freezes_direct_sdist_and_offline_guards() -> None:
+    source = _PACKAGE_SMOKE.read_text(encoding="utf-8")
+    for required in (
+        '"--no-build-isolation"',
+        '"--no-deps"',
+        '"hatchling==1.32.0"',
+        "_assert_distribution_absent(source_python",
+        "_assert_direct_sdist_origin(sdist_python",
+        "sys.addaudithook(_audit)",
+        '"socket.__new__"',
+        "socket.getaddrinfo = _deny",
+        "requests.sessions.Session.__init__ = _deny",
+        "subprocess.Popen = _deny",
+        '"confluent_kafka"',
+        '"serializing-producer"',
+        '"os.fork"',
+        '"streamt.cli.helpers"',
+        '"streamt.integrations.openlineage.transport"',
+        '"streamt.deployer"',
+        '"streamt.planner"',
+        '"streamt.providers"',
+        '"streamt.state"',
+        "_assert_public_allowlist",
+        "_assert_secret_neutral",
+        "_assert_artifact_secret_neutral",
+        "_inspect_resource_subtree",
+        "_inspect_wheel(wheel)",
+        "_inspect_sdist(sdist)",
+        "_pip_check(python",
+    ):
+        assert required in source
+
+    assert "pytest.skip" not in source
+    assert "pip install -e" not in source

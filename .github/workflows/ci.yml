@@ -697,6 +697,52 @@ jobs:
           cd /tmp
           /tmp/streamt-postgres-wheel-smoke/bin/python -c 'import psycopg; from streamt.deployer.postgres_state import PostgresStateAdministration; assert psycopg.__version__'
 
+  strimzi-package-parity:
+    name: Strimzi package parity (Python ${{ matrix.python-version }})
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download exact release-candidate distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-distributions-${{ github.run_attempt }}
+          path: dist/
+
+      - name: Verify source, wheel, and direct-sdist Strimzi parity
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wheels=(dist/*.whl)
+          source_distributions=(dist/*.tar.gz)
+          if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "Expected exactly one wheel" >&2
+            exit 1
+          fi
+          if [[ ${#source_distributions[@]} -ne 1 || ! -f "${source_distributions[0]}" ]]; then
+            echo "Expected exactly one source distribution" >&2
+            exit 1
+          fi
+          python tests/package/strimzi_package_smoke.py \
+            --wheel "${wheels[0]}" \
+            --sdist "${source_distributions[0]}" \
+            --source-root "${GITHUB_WORKSPACE}"
+
   datahub-release-oracle:
     name: DataHub 1.7.0 oracle (Python ${{ matrix.python-version }})
     needs: package
