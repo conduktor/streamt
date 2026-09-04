@@ -1,0 +1,19 @@
+Strimzi KafkaTopic CRD attribution and provenance
+
+This distribution contains a compressed, base64-encoded copy of the Strimzi
+KafkaTopic CustomResourceDefinition under the Apache License, Version 2.0.
+
+Upstream project: Strimzi Kafka Operator
+Upstream release: 1.2.0 (released 2026-08-20)
+Upstream commit: 6c7b43c4af0db547c10463ba09d1dfa6f5e156a0
+Source URL: https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/6c7b43c4af0db547c10463ba09d1dfa6f5e156a0/packaging/install/cluster-operator/043-Crd-kafkatopic.yaml
+Source SHA-256: 36390f0731c699448076d4ee739e8b7f331d083e91a7fb71500aaa830ab1127e
+Transformation: The exact source bytes were gzip-compressed with the gzip
+  modification time fixed at zero, then base64-encoded with line wrapping.
+  Base64 decoding and gzip decompression reproduce the source bytes unchanged.
+Retrieval date: 2026-09-03
+License: Apache License, Version 2.0. The adjacent
+  strimzi-1.2.0-LICENSE.txt is an exact copy of the upstream root LICENSE at
+  the pinned commit.
+Upstream NOTICE: The upstream repository has no root NOTICE file at the pinned
+  commit; the immutable raw NOTICE URL returned HTTP 404 on the retrieval date.

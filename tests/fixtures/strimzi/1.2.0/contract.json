@@ -1,0 +1,61 @@
+{
+  "target_release": "1.2.0",
+  "api_version": "kafka.strimzi.io/v1",
+  "kind": "KafkaTopic",
+  "namespace": "payments-prod",
+  "cluster_name": "payments-kafka",
+  "manifest_checksums": {
+    "baseline": "sha256:c332e02e89962298f8bb4a1ac29b964f97e0c38b2192e9986d9b41ba21814b39",
+    "secret_variant": "sha256:c332e02e89962298f8bb4a1ac29b964f97e0c38b2192e9986d9b41ba21814b39",
+    "nonsecret_variant": "sha256:4615cb31a73925015ccab95829e54b8321e121cc57ac38f08e9cb2cdf7771309",
+    "empty": "sha256:c3b994d471b107c34b48064f85c129cbfd0de90f6087ff9ff614166752d70bb0"
+  },
+  "identities": [
+    {
+      "topic_name": "Orders_READY_v1",
+      "topic_name_sha256": "a48756b0f1cc6f4a99afdf5092fd5dd5877abf2f0bb001dcc5d3348d2fb10214",
+      "metadata_name": "streamt-topic-a48756b0f1cc6f4a99afdf5092fd5dd5877abf2f0bb001dcc5d3348d2fb10214",
+      "naming_path": "full_sha256"
+    },
+    {
+      "topic_name": "orders-ready-v1",
+      "topic_name_sha256": "e97ad7095b74ba4a3f86b40183235028166073cbc28bbf5e324746696e1dfe74",
+      "metadata_name": "orders-ready-v1",
+      "naming_path": "direct_dns1123"
+    }
+  ],
+  "counts": {
+    "emitted_topics": 2,
+    "external_topics_omitted": 1,
+    "other_artifacts_omitted": 11
+  },
+  "warnings": [
+    {
+      "code": "W121_STRIMZI_ARTIFACTS_OMITTED",
+      "message": "Non-topic artifacts omitted from Strimzi export",
+      "location": "artifacts/omitted/schemas=1,flink_jobs=2,test_jobs=3,connectors=1,connector_removals=2,gateway_rules=1,gateway_rule_removals=1"
+    },
+    {
+      "code": "W120_STRIMZI_EXTERNAL_TOPIC_OMITTED",
+      "message": "External topic artifact omitted from Strimzi export",
+      "location": "artifacts/topics/1/ownership"
+    }
+  ],
+  "warning_count": 2,
+  "empty_counts": {
+    "emitted_topics": 0,
+    "external_topics_omitted": 0,
+    "other_artifacts_omitted": 0
+  },
+  "empty_warnings": [],
+  "canonical_yaml_sha256": "sha256:f07c9b7951c52e3a56c83bd664c67d867c4013d00b8c11929d483c2bb19dd052",
+  "empty_yaml_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "confidential_input_sentinels": [
+    "fixture-private-token-alpha",
+    "fixture-private-token-beta"
+  ],
+  "omitted_external_public_identities": [
+    "External_Audit_v1",
+    "external_audit"
+  ]
+}

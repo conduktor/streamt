@@ -5,8 +5,9 @@
 Implement the narrow, deterministic boundary in
 [`Strimzi KafkaTopic GitOps export`](../specs/strimzi-kafkatopic-export.md).
 
-Status on 2026-09-03: specification and upstream pins prepared; implementation
-has not started. No current support claim changes.
+Status on 2026-09-04: Slice 0 is complete. The pinned CRD, license, provenance
+notice, reviewed byte fixtures, and wheel/sdist boundary checks are frozen;
+Slice 1 validation work is underway. No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.

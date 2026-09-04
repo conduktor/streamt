@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "project": "empty-project",
+  "compiled_at": "2026-09-03T00:00:00Z",
+  "sources": [],
+  "models": [],
+  "tests": [],
+  "exposures": [],
+  "dag": {
+    "nodes": [],
+    "edges": []
+  },
+  "artifacts": {
+    "schemas": [],
+    "topics": [],
+    "flink_jobs": [],
+    "test_jobs": [],
+    "connectors": [],
+    "gateway_rules": []
+  }
+}

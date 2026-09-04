@@ -1,0 +1,62 @@
+[
+  {
+    "apiVersion": "kafka.strimzi.io/v1",
+    "kind": "KafkaTopic",
+    "metadata": {
+      "name": "streamt-topic-a48756b0f1cc6f4a99afdf5092fd5dd5877abf2f0bb001dcc5d3348d2fb10214",
+      "namespace": "payments-prod",
+      "labels": {
+        "strimzi.io/cluster": "payments-kafka",
+        "app.kubernetes.io/managed-by": "streamt"
+      },
+      "annotations": {
+        "streamt.dev/manifest-checksum": "sha256:c332e02e89962298f8bb4a1ac29b964f97e0c38b2192e9986d9b41ba21814b39",
+        "streamt.dev/owner-name": "orders_source_dlq",
+        "streamt.dev/owner-type": "source",
+        "streamt.dev/ownership-mode": "managed",
+        "streamt.dev/project": "payments-streaming",
+        "streamt.dev/strimzi-release": "1.2.0"
+      }
+    },
+    "spec": {
+      "topicName": "Orders_READY_v1",
+      "partitions": 3,
+      "replicas": 2,
+      "config": {
+        "compression.type": "lz4",
+        "min.insync.replicas": "2",
+        "unclean.leader.election.enable": "true"
+      }
+    }
+  },
+  {
+    "apiVersion": "kafka.strimzi.io/v1",
+    "kind": "KafkaTopic",
+    "metadata": {
+      "name": "orders-ready-v1",
+      "namespace": "payments-prod",
+      "labels": {
+        "strimzi.io/cluster": "payments-kafka",
+        "app.kubernetes.io/managed-by": "streamt"
+      },
+      "annotations": {
+        "streamt.dev/manifest-checksum": "sha256:c332e02e89962298f8bb4a1ac29b964f97e0c38b2192e9986d9b41ba21814b39",
+        "streamt.dev/owner-name": "orders_ready",
+        "streamt.dev/owner-type": "model",
+        "streamt.dev/ownership-mode": "managed",
+        "streamt.dev/project": "payments-streaming",
+        "streamt.dev/strimzi-release": "1.2.0"
+      }
+    },
+    "spec": {
+      "topicName": "orders-ready-v1",
+      "partitions": 6,
+      "replicas": 3,
+      "config": {
+        "cleanup.policy": "compact",
+        "delete.retention.ms": "86400000",
+        "remote.storage.enable": "false"
+      }
+    }
+  }
+]
