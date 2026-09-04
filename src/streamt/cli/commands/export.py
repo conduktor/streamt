@@ -124,6 +124,28 @@ def _destination_state(path: Path) -> tuple[int, int, int] | None:
     return (status.st_dev, status.st_ino, stat.S_IFMT(status.st_mode))
 
 
+def _hold_destination(path: Path, expected: tuple[int, int, int]) -> int:
+    """Hold the sampled inode so an unlink cannot immediately reuse its identity."""
+    flags = (
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        status = os.fstat(descriptor)
+    except OSError:
+        if descriptor >= 0:
+            _close_fd_quietly(descriptor)
+        raise _StrimziCommandError("output_file") from None
+    observed = (status.st_dev, status.st_ino, stat.S_IFMT(status.st_mode))
+    if observed != expected or not stat.S_ISREG(status.st_mode):
+        _close_fd_quietly(descriptor)
+        raise _StrimziCommandError("output_file")
+    return descriptor
+
+
 def _staging_state(path: Path) -> tuple[int, int, int]:
     try:
         status = path.lstat()
@@ -159,11 +181,14 @@ def _atomic_write(path: Path, content: bytes) -> None:
     """Durably replace one regular destination via a private same-dir stage."""
     stage: Path | None = None
     descriptor = -1
+    destination_descriptor = -1
     stream: BinaryIO | None = None
     stage_identity: tuple[int, int, int] | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         initial = _destination_state(path)
+        if initial is not None:
+            destination_descriptor = _hold_destination(path, initial)
         descriptor, stage_name = tempfile.mkstemp(
             prefix=f".{path.name}.streamt-strimzi-",
             suffix=".tmp",
@@ -189,6 +214,9 @@ def _atomic_write(path: Path, content: bytes) -> None:
         current = _destination_state(path)
         if current != initial:
             raise _StrimziCommandError("output_file")
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
+            destination_descriptor = -1
         if _staging_state(stage) != stage_identity:
             raise _StrimziCommandError("output_file")
         os.replace(stage, path)
@@ -198,6 +226,8 @@ def _atomic_write(path: Path, content: bytes) -> None:
             _close_stream_quietly(stream)
         if descriptor >= 0:
             _close_fd_quietly(descriptor)
+        if destination_descriptor >= 0:
+            _close_fd_quietly(destination_descriptor)
         if stage is not None:
             _unlink_quietly(stage)
         raise
