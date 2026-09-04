@@ -460,9 +460,26 @@ mutation. It is test-only and pinned to:
 - Kafka 4.3.1
   `quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a`;
   and
-- `kubectl` v1.35.8, whose official Linux amd64 and arm64 SHA-256 values are
-  respectively `874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf`
-  and `cc749967b62f4422260bc9c0aa7a7c55f45175ae38cb8d95767b5d2b7e04c1fd`.
+- `kubectl` v1.35.8, whose official Linux amd64, Linux arm64, and Darwin arm64
+  SHA-256 values are respectively
+  `874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf`,
+  `cc749967b62f4422260bc9c0aa7a7c55f45175ae38cb8d95767b5d2b7e04c1fd`,
+  and `b8be50ae0c6665b646fb009f904a52cad30806deee19ab3b4fe5af2d68bd82eb`.
+
+The official kind v0.33.0 Darwin arm64 binary used by the reviewed local pilot
+has SHA-256
+`0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f`.
+Host-tool selection and container-image selection are separate: the local
+pilot uses Darwin arm64 kind/kubectl binaries with Linux arm64 image children,
+while the release lane uses Linux amd64 for both. The gate MUST derive the
+image platform from the Docker server, not from the host Python platform.
+
+Locked GitHub release URLs may follow exactly one HTTPS redirect from
+`github.com` to `release-assets.githubusercontent.com`; the signed destination
+query is transport metadata and is not a provenance identity. Every other
+redirect source, target, or count fails. Raw GitHub and `dl.k8s.io` inputs are
+required to remain direct. In every case the bounded downloaded bytes MUST
+match the frozen SHA-256 before use.
 
 The node, operator, and Kafka digests above are immutable multi-platform index
 identities. The gate's image lock MUST additionally freeze, for each supported
@@ -486,6 +503,14 @@ Kubernetes `imageID` representation produced by the pinned node/runtime
 combination; subsequent runs compare exact values from the image lock rather
 than accepting an arbitrary index, child, or config form.
 
+The test-only gate exposes pilot mode only while the selected operator and
+Kafka `imageID` locks are null. A pilot runs the full reconciliation and replay
+flow, proves exact applied image references and CRI content first, records one
+consistent observed ID per image in secret-scanned evidence, cleans up, and
+returns a distinct unsuccessful result. It is discovery evidence, never an
+acceptance pass. Normal mode rejects a null lock before mutation, pilot mode
+rejects an already frozen lock, and the permanent CI lane MUST use normal mode.
+
 The gate has an internal deadline shorter than its CI job timeout so it can run
 bounded evidence capture and exact cleanup/residue checks before failure-only
 artifact staging and upload. Evidence candidates MUST remain outside a fresh
@@ -499,5 +524,8 @@ relies on runner disposal; it MUST NOT be described as a guaranteed trap.
 
 The pinned Strimzi support matrix includes Kubernetes 1.35 and Kafka 4.3.1.
 The test cluster is single-node, KRaft, ephemeral, loopback/internal-only, and
-contains no production data. It validates interoperability; it is not a
-production deployment recommendation.
+contains no production data. Kafka process requests and limits are declared on
+the `KafkaNodePool`, as required by the pinned `v1` schema; Topic Operator
+requests and limits are declared on `Kafka.spec.entityOperator.topicOperator`.
+It validates interoperability; it is not a production deployment
+recommendation.

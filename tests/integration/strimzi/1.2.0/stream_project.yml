@@ -1,0 +1,46 @@
+apiVersion: streamt.dev/v1alpha1
+project:
+  name: strimzi-real-gate
+  version: 1.0.0
+  description: Deterministic Strimzi 1.2.0 real-cluster acceptance fixture
+runtime:
+  kafka:
+    bootstrap_servers: strimzi-runtime-not-contacted.invalid:19092
+    security_protocol: SASL_PLAINTEXT
+    sasl_mechanism: PLAIN
+    sasl_username: strimzi-gate-user
+    sasl_password: STRIMZI_GATE_RUNTIME_PASSWORD_SECRET_91d4
+connections:
+  unused:
+    type: opaque
+    config:
+      password: STRIMZI_GATE_CONNECTION_PASSWORD_SECRET_29af
+      sql: SELECT 'STRIMZI_GATE_SQL_SECRET_36c8' AS private_marker
+deployment_state:
+  backend: postgres
+  namespace: strimzi-real-gate
+  postgres:
+    dsn_env: STREAMT_STRIMZI_GATE_STATE_DSN
+models:
+  - name: hashed-topic-owner
+    materialized: topic
+    topic:
+      name: Orders_READY_v1
+      partitions: 2
+      replication_factor: 1
+      config:
+        compression.type: lz4
+        min.insync.replicas: 1
+        unclean.leader.election.enable: true
+  - name: direct-topic-owner
+    materialized: topic
+    tags:
+      - STRIMZI_GATE_TAG_SECRET_d84a
+    topic:
+      name: orders-ready-v1
+      partitions: 3
+      replication_factor: 1
+      config:
+        cleanup.policy: compact
+        delete.retention.ms: 86400000
+        remote.storage.enable: false

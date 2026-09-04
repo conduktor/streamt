@@ -1,0 +1,363 @@
+{
+  "schema_version": 1,
+  "document_count": 27,
+  "empty_document_count": 1,
+  "document_inventory": [
+    {
+      "index": 0,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator"
+    },
+    {
+      "index": 1,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-watched"
+    },
+    {
+      "index": 2,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkaconnects.kafka.strimzi.io"
+    },
+    {
+      "index": 3,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "strimzipodsets.core.strimzi.io"
+    },
+    {
+      "index": 4,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-entity-operator"
+    },
+    {
+      "index": 5,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-kafka-broker"
+    },
+    {
+      "index": 6,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-cluster-operator-watched"
+    },
+    {
+      "index": 7,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-entity-operator-delegation"
+    },
+    {
+      "index": 8,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkas.kafka.strimzi.io"
+    },
+    {
+      "index": 9,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-cluster-operator-global"
+    },
+    {
+      "index": 10,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator-kafka-broker-delegation"
+    },
+    {
+      "index": 11,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator"
+    },
+    {
+      "index": 12,
+      "api_version": "v1",
+      "kind": "ServiceAccount",
+      "name": "strimzi-cluster-operator"
+    },
+    {
+      "index": 13,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkarebalances.kafka.strimzi.io"
+    },
+    {
+      "index": 14,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkanodepools.kafka.strimzi.io"
+    },
+    {
+      "index": 15,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkatopics.kafka.strimzi.io"
+    },
+    {
+      "index": 16,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator-kafka-client-delegation"
+    },
+    {
+      "index": 17,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-kafka-client"
+    },
+    {
+      "index": 18,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-cluster-operator-namespaced"
+    },
+    {
+      "index": 19,
+      "api_version": "apps/v1",
+      "kind": "Deployment",
+      "name": "strimzi-cluster-operator"
+    },
+    {
+      "index": 20,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkamirrormaker2s.kafka.strimzi.io"
+    },
+    {
+      "index": 21,
+      "api_version": "v1",
+      "kind": "ConfigMap",
+      "name": "strimzi-cluster-operator"
+    },
+    {
+      "index": 22,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-leader-election"
+    },
+    {
+      "index": 23,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkabridges.kafka.strimzi.io"
+    },
+    {
+      "index": 24,
+      "api_version": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "name": "strimzi-cluster-operator-leader-election"
+    },
+    {
+      "index": 25,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkaconnectors.kafka.strimzi.io"
+    },
+    {
+      "index": 26,
+      "api_version": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "name": "kafkausers.kafka.strimzi.io"
+    }
+  ],
+  "deployment_image": {
+    "document_index": 19,
+    "container_name": "strimzi-cluster-operator",
+    "path": "/spec/template/spec/containers/0/image",
+    "source_value": "quay.io/strimzi/operator:1.2.0",
+    "source_sha256": "1ddbce7cbcd6b73926754170925c995a919f292ed3c432bd025875d29a51286e",
+    "rewrite_image": "operator",
+    "image_pull_policy_path": "/spec/template/spec/containers/0/imagePullPolicy",
+    "image_pull_policy_source": null,
+    "image_pull_policy_value": "Never"
+  },
+  "image_environment": {
+    "document_index": 19,
+    "container_name": "strimzi-cluster-operator",
+    "path": "/spec/template/spec/containers/0/env",
+    "classified_source_count": 12,
+    "rewrite_operator": [
+      {
+        "name": "STRIMZI_DEFAULT_TOPIC_OPERATOR_IMAGE",
+        "source_sha256": "1ddbce7cbcd6b73926754170925c995a919f292ed3c432bd025875d29a51286e"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_USER_OPERATOR_IMAGE",
+        "source_sha256": "1ddbce7cbcd6b73926754170925c995a919f292ed3c432bd025875d29a51286e"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_KAFKA_INIT_IMAGE",
+        "source_sha256": "1ddbce7cbcd6b73926754170925c995a919f292ed3c432bd025875d29a51286e"
+      }
+    ],
+    "rewrite_kafka": [
+      {
+        "name": "STRIMZI_DEFAULT_KAFKA_EXPORTER_IMAGE",
+        "source_sha256": "2ab6a1f77de941dc5237ccea5d44774b1d082bee7c62c9b5dd72f623f90606bf"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_CRUISE_CONTROL_IMAGE",
+        "source_sha256": "2ab6a1f77de941dc5237ccea5d44774b1d082bee7c62c9b5dd72f623f90606bf"
+      }
+    ],
+    "rewrite_kafka_version_maps": [
+      {
+        "name": "STRIMZI_KAFKA_IMAGES",
+        "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
+        "value_prefix": "4.3.1="
+      },
+      {
+        "name": "STRIMZI_KAFKA_CONNECT_IMAGES",
+        "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
+        "value_prefix": "4.3.1="
+      },
+      {
+        "name": "STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES",
+        "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
+        "value_prefix": "4.3.1="
+      }
+    ],
+    "remove": [
+      {
+        "name": "STRIMZI_DEFAULT_KAFKA_BRIDGE_IMAGE",
+        "source_sha256": "6a66766bdf3d22bcbb7a892fecbe67ff885868f85220c1a371688a26862b6372"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_KANIKO_EXECUTOR_IMAGE",
+        "source_sha256": "f84174bdc7b0c22cd21c7c6074a96555be843aa205cfe7d01085cb125abf34b2"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_BUILDAH_IMAGE",
+        "source_sha256": "18ce37c2a5f579ac2ba499849220c1678f27a7501404612feb77299e4f1f5236"
+      },
+      {
+        "name": "STRIMZI_DEFAULT_MAVEN_BUILDER",
+        "source_sha256": "570a0314822662c8ae8120e35312f9c6c9db76986a36a67d42ef711d189b37a8"
+      }
+    ],
+    "add": {
+      "name": "STRIMZI_IMAGE_PULL_POLICY",
+      "source_count": 0,
+      "value": "Never"
+    }
+  },
+  "metadata_namespace_targets": [
+    {
+      "document_index": 1,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-watched",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 7,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-entity-operator-delegation",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 11,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 12,
+      "kind": "ServiceAccount",
+      "name": "strimzi-cluster-operator",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 19,
+      "kind": "Deployment",
+      "name": "strimzi-cluster-operator",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 21,
+      "kind": "ConfigMap",
+      "name": "strimzi-cluster-operator",
+      "path": "/metadata/namespace"
+    },
+    {
+      "document_index": 22,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-leader-election",
+      "path": "/metadata/namespace"
+    }
+  ],
+  "subject_namespace_targets": [
+    {
+      "document_index": 0,
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 1,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-watched",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 7,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-entity-operator-delegation",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 10,
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator-kafka-broker-delegation",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 11,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 16,
+      "kind": "ClusterRoleBinding",
+      "name": "strimzi-cluster-operator-kafka-client-delegation",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    },
+    {
+      "document_index": 22,
+      "kind": "RoleBinding",
+      "name": "strimzi-cluster-operator-leader-election",
+      "path": "/subjects/0/namespace",
+      "source_value": "myproject"
+    }
+  ],
+  "forbidden_fixture_resources": {
+    "kinds": [
+      "KafkaBridge",
+      "KafkaConnect",
+      "KafkaConnector",
+      "KafkaMirrorMaker",
+      "KafkaMirrorMaker2",
+      "KafkaRebalance",
+      "KafkaUser"
+    ],
+    "kafka_spec_fields": [
+      "cruiseControl",
+      "kafkaExporter"
+    ],
+    "entity_operator_fields": [
+      "userOperator"
+    ]
+  }
+}

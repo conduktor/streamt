@@ -337,7 +337,9 @@ production code from the checkout.
   `aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d`
   for amd64 and
   `20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2`
-  for arm64;
+  for arm64; the reviewed local pilot instead uses the official Darwin arm64
+  binary with SHA-256
+  `0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f`;
 - Kubernetes `v1.35.8` node image at
   `kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0`;
 - pinned upstream fixture inputs from commit
@@ -354,6 +356,13 @@ production code from the checkout.
   `quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a`;
   and
 - exact `kubectl` v1.35.8 binary/checksum selected by runner architecture.
+
+`images.lock.json` freezes Linux amd64, Linux arm64, and Darwin arm64 host-tool
+downloads. The first two serve release runners; Darwin arm64 serves the local
+pilot and uses the exact kubectl digest recorded in the specification. Host
+tools are selected from the host OS/architecture, while image children are
+selected independently from Docker server `OSType` and `Architecture`; an
+unsupported or inconsistent pair fails closed.
 
 The three image references above are multi-platform index pins and remain the
 provenance roots. `images.lock.json` also freezes the Linux amd64 and arm64
@@ -413,17 +422,22 @@ Deployment's own `imagePullPolicy` MUST also be `Never`. The Kafka test fixture
 is a reviewed one-node, dual-role KRaft derivative of the pinned Strimzi
 single-node example, uses ephemeral storage and an internal plaintext listener,
 enables only the Topic Operator, and contains explicit CPU/memory requests and
-limits.
+limits. Kafka process resources are set on `KafkaNodePool.spec.resources`, not
+the schema-invalid `Kafka.spec.kafka.resources`; Topic Operator resources are
+set on `Kafka.spec.entityOperator.topicOperator.resources`.
 
 ### Isolation and execution
 
 1. Use unique, validated names for the kind cluster, Docker network, namespace,
    Kafka cluster, temp directory, and kubeconfig. Kubeconfig permissions are
    `0600`; its contents are never logged or uploaded.
-2. Download and verify all tools and assets and pull the kind node index plus
-   the selected-platform operator and Kafka child manifests by exact digest
-   while runner egress is still available. Verify the local index-to-child and
-   child-to-config chains against `images.lock.json`. Install the
+2. Download and verify all tools and assets and pull the selected-platform kind
+   node, operator, and Kafka child manifests by exact digest while runner egress
+   is still available. Verify every frozen index-to-child relationship and each
+   local child-to-config identity against `images.lock.json`. A locked GitHub
+   release URL may follow exactly one HTTPS redirect from `github.com` to
+   `release-assets.githubusercontent.com`; all other redirect behavior fails
+   closed. Raw GitHub and `dl.k8s.io` URLs remain direct. Install the
    supplied wheel in a clean location outside the checkout, generate canonical
    YAML twice before creating any Docker network or cluster, and prove exact
    bytes under the offline exporter guards.
@@ -464,6 +478,12 @@ limits.
    frozen values. It MUST NOT accept an arbitrary index, child-manifest, or
    config-digest form. This check is scoped to Strimzi workloads; Kubernetes
    system images are inherited from the pinned kind node image.
+   Pilot mode is explicit and allowed only while both selected runtime-ID locks
+   are null. It completes the same read-back and replay flow, writes one
+   consistent observed ID per exact image reference to bounded secret-scanned
+   evidence, cleans up, and exits with a distinct unsuccessful status. Normal
+   mode fails before mutation on a null lock; pilot mode fails on frozen locks;
+   permanent CI never passes `--pilot`.
 8. For both the direct and hashed identities, require the exact namespace,
    metadata name, cluster label, annotations, spec, `status.topicName`, nonempty
    `status.topicId`, `status.observedGeneration == metadata.generation`, and a

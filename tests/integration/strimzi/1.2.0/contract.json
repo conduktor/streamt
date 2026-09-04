@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "target_release": "1.2.0",
+  "api_version": "kafka.strimzi.io/v1",
+  "kind": "KafkaTopic",
+  "placeholders": {
+    "namespace": {
+      "value": "streamt-strimzi-namespace-placeholder",
+      "file": "kafka.yaml",
+      "occurrences": 2,
+      "replacement_pattern": "^st-[a-z0-9]{12}$"
+    },
+    "kafka_cluster": {
+      "value": "streamt-strimzi-cluster-placeholder",
+      "file": "kafka.yaml",
+      "occurrences": 2,
+      "replacement_pattern": "^sk-[a-z0-9]{12}$"
+    },
+    "kind_cluster_pattern": "^streamt-strimzi-[a-z0-9]{12}-kind$",
+    "docker_network_pattern": "^streamt-strimzi-[a-z0-9]{12}-net$"
+  },
+  "export": {
+    "project_name": "strimzi-real-gate",
+    "manifest_checksum": "sha256:589e61b12ea586cf0db22870eeed5ed3b6ee35fad7e0df042b769b0c55ae1c56",
+    "topic_count": 2,
+    "warnings": [],
+    "counts": {
+      "emitted_topics": 2,
+      "external_topics_omitted": 0,
+      "other_artifacts_omitted": 0
+    },
+    "topics": [
+      {
+        "topic_name": "Orders_READY_v1",
+        "topic_name_sha256": "a48756b0f1cc6f4a99afdf5092fd5dd5877abf2f0bb001dcc5d3348d2fb10214",
+        "metadata_name": "streamt-topic-a48756b0f1cc6f4a99afdf5092fd5dd5877abf2f0bb001dcc5d3348d2fb10214",
+        "owner_name": "hashed-topic-owner",
+        "owner_type": "model",
+        "partitions": 2,
+        "replicas": 1,
+        "config": {
+          "compression.type": "lz4",
+          "min.insync.replicas": "1",
+          "unclean.leader.election.enable": "true"
+        }
+      },
+      {
+        "topic_name": "orders-ready-v1",
+        "topic_name_sha256": "e97ad7095b74ba4a3f86b40183235028166073cbc28bbf5e324746696e1dfe74",
+        "metadata_name": "orders-ready-v1",
+        "owner_name": "direct-topic-owner",
+        "owner_type": "model",
+        "partitions": 3,
+        "replicas": 1,
+        "config": {
+          "cleanup.policy": "compact",
+          "delete.retention.ms": "86400000",
+          "remote.storage.enable": "false"
+        }
+      }
+    ]
+  },
+  "confidential_input_sentinels": [
+    "strimzi-runtime-not-contacted.invalid:19092",
+    "STRIMZI_GATE_RUNTIME_PASSWORD_SECRET_91d4",
+    "STRIMZI_GATE_CONNECTION_PASSWORD_SECRET_29af",
+    "STRIMZI_GATE_SQL_SECRET_36c8",
+    "STRIMZI_GATE_TAG_SECRET_d84a",
+    "postgresql://STRIMZI_GATE_STATE_PASSWORD_SECRET_663b@state-not-contacted.invalid/streamt"
+  ],
+  "environment_sentinels": {
+    "STREAMT_STRIMZI_GATE_STATE_DSN": "postgresql://STRIMZI_GATE_STATE_PASSWORD_SECRET_663b@state-not-contacted.invalid/streamt"
+  }
+}
