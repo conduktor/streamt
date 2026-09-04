@@ -1477,9 +1477,43 @@ def test_ctr_image_load_delta_rejects_every_partial_or_ambiguous_shape(mutation:
 
 @pytest.mark.parametrize(
     "output",
-    [b"a\na\n", b"a\n\n", b" a\n", b"a\r\n", b"\xff\n"],
+    [
+        b"a\na\n",
+        b"a\n\n",
+        b" a\n",
+        b"a\r\n",
+        b"\xff\n",
+        b"name\x00escape\n",
+        b"name\vother\n",
+        b"name\fother\n",
+        b"name\x1cother\n",
+        b"name\x1dother\n",
+        b"name\x1eother\n",
+        b"name\x1b[31m\n",
+        b"name\tvalue\n",
+        b"https://registry.invalid/image:tag\n",
+        b"user:password@registry.invalid/image\n",
+        b"registry.invalid/image?query\n",
+        b"registry.invalid/image#fragment\n",
+        b"registry.invalid\\image:tag\n",
+        b"registry.invalid/image@latest\n",
+        b"a" * 513 + b"\n",
+    ],
 )
 def test_ctr_q_inventory_parser_rejects_ambiguous_bytes(output: bytes) -> None:
+    with pytest.raises(gate.GateError):
+        gate._parse_ctr_image_names(output)
+
+
+def test_ctr_q_inventory_parser_keeps_unexpected_safe_references_for_diagnosis() -> None:
+    digest = "sha256:" + "a" * 64
+    assert gate._parse_ctr_image_names(
+        f"unexpected.registry/example/image:tag\n{digest}\n".encode()
+    ) == frozenset({"unexpected.registry/example/image:tag", digest})
+
+
+def test_ctr_q_inventory_parser_enforces_reference_count_bound() -> None:
+    output = "".join(f"registry.invalid/image-{index}:tag\n" for index in range(4_097)).encode()
     with pytest.raises(gate.GateError):
         gate._parse_ctr_image_names(output)
 
@@ -1627,9 +1661,7 @@ def test_cri_mapping_accepts_only_normalized_target_only_records() -> None:
         elif mutation == "extra-digest":
             operator["repoDigests"].append("quay.io/strimzi/operator@sha256:" + "f" * 64)
         elif mutation == "desktop-aliases":
-            operator["repoDigests"] = _desktop_cri_inventory(images)["images"][0][
-                "repoDigests"
-            ]
+            operator["repoDigests"] = _desktop_cri_inventory(images)["images"][0]["repoDigests"]
         elif mutation == "docker-alias":
             operator["repoDigests"] = [f"docker.io/{images.operator_child_reference}"]
         elif mutation == "index-ref":
@@ -1704,9 +1736,7 @@ def test_workload_status_image_rejects_every_unreviewed_backend_form(
         status["image"] = None
 
     validate = (
-        gate._validate_workload_images
-        if consumer == "normal"
-        else gate._collect_pilot_image_ids
+        gate._validate_workload_images if consumer == "normal" else gate._collect_pilot_image_ids
     )
     with pytest.raises(gate.GateError):
         validate(pods, images)
@@ -1753,9 +1783,7 @@ def test_raw_kubectl_collections_normalize_only_after_exact_identity_validation(
     assert normalized["items"] == raw["items"]
 
     services = _internal_services("sk-123456789abc")
-    assert len(
-        gate._kubectl_collection_items(services, item_kind="Service", code="test")
-    ) == 2
+    assert len(gate._kubectl_collection_items(services, item_kind="Service", code="test")) == 2
 
 
 @pytest.mark.parametrize(
@@ -2710,9 +2738,7 @@ def test_operator_rewriter_checks_each_class_source_hash_before_rewriting(
 def test_source_kafka_version_map_parser_rejects_noncanonical_formatting() -> None:
     documents = _operator_documents()
     environment = _container(_deployment(documents))["env"]
-    value = next(item for item in environment if item["name"] == "STRIMZI_KAFKA_IMAGES")[
-        "value"
-    ]
+    value = next(item for item in environment if item["name"] == "STRIMZI_KAFKA_IMAGES")["value"]
     gate._validate_source_kafka_version_map(value)
     for changed in (
         value.removesuffix("\n"),
@@ -4180,11 +4206,15 @@ def test_cluster_evidence_capture_is_exact_bounded_and_broker_complete(
     def runner(command: list[str], **kwargs: Any) -> Any:
         commands.append(tuple(command))
         bounds.append((kwargs["timeout_seconds"], kwargs["max_output_bytes"]))
+        if "ctr" in command:
+            return gate.ProcessResult(0, b"quay.io/z\nquay.io/a\n", b"")
         return gate.ProcessResult(0, b"bounded evidence\n", b"")
 
     captured, rejected = gate._capture_cluster_evidence(
         candidate=candidate,
         confidential=contract.confidential_sentinels,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
         kubectl=Path("/locked/kubectl"),
         kubeconfig=kubeconfig,
         namespace="st-123456789abc",
@@ -4199,9 +4229,10 @@ def test_cluster_evidence_capture_is_exact_bounded_and_broker_complete(
     )
 
     assert rejected is False
-    assert len(commands) == 9 + 2 * len(contract.topics)
+    assert len(commands) == 10 + 2 * len(contract.topics)
     assert len(captured) == len(commands) + 1
     assert set(captured) == {
+        "ctr-images.txt",
         "kubernetes-version.json",
         "kafkatopic-crd.json",
         "kafkatopic-crd-sha256.json",
@@ -4217,15 +4248,132 @@ def test_cluster_evidence_capture_is_exact_bounded_and_broker_complete(
         "broker-1-describe.txt",
         "broker-1-configs.txt",
     }
+    assert commands[0] == gate._ctr_images_list_command(
+        Path("/locked/docker"),
+        "streamt-strimzi-123456789abc-kind-control-plane",
+    )
+    assert (candidate / "ctr-images.txt").read_bytes() == b"quay.io/a\nquay.io/z\n"
     assert bounds == [(5, 512 * 1024)] * len(commands)
     for index, topic in enumerate(contract.topics):
-        describe = commands[9 + index * 2]
-        configs = commands[10 + index * 2]
+        describe = commands[10 + index * 2]
+        configs = commands[11 + index * 2]
         assert describe[-3:] == ("--describe", "--topic", topic.topic_name)
         assert configs[-3:] == ("--entity-name", topic.topic_name, "--describe")
         assert "localhost:9092" in describe
         assert "localhost:9092" in configs
     assert not any("private kubeconfig" in path.read_text() for path in candidate.iterdir())
+
+
+def test_ctr_inventory_capture_survives_absent_node_and_kubeconfig(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    commands: list[tuple[str, ...]] = []
+
+    def runner(command: list[str], **kwargs: Any) -> Any:
+        commands.append(tuple(command))
+        assert kwargs["timeout_seconds"] == 5
+        assert kwargs["max_output_bytes"] == 512 * 1024
+        return gate.ProcessResult(1, b"untrusted stdout", b"untrusted stderr")
+
+    captured, rejected = gate._capture_cluster_evidence(
+        candidate=candidate,
+        confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
+        kubectl=Path("/locked/kubectl"),
+        kubeconfig=tmp_path / "missing-kubeconfig",
+        namespace="st-123456789abc",
+        cluster_name="sk-123456789abc",
+        broker_pod=None,
+        topics=(),
+        cwd=tmp_path,
+        environment={"PATH": "/locked"},
+        deadline=30,
+        runner=runner,
+        monotonic=lambda: 0,
+    )
+
+    assert commands == [
+        gate._ctr_images_list_command(
+            Path("/locked/docker"),
+            "streamt-strimzi-123456789abc-kind-control-plane",
+        )
+    ]
+    assert captured == ("ctr-images.txt",)
+    assert rejected is False
+    assert (candidate / "ctr-images.txt").read_bytes() == (
+        b'{"returncode":1,"status":"capture-failed"}\n'
+    )
+    assert b"untrusted" not in (candidate / "ctr-images.txt").read_bytes()
+
+
+def test_ctr_inventory_capture_neutralizes_success_with_stderr(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+
+    def runner(_command: list[str], **_kwargs: Any) -> Any:
+        return gate.ProcessResult(
+            0,
+            b"quay.io/strimzi/operator@sha256:" + b"a" * 64 + b"\n",
+            b"untrusted warning",
+        )
+
+    captured, rejected = gate._capture_cluster_evidence(
+        candidate=candidate,
+        confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
+        kubectl=Path("/locked/kubectl"),
+        kubeconfig=tmp_path / "missing-kubeconfig",
+        namespace="st-123456789abc",
+        cluster_name="sk-123456789abc",
+        broker_pod=None,
+        topics=(),
+        cwd=tmp_path,
+        environment={"PATH": "/locked"},
+        deadline=30,
+        runner=runner,
+        monotonic=lambda: 0,
+    )
+
+    assert captured == ("ctr-images.txt",)
+    assert rejected is False
+    assert (candidate / "ctr-images.txt").read_bytes() == (
+        b'{"returncode":0,"status":"capture-failed"}\n'
+    )
+
+
+def test_unsafe_ctr_inventory_capture_forces_marker_only_staging(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    upload = tmp_path / "upload"
+    candidate.mkdir()
+
+    def runner(_command: list[str], **_kwargs: Any) -> Any:
+        return gate.ProcessResult(0, b"safe\x1b[31munsafe\n", b"")
+
+    captured, rejected = gate._capture_cluster_evidence(
+        candidate=candidate,
+        confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
+        kubectl=Path("/locked/kubectl"),
+        kubeconfig=tmp_path / "missing-kubeconfig",
+        namespace="st-123456789abc",
+        cluster_name="sk-123456789abc",
+        broker_pod=None,
+        topics=(),
+        cwd=tmp_path,
+        environment={"PATH": "/locked"},
+        deadline=30,
+        runner=runner,
+        monotonic=lambda: 0,
+    )
+
+    assert captured == ()
+    assert rejected is True
+    with pytest.raises(gate.GateError):
+        gate._scan_and_stage_evidence(candidate, upload, ())
+    _assert_marker_only(upload)
 
 
 @pytest.mark.parametrize(
@@ -4260,19 +4408,23 @@ def test_ordinary_capture_failure_stages_only_neutral_placeholder_and_summary(
     def runner(_command: list[str], **_kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
-        if calls == 2 and failure == "nonzero":
+        if calls == 1:
+            return gate.ProcessResult(0, b"sha256:" + b"a" * 64 + b"\n", b"")
+        if calls == 3 and failure == "nonzero":
             return gate.ProcessResult(
                 7,
                 b"CONFIDENTIAL_SENTINEL raw stdout",
                 b"CONFIDENTIAL_SENTINEL raw stderr",
             )
-        if calls == 2 and failure == "exception":
+        if calls == 3 and failure == "exception":
             raise RuntimeError("CONFIDENTIAL_SENTINEL raw exception")
         return gate.ProcessResult(0, b"bounded evidence\n", b"")
 
     captured, rejected = gate._capture_cluster_evidence(
         candidate=candidate,
         confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
         kubectl=Path("/locked/kubectl"),
         kubeconfig=kubeconfig,
         namespace="st-123456789abc",
@@ -4286,7 +4438,7 @@ def test_ordinary_capture_failure_stages_only_neutral_placeholder_and_summary(
         monotonic=lambda: 0,
     )
 
-    assert calls == 9 + 2 * len(contract.topics)
+    assert calls == 10 + 2 * len(contract.topics)
     assert rejected is False
     assert failure_name in captured
     assert (candidate / failure_name).read_bytes() == failure_payload
@@ -4327,7 +4479,7 @@ def test_capture_deadline_incompleteness_forces_marker_only_staging(
     def runner(_command: list[str], **_kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
-        return gate.ProcessResult(0, b"bounded evidence\n", b"")
+        return gate.ProcessResult(0, b"sha256:" + b"a" * 64 + b"\n", b"")
 
     def monotonic() -> float:
         nonlocal monotonic_calls
@@ -4337,6 +4489,8 @@ def test_capture_deadline_incompleteness_forces_marker_only_staging(
     captured, rejected = gate._capture_cluster_evidence(
         candidate=candidate,
         confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
         kubectl=Path("/locked/kubectl"),
         kubeconfig=kubeconfig,
         namespace="st-123456789abc",
@@ -4381,12 +4535,16 @@ def test_capture_evidence_safety_failure_forces_marker_only_staging(
         monkeypatch.setattr(gate, "_evidence_write", failed_write)
 
     def runner(_command: list[str], **_kwargs: Any) -> Any:
-        payload = b"CONFIDENTIAL_SENTINEL" if failure == "secret" else b"bounded evidence\n"
+        payload = (
+            b"CONFIDENTIAL_SENTINEL" if failure == "secret" else b"sha256:" + b"a" * 64 + b"\n"
+        )
         return gate.ProcessResult(0, payload, b"")
 
     captured, rejected = gate._capture_cluster_evidence(
         candidate=candidate,
         confidential=_SAFE_SENTINELS,
+        docker=Path("/locked/docker"),
+        node_name="streamt-strimzi-123456789abc-kind-control-plane",
         kubectl=Path("/locked/kubectl"),
         kubeconfig=kubeconfig,
         namespace="st-123456789abc",
@@ -4954,8 +5112,7 @@ def _install_lifecycle_fakes(
             if use_desktop:
                 outer_source = (
                     import_pairs[images.operator_child_reference].outer_source
-                    if failure == "ctr-pair-overlap"
-                    and reference == images.kafka_child_reference
+                    if failure == "ctr-pair-overlap" and reference == images.kafka_child_reference
                     else pair.outer_source
                 )
                 ctr_names.update({pair.child_source, outer_source, config})
@@ -5066,10 +5223,10 @@ def _install_lifecycle_fakes(
             route_inventories += 1
             family = encoded[4]
             events.append(f"route-inventory-{family}")
-            drift = failure == "route-drift" or (
-                failure == "late-route-drift" and route_inventories > 4
-            ) or (
-                failure == "restart-route-drift" and route_inventories in {3, 4}
+            drift = (
+                failure == "route-drift"
+                or (failure == "late-route-drift" and route_inventories > 4)
+                or (failure == "restart-route-drift" and route_inventories in {3, 4})
             )
             return gate.ProcessResult(
                 0,
@@ -5261,6 +5418,7 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
         "ctr-list",
         "ctr-list",
         "cri-final",
+        "ctr-list",
     ]
     assert harness["events"].index("route-delete") == harness["events"].index("kind-create") + 1
     first_ipv4 = harness["events"].index("route-inventory--4")
@@ -5280,9 +5438,7 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
     assert harness["events"].count("route-inventory--4") == 3
     assert harness["events"].count("route-inventory--6") == 3
     ipv4_indexes = [
-        index
-        for index, event in enumerate(harness["events"])
-        if event == "route-inventory--4"
+        index for index, event in enumerate(harness["events"]) if event == "route-inventory--4"
     ]
     assert ipv4_indexes[1] < harness["events"].index("evidence:topic-replay.json")
     assert ipv4_indexes[2] > harness["events"].index("evidence:topic-replay.json")
@@ -5415,7 +5571,7 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
             f"{harness['prefix']}-kind-control-plane",
             _ctr_import_key(images.kafka_child_reference),
             images.kafka_child_reference,
-        )
+        ),
     ]
     assert route_delete_index < min(initial_route_indexes)
     assert max(initial_route_indexes) < egress_index < first_strimzi_apply
@@ -5445,8 +5601,7 @@ def test_classic_lifecycle_never_tags_removes_or_restarts_containerd(
         == 0
     )
     assert not any(
-        event.startswith(("ctr-content:", "ctr-tag:", "ctr-rm:"))
-        for event in harness["events"]
+        event.startswith(("ctr-content:", "ctr-tag:", "ctr-rm:")) for event in harness["events"]
     )
     assert "containerd-restart" not in harness["events"]
     assert harness["events"].count("route-inventory--4") == 2
@@ -5545,6 +5700,7 @@ def test_lifecycle_failure_still_captures_cleans_and_stages_safe_evidence(
     summary = json.loads((arguments.evidence_upload / "summary.json").read_bytes())
     assert summary["status"] == "failed"
     assert summary["failure_code"] == failure_code
+    assert (arguments.evidence_upload / "ctr-images.txt").is_file()
     upload_bytes = b"".join(path.read_bytes() for path in arguments.evidence_upload.iterdir())
     assert b"CONFIDENTIAL_INTERNAL_FAILURE" not in upload_bytes
 
@@ -5711,18 +5867,14 @@ def test_main_contains_expected_and_unexpected_lifecycle_failures(
 
 def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -> None:
     workflow_path = _ROOT / ".github" / "workflows" / "ci.yml"
-    workflow = yaml.load(
-        workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
-    )
+    workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert workflow["on"] == {
         "push": {"branches": ["main"]},
         "pull_request": {"branches": ["main"]},
         "workflow_dispatch": {
             "inputs": {
                 "strimzi_amd64_pilot": {
-                    "description": (
-                        "Run the temporary non-acceptance Strimzi amd64 imageID pilot"
-                    ),
+                    "description": ("Run the temporary non-acceptance Strimzi amd64 imageID pilot"),
                     "required": "true",
                     "default": "false",
                     "type": "boolean",
@@ -5733,12 +5885,10 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
 
     job = workflow["jobs"]["strimzi-amd64-pilot"]
     assert job["name"] == (
-        "TEMPORARY NON-ACCEPTANCE - Strimzi 1.2.0 amd64 imageID pilot "
-        "(expected red)"
+        "TEMPORARY NON-ACCEPTANCE - Strimzi 1.2.0 amd64 imageID pilot (expected red)"
     )
     assert job["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && "
-        "inputs.strimzi_amd64_pilot == true }}"
+        "${{ github.event_name == 'workflow_dispatch' && inputs.strimzi_amd64_pilot == true }}"
     )
     assert job["needs"] == ["package", "strimzi-package-parity"]
     assert job["runs-on"] == "ubuntu-24.04"
@@ -5748,18 +5898,12 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
 
     steps = job["steps"]
     checkout = next(step for step in steps if step["name"] == "Checkout")
-    assert checkout["uses"] == (
-        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
-    )
+    assert checkout["uses"] == ("actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803")
     setup = next(step for step in steps if step["name"] == "Setup Python")
-    assert setup["uses"] == (
-        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
-    )
+    assert setup["uses"] == ("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1")
     assert setup["with"] == {"python-version": "3.12"}
     download = next(
-        step
-        for step in steps
-        if step["name"] == "Download exact release-candidate distributions"
+        step for step in steps if step["name"] == "Download exact release-candidate distributions"
     )
     assert download["uses"] == (
         "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
@@ -5769,23 +5913,18 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
         "path": "${{ runner.temp }}/streamt-strimzi-wheel",
     }
 
-    self_test = next(
-        step for step in steps if step["name"] == "Self-test standalone gate"
-    )
+    self_test = next(step for step in steps if step["name"] == "Self-test standalone gate")
     assert self_test["run"] == (
         "env -u PYTHONPATH python -I tests/integration/strimzi_gate.py --self-test"
     )
-    install = next(
-        step for step in steps if step["name"] == "Install standalone gate dependency"
-    )
+    install = next(step for step in steps if step["name"] == "Install standalone gate dependency")
     assert install["run"] == (
         "python -m pip install --disable-pip-version-check --no-input 'PyYAML==6.0.3'"
     )
     pilot = next(
         step
         for step in steps
-        if step["name"]
-        == "Run amd64 pilot, validate staged evidence, and remain deliberately red"
+        if step["name"] == "Run amd64 pilot, validate staged evidence, and remain deliberately red"
     )
     assert pilot["shell"] == "bash"
     script = pilot["run"]
@@ -5799,7 +5938,7 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     assert '--wheel "${wheel}"' in script
     assert "if (( pilot_status != 2 )); then" in script
     assert "Expected pilot exit 2" in script
-    assert 'summary != expected_summary' in script
+    assert "summary != expected_summary" in script
     assert '"status": "pilot-pending"' in script
     assert '"platform": "linux/amd64"' in script
     assert '"pilot-image-ids.json"' in script
@@ -5809,21 +5948,16 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     assert "continue-on-error" not in pilot
 
     uploads = [
-        step
-        for step in steps
-        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        step for step in steps if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
     assert len(uploads) == 1
     upload = uploads[0]
     assert upload["name"] == "Upload only scanned amd64 pilot evidence"
     assert upload["if"] == "failure()"
-    assert upload["uses"] == (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-    )
+    assert upload["uses"] == ("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
     assert upload["with"] == {
         "name": (
-            "strimzi-1.2.0-amd64-pilot-evidence-"
-            "${{ github.run_id }}-${{ github.run_attempt }}"
+            "strimzi-1.2.0-amd64-pilot-evidence-${{ github.run_id }}-${{ github.run_attempt }}"
         ),
         "path": (
             "${{ runner.temp }}/streamt-strimzi-evidence-upload-"

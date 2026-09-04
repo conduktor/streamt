@@ -574,9 +574,19 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
 
 On success, ordinary failure, and internal timeout, the orchestrator first
 captures bounded, secret-scanned artifacts: Kubernetes version and node image,
-CRD digest, operator Deployment/Pod descriptions, operator and Topic Operator
-logs, Kafka/NodePool/Topic JSON, events, broker descriptions/configs, generated
-YAML checksums, and poll timeline. Kubeconfig, Secrets, service-account tokens,
+the canonical sorted node containerd image-reference inventory from exact
+`ctr --namespace=k8s.io images list -q`, CRD digest, operator Deployment/Pod
+descriptions, operator and Topic Operator logs, Kafka/NodePool/Topic JSON,
+events, broker descriptions/configs, generated YAML checksums, and poll
+timeline. `ctr-images.txt` is attempted even when the node or kubeconfig is
+absent. Its closed transform permits at most 4,096 LF-delimited, 512-byte
+printable-ASCII references, rejects control/URI/credential/query/fragment/
+backslash forms, requires an exact lowercase SHA-256 after every `@`, and sorts
+the retained lines. Safe unexpected references remain useful diagnostics. A
+nonzero result or zero result with stderr produces only the fixed neutral
+placeholder. Unsafe parsing, a secret match, or a write failure performs no
+partial redaction and forces marker-only staging.
+Kubeconfig, Secrets, service-account tokens,
 environment dumps, registry configuration, and unbounded logs are never
 uploaded. A capture command returning nonzero produces fixed JSON at the
 original evidence filename with only its integer return code and a

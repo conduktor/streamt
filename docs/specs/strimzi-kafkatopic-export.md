@@ -614,7 +614,20 @@ until the first isolation proof passes.
 The gate has an internal deadline shorter than its CI job timeout so it can run
 bounded evidence capture and exact cleanup/residue checks before failure-only
 artifact staging and upload. Evidence candidates MUST remain outside a fresh
-upload directory. An evidence command that returns nonzero is represented at
+upload directory. The exact evidence inventory includes `ctr-images.txt`, a
+bounded, secret-scanned, lexicographically sorted canonicalization of
+`docker exec <exact-node> ctr --namespace=k8s.io images list -q`; capture MUST
+attempt it on success and failure paths, including when the node or kubeconfig
+is absent. It accepts at most 4,096 LF-delimited references of at most 512
+printable ASCII bytes each, rejects control bytes, URI schemes, credentials,
+queries, fragments, and backslashes, and requires every `@` suffix to be an
+exact lowercase SHA-256 digest. Syntactically safe unexpected references remain
+in the sorted diagnostic inventory rather than being identity-allowlisted. A
+nonzero command or zero exit with nonempty stderr produces only the fixed
+neutral failure record; stderr is never published. There is no partial
+redaction: an unsafe reference, parse failure, secret match, or evidence write
+failure rejects the candidate set and yields marker-only staging. An ordinary
+evidence command that returns nonzero is represented at
 its original filename by fixed JSON containing only its integer return code and
 `capture-failed` status; a runner exception or timeout is represented by a
 fixed `<filename>.failed` artifact with no raw diagnostic. Either case remains

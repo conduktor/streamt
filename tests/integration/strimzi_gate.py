@@ -147,6 +147,8 @@ MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_EVIDENCE_FILE_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_TOTAL_BYTES = 12 * 1024 * 1024
+MAX_CTR_IMAGE_REFERENCES = 4_096
+MAX_CTR_IMAGE_REFERENCE_BYTES = 512
 SCAN_FAILURE_MARKER_NAME = "EVIDENCE_REJECTED.txt"
 SCAN_FAILURE_MARKER_BYTES = b"Strimzi gate evidence was rejected by the final safety scan.\n"
 TOPIC_FIELD_MANAGER = "streamt-strimzi-gate"
@@ -193,6 +195,7 @@ _HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_EVIDENCE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _IMAGE_TAG = re.compile(r"(?:^|/)[^/@\s]+:[^/@\s]+$")
 _STRIMZI_CHILD_REFERENCE = re.compile(r"^quay\.io/strimzi/(?:operator|kafka)@sha256:[0-9a-f]{64}$")
+_CTR_IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+:@-]{0,511}$")
 _FORBIDDEN_IMPORTS = (
     "streamt.deployer",
     "streamt.deployment",
@@ -1150,10 +1153,7 @@ def _load_operator_contract(
         and {item["name"] for item in kafka_items} == _OPERATOR_ENV_TO_KAFKA
         and {item["name"] for item in map_items} == _KAFKA_IMAGE_MAP_ENV
         and {item["name"] for item in removed_items} == _REMOVED_IMAGE_ENV
-        and all(
-            item["version_keys"] == list(_KAFKA_IMAGE_MAP_VERSIONS)
-            for item in map_items
-        ),
+        and all(item["version_keys"] == list(_KAFKA_IMAGE_MAP_VERSIONS) for item in map_items),
         "operator_contract_invalid",
         "Operator image environment inventory changed",
     )
@@ -1664,8 +1664,7 @@ def _validate_source_kafka_version_map(value: str) -> None:
         tuple(version for version, _image in pairs) == _KAFKA_IMAGE_MAP_VERSIONS
         and tuple(image for _version, image in pairs)
         == tuple(
-            f"quay.io/strimzi/kafka:1.2.0-kafka-{version}"
-            for version in _KAFKA_IMAGE_MAP_VERSIONS
+            f"quay.io/strimzi/kafka:1.2.0-kafka-{version}" for version in _KAFKA_IMAGE_MAP_VERSIONS
         ),
         "operator_invalid",
         "Operator Kafka version map source closure changed",
@@ -1683,9 +1682,7 @@ def _rewritten_kafka_version_map(child_reference: str) -> str:
         "operator_invalid",
         "Rewritten Kafka child reference is invalid",
     )
-    return "".join(
-        f"{version}={child_reference}\n" for version in _KAFKA_IMAGE_MAP_VERSIONS
-    )
+    return "".join(f"{version}={child_reference}\n" for version in _KAFKA_IMAGE_MAP_VERSIONS)
 
 
 def _rewrite_operator_documents(
@@ -2110,10 +2107,9 @@ def _validate_cri_mappings(value: Any, images: PlatformImages) -> None:
 
 
 def _valid_cri_repo_digests(digests: Sequence[str], child_reference: str) -> bool:
-    return (
-        _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None
-        and list(digests) == [child_reference]
-    )
+    return _STRIMZI_CHILD_REFERENCE.fullmatch(child_reference) is not None and list(digests) == [
+        child_reference
+    ]
 
 
 def _ctr_images_list_command(docker: Path, node_name: str) -> tuple[str, ...]:
@@ -2131,18 +2127,38 @@ def _ctr_images_list_command(docker: Path, node_name: str) -> tuple[str, ...]:
 
 
 def _parse_ctr_image_names(output: bytes) -> frozenset[str]:
+    _require(
+        all(byte == 0x0A or 0x20 <= byte <= 0x7E for byte in output),
+        "ctr_inventory_invalid",
+        "ctr image inventory contains a control byte",
+    )
     try:
-        decoded = output.decode("utf-8")
+        decoded = output.decode("ascii")
     except UnicodeError as error:
         raise GateError("ctr_inventory_invalid", "ctr image inventory is invalid") from error
     lines = decoded.splitlines()
     _require(
         "\r" not in decoded
         and all(line and line == line.strip() for line in lines)
-        and len(lines) == len(set(lines)),
+        and len(lines) == len(set(lines))
+        and len(lines) <= MAX_CTR_IMAGE_REFERENCES,
         "ctr_inventory_invalid",
         "ctr image inventory is ambiguous",
     )
+    for line in lines:
+        _require(
+            len(line.encode("ascii")) <= MAX_CTR_IMAGE_REFERENCE_BYTES
+            and _CTR_IMAGE_REFERENCE.fullmatch(line) is not None
+            and "://" not in line,
+            "ctr_inventory_invalid",
+            "ctr image inventory contains an unsafe reference",
+        )
+        if "@" in line:
+            _require(
+                line.count("@") == 1 and _SHA256.fullmatch(line.rsplit("@", 1)[1]) is not None,
+                "ctr_inventory_invalid",
+                "ctr image inventory digest suffix is invalid",
+            )
     return frozenset(lines)
 
 
@@ -2187,9 +2203,7 @@ def _classify_ctr_image_load(
     )
     child_digest = child_reference.rsplit("@", 1)[1]
     _require(
-        child_reference not in before
-        and config_digest not in before
-        and before <= after,
+        child_reference not in before and config_digest not in before and before <= after,
         "ctr_inventory_invalid",
         "ctr image load changed a pre-existing identity",
     )
@@ -2293,8 +2307,7 @@ def _validate_ctr_outer_content(
     )
     repository = child_reference.split("@", 1)[0].removeprefix("quay.io/")
     _require(
-        descriptor["mediaType"]
-        == "application/vnd.docker.distribution.manifest.v2+json"
+        descriptor["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json"
         and descriptor["digest"] == pair.child_digest
         and isinstance(descriptor["size"], int)
         and not isinstance(descriptor["size"], bool)
@@ -2303,8 +2316,7 @@ def _validate_ctr_outer_content(
         "ctr outer descriptor does not identify the selected child",
     )
     _require(
-        descriptor["annotations"]
-        == {"containerd.io/distribution.source.quay.io": repository},
+        descriptor["annotations"] == {"containerd.io/distribution.source.quay.io": repository},
         "ctr_content_invalid",
         "ctr outer descriptor annotation changed",
     )
@@ -3138,8 +3150,7 @@ def _node_ready(value: Any, *, node_name: str) -> Mapping[str, Any]:
     assert isinstance(status_value, dict)
     conditions = status_value.get("conditions")
     _require(
-        isinstance(conditions, list)
-        and all(isinstance(item, dict) for item in conditions),
+        isinstance(conditions, list) and all(isinstance(item, dict) for item in conditions),
         "node_not_ready",
         "Node readiness shape changed",
     )
@@ -4809,6 +4820,8 @@ def _capture_cluster_evidence(
     *,
     candidate: Path,
     confidential: Iterable[str],
+    docker: Path,
+    node_name: str,
     kubectl: Path,
     kubeconfig: Path,
     namespace: str,
@@ -4821,118 +4834,125 @@ def _capture_cluster_evidence(
     runner: Callable[..., ProcessResult],
     monotonic: Callable[[], float],
 ) -> tuple[tuple[str, ...], bool]:
-    if not kubeconfig.is_file() or kubeconfig.is_symlink():
-        return (), False
     commands: list[tuple[str, list[str]]] = [
         (
-            "kubernetes-version.json",
-            [str(kubectl), "--kubeconfig", str(kubeconfig), "version", "--output=json"],
-        ),
-        (
-            "kafkatopic-crd.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "get",
-                "customresourcedefinition/kafkatopics.kafka.strimzi.io",
-                "--output=json",
-            ],
-        ),
-        (
-            "nodes.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "get",
-                "nodes",
-                "--output=json",
-            ],
-        ),
-        (
-            "operator-deployment.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "deployment/strimzi-cluster-operator",
-                "--output=json",
-            ],
-        ),
-        (
-            "workload-pods.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "pods",
-                "--output=json",
-            ],
-        ),
-        (
-            "strimzi-resources.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "kafka,kafkanodepool,kafkatopic",
-                "--output=json",
-            ],
-        ),
-        (
-            "events.json",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "events",
-                "--output=json",
-            ],
-        ),
-        (
-            "operator.log",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "logs",
-                "deployment/strimzi-cluster-operator",
-                "--tail=500",
-                "--limit-bytes=524288",
-            ],
-        ),
-        (
-            "topic-operator.log",
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "logs",
-                f"deployment/{cluster_name}-entity-operator",
-                "--container=topic-operator",
-                "--tail=500",
-                "--limit-bytes=524288",
-            ],
+            "ctr-images.txt",
+            list(_ctr_images_list_command(docker, node_name)),
         ),
     ]
-    if broker_pod is not None:
+    if kubeconfig.is_file() and not kubeconfig.is_symlink():
+        commands.extend(
+            [
+                (
+                    "kubernetes-version.json",
+                    [str(kubectl), "--kubeconfig", str(kubeconfig), "version", "--output=json"],
+                ),
+                (
+                    "kafkatopic-crd.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "get",
+                        "customresourcedefinition/kafkatopics.kafka.strimzi.io",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "nodes.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "get",
+                        "nodes",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "operator-deployment.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "get",
+                        "deployment/strimzi-cluster-operator",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "workload-pods.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "get",
+                        "pods",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "strimzi-resources.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "get",
+                        "kafka,kafkanodepool,kafkatopic",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "events.json",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "get",
+                        "events",
+                        "--output=json",
+                    ],
+                ),
+                (
+                    "operator.log",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "logs",
+                        "deployment/strimzi-cluster-operator",
+                        "--tail=500",
+                        "--limit-bytes=524288",
+                    ],
+                ),
+                (
+                    "topic-operator.log",
+                    [
+                        str(kubectl),
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--namespace",
+                        namespace,
+                        "logs",
+                        f"deployment/{cluster_name}-entity-operator",
+                        "--container=topic-operator",
+                        "--tail=500",
+                        "--limit-bytes=524288",
+                    ],
+                ),
+            ]
+        )
+    if broker_pod is not None and kubeconfig.is_file() and not kubeconfig.is_symlink():
         for index, topic in enumerate(topics):
             commands.extend(
                 [
@@ -5009,7 +5029,7 @@ def _capture_cluster_evidence(
                 break
             captured.append(failure_name)
             continue
-        if result.returncode != 0:
+        if result.returncode != 0 or (name == "ctr-images.txt" and result.stderr != b""):
             try:
                 _evidence_write(
                     candidate,
@@ -5029,6 +5049,9 @@ def _capture_cluster_evidence(
             continue
         try:
             payload = result.stdout
+            if name == "ctr-images.txt":
+                names = _parse_ctr_image_names(payload)
+                payload = "".join(f"{item}\n" for item in sorted(names)).encode("utf-8")
             _evidence_write(candidate, name, payload, confidential)
             captured.append(name)
             if name == "kafkatopic-crd.json":
@@ -5570,10 +5593,8 @@ def _execute_gate(
                 _require(
                     import_pair.outer_digest not in selected_digests
                     and all(
-                        import_pair.child_source
-                        not in {prior.child_source, prior.outer_source}
-                        and import_pair.outer_source
-                        not in {prior.child_source, prior.outer_source}
+                        import_pair.child_source not in {prior.child_source, prior.outer_source}
+                        and import_pair.outer_source not in {prior.child_source, prior.outer_source}
                         and import_pair.outer_digest != prior.outer_digest
                         for prior in import_pairs
                     ),
@@ -6160,6 +6181,8 @@ def _execute_gate(
         _captured, rejected = _capture_cluster_evidence(
             candidate=candidate,
             confidential=bundle.gate_contract.confidential_sentinels,
+            docker=docker,
+            node_name=targets.node_name,
             kubectl=kubectl,
             kubeconfig=kubeconfig,
             namespace=namespace,
