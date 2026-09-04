@@ -7,9 +7,10 @@ the Strimzi stream twice with the installed executable while network and
 deployment imports are denied, and only then creates its disposable kind
 topology.
 
-The real lane remains pilot-pending until ``images.lock.json`` contains the
-exact runtime image IDs produced by the pinned kind/containerd combination.
-``--self-test`` is intentionally local and side-effect free.
+The permanent lane uses exact reviewed runtime image IDs from
+``images.lock.json``. Pilot mode remains available only for future platform
+discovery with a deliberately fully pending synthetic lock. ``--self-test`` is
+intentionally local and side-effect free.
 """
 
 from __future__ import annotations
@@ -167,7 +168,7 @@ DOCKER_NETWORK_OPTION_SETS = (
 
 _FIXTURE_SHA256 = {
     "contract.json": "9e9a2aeb47a58a2a09f10d79c61b85c69eaa5e824194327ff6b0adffa2af3917",
-    "images.lock.json": "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b",
+    "images.lock.json": "739a1eb624a0f0dbf4775c93fc7152f0280e153251f8de6b274dc2330ef3b7d0",
     "kafka.yaml": "f33e0b3255aaf1257603a981de79a51b8afc6882e58023841da1c5028770b445",
     "kind.yaml": "3c1649c94e244ede76e3631d2b08656c3ad8a9e23b26a8d98f8174a55a0c4575",
     "operator-contract.json": "7f9343e9aa04f70d91a39a4bf8db0ac6245810d1e2ac3e68309ef2014af19094",

@@ -77,7 +77,7 @@
         "linux/amd64": {
           "manifest": "sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e",
           "config": "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3",
-          "kubernetes_image_id": null
+          "kubernetes_image_id": "quay.io/strimzi/operator@sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e"
         },
       "linux/arm64": {
         "manifest": "sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927",
@@ -94,7 +94,7 @@
         "linux/amd64": {
           "manifest": "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d",
           "config": "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3",
-          "kubernetes_image_id": null
+          "kubernetes_image_id": "quay.io/strimzi/kafka@sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d"
         },
       "linux/arm64": {
         "manifest": "sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb",

@@ -334,7 +334,7 @@ def test_gate_module_exists_and_topology_owns_exactly_six_files() -> None:
         if path.is_file()
     } == {
         "contract.json": "9e9a2aeb47a58a2a09f10d79c61b85c69eaa5e824194327ff6b0adffa2af3917",
-        "images.lock.json": "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b",
+        "images.lock.json": "739a1eb624a0f0dbf4775c93fc7152f0280e153251f8de6b274dc2330ef3b7d0",
         "kafka.yaml": "f33e0b3255aaf1257603a981de79a51b8afc6882e58023841da1c5028770b445",
         "kind.yaml": "3c1649c94e244ede76e3631d2b08656c3ad8a9e23b26a8d98f8174a55a0c4575",
         "operator-contract.json": (
@@ -449,11 +449,7 @@ def test_image_lock_has_exact_closed_provenance_and_platform_chains() -> None:
             expected_keys = {"manifest", "config"}
             if image_name != "node":
                 expected_keys.add("kubernetes_image_id")
-                expected_runtime_id = (
-                    None
-                    if platform_key == "linux/amd64"
-                    else f"{repository}@{expected[f'{image_name}_manifest']}"
-                )
+                expected_runtime_id = f"{repository}@{expected[f'{image_name}_manifest']}"
                 assert platform_value["kubernetes_image_id"] == expected_runtime_id
             assert set(platform_value) == expected_keys
             assert platform_value["manifest"] == expected[f"{image_name}_manifest"]
@@ -1180,17 +1176,14 @@ def test_host_and_docker_architecture_mismatch_fails_closed() -> None:
 
 
 def _frozen_platform() -> Any:
-    images = _platform()
+    return _platform()
+
+
+def _pending_platform() -> Any:
     return dataclasses.replace(
-        images,
-        operator_runtime_image_id=(
-            "quay.io/strimzi/operator@"
-            "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3"
-        ),
-        kafka_runtime_image_id=(
-            "quay.io/strimzi/kafka@"
-            "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
-        ),
+        _platform(),
+        operator_runtime_image_id=None,
+        kafka_runtime_image_id=None,
     )
 
 
@@ -2141,7 +2134,7 @@ def test_workload_image_validation_accepts_both_exact_backend_status_forms(
 
 
 def test_workload_image_validation_rejects_pilot_pending_and_nonexact_ids() -> None:
-    pending = _platform()
+    pending = _pending_platform()
     assert pending.pilot_pending
     with pytest.raises(gate.GateError):
         gate._validate_workload_images(_workload_pods(pending), pending)
@@ -2176,7 +2169,7 @@ def test_workload_status_image_rejects_every_unreviewed_backend_form(
     consumer: str,
     mutation: str,
 ) -> None:
-    images = _frozen_platform() if consumer == "normal" else _platform()
+    images = _frozen_platform() if consumer == "normal" else _pending_platform()
     pods = _workload_pods(images) if consumer == "normal" else _pilot_pods(images)
     status = pods["items"][0]["status"]["containerStatuses"][0]
     if mutation == "manifest":
@@ -2418,7 +2411,7 @@ def test_workload_exposure_rejects_every_host_or_service_escape(mutation: str) -
 
 
 def test_pilot_mode_is_allowed_only_for_a_fully_pending_runtime_id_lock() -> None:
-    pending = _platform()
+    pending = _pending_platform()
     frozen = _frozen_platform()
     gate._validate_pilot_mode(pending, True)
     gate._validate_pilot_mode(frozen, False)
@@ -2460,7 +2453,7 @@ def _pilot_pods(images: Any) -> dict[str, Any]:
 def test_pilot_collector_accepts_both_exact_backend_status_forms(
     status_image_form: str,
 ) -> None:
-    images = _platform()
+    images = _pending_platform()
     pods = _pilot_pods(images)
     _set_status_image_form(pods, images, status_image_form)
     collected = gate._collect_pilot_image_ids(pods, images)
@@ -2469,7 +2462,7 @@ def test_pilot_collector_accepts_both_exact_backend_status_forms(
 
 
 def test_pilot_collector_requires_one_consistent_observed_id_per_child() -> None:
-    images = _platform()
+    images = _pending_platform()
     collected = gate._collect_pilot_image_ids(_pilot_pods(images), images)
     assert collected == {
         "schema_version": 1,
@@ -5913,7 +5906,7 @@ def _install_lifecycle_fakes(
 @pytest.mark.parametrize(
     ("pilot", "images", "expected_code"),
     [
-        (False, _platform(), "pilot_pending"),
+        (False, _pending_platform(), "pilot_pending"),
         (True, _frozen_platform(), "pilot_forbidden"),
     ],
 )
@@ -5953,7 +5946,7 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
     monkeypatch: pytest.MonkeyPatch,
     pilot: bool,
 ) -> None:
-    images = _platform() if pilot else _frozen_platform()
+    images = _pending_platform() if pilot else _frozen_platform()
     harness = _install_lifecycle_fakes(monkeypatch, tmp_path, images)
     arguments = _lifecycle_arguments(tmp_path, pilot=pilot)
 
@@ -6766,31 +6759,19 @@ def test_main_contains_expected_and_unexpected_lifecycle_failures(
     assert "CONFIDENTIAL_UNEXPECTED" not in output.err
 
 
-def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -> None:
+def test_strimzi_real_acceptance_ci_job_is_unconditional_and_fail_closed() -> None:
     workflow_path = _ROOT / ".github" / "workflows" / "ci.yml"
     workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert workflow["on"] == {
         "push": {"branches": ["main"]},
         "pull_request": {"branches": ["main"]},
-        "workflow_dispatch": {
-            "inputs": {
-                "strimzi_amd64_pilot": {
-                    "description": ("Run the temporary non-acceptance Strimzi amd64 imageID pilot"),
-                    "required": "true",
-                    "default": "false",
-                    "type": "boolean",
-                }
-            }
-        },
+        "workflow_dispatch": {},
     }
 
-    job = workflow["jobs"]["strimzi-amd64-pilot"]
-    assert job["name"] == (
-        "TEMPORARY NON-ACCEPTANCE - Strimzi 1.2.0 amd64 imageID pilot (expected red)"
-    )
-    assert job["if"] == (
-        "${{ github.event_name == 'workflow_dispatch' && inputs.strimzi_amd64_pilot == true }}"
-    )
+    assert "strimzi-amd64-pilot" not in workflow["jobs"]
+    job = workflow["jobs"]["strimzi-real-acceptance"]
+    assert job["name"] == "Strimzi 1.2.0 real KafkaTopic acceptance"
+    assert "if" not in job
     assert job["needs"] == ["package", "strimzi-package-parity"]
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["timeout-minutes"] == "30"
@@ -6815,35 +6796,30 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     }
 
     self_test = next(step for step in steps if step["name"] == "Self-test standalone gate")
-    assert self_test["run"] == (
-        "env -u PYTHONPATH python -I tests/integration/strimzi_gate.py --self-test"
-    )
+    assert self_test["run"] == ("python -I tests/integration/strimzi_gate.py --self-test")
     install = next(step for step in steps if step["name"] == "Install standalone gate dependency")
     assert install["run"] == (
         "python -m pip install --disable-pip-version-check --no-input 'PyYAML==6.0.3'"
     )
-    pilot = next(
-        step
-        for step in steps
-        if step["name"] == "Run amd64 pilot, validate staged evidence, and remain deliberately red"
+    acceptance = next(
+        step for step in steps if step["name"] == "Run and validate real Strimzi acceptance"
     )
-    assert pilot["shell"] == "bash"
-    script = pilot["run"]
+    assert acceptance["shell"] == "bash"
+    script = acceptance["run"]
     assert "set -euo pipefail" in script
-    assert "--pilot" in script
-    assert "env -u PYTHONPATH python -I" in script
-    assert script.count("env -u PYTHONPATH python -I -") == 2
+    assert "--pilot" not in script
+    assert "PYTHONPATH" not in script
+    assert script.count("python -I -") == 2
     assert "import sys" in script
     assert "Path(sys.argv[1])" in script
     assert 'python -I - "${upload}"' in script
     assert '--wheel "${wheel}"' in script
-    assert "if (( pilot_status != 2 )); then" in script
-    assert "Expected pilot exit 2" in script
-    assert "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b" in script
+    assert "pilot_status" not in script
+    assert "739a1eb624a0f0dbf4775c93fc7152f0280e153251f8de6b274dc2330ef3b7d0" in script
     assert script.count("object_pairs_hook=reject_duplicates") == 2
     assert script.count("parse_constant=reject_constant") == 2
-    assert "Pilot evidence candidate was not removed" in script
-    assert "pilot evidence artifact closure changed" in script
+    assert "Strimzi evidence candidate was not removed" in script
+    assert "Strimzi evidence artifact closure changed" in script
     heredocs = [block.split("\nPY", 1)[0] for block in script.split("<<'PY'\n")[1:]]
     assert len(heredocs) == 2
     validator_tree = ast.parse(heredocs[1])
@@ -6883,7 +6859,6 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
         "nodes.json",
         "operator-deployment.json",
         "operator.log",
-        "pilot-image-ids.json",
         "strimzi-resources.json",
         "summary.json",
         "timeline.json",
@@ -6893,32 +6868,32 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
         "workload-pods.json",
     }
     assert '(upload / "kafka-version.txt").read_bytes() != b"4.3.1\\n"' in script
-    assert "pilot cleanup was not exact and residue-free" in script
+    assert "Strimzi cleanup was not exact and residue-free" in script
     assert '"kafka-version-verified"' in script
     assert "elapsed != sorted(elapsed)" in script
-    assert "pilot imageID evidence is not the exact normalized chain" in script
+    assert 'read_json("workload-pods.json")' in script
+    assert "Strimzi workload spec image closure changed" in script
+    assert "Strimzi workload status image closure changed" in script
+    assert "Strimzi workload runtime imageID changed" in script
     assert 'checksums["wheel_sha256"] != wheel_sha256' in script
     assert "summary != expected_summary" in script
-    assert '"status": "pilot-pending"' in script
+    assert '"status": "passed"' in script
     assert '"platform": "linux/amd64"' in script
-    assert '"pilot-image-ids.json"' in script
-    assert '"linux/arm64"]["kubernetes_image_id"]' in script
-    assert '"linux/amd64"]["kubernetes_image_id"]' in script
-    assert script.rstrip().endswith("exit 2")
-    assert "continue-on-error" not in pilot
+    assert "Normal Strimzi evidence contains a pilot imageID artifact" in script
+    assert "kubernetes_image_id" in script
+    assert not script.rstrip().endswith("exit 2")
+    assert "continue-on-error" not in acceptance
 
     uploads = [
         step for step in steps if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
     assert len(uploads) == 1
     upload = uploads[0]
-    assert upload["name"] == "Upload only scanned amd64 pilot evidence"
+    assert upload["name"] == "Upload only scanned Strimzi evidence on failure"
     assert upload["if"] == "failure()"
     assert upload["uses"] == ("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a")
     assert upload["with"] == {
-        "name": (
-            "strimzi-1.2.0-amd64-pilot-evidence-${{ github.run_id }}-${{ github.run_attempt }}"
-        ),
+        "name": "strimzi-1.2.0-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
         "path": (
             "${{ runner.temp }}/streamt-strimzi-evidence-upload-"
             "${{ github.run_id }}-${{ github.run_attempt }}/"
@@ -6933,9 +6908,6 @@ def test_strimzi_ci_job_is_exact_once_wiring_is_present() -> None:
     workflow_path = _ROOT / ".github" / "workflows" / "ci.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
-    if "strimzi-real-acceptance" not in jobs:
-        return
-
     job = jobs["strimzi-real-acceptance"]
     assert job["name"] == "Strimzi 1.2.0 real KafkaTopic acceptance"
     assert job["needs"] == ["package", "strimzi-package-parity"]

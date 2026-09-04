@@ -18,8 +18,10 @@ runtime inspection exposed that its Kafka image was the official 4.3.0
 artifact mislabeled as 4.3.1. The genuine 4.3.1 index and platform chains are
 now corrected. A fresh local Linux arm64 pilot and subsequent frozen-ID normal
 run pass the complete flow, including an exact in-broker 4.3.1 proof; the
-reviewed arm64 operator/Kafka runtime IDs are frozen. Both Linux amd64 runtime
-IDs remain null. The Linux amd64 pilot and permanent normal-mode CI lane remain
+reviewed arm64 operator/Kafka runtime IDs are frozen. Hosted Linux amd64 pilot
+run `33908141332` completed the same flow and recorded the exact selected child
+references as both runtime IDs; those reviewed amd64 values are now frozen.
+The permanent normal-mode CI lane is wired but its first green run remains
 before Slice 5 is complete. No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
@@ -602,9 +604,13 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    A first reviewed pilot records the exact Kubernetes `imageID`
    representation for each workload under the pinned kind node/containerd
    combination in `images.lock.json`; CI then requires exact equality to those
-   frozen values. It MUST NOT accept an arbitrary index, child-manifest, or
-   config-digest form. This check is scoped to Strimzi workloads; Kubernetes
-   system images are inherited from the pinned kind node image.
+   frozen values. Hosted Linux amd64 run `33908141332` recorded the exact
+   operator and Kafka child references, which are now the frozen amd64 runtime
+   IDs. The permanent normal-mode lane still must pass before Slice 5 or any
+   public support claim completes. The gate MUST NOT accept an arbitrary index,
+   child-manifest, or config-digest form. This check is scoped to Strimzi
+   workloads; Kubernetes system images are inherited from the pinned kind node
+   image.
    Select the one exact Ready broker Pod from that validated inventory and run
    `/opt/kafka/bin/kafka-topics.sh --version` in its `kafka` container under the
    bounded subprocess contract. Require exit zero, stdout exactly `4.3.1\n`,

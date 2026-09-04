@@ -5,13 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      strimzi_amd64_pilot:
-        description: Run the temporary non-acceptance Strimzi amd64 imageID pilot
-        required: true
-        default: false
-        type: boolean
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -750,9 +744,8 @@ jobs:
             --sdist "${source_distributions[0]}" \
             --source-root "${GITHUB_WORKSPACE}"
 
-  strimzi-amd64-pilot:
-    name: TEMPORARY NON-ACCEPTANCE - Strimzi 1.2.0 amd64 imageID pilot (expected red)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.strimzi_amd64_pilot == true }}
+  strimzi-real-acceptance:
+    name: Strimzi 1.2.0 real KafkaTopic acceptance
     needs: [package, strimzi-package-parity]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -778,9 +771,9 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input 'PyYAML==6.0.3'
 
       - name: Self-test standalone gate
-        run: env -u PYTHONPATH python -I tests/integration/strimzi_gate.py --self-test
+        run: python -I tests/integration/strimzi_gate.py --self-test
 
-      - name: Run amd64 pilot, validate staged evidence, and remain deliberately red
+      - name: Run and validate real Strimzi acceptance
         shell: bash
         run: |
           set -euo pipefail
@@ -809,11 +802,11 @@ jobs:
           wheel="$(realpath -- "${wheels[0]}")"
 
           if [[ -e "${candidate}" || -L "${candidate}" || -e "${upload}" || -L "${upload}" ]]; then
-            echo "Pilot evidence paths must start absent" >&2
+            echo "Strimzi evidence paths must start absent" >&2
             exit 1
           fi
 
-          env -u PYTHONPATH python -I - \
+          python -I - \
             "${GITHUB_WORKSPACE}/tests/integration/strimzi/1.2.0/images.lock.json" <<'PY'
           import hashlib
           import json
@@ -834,10 +827,10 @@ jobs:
           path = Path(sys.argv[1])
           raw = path.read_bytes()
           expected_lock_sha256 = (
-              "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b"
+              "739a1eb624a0f0dbf4775c93fc7152f0280e153251f8de6b274dc2330ef3b7d0"
           )
           if hashlib.sha256(raw).hexdigest() != expected_lock_sha256:
-              raise SystemExit("images.lock.json bytes are not the reviewed pilot lock")
+              raise SystemExit("images.lock.json bytes are not the reviewed acceptance lock")
           try:
               lock = json.loads(
                   raw,
@@ -863,7 +856,10 @@ jobs:
                           "config": (
                               "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3"
                           ),
-                          "kubernetes_image_id": None,
+                          "kubernetes_image_id": (
+                              "quay.io/strimzi/operator@"
+                              "sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e"
+                          ),
                       },
                       "linux/arm64": {
                           "manifest": (
@@ -894,7 +890,10 @@ jobs:
                           "config": (
                               "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
                           ),
-                          "kubernetes_image_id": None,
+                          "kubernetes_image_id": (
+                              "quay.io/strimzi/kafka@"
+                              "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d"
+                          ),
                       },
                       "linux/arm64": {
                           "manifest": (
@@ -920,40 +919,33 @@ jobs:
           if selected_images != expected_images:
               raise SystemExit("images.lock.json image closure is not exact")
           for image in ("operator", "kafka"):
-              arm64_id = lock["images"][image]["platforms"]["linux/arm64"]["kubernetes_image_id"]
-              amd64_id = lock["images"][image]["platforms"]["linux/amd64"]["kubernetes_image_id"]
-              expected_arm64 = expected_images[image]["platforms"]["linux/arm64"][
-                  "kubernetes_image_id"
-              ]
-              if arm64_id != expected_arm64 or amd64_id is not None:
-                  raise SystemExit(f"{image} pilot runtime imageID state is not exact")
+              for platform in ("linux/amd64", "linux/arm64"):
+                  runtime_id = lock["images"][image]["platforms"][platform][
+                      "kubernetes_image_id"
+                  ]
+                  expected_runtime_id = expected_images[image]["platforms"][platform][
+                      "kubernetes_image_id"
+                  ]
+                  if runtime_id != expected_runtime_id:
+                      raise SystemExit(f"{image} {platform} runtime imageID is not exact")
           PY
 
-          set +e
-          env -u PYTHONPATH python -I \
+          python -I \
             "${GITHUB_WORKSPACE}/tests/integration/strimzi_gate.py" \
             --wheel "${wheel}" \
             --evidence-candidate "${candidate}" \
-            --evidence-upload "${upload}" \
-            --pilot
-          pilot_status=$?
-          set -e
-
-          if (( pilot_status != 2 )); then
-            echo "Expected pilot exit 2, received ${pilot_status}" >&2
-            exit 1
-          fi
+            --evidence-upload "${upload}"
 
           if [[ -e "${candidate}" || -L "${candidate}" ]]; then
-            echo "Pilot evidence candidate was not removed" >&2
+            echo "Strimzi evidence candidate was not removed" >&2
             exit 1
           fi
           if [[ ! -d "${upload}" || -L "${upload}" ]]; then
-            echo "Pilot evidence upload is not a real directory" >&2
+            echo "Strimzi evidence upload is not a real directory" >&2
             exit 1
           fi
 
-          env -u PYTHONPATH python -I - "${upload}" "${wheel}" <<'PY'
+          python -I - "${upload}" "${wheel}" <<'PY'
           import hashlib
           import json
           import re
@@ -1016,7 +1008,6 @@ jobs:
               "nodes.json",
               "operator-deployment.json",
               "operator.log",
-              "pilot-image-ids.json",
               "strimzi-resources.json",
               "summary.json",
               "timeline.json",
@@ -1026,31 +1017,31 @@ jobs:
               "workload-pods.json",
           }
           if stat.S_IMODE(upload.stat().st_mode) != 0o700:
-              raise SystemExit("pilot upload directory mode changed")
+              raise SystemExit("Strimzi upload directory mode changed")
           actual_files = set()
           for artifact in upload.iterdir():
               mode = artifact.lstat().st_mode
               if artifact.is_symlink() or not stat.S_ISREG(mode):
-                  raise SystemExit("pilot evidence contains a non-regular file")
+                  raise SystemExit("Strimzi evidence contains a non-regular file")
               if stat.S_IMODE(mode) != 0o444:
                   raise SystemExit(f"{artifact.name} mode changed")
               actual_files.add(artifact.name)
           if actual_files != expected_files:
-              raise SystemExit("pilot evidence artifact closure changed")
+              raise SystemExit("Strimzi evidence artifact closure changed")
 
           expected_summary_bytes = (
               b'{"failure_code":null,"platform":"linux/amd64",'
-              b'"release":"1.2.0","status":"pilot-pending"}\n'
+              b'"release":"1.2.0","status":"passed"}\n'
           )
           summary_raw, summary = read_json("summary.json")
           expected_summary = {
               "failure_code": None,
               "platform": "linux/amd64",
               "release": "1.2.0",
-              "status": "pilot-pending",
+              "status": "passed",
           }
           if summary != expected_summary or summary_raw != expected_summary_bytes:
-              raise SystemExit("pilot summary.json did not match the exact pending contract")
+              raise SystemExit("Strimzi summary.json did not match the exact passing contract")
 
           expected_cleanup = (
               b'{"cluster_delete_returncode":0,"network_remove_returncode":0,'
@@ -1058,10 +1049,10 @@ jobs:
               b'"residue_networks":[]}\n'
           )
           if (upload / "cleanup.json").read_bytes() != expected_cleanup:
-              raise SystemExit("pilot cleanup was not exact and residue-free")
+              raise SystemExit("Strimzi cleanup was not exact and residue-free")
 
           if (upload / "kafka-version.txt").read_bytes() != b"4.3.1\n":
-              raise SystemExit("pilot Kafka runtime version evidence changed")
+              raise SystemExit("Strimzi Kafka runtime version evidence changed")
 
           _timeline_raw, timeline = read_json("timeline.json")
           expected_phases = [
@@ -1082,19 +1073,18 @@ jobs:
               "cleanup-complete",
           ]
           if not isinstance(timeline, list) or len(timeline) != len(expected_phases):
-              raise SystemExit("pilot timeline coverage changed")
+              raise SystemExit("Strimzi timeline coverage changed")
           elapsed = []
           for entry, expected_phase in zip(timeline, expected_phases, strict=True):
               if not isinstance(entry, dict) or set(entry) != {"elapsed_ms", "phase"}:
-                  raise SystemExit("pilot timeline entry shape changed")
+                  raise SystemExit("Strimzi timeline entry shape changed")
               value = entry["elapsed_ms"]
               if type(value) is not int or value < 0 or entry["phase"] != expected_phase:
-                  raise SystemExit("pilot timeline ordering or timing changed")
+                  raise SystemExit("Strimzi timeline ordering or timing changed")
               elapsed.append(value)
           if elapsed != sorted(elapsed):
-              raise SystemExit("pilot timeline is not monotonic")
+              raise SystemExit("Strimzi timeline is not monotonic")
 
-          _image_ids_raw, image_ids = read_json("pilot-image-ids.json")
           operator_child = (
               "quay.io/strimzi/operator@"
               "sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e"
@@ -1103,28 +1093,79 @@ jobs:
               "quay.io/strimzi/kafka@"
               "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d"
           )
-          expected_image_ids = {
-              "schema_version": 1,
-              "platform": "linux/amd64",
-              "images": {
-                  "operator": {
-                      "child_reference": operator_child,
-                      "config_digest": (
-                          "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3"
-                      ),
-                      "kubernetes_image_id": operator_child,
-                  },
-                  "kafka": {
-                      "child_reference": kafka_child,
-                      "config_digest": (
-                          "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
-                      ),
-                      "kubernetes_image_id": kafka_child,
-                  },
-              },
+          expected_images = {
+              operator_child: (
+                  "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3",
+                  operator_child,
+              ),
+              kafka_child: (
+                  "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3",
+                  kafka_child,
+              ),
           }
-          if image_ids != expected_image_ids:
-              raise SystemExit("pilot imageID evidence is not the exact normalized chain")
+          _pods_raw, pods = read_json("workload-pods.json")
+          if (
+              not isinstance(pods, dict)
+              or set(pods) != {"apiVersion", "kind", "metadata", "items"}
+              or pods["apiVersion"] != "v1"
+              or pods["kind"] != "List"
+              or pods["metadata"] != {"resourceVersion": ""}
+              or not isinstance(pods["items"], list)
+              or not pods["items"]
+          ):
+              raise SystemExit("Strimzi workload Pod collection shape changed")
+          image_counts = dict.fromkeys(expected_images, 0)
+          for pod in pods["items"]:
+              if (
+                  not isinstance(pod, dict)
+                  or pod.get("apiVersion") != "v1"
+                  or pod.get("kind") != "Pod"
+                  or not isinstance(pod.get("spec"), dict)
+                  or not isinstance(pod.get("status"), dict)
+              ):
+                  raise SystemExit("Strimzi workload Pod identity changed")
+              for specification_key, status_key in (
+                  ("initContainers", "initContainerStatuses"),
+                  ("containers", "containerStatuses"),
+              ):
+                  specifications = pod["spec"].get(specification_key, [])
+                  statuses = pod["status"].get(status_key, [])
+                  if not isinstance(specifications, list) or not isinstance(statuses, list):
+                      raise SystemExit("Strimzi workload container collection changed")
+                  expected_statuses = {}
+                  for container in specifications:
+                      if (
+                          not isinstance(container, dict)
+                          or not isinstance(container.get("name"), str)
+                          or not isinstance(container.get("image"), str)
+                          or container["name"] in expected_statuses
+                          or container["image"] not in expected_images
+                      ):
+                          raise SystemExit("Strimzi workload spec image closure changed")
+                      expected_statuses[container["name"]] = container["image"]
+                  observed_statuses = {}
+                  for status_value in statuses:
+                      if (
+                          not isinstance(status_value, dict)
+                          or not isinstance(status_value.get("name"), str)
+                          or status_value["name"] in observed_statuses
+                      ):
+                          raise SystemExit("Strimzi workload status coverage changed")
+                      observed_statuses[status_value["name"]] = status_value
+                  if set(observed_statuses) != set(expected_statuses):
+                      raise SystemExit("Strimzi workload status coverage changed")
+                  for name, reference in expected_statuses.items():
+                      config_digest, runtime_id = expected_images[reference]
+                      status_value = observed_statuses[name]
+                      if status_value.get("image") not in {reference, config_digest}:
+                          raise SystemExit("Strimzi workload status image closure changed")
+                      if status_value.get("imageID") != runtime_id:
+                          raise SystemExit("Strimzi workload runtime imageID changed")
+                      image_counts[reference] += 1
+          if not all(count > 0 for count in image_counts.values()):
+              raise SystemExit("Strimzi workload image coverage is incomplete")
+          if (upload / "pilot-image-ids.json").exists():
+              raise SystemExit("Normal Strimzi evidence contains a pilot imageID artifact")
 
           _checksums_raw, checksums = read_json("generated-checksums.json")
           if not isinstance(checksums, dict) or set(checksums) != {
@@ -1140,7 +1181,7 @@ jobs:
                   "9e9a2aeb47a58a2a09f10d79c61b85c69eaa5e824194327ff6b0adffa2af3917"
               ),
               "images.lock.json": (
-                  "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b"
+                  "739a1eb624a0f0dbf4775c93fc7152f0280e153251f8de6b274dc2330ef3b7d0"
               ),
               "kafka.yaml": (
                   "f33e0b3255aaf1257603a981de79a51b8afc6882e58023841da1c5028770b445"
@@ -1167,14 +1208,11 @@ jobs:
                   raise SystemExit(f"{name} is not an exact SHA-256")
           PY
 
-          echo "::notice::Validated amd64 pilot evidence; this temporary job fails intentionally."
-          exit 2
-
-      - name: Upload only scanned amd64 pilot evidence
+      - name: Upload only scanned Strimzi evidence on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: strimzi-1.2.0-amd64-pilot-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: strimzi-1.2.0-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/streamt-strimzi-evidence-upload-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 7

@@ -644,7 +644,16 @@ closed.
 Before the real lane is enabled, a reviewed pilot MUST record the exact
 Kubernetes `imageID` representation produced by the pinned node/runtime
 combination; subsequent runs compare exact values from the image lock rather
-than accepting an arbitrary index, child, or config form.
+than accepting an arbitrary index, child, or config form. Hosted Linux amd64
+pilot run `33908141332` recorded the operator and Kafka child references
+respectively as
+`quay.io/strimzi/operator@sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e`
+and
+`quay.io/strimzi/kafka@sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d`;
+those exact values are now frozen for Linux amd64. This pilot is discovery
+evidence only. The permanent normal-mode CI lane remains required to pass
+before this specification's proposed status or any public support claim may
+change.
 
 The test-only gate exposes pilot mode only while the selected operator and
 Kafka `imageID` locks are null. A pilot runs the full reconciliation and replay
