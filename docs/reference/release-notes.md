@@ -178,11 +178,12 @@ streamt plan --env prod --out gateway-removal.plan.json
 streamt apply --env prod --plan gateway-removal.plan.json --confirm-env prod --force
 ```
 
-Reviewed-plan format version 4 binds the exact ordered action and secret-neutral
-Gateway current/desired aggregate evidence. Versions 1 through 3 must be
-regenerated. Direct apply, direct dry-run, offline plan files, and targeted or
-selected apply cannot authorize a tombstone. The actual delete requires
-`--force` unless environment policy already allows destructive operations.
+Reviewed-plan format version 5 binds the exact ordered action and secret-neutral
+Gateway current/desired aggregate evidence; its Connector evidence field is
+null. Versions 1 through 4 must be regenerated. Direct apply, direct dry-run,
+offline plan files, and targeted or selected apply cannot authorize a
+tombstone. The actual delete requires `--force` unless environment policy
+already allows destructive operations.
 
 Provider-free preflight first binds the logical owner, provider rule name,
 AliasTopic, backend, prior artifact checksum, and managed ownership. Planning
@@ -218,6 +219,81 @@ locking, compare-and-swap, remote-state policy, and idempotency behavior. Flink
 adoption remains deferred. This boundary is covered by source tests, an
 isolated-wheel command smoke test, a real Connect observer test, and the
 existing PostgreSQL 14/18 release gates.
+
+### Explicit reviewed Kafka Connect Connector removal
+
+Projects can now request deletion of one exact previously managed Connector
+with `lifecycle.connector_removals`. Each strict tombstone contains only the
+prior logical owner, exact connector name, and explicit Connect cluster alias;
+the alias must be the configured default. It contains no connector class,
+topics, raw configuration, endpoint, backend identity, credentials, or
+ownership payload. Removing a sink model, omitting a Connector artifact,
+selecting another model, or observing absence never creates deletion authority.
+
+The supported command path is deliberately narrow:
+
+```bash
+streamt plan --env prod --out connector-removal.plan.json
+streamt apply --env prod --plan connector-removal.plan.json \
+  --confirm-env prod --force
+```
+
+Every removal requires PostgreSQL deployment-state schema version 2, its exact
+least-privilege writer/catalog/ACL and direct-primary authority, and a complete
+fresh online reviewed plan. Direct apply, direct or reviewed dry-run, offline
+planning, `--target`, `--select`, local state, PostgreSQL v1, non-default
+cluster routing, and legacy or adopted ownership cannot authorize deletion.
+`--force` supplies only destructive authorization and cannot bypass another
+gate. An exact already-absent tombstone with no prior record is a visible no-op
+that makes no provider mutation and does not advance the ownership serial.
+
+Provider-free preflight binds all desired, tombstone, state, backend, and
+provider-locator identities before Connect access. An action requires one exact
+managed prior record plus a complete present resource GET whose reconstructed
+artifact checksum matches that record. Reviewed-plan format 5 binds the ordered
+delete to secret-neutral current-present and desired-absent fingerprints.
+Operation control and recovery plans use version 3; legacy versions cannot
+represent or authorize Connector deletion.
+
+Apply holds the PostgreSQL address advisory lock through fresh re-planning,
+durable progress, provider mutation, and atomic state/control/history commit.
+The managed mutation rechecks the exact current observation, performs one
+direct non-retrying DELETE requiring an empty HTTP 204 response, and polls the
+same encoded resource path for bounded exact-absence proof. PostgreSQL excludes
+other streamt writers at the state address, but Connect has no conditional
+delete transaction, so a manual or other non-streamt writer remains a TOCTOU
+boundary.
+
+A changed preimage, DELETE-time 404, redirect, nonempty or non-204 response,
+transport failure, or missing absent postcondition becomes
+`E428_CONNECTOR_REMOVAL_DRIFT`. streamt stops later actions, retains ownership,
+records recovery-required state, and neither retries DELETE nor attempts an
+automatic rollback. Reviewed recovery may use the durable action without a
+retained tombstone: one exact absent observation proves the completed candidate
+for `observed`, while only the exact present prior surface can satisfy
+`rolled_back`. Local recovery, a third state, a wrong binding, a competing
+claim, or malformed/partial evidence fails closed.
+
+The distribution gate builds both sdist and wheel, then an isolated
+installed-wheel executable runs the public plan, destructive refusal, apply,
+DELETE-time uncertainty, and tombstone-independent recovery against PostgreSQL
+14 and 18 without importing the checkout. A separate pinned Kafka Connect
+7.5.0 gate runs the public reviewed workflow with plain and percent-encoded
+names against PostgreSQL 14 and 18, proves the unrelated Connector's returned
+document stays byte-for-byte equal, and proves Kafka topics and Schema Registry
+subjects remain unchanged. Across these gates, sentinel checks cover CLI
+output, reviewed/recovery files, PostgreSQL current/control/history rows, and
+provider logs for raw config, endpoints, response bodies, DSNs, credentials,
+roles, schemas, and checkout paths.
+
+This release adds only Connector-object deletion. It does not delete Kafka
+topics or records, consumer offsets, Schema Registry subjects, external
+systems, credentials, or connector plugins. Topic and schema deletion and
+Flink cancellation remain unsupported separate contracts. See
+[YAML reference](yaml-schema.md#explicit-kafka-connect-connector-removals),
+[CLI reference](cli.md#remove-one-exact-kafka-connect-connector),
+[recovery runbook](../guides/state-recovery.md), and the
+[support matrix](support-matrix.md).
 
 ### PostgreSQL v2 deployment state
 

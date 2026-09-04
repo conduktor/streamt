@@ -624,6 +624,59 @@ or omitting a rule does not request deletion, and streamt does not discover
 Gateway deletion candidates by prefix or cluster-wide search. Gateway adoption
 is a separate exact alias-only workflow described below.
 
+#### Remove one exact Kafka Connect Connector
+
+Connector removal is an explicit PostgreSQL-v2-only reviewed workflow. Declare
+one exact `lifecycle.connector_removals` tombstone as shown in the
+[YAML reference](yaml-schema.md#explicit-kafka-connect-connector-removals),
+then create a fresh online plan and apply that exact file:
+
+```bash
+streamt plan --env prod --out connector-removal.plan.json
+streamt apply --env prod --plan connector-removal.plan.json \
+  --confirm-env prod --force
+```
+
+Every Connector tombstone requires this complete workflow, including in an
+unprotected environment. `plan --offline`, direct `apply`, every direct or
+reviewed `apply --dry-run`, and `apply` combined with `--target` or `--select`
+are rejected before deployment-state or Connect access. Local state,
+PostgreSQL schema version 1, and any writer that cannot prove the exact version
+2 catalog/ACL and direct-primary authority are also rejected. `--force` cannot
+bypass any of these gates; it supplies only destructive authorization when
+`safety.allow_destructive` is not already true.
+
+Planning resolves all tombstone, desired-artifact, ownership, backend, and
+provider-locator collisions before constructing Connect. An actionable delete
+requires one exact prior `managed` record and one complete strict Connector
+observation that reconstructs its artifact checksum. Reviewed-plan format 5
+binds the ordered delete to the connector name, alias-bearing endpoint digest,
+prior artifact checksum, exact current fingerprint, and exact desired-absence
+fingerprint. It stores no Connect endpoint or raw connector configuration.
+
+Apply reacquires the PostgreSQL address advisory lock, freshly replans, and
+requires exact plan equality before recording durable version-3 action
+evidence. The managed mutation performs an immediate equality GET, one direct
+non-retrying DELETE, and bounded exact-absence confirmation. The lock excludes
+other streamt writers at that state address but cannot exclude a manual or
+other non-streamt Connect writer; that provider race remains fail-closed.
+
+Removing a sink model, omitting a Connector artifact, selecting a different
+model, or merely observing absence never requests deletion. A tombstone with
+no prior record and an already-absent Connector is an assessed no-op: it makes
+no provider mutation, needs no destructive override, and does not advance the
+ownership serial. Absence with a prior managed record is blocking drift, while
+a present Connector without ownership is blocking ownership-required state.
+
+After a DELETE starts, a 404, redirect, non-empty or non-204 response, transport
+failure, changed preimage, or unproved absence is the uncertain
+`E428_CONNECTOR_REMOVAL_DRIFT` outcome. streamt stops later actions, retains
+ownership, records recovery-required state, and never retries the DELETE or
+attempts an automatic rollback. Use the reviewed recovery workflow below. The
+operation deletes only the exact Connector object; it does not delete Kafka
+topics or records, consumer offsets, schemas, external systems, credentials,
+or plugins.
+
 Online JSON plan output also includes `operation_status`, containing only safe
 status, operation ID/kind, stable failure code, and last safely successful
 action index. Planning is read-only and does not clear an unfinished operation.
@@ -1264,6 +1317,26 @@ Legacy control-version-1 Gateway actions have no exact aggregate evidence and
 fail before provider access for live `observed` or `rolled_back` recovery. They
 may use `abandoned_before_mutation` only when durable progress is empty.
 
+A control-version-3 Connector delete action carries secret-neutral evidence
+for one exact current-present and desired-absent Connector surface: its
+alias-bearing endpoint digest, exact connector name, prior artifact checksum,
+and whole-observation fingerprints. Recovery validates the action, its exact
+prior managed ownership record, current runtime binding, and collisions before
+Connect access. It then makes one strict resource GET for each normalized
+endpoint/name locator; current desired Connectors, retained removal tombstones,
+and recovery actions sharing that locator reuse the same observation.
+
+The lifecycle tombstone is not required during recovery: the durable action is
+the deletion authority. Exact absence is the completed candidate accepted by
+`observed`; exact presence with the durable current fingerprint and a
+reconstructible matching prior checksum is the prior result accepted by
+`observed` or `rolled_back`. `rolled_back` never accepts absence. Any other
+present value, malformed or partial document, unavailable observation, wrong
+runtime binding, or competing desired/removal claim fails closed and retains
+the blocker. Control versions 1 and 2 cannot represent a Connector delete and
+fail before Connect access for live recovery; only a progress-empty
+`abandoned_before_mutation` resolution remains provider-free.
+
 The evidence file is created atomically as a regular file with mode `0600` and
 is never overwritten. It binds the configured store/address, blocked and new
 recovery operation IDs, prior state and control preimage, current project
@@ -1366,6 +1439,15 @@ removed Gateway rules, so deleting a rule declaration does not itself schedule
 a provider delete. Alias-only `adopt` recovery requires the exact reviewed
 current aggregate; `observed` records the adopted ownership candidate and
 `rolled_back` retains the absent prior claim.
+
+For Connector deletion specifically, only exact absence for a durable
+version-3 `delete` action can remove its matching managed ownership record.
+Manifest or model absence is inert, recovery never retries DELETE, and no
+nearby, legacy, adopted, differently bound, or checksum-mismatched record is
+accepted. A present exact prior surface can only retain that record. Local
+state cannot authorize or resolve a Connector deletion; use the exact
+PostgreSQL-v2 writer and advisory-lock boundary that created the blocked
+operation.
 
 Local recovery uses the local state authority and a crash-safe history
 sequence. PostgreSQL recovery requires an exact v2 catalog and resolves only

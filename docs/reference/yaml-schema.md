@@ -369,6 +369,71 @@ Tombstones never appear in `gateway_rules`, the desired model list, or the DAG.
 
 ---
 
+## Explicit Kafka Connect Connector Removals
+
+Connector removal intent is declared at project level. The tombstone names one
+logical owner and one exact Connector on the configured default Connect
+cluster; it deliberately contains no connector class, topics, configuration,
+endpoint, backend identity, or ownership object:
+
+```yaml
+apiVersion: streamt.dev/v1alpha1
+project:
+  name: payments
+  version: 1.0.0
+runtime:
+  kafka:
+    bootstrap_servers: broker.example:9092
+  connect:
+    default: primary-connect
+    clusters:
+      primary-connect:
+        rest_url: https://connect.example:8443
+deployment_state:
+  backend: postgres
+  namespace: platform
+  postgres:
+    dsn_env: STREAMT_STATE_ADMIN_DSN
+    writer_dsn_env: STREAMT_STATE_WRITER_DSN
+    schema: streamt
+lifecycle:
+  connector_removals:
+    - logical_owner: archive_orders
+      name: archive-orders-sink
+      cluster: primary-connect
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `lifecycle.connector_removals` | list | No | Explicit Connector tombstones; defaults to an empty list and accepts at most 256 entries |
+| `logical_owner` | string | Yes | Exact prior logical model owner; 1–128 control-free characters and no `/` |
+| `name` | string | Yes | Exact Connect connector name; 1–256 control-free characters |
+| `cluster` | string | Yes | Explicit Connect cluster alias; 1–128 control-free characters and, in this release, exactly `runtime.connect.default` |
+
+All lifecycle objects are strict. Null collections, null fields, empty or
+whitespace-only values, duplicate logical owners, duplicate `(cluster, name)`
+pairs, and unknown fields are rejected. A desired Connector cannot claim the
+same logical resource or provider locator as a tombstone. In particular, do
+not add `config`, `connector_class`, `topics`, credentials, an endpoint, a
+fingerprint, a backend, or `ownership` to the declaration.
+
+A tombstone is affirmative intent, not proof by itself. It can authorize a
+delete only through a fresh online reviewed plan, exact PostgreSQL
+deployment-state schema version 2 writer authority, a matching prior
+`managed` ownership record, and a complete live Connector observation whose
+reconstructed artifact checksum matches that record. Local state,
+PostgreSQL v1, adopted or legacy records, non-default Connect aliases, and
+partial or offline workflows fail closed.
+
+Removing a sink model, omitting a Connector artifact, or observing an absent
+Connector never creates deletion authority. An already-absent tombstone with
+no prior record is a visible no-op; a missing Connector with a prior managed
+record is blocking state/provider drift. This lifecycle contract deletes only
+the named Connector object—not topics, records, offsets, schemas, external
+systems, credentials, or plugins.
+
+---
+
 ## Sources
 
 Sources declare external Kafka topics that your project consumes.

@@ -22,15 +22,17 @@ integrate with them.
    The source and exact-SHA workflow are prepared; TestPyPI and PyPI publication
    remain blocked on their external protected environments and trusted-
    publisher registrations.
-2. Add PostgreSQL-v2-only explicit Kafka Connect removal under the
-   [Connector removal specification](docs/specs/connector-explicit-removal.md).
-   This is the next destructive lifecycle type because its strict identity,
-   observer, and secret-neutral artifact boundary already exist.
-3. Add a deterministic managed-topic-only Strimzi `KafkaTopic` GitOps export
+2. Add a deterministic managed-topic-only Strimzi `KafkaTopic` GitOps export
    under the
    [Strimzi export specification](docs/specs/strimzi-kafkatopic-export.md).
    It remains an offline artifact until its installed-package and pinned real
    Strimzi reconciliation gates pass.
+
+PostgreSQL-v2-only explicit Kafka Connect removal is complete under its
+[Connector removal specification](docs/specs/connector-explicit-removal.md).
+Its narrow full-online-reviewed boundary does not enable topic or schema
+deletion, Flink cancellation, local-state deletion, or non-default Connect
+cluster routing.
 
 Topic and schema deletion, Flink cancellation, production catalog publication,
 and direct Kubernetes apply remain separate later contracts.
@@ -63,8 +65,12 @@ development cluster.
         locked state projection, recovery, and real Gateway gate. Its existing
         local-state development mode does not satisfy the broader remote-only
         completion criterion.
-  - [ ] Kafka Connect removal is specified next as PostgreSQL-schema-v2-only in
-        the
+  - [x] Kafka Connect removal is PostgreSQL-schema-v2-only and requires an exact
+        lifecycle tombstone, a fresh full online reviewed plan, managed state,
+        strict live evidence, destructive authorization, and reviewed recovery.
+        Source, sdist/wheel build, isolated installed-wheel, PostgreSQL 14/18,
+        independent-process, secrecy, and pinned real Connect 7.5.0 gates
+        pass. Manifest/model absence remains inert. See the
         [Connector removal implementation plan](docs/plans/2026-09-03-connector-explicit-removal.md).
   - [ ] Kafka topic, Schema Registry subject, and Flink job removal remain
         blocked on their separate data-loss, reference, identity, and stateful

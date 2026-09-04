@@ -22,6 +22,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from streamt.compiler import Compiler
 from streamt.core.deployment_state import validate_deployment_state_config
 from streamt.core.models import (
     CheckpointConfig,
@@ -63,6 +64,7 @@ from streamt.core.models import (
     TopicConfig,
     TopicRules,
 )
+from streamt.core.parser import ProjectParser
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOC_DIRS = [PROJECT_ROOT / "docs"]
@@ -549,3 +551,28 @@ def test_doc_yaml_block(block: tuple[str, int, str]) -> None:
         f"Schema validation failed for {category} block at {path}:{line}\n"
         + "\n".join(str(e) for e in errors)
     )
+
+
+def test_connector_removal_reference_example_uses_the_real_project_parser(
+    tmp_path: Path,
+) -> None:
+    matches = [
+        text
+        for path, _line, text in _ALL_BLOCKS
+        if path == "docs/reference/yaml-schema.md"
+        and "connector_removals:" in text
+        and "archive-orders-sink" in text
+    ]
+    assert len(matches) == 1
+    (tmp_path / "stream_project.yml").write_text(matches[0], encoding="utf-8")
+
+    project = ProjectParser(tmp_path).parse()
+    manifest = Compiler(project).compile(dry_run=True)
+
+    assert manifest.artifacts["connector_removals"] == [
+        {
+            "logicalOwner": "archive_orders",
+            "name": "archive-orders-sink",
+            "cluster": "primary-connect",
+        }
+    ]

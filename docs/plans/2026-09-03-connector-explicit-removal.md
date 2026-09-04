@@ -2,7 +2,8 @@
 
 ## Status and objective
 
-Status: in progress through Slice 7. The reserved codes, strict declaration,
+Status: complete. All eight implementation slices and the exact-commit
+repository CI gate pass. The reserved codes, strict declaration,
 compiled artifact, PostgreSQL-v2 authority gate, provider-free identity/state
 preflight, exact Connector action evidence, strict live planning matrix, and
 managed observed-delete boundary are implemented. Reviewed plans use v5 and
@@ -19,13 +20,17 @@ actions, and records recovery without rollback mutation. Tombstone-independent
 reviewed recovery now binds durable v3 evidence to the current runtime before
 provider access, shares one planner-owned observation with retained removal
 claims, and atomically resolves exact absent or prior-present state under the
-PostgreSQL operation lock. The workflow remains undocumented as supported until
-the remaining dedicated installed-executable, real Connect, documentation, and
-repository-wide release gates pass. PostgreSQL 14 and 18 now exercise the
-public reviewed lifecycle, literal DELETE-time 404 and response-loss recovery,
-mixed-action exact-subset recovery, physical writer-session loss, and a bounded
-two-process same-address contention race; the same command suite also runs from
-the isolated installed wheel in CI.
+PostgreSQL operation lock. PostgreSQL 14 and 18 exercise the public reviewed
+lifecycle, literal DELETE-time 404 and response-loss recovery, mixed-action
+exact-subset recovery, physical writer-session loss, and a bounded two-process
+same-address contention race. Fresh sdist/wheel builds plus isolated
+installed-wheel executable runs cover the public lifecycle and recovery without
+checkout imports. The pinned Kafka
+Connect 7.5.0 gate runs the public workflow for plain and percent-encoded names
+against PostgreSQL 14 and 18 while preserving an unrelated Connector, Kafka
+topics, and Schema Registry subjects exactly. The reference, recovery, support,
+release, and roadmap documentation now publishes only this narrow supported
+boundary.
 
 The objective is to implement the frozen
 [Connector removal specification](../specs/connector-explicit-removal.md) as
@@ -618,8 +623,13 @@ resources.
 - [x] Add exact Connector-specific state projection.
 - [x] Add tombstone-independent reviewed recovery.
 - [x] Pass PostgreSQL 14/18 command and concurrency gates.
-- [ ] Pass installed-wheel lifecycle/recovery gate.
-- [ ] Pass focused real Connect deletion/preservation gate.
-- [ ] Update existing reference documentation only after implementation passes.
-- [ ] Pass secrecy, formatting, lint, typing, documentation, package, and full
-      test gates.
+- [x] Pass sdist/wheel build and isolated installed-wheel lifecycle/recovery
+      gates on PostgreSQL 14/18.
+- [x] Pass focused real Connect 7.5.0 deletion/preservation gates with plain
+      and percent-encoded names on PostgreSQL 14/18.
+- [x] Update reference, recovery, support, release, and roadmap documentation
+      only after the provider and executable gates pass.
+- [x] Pass focused secrecy, parser, formatting, lint, and strict documentation
+      gates.
+- [x] Pass final exact-commit repository-wide typing, unit, integration,
+      package, and workflow gates.

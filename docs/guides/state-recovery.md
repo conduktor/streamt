@@ -100,6 +100,17 @@ not make them provider-atomic. Keep Gateway changes frozen throughout planning,
 review, and first execution; a change between the two lists can only be rejected
 when it produces inconsistent or nonmatching aggregate evidence.
 
+For Kafka Connect, a blocked explicit Connector deletion can be resolved only
+with PostgreSQL deployment-state schema version 2. Recovery validates every
+durable action, prior managed record, current runtime binding, and competing
+desired/removal claim before Connect access. It then performs one strict
+resource GET per normalized endpoint/name locator. Current desired Connectors,
+retained removal tombstones, and recovery actions that share that locator reuse
+the same observation. Freeze manual and non-streamt Connect writers through
+planning, independent review, and the first execution; Connect offers no
+conditional delete transaction and the PostgreSQL lock serializes only streamt
+writers.
+
 ## Create the reviewed evidence
 
 The planning syntax is:
@@ -255,6 +266,11 @@ so direct endpoint control is an operator prerequisite. Ordinary and recovery
 commands share this writer boundary; neither can fall back to the owner/admin
 credential, local state, or empty state.
 
+Local recovery remains valid for its existing non-removal action boundaries,
+but it cannot resolve an explicit Connector deletion. Such a delete is created
+only under PostgreSQL v2 and must be recovered under the same exact store,
+address, writer identity, catalog/ACL, and direct-primary authority.
+
 ## Supported observation boundaries
 
 Support means that a complete fresh planner observation can reconstruct the
@@ -265,7 +281,7 @@ provider response or every action is recoverable.
 | --- | --- | --- | --- |
 | Schema Registry subject | Exact prior or candidate content can be proven for supported register/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Partial schema metadata, identity mismatch, or a checksum that cannot be reconstructed fails closed. |
 | Kafka topic | Exact partitions, replication factor, and complete config can prove prior or candidate state for supported create/update/adopt paths. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Recovery requires a strict, complete config read; filtered or partial broker config is rejected. |
-| Kafka Connect connector | Exact connector config can prove supported create/update/adopt prior or candidate state. | Exact absence can prove a not-yet-created prior state or a completed delete candidate. | Evidence is bound to the effective alias, normalized-endpoint fingerprint, and connector name. Partial config/status/task observations, legacy unbound state, unsupported cluster representation, or ambiguous identity fails closed. |
+| Kafka Connect connector | Exact connector config can prove supported create/update/adopt prior or candidate state. For an explicit deletion, only exact presence matching the durable current fingerprint and reconstructible prior managed checksum proves the prior result. | Exact absence can prove a not-yet-created prior state. It proves a deletion candidate only for an exact durable control-version-3 Connector `delete` action; manifest/model absence alone is inert. | Explicit deletion recovery is PostgreSQL-v2-only and does not require the lifecycle tombstone to remain in the current project. Evidence is bound to the exact managed prior record, effective default alias, normalized-endpoint fingerprint, and connector name. Partial config/status/task observations, control versions 1/2, legacy or adopted state, competing claims, wrong binding, or any third state fails closed before resolution. |
 | Conduktor Gateway rule | The complete alias plus rule-owned interceptor aggregate must match exact durable evidence. A desired match proves a completed create/update candidate; a current match proves the prior result for mutation actions. Alias-only adoption requires the exact reviewed current present surface: `observed` records its candidate ownership and `rolled_back` retains prior absence. | Exact current absence proves an unapplied or rolled-back create. Exact desired absence proves a completed delete candidate. Adoption does not accept absence. | Evidence is bound to the endpoint/vCluster backend identity, provider rule name, alias, aggregate fingerprint, and owned-interceptor count. Anything outside the action-specific exact surfaces fails closed. |
 | Flink job | Unsupported. Current live status and job ID cannot prove the managed SQL artifact or execution settings. | Exact absence can prove a not-yet-submitted prior state or a completed cancel candidate. | Any present Flink target fails closed, even when its runtime status looks healthy. |
 
@@ -276,14 +292,18 @@ Additional action constraints apply:
   schema/topic/connector update may be representable when its exact prior
   artifact checksum can be reconstructed. A Gateway update or delete can prove
   rollback only by matching its exact durable current aggregate surface.
-- A non-Gateway delete or cancel plan normally omits the old desired artifact.
-  If its target is still present, recovery cannot reconstruct the prior artifact
-  checksum and fails closed; presence alone is not proof of rollback. Gateway
-  actions instead carry the exact current and desired aggregate fingerprints in
-  their durable pre-mutation intent.
-- Exact absence can prove the candidate result of a delete/cancel for every
-  target type listed above. It can also prove the prior result when a create-like
-  action never produced a target.
+- A non-Gateway, non-Connector delete or cancel plan normally omits the old
+  desired artifact. If its target is still present, recovery cannot reconstruct
+  the prior artifact checksum and fails closed; presence alone is not proof of
+  rollback. Gateway and explicit Connector removal actions instead carry exact
+  current and desired fingerprints in durable pre-mutation intent. Connector
+  rollback additionally reconstructs and verifies its prior artifact checksum
+  from the complete live config.
+- Exact absence can prove the candidate result of a delete/cancel only when the
+  blocked durable action carries that explicit absent desired surface. A
+  Connector deletion specifically requires control-version-3 evidence. Absence
+  can also prove the prior result when a create-like action never produced a
+  target.
 - `observed` may mix prior and candidate classifications across the ordered
   action list. Every individual classification must still be exact.
 - Adoption recovery is limited to exact schema-subject, Kafka-topic, bound
@@ -303,6 +323,22 @@ evidence. They therefore fail closed for live `observed` or `rolled_back`
 recovery before Gateway is contacted. `abandoned_before_mutation` remains
 available for such an action only when durable progress is empty, because that
 resolution needs no provider observation.
+
+Connector recovery follows the same absence-inert principle with a narrower
+state boundary. The lifecycle tombstone may be retained or removed after the
+blocked operation because exact control-version-3 action evidence—not current
+manifest absence—is the recovery authority. `observed` may remove only the
+matching prior managed record when one fresh strict GET proves exact absence.
+`rolled_back` requires exact present prior evidence and never accepts absence.
+Recovery never issues or retries DELETE. Any different present fingerprint,
+unreconstructible checksum, malformed document, wrong endpoint binding,
+desired/removal collision, or provider failure preserves the blocker.
+
+Control versions 1 and 2 have no Connector deletion evidence and cannot be
+upgraded or inferred from state. Live `observed` or `rolled_back` recovery of
+such a deletion fails before Connect is contacted. A generic
+`abandoned_before_mutation` outcome remains available only when durable
+progress is empty and requires no provider observation.
 
 When a target is outside these boundaries, do not choose the closest-looking
 resolution. Preserve the marker and evidence, freeze mutations, and escalate to
@@ -327,6 +363,7 @@ secret-neutral error codes.
 | `E424_STATE_CONFLICT` | State or operation control changed after observation. Preserve the incident evidence, inspect status, and create a fresh reviewed plan for the remaining blocker. |
 | `E425_STATE_UNKNOWN_OUTCOME` | Recovery may have committed. Do not generate a different resolution or blindly replay. Inspect status, preserve the original file, and use only the exact same plan and confirmations for idempotent verification. |
 | `E426_STATE_RELEASE_FAILED_AFTER_COMMIT` | The reviewed recovery commit was verified, but authority release was not. Treat it as committed (`committed: true`), investigate the session/endpoint, and do not replay it as an uncommitted write. |
+| `E428_CONNECTOR_REMOVAL_DRIFT` | A started Connector deletion failed to prove exact absence. Preserve the managed ownership record and blocker, then create reviewed recovery evidence; never retry DELETE as incident cleanup. |
 
 Never turn a failed recovery into an `apply` retry. If status is still blocked
 after an ordinary validation, observation, availability, or lock-timeout
