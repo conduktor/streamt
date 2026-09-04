@@ -2,33 +2,37 @@
 
 from __future__ import annotations
 
+from importlib import import_module
+
 import click
 
 from streamt import __version__
 
-from .commands import (
-    adopt,
-    apply,
-    build,
-    compile,
-    diff,
-    docs,
-    envs,
-    import_cmd,
-    init,
-    lineage,
-    list_cmd,
-    observe,
-    plan,
-    show,
-    state_cmd,
-    status,
-    test,
-    validate,
-)
+
+class _LazyCommandRef(click.Command):
+    """Import location for a top-level command, resolved only when requested."""
+
+    def __init__(self, name: str, module: str, attribute: str) -> None:
+        super().__init__(name=name)
+        self.module = module
+        self.attribute = attribute
 
 
-@click.group()
+class _LazyGroup(click.Group):
+    """Click group that replaces lazy references with their real commands."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if not isinstance(command, _LazyCommandRef):
+            return command
+        resolved = getattr(import_module(command.module), command.attribute)
+        if not isinstance(resolved, click.Command):
+            raise TypeError("Lazy CLI target is not a Click command")
+        self.commands[cmd_name] = resolved
+        return resolved
+
+
+@click.group(cls=_LazyGroup)
 @click.version_option(version=__version__)
 @click.option(
     "--output",
@@ -57,22 +61,29 @@ def main(ctx: click.Context, output: str, quiet: bool, verbose: bool) -> None:
         logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s: %(message)s")
 
 
-# Register all commands
-main.add_command(adopt.adopt)
-main.add_command(validate.validate)
-main.add_command(compile.compile)
-main.add_command(plan.plan)
-main.add_command(apply.apply)
-main.add_command(test.test)
-main.add_command(lineage.lineage)
-main.add_command(observe.observe)
-main.add_command(status.status)
-main.add_command(state_cmd.state)
-main.add_command(list_cmd.list_resources, name="list")
-main.add_command(show.show_resource, name="show")
-main.add_command(docs.docs)
-main.add_command(envs.envs)
-main.add_command(diff.diff_resources, name="diff")
-main.add_command(build.build)
-main.add_command(init.init)
-main.add_command(import_cmd.import_resources)
+# Preserve the previous registration order and explicit aliases while keeping
+# deployment and state modules outside the fresh CLI import boundary.
+_COMMANDS = (
+    ("adopt", "streamt.cli.commands.adopt", "adopt"),
+    ("validate", "streamt.cli.commands.validate", "validate"),
+    ("compile", "streamt.cli.commands.compile", "compile"),
+    ("plan", "streamt.cli.commands.plan", "plan"),
+    ("apply", "streamt.cli.commands.apply", "apply"),
+    ("test", "streamt.cli.commands.test", "test"),
+    ("lineage", "streamt.cli.commands.lineage", "lineage"),
+    ("observe", "streamt.cli.commands.observe", "observe"),
+    ("status", "streamt.cli.commands.status", "status"),
+    ("state", "streamt.cli.commands.state_cmd", "state"),
+    ("list", "streamt.cli.commands.list_cmd", "list_resources"),
+    ("show", "streamt.cli.commands.show", "show_resource"),
+    ("docs", "streamt.cli.commands.docs", "docs"),
+    ("envs", "streamt.cli.commands.envs", "envs"),
+    ("diff", "streamt.cli.commands.diff", "diff_resources"),
+    ("build", "streamt.cli.commands.build", "build"),
+    ("init", "streamt.cli.commands.init", "init"),
+    ("import", "streamt.cli.commands.import_cmd", "import_resources"),
+    ("export", "streamt.cli.commands.export", "export"),
+)
+
+for _name, _module, _attribute in _COMMANDS:
+    main.add_command(_LazyCommandRef(_name, _module, _attribute), name=_name)

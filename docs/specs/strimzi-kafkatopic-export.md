@@ -320,11 +320,22 @@ staging file. Symlink and non-regular-file targets fail closed.
 Missing parent directories are created before staging. The destination is
 checked with `lstat` before staging and again immediately before replacement;
 directories, FIFOs, sockets, devices, symlinks, and a destination swapped to
-one of those types all fail. The randomized staging file is in the destination
-directory with mode `0600`. Cleanup covers descriptor creation, wrapping,
-write, flush, `fsync`, close, and replacement failures, including
-`BaseException`, while command-level error conversion does not catch
-`BaseException`.
+one of those types by either observation all fail. The randomized staging file
+is in the destination directory with mode `0600`, and its identity is likewise
+checked against the open descriptor immediately before replacement. Cleanup
+covers descriptor creation, wrapping, write, flush, `fsync`, close, and
+replacement failures, including `BaseException`, while command-level error
+conversion does not catch `BaseException`.
+
+The output directory is a caller-controlled trust boundary. As with portable
+same-directory temporary-file writers generally, mutation by another actor
+with write access after either final `lstat` sample and before `os.replace`
+cannot be distinguished atomically on every supported platform. `os.replace`
+does not follow a destination symlink, so a post-sample destination swap cannot
+write through to its referent; nevertheless, callers MUST NOT select a
+directory writable by an untrusted actor. Tests cover every mutation observable
+at the frozen checks and prove that replacement never follows a destination
+symlink.
 
 ## Secret-neutral failure boundary
 
@@ -334,9 +345,14 @@ connector configuration, SQL, environment-variable values, Python exception
 text, temporary paths, or rejected configuration values in output, warnings,
 errors, logs, or object representations.
 
-All command failures use `E509_STRIMZI_INVALID` with the exact message
-`Strimzi export failed safely` and one safe structural location. The location
-is selected from this closed table:
+All failures contained after construction of the export formatter use
+`E509_STRIMZI_INVALID` with the exact message `Strimzi export failed safely`
+and one safe structural location. Click's argument-tokenization errors (for
+example, an option token with no following value or an unknown option) and a
+failure to construct the formatter itself remain framework/bootstrap failures
+outside this boundary. Missing or domain-invalid namespace and cluster-name
+values are parsed successfully and MUST use the E509 boundary. The location for
+a contained failure is selected from this closed table:
 
 | Location | Failure phase |
 | --- | --- |
@@ -362,9 +378,19 @@ schema, YAML, and I/O failures at the phase locations above. A final
 `except Exception` containment guard maps every remaining ordinary exception to
 `export` without exposing its text; it deliberately does not catch
 `BaseException`. Before emitting an error it clears any materialized data,
-warnings, and prior errors, so a late write failure cannot leak documents.
-Parser and compiler logging is suppressed for this command even under root
-`--verbose`.
+warnings, and prior errors, so an error-envelope retry cannot include material
+that stdout has not already accepted. Parser and compiler logging is suppressed
+for this command even under root `--verbose`.
+
+Stdout is a non-transactional boundary. A write can accept some or all bytes
+and then fail during that write or its flush; accepted bytes cannot be
+retracted. When the stream is known to be untouched, JSON mode retries with the
+fixed E509 envelope. Once a write may have begun, the command exits `1` and
+prints the fixed E509 message to stderr but MUST NOT append a second JSON
+envelope to the possibly partial or complete first one. Raw text has the same
+irretractable-write limitation. This exception does not permit confidential
+data on the success surface: only the already-frozen public document and
+defensive result fields can have been accepted before the transport failure.
 
 Tests MUST seed distinct confidential sentinels in Kafka runtime endpoints,
 Schema Registry, Flink, Connect, Gateway, state,

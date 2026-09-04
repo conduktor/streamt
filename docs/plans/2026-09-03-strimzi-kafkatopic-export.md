@@ -5,12 +5,14 @@
 Implement the narrow, deterministic boundary in
 [`Strimzi KafkaTopic GitOps export`](../specs/strimzi-kafkatopic-export.md).
 
-Status on 2026-09-04: Slices 0 through 2 are complete. The pinned CRD, license,
+Status on 2026-09-04: Slices 0 through 3 are complete. The pinned CRD, license,
 provenance notice, reviewed byte fixtures, wheel/sdist boundary checks, strict
 topic parser, pure manifest identity, closed document contract, and pinned-CRD
 validation are frozen. The pure mapper now emits defensive documents and
-canonical Kubernetes-safe YAML with exact omission warnings and counts; Slice 3
-CLI work is underway. No current support claim changes.
+canonical Kubernetes-safe YAML with exact omission warnings and counts. The
+offline CLI, lazy command registry, secret-neutral failure boundary, and atomic
+optional output are implemented; Slice 4 installed-package parity is underway.
+No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -230,9 +232,15 @@ Do not add target fields to streamt project YAML or runtime configuration.
    fully, then optionally write.
 3. Implement exact raw-text, file, quiet, and JSON behavior. Convert mapper
    warnings to structured warnings without changing order or exposing names.
+   Track whether stdout may already have accepted bytes so a transport failure
+   never appends a second JSON envelope to a partial or complete first one.
 4. Reuse or extract a small same-directory atomic writer only when its behavior
    remains byte-for-byte compatible with existing exporters. Reject symlinks
-   and non-regular destinations and clean staging files on every exception.
+   and non-regular destinations observed at either frozen identity check and
+   clean staging files on every exception. Treat the output directory as a
+   caller-controlled boundary because portable replacement cannot close the
+   final sample-to-replace race against another actor with directory write
+   access; prove that destination replacement never follows a symlink.
 5. Catch the defined parse/environment/export/schema/YAML/I/O failures at their
    frozen phase locations, followed by one ordinary-`Exception` containment
    guard at `export`. Emit E509 with the exact fixed message and never print
@@ -250,6 +258,8 @@ Do not add target fields to streamt project YAML or runtime configuration.
 - compilation count is exactly one on success and zero for primitive failures;
 - text stdout is raw-only, warnings are stderr-only, JSON has exact keys and
   order, quiet/no-file fails, and file mode has empty stdout;
+- a pre-write JSON transport failure can emit one clean E509 envelope, while a
+  write/flush failure after possible acceptance emits no concatenated retry;
 - existing-file preservation, same-directory private staging, flush/fsync/
   replace order, permission errors, serialization errors, broken pipes, and
   cleanup are covered; and
