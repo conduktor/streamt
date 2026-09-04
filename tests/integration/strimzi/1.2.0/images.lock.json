@@ -89,17 +89,17 @@
     "kafka": {
       "repository": "quay.io/strimzi/kafka",
       "tag": "1.2.0-kafka-4.3.1",
-      "index": "quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a",
+      "index": "quay.io/strimzi/kafka@sha256:fef34b5438e8556cc08c01f3e254e47346f061b53a4e38d4289853777e0ea7f1",
       "platforms": {
         "linux/amd64": {
-          "manifest": "sha256:63a2dd081b781951d1327626071760525734f4047acfb2d05b1a2878ad4135a5",
-          "config": "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd",
+          "manifest": "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d",
+          "config": "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3",
           "kubernetes_image_id": null
         },
       "linux/arm64": {
-        "manifest": "sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a",
-        "config": "sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c",
-        "kubernetes_image_id": "quay.io/strimzi/kafka@sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a"
+        "manifest": "sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb",
+        "config": "sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684",
+        "kubernetes_image_id": "quay.io/strimzi/kafka@sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb"
         }
       }
     }

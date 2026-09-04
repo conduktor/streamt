@@ -42,7 +42,7 @@ _EXPECTED_FILES = {
 _NAMESPACE_PLACEHOLDER = "streamt-strimzi-namespace-placeholder"
 _CLUSTER_PLACEHOLDER = "streamt-strimzi-cluster-placeholder"
 _OPERATOR_INDEX = "sha256:77f8fa8121a67561c3418de985783d197f51b8931e9a47f793dc0437dc6bb21f"
-_KAFKA_INDEX = "sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a"
+_KAFKA_INDEX = "sha256:fef34b5438e8556cc08c01f3e254e47346f061b53a4e38d4289853777e0ea7f1"
 _NODE_INDEX = "sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0"
 _PLATFORMS = {
     "linux/amd64": {
@@ -53,8 +53,8 @@ _PLATFORMS = {
         "node_config": "sha256:194068f84949f79dca8527c1e0578d9cd90f0bcd82a359bdb0d2d5bfe9d61185",
         "operator_manifest": "sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e",
         "operator_config": "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3",
-        "kafka_manifest": "sha256:63a2dd081b781951d1327626071760525734f4047acfb2d05b1a2878ad4135a5",
-        "kafka_config": "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd",
+        "kafka_manifest": "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d",
+        "kafka_config": "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3",
     },
     "linux/arm64": {
         "machine": "aarch64",
@@ -64,8 +64,8 @@ _PLATFORMS = {
         "node_config": "sha256:664b3989afaffcd2268ece28d6cf012b27700e6b8e81c3c7641cc167889075f5",
         "operator_manifest": "sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927",
         "operator_config": "sha256:693db9e33a50f7cc1cd84cb763ee083c5209412b16f9f198ca013546da44f4f1",
-        "kafka_manifest": "sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a",
-        "kafka_config": "sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c",
+        "kafka_manifest": "sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb",
+        "kafka_config": "sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684",
     },
 }
 _OPERATOR_ASSET_SHA256 = "a0b1ae3e375a7da0674eb3894df8aa955bc50abe8190bc9344e30b83bbee4775"
@@ -334,7 +334,7 @@ def test_gate_module_exists_and_topology_owns_exactly_six_files() -> None:
         if path.is_file()
     } == {
         "contract.json": "9e9a2aeb47a58a2a09f10d79c61b85c69eaa5e824194327ff6b0adffa2af3917",
-        "images.lock.json": "3c583c589ae345da58abec1e0484320c68d5e4d307439d62c811a13a9f7af83c",
+        "images.lock.json": "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b",
         "kafka.yaml": "f33e0b3255aaf1257603a981de79a51b8afc6882e58023841da1c5028770b445",
         "kind.yaml": "3c1649c94e244ede76e3631d2b08656c3ad8a9e23b26a8d98f8174a55a0c4575",
         "operator-contract.json": (
@@ -1189,7 +1189,7 @@ def _frozen_platform() -> Any:
         ),
         kafka_runtime_image_id=(
             "quay.io/strimzi/kafka@"
-            "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd"
+            "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
         ),
     )
 
@@ -2448,7 +2448,7 @@ def _pilot_pods(images: Any) -> dict[str, Any]:
     )
     kafka_id = (
         "quay.io/strimzi/kafka@"
-        "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd"
+        "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
     )
     pods["items"][0]["status"]["containerStatuses"][0]["imageID"] = operator_id
     pods["items"][1]["status"]["initContainerStatuses"][0]["imageID"] = operator_id
@@ -2488,7 +2488,7 @@ def test_pilot_collector_requires_one_consistent_observed_id_per_child() -> None
                 "config_digest": images.kafka_config_digest,
                 "kubernetes_image_id": (
                     "quay.io/strimzi/kafka@"
-                    "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd"
+                    "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3"
                 ),
             },
         },
@@ -3464,6 +3464,43 @@ def test_both_topic_applications_use_the_same_fixed_server_side_manager() -> Non
     assert dry_run == (*base, "--dry-run=server")
     assert first_apply == replay_apply == base
     assert all("save-config" not in argument for argument in (*dry_run, *first_apply))
+
+
+def test_kafka_runtime_version_command_and_exact_result_are_closed() -> None:
+    kubectl = Path("/locked/kubectl")
+    kubeconfig = Path("/private/runtime/kubeconfig")
+    namespace = "st-123456789abc"
+    broker_pod = "sk-123456789abc-dual-role-0"
+    assert gate._kafka_version_command(kubectl, kubeconfig, namespace, broker_pod) == (
+        "/locked/kubectl",
+        "--kubeconfig",
+        "/private/runtime/kubeconfig",
+        "--namespace",
+        namespace,
+        "exec",
+        broker_pod,
+        "--container=kafka",
+        "--",
+        "/opt/kafka/bin/kafka-topics.sh",
+        "--version",
+    )
+    result = gate.ProcessResult(0, b"4.3.1\n", b"")
+    assert gate._validate_kafka_version_result(result) == b"4.3.1\n"
+
+    for changed in (
+        gate.ProcessResult(0, b"4.3.0\n", b""),
+        gate.ProcessResult(0, b"4.3.1", b""),
+        gate.ProcessResult(0, b"4.3.1\r\n", b""),
+        gate.ProcessResult(0, b" 4.3.1\n", b""),
+        gate.ProcessResult(0, b"4.3.1\nextra\n", b""),
+        gate.ProcessResult(0, b"", b""),
+        gate.ProcessResult(0, b"\xff\n", b""),
+        gate.ProcessResult(7, b"4.3.1\n", b""),
+        gate.ProcessResult(0, b"4.3.1\n", b"warning\n"),
+    ):
+        with pytest.raises(gate.GateError) as captured:
+            gate._validate_kafka_version_result(changed)
+        assert captured.value.code == "kafka_version_invalid"
 
 
 def test_process_runner_preserves_channels_and_bounds_output(tmp_path: Path) -> None:
@@ -5821,6 +5858,11 @@ def _install_lifecycle_fakes(
             if failure == "service-collection-envelope":
                 value["kind"] = "ServiceList"
             return gate.ProcessResult(0, json.dumps(value).encode(), b"")
+        if encoded[-2:] == ("/opt/kafka/bin/kafka-topics.sh", "--version"):
+            events.append("kafka-version")
+            if failure == "kafka-version":
+                return gate.ProcessResult(0, b"4.3.0\n", b"")
+            return gate.ProcessResult(0, b"4.3.1\n", b"")
         if "--dry-run=server" in encoded:
             events.append("topic-dry-run")
         elif "--field-manager=streamt-strimzi-gate" in encoded:
@@ -5927,6 +5969,11 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
     assert harness["observations"][0] == harness["observations"][1]
     assert harness["events"].count("topic-dry-run") == 1
     assert harness["events"].count("topic-apply") == 2
+    assert harness["events"].count("kafka-version") == 1
+    assert harness["events"].index("kafka-version") < harness["events"].index("topic-dry-run")
+    assert harness["events"].index("evidence:kafka-version.txt") < harness["events"].index(
+        "topic-dry-run"
+    )
     assert harness["events"].index("offline-export") < harness["events"].index("network-create")
     assert harness["events"].index("evidence:generated-checksums.json") < harness["events"].index(
         "network-create"
@@ -6079,6 +6126,12 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
         "release": "1.2.0",
         "status": "pilot-pending" if pilot else "passed",
     }
+    assert (arguments.evidence_upload / "kafka-version.txt").read_bytes() == b"4.3.1\n"
+    timeline = json.loads((arguments.evidence_upload / "timeline.json").read_bytes())
+    phases = [entry["phase"] for entry in timeline]
+    assert phases.index("kafka-ready") < phases.index("workload-images-verified")
+    assert phases.index("workload-images-verified") < phases.index("kafka-version-verified")
+    assert phases.index("kafka-version-verified") < phases.index("topics-ready")
     pilot_path = arguments.evidence_upload / "pilot-image-ids.json"
     assert pilot_path.exists() is pilot
     if pilot:
@@ -6452,6 +6505,7 @@ def test_lifecycle_rejects_mixed_ctr_modes_before_restart_or_apply(
         ("cri-wrong-ref", "cri_invalid"),
         ("pod-collection-envelope", "workload_image_invalid"),
         ("service-collection-envelope", "workload_exposure_invalid"),
+        ("kafka-version", "kafka_version_invalid"),
     ],
 )
 def test_lifecycle_failure_still_captures_cleans_and_stages_safe_evidence(
@@ -6480,6 +6534,10 @@ def test_lifecycle_failure_still_captures_cleans_and_stages_safe_evidence(
     if failure.startswith(("ctr-", "cri-")):
         assert not any(
             "apply" in command and "--filename" in command for command in harness["commands"]
+        )
+    if failure == "kafka-version":
+        assert not any(
+            "--field-manager=streamt-strimzi-gate" in command for command in harness["commands"]
         )
     assert harness["events"].index("cleanup-network") < harness["events"].index("stage")
     assert not arguments.evidence_candidate.exists()

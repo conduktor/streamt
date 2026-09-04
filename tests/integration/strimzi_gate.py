@@ -58,7 +58,7 @@ OPERATOR_INDEX_REFERENCE = (
     "sha256:77f8fa8121a67561c3418de985783d197f51b8931e9a47f793dc0437dc6bb21f"
 )
 KAFKA_INDEX_REFERENCE = (
-    "quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a"
+    "quay.io/strimzi/kafka@sha256:fef34b5438e8556cc08c01f3e254e47346f061b53a4e38d4289853777e0ea7f1"
 )
 _EXPECTED_KIND_BINARIES = {
     "linux/amd64": (
@@ -111,12 +111,12 @@ _EXPECTED_IMAGE_PLATFORMS = {
     },
     "kafka": {
         "linux/amd64": (
-            "sha256:63a2dd081b781951d1327626071760525734f4047acfb2d05b1a2878ad4135a5",
-            "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd",
+            "sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d",
+            "sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3",
         ),
         "linux/arm64": (
-            "sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a",
-            "sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c",
+            "sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb",
+            "sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684",
         ),
     },
 }
@@ -167,7 +167,7 @@ DOCKER_NETWORK_OPTION_SETS = (
 
 _FIXTURE_SHA256 = {
     "contract.json": "9e9a2aeb47a58a2a09f10d79c61b85c69eaa5e824194327ff6b0adffa2af3917",
-    "images.lock.json": "3c583c589ae345da58abec1e0484320c68d5e4d307439d62c811a13a9f7af83c",
+    "images.lock.json": "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b",
     "kafka.yaml": "f33e0b3255aaf1257603a981de79a51b8afc6882e58023841da1c5028770b445",
     "kind.yaml": "3c1649c94e244ede76e3631d2b08656c3ad8a9e23b26a8d98f8174a55a0c4575",
     "operator-contract.json": "7f9343e9aa04f70d91a39a4bf8db0ac6245810d1e2ac3e68309ef2014af19094",
@@ -4873,6 +4873,47 @@ def _select_broker_pod(pods: Mapping[str, Any], cluster_name: str) -> str:
     return matches[0]
 
 
+def _kafka_version_command(
+    kubectl: Path,
+    kubeconfig: Path,
+    namespace: str,
+    broker_pod: str,
+) -> tuple[str, ...]:
+    _require(
+        _DNS_LABEL.fullmatch(namespace) is not None, "kafka_version_invalid", "Namespace invalid"
+    )
+    _require(
+        _DNS_LABEL.fullmatch(broker_pod) is not None,
+        "kafka_version_invalid",
+        "Broker Pod name invalid",
+    )
+    return (
+        str(kubectl),
+        "--kubeconfig",
+        str(kubeconfig),
+        "--namespace",
+        namespace,
+        "exec",
+        broker_pod,
+        "--container=kafka",
+        "--",
+        "/opt/kafka/bin/kafka-topics.sh",
+        "--version",
+    )
+
+
+def _validate_kafka_version_result(result: ProcessResult) -> bytes:
+    _require(
+        type(result.returncode) is int
+        and result.returncode == 0
+        and result.stdout == b"4.3.1\n"
+        and result.stderr == b"",
+        "kafka_version_invalid",
+        "Kafka runtime version changed",
+    )
+    return result.stdout
+
+
 def _observe_topics(
     *,
     kubectl: Path,
@@ -6427,7 +6468,54 @@ def _execute_gate(
         _require(
             isinstance(cluster_pods, dict), "broker_pod_invalid", "Cluster Pod list is invalid"
         )
-        broker_pod = _select_broker_pod(_combine_pod_lists(cluster_pods), kafka_cluster)
+        workload_pods = _combine_pod_lists(cluster_pods)
+        services = _kubectl_json(
+            [
+                str(kubectl),
+                "--kubeconfig",
+                str(kubeconfig),
+                "--namespace",
+                namespace,
+                "get",
+                "services",
+                "--output=json",
+            ],
+            cwd=runtime,
+            environment=environment,
+            deadline=execution_deadline,
+            runner=runner,
+            monotonic=monotonic,
+        )
+        _validate_workload_exposure(
+            workload_pods,
+            services,
+            cluster_name=kafka_cluster,
+        )
+        if arguments.pilot:
+            pilot_record = _collect_pilot_image_ids(workload_pods, images)
+        else:
+            _validate_workload_images(workload_pods, images)
+        phase("workload-images-verified")
+
+        broker_pod = _select_broker_pod(workload_pods, kafka_cluster)
+        kafka_version = _run_checked_before(
+            _kafka_version_command(kubectl, kubeconfig, namespace, broker_pod),
+            cwd=runtime,
+            environment=environment,
+            deadline=execution_deadline,
+            cap=30,
+            runner=runner,
+            monotonic=monotonic,
+            code="kafka_version_invalid",
+        )
+        kafka_version_bytes = _validate_kafka_version_result(kafka_version)
+        _evidence_write(
+            candidate,
+            "kafka-version.txt",
+            kafka_version_bytes,
+            bundle.gate_contract.confidential_sentinels,
+        )
+        phase("kafka-version-verified")
 
         _run_checked_before(
             _topic_apply_command(kubectl, kubeconfig, output_one, dry_run=True),
@@ -6469,52 +6557,6 @@ def _execute_gate(
             bundle.gate_contract.confidential_sentinels,
         )
         phase("topics-ready")
-
-        namespace_pods = _kubectl_json(
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "pods",
-                "--output=json",
-            ],
-            cwd=runtime,
-            environment=environment,
-            deadline=execution_deadline,
-            runner=runner,
-            monotonic=monotonic,
-        )
-        workload_pods = _combine_pod_lists(namespace_pods)
-        services = _kubectl_json(
-            [
-                str(kubectl),
-                "--kubeconfig",
-                str(kubeconfig),
-                "--namespace",
-                namespace,
-                "get",
-                "services",
-                "--output=json",
-            ],
-            cwd=runtime,
-            environment=environment,
-            deadline=execution_deadline,
-            runner=runner,
-            monotonic=monotonic,
-        )
-        _validate_workload_exposure(
-            workload_pods,
-            services,
-            cluster_name=kafka_cluster,
-        )
-        if arguments.pilot:
-            pilot_record = _collect_pilot_image_ids(workload_pods, images)
-        else:
-            _validate_workload_images(workload_pods, images)
-        phase("workload-images-verified")
 
         _run_checked_before(
             _topic_apply_command(kubectl, kubeconfig, output_one, dry_run=False),

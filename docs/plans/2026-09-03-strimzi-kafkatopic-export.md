@@ -12,11 +12,15 @@ validation are frozen. The pure mapper now emits defensive documents and
 canonical Kubernetes-safe YAML with exact omission warnings and counts. The
 offline CLI, lazy command registry, secret-neutral failure boundary, and atomic
 optional output are implemented. Clean source, wheel, and direct-sdist parity
-now runs on Python 3.10 through 3.14. Slice 5's reviewed local Linux arm64 pilot
-and subsequent normal-mode run pass the complete real Strimzi 1.2.0/Kafka 4.3.1
-flow, and the learned Kubernetes image IDs are frozen. The Linux amd64 CI pilot
-and permanent normal-mode CI lane remain before Slice 5 is complete. No current
-support claim changes.
+now runs on Python 3.10 through 3.14. Slice 5's earlier local Linux arm64 pilot
+and normal-mode run completed against the then-current lock, but subsequent
+runtime inspection exposed that its Kafka image was the official 4.3.0
+artifact mislabeled as 4.3.1. The genuine 4.3.1 index and platform chains are
+now corrected. A fresh local Linux arm64 pilot and subsequent frozen-ID normal
+run pass the complete flow, including an exact in-broker 4.3.1 proof; the
+reviewed arm64 operator/Kafka runtime IDs are frozen. Both Linux amd64 runtime
+IDs remain null. The Linux amd64 pilot and permanent normal-mode CI lane remain
+before Slice 5 is complete. No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -356,7 +360,7 @@ production code from the checkout.
 - operator image
   `quay.io/strimzi/operator@sha256:77f8fa8121a67561c3418de985783d197f51b8931e9a47f793dc0437dc6bb21f`;
 - Kafka 4.3.1 image
-  `quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a`;
+  `quay.io/strimzi/kafka@sha256:fef34b5438e8556cc08c01f3e254e47346f061b53a4e38d4289853777e0ea7f1`;
   and
 - exact `kubectl` v1.35.8 binary/checksum selected by runner architecture.
 
@@ -366,6 +370,17 @@ pilot and uses the exact kubectl digest recorded in the specification. Host
 tools are selected from the host OS/architecture, while image children are
 selected independently from Docker server `OSType` and `Architecture`; an
 unsupported or inconsistent pair fails closed.
+
+The corrected Kafka index resolves to Linux amd64 manifest/config
+`sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d` /
+`sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3`
+and Linux arm64 manifest/config
+`sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb` /
+`sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684`.
+The earlier test lock was the official 4.3.0 chain under a 4.3.1 label and is
+fully replaced. The corrected arm64 runtime ID is frozen after a fresh reviewed
+pilot and successful frozen-ID normal run; the corrected amd64 runtime ID
+remains null until its hosted pilot is reviewed.
 
 The three image references above are multi-platform index pins and remain the
 provenance roots. `images.lock.json` also freezes the Linux amd64 and arm64
@@ -573,9 +588,8 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    The CI job timeout is 30 minutes. The gate has a shorter global internal
    deadline that reserves bounded time for evidence capture, cleanup/residue
    verification, and failure-only upload.
-7. Run server-side dry-run on the already-generated canonical stream, then
-   apply the first copy. Enumerate all Cluster Operator and test-namespace Pod
-   container and init-container image references and require only the exact
+7. Enumerate all Cluster Operator and test-namespace Pod container and
+   init-container image references and require only the exact
    selected-platform operator and Kafka child references permitted by the
    closure. Each `spec.image` must be the exact child. Its corresponding
    Kubernetes status `image` may be only that child or its own frozen bare
@@ -591,6 +605,13 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    frozen values. It MUST NOT accept an arbitrary index, child-manifest, or
    config-digest form. This check is scoped to Strimzi workloads; Kubernetes
    system images are inherited from the pinned kind node image.
+   Select the one exact Ready broker Pod from that validated inventory and run
+   `/opt/kafka/bin/kafka-topics.sh --version` in its `kafka` container under the
+   bounded subprocess contract. Require exit zero, stdout exactly `4.3.1\n`,
+   and empty stderr, then write the exact stdout as secret-scanned
+   `kafka-version.txt` evidence and record `kafka-version-verified`. Only after
+   this proof may the gate server-side dry-run the already-generated canonical
+   stream and apply its first copy.
    Pilot mode is explicit and allowed only while both selected runtime-ID locks
    are null. It completes the same read-back and replay flow, writes one
    consistent observed ID per exact image reference to bounded secret-scanned
@@ -620,7 +641,12 @@ the canonical sorted node containerd image-reference inventory from exact
 `ctr --namespace=k8s.io images list -q`, CRD digest, operator Deployment/Pod
 descriptions, operator and Topic Operator logs, Kafka/NodePool/Topic JSON,
 events, broker descriptions/configs, generated YAML checksums, and poll
-timeline. The exact load-diagnostic inventory is one sorted before/after pair
+timeline. A full evidence bundle on a path that reaches the successful broker
+runtime-version proof also contains exact `kafka-version.txt` bytes `4.3.1\n`;
+the marker-only staging boundary still applies after any later evidence-safety
+failure. A failed proof cannot reach KafkaTopic dry-run or apply and is
+represented through the fixed failure summary and bounded capture. The exact
+load-diagnostic inventory is one sorted before/after pair
 per attempted load (four files on the complete two-load path), plus zero to two
 sorted canonical import-content JSON files per attempted load, under the names
 frozen in step 5, plus one config JSON file per converted load. `ctr-images.txt`

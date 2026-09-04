@@ -462,7 +462,7 @@ mutation. It is test-only and pinned to:
 - Strimzi operator
   `quay.io/strimzi/operator@sha256:77f8fa8121a67561c3418de985783d197f51b8931e9a47f793dc0437dc6bb21f`;
 - Kafka 4.3.1
-  `quay.io/strimzi/kafka@sha256:e90a1a74af4226f3ca4d1ebef3ab13bdb09754ae17ca4c1444f7fcbb0ca8ea9a`;
+  `quay.io/strimzi/kafka@sha256:fef34b5438e8556cc08c01f3e254e47346f061b53a4e38d4289853777e0ea7f1`;
   and
 - `kubectl` v1.35.8, whose official Linux amd64, Linux arm64, and Darwin arm64
   SHA-256 values are respectively
@@ -509,7 +509,17 @@ manifest's config digest:
 | --- | --- | --- |
 | kind node | `sha256:0c58cebbb66d7fa5fd497235dfae1e4e722ff84104e24a6f736ce8cd607cbe7c` / `sha256:194068f84949f79dca8527c1e0578d9cd90f0bcd82a359bdb0d2d5bfe9d61185` | `sha256:b38a25576c835bfedc9d06368f87ec40863459a4d5dcbdbab2fd5f58ecf97466` / `sha256:664b3989afaffcd2268ece28d6cf012b27700e6b8e81c3c7641cc167889075f5` |
 | Strimzi operator | `sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e` / `sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3` | `sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927` / `sha256:693db9e33a50f7cc1cd84cb763ee083c5209412b16f9f198ca013546da44f4f1` |
-| Kafka 4.3.1 | `sha256:63a2dd081b781951d1327626071760525734f4047acfb2d05b1a2878ad4135a5` / `sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd` | `sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a` / `sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c` |
+| Kafka 4.3.1 | `sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d` / `sha256:ba984c01faaf5b9d9ccc2aeba9ec7e2177a970caec767dfa477b8d8a94df98f3` | `sha256:ffba1669b6daa7e186a17b0c49b48f4dfd8ef5872720e0eec9bf7c4612dd1bcb` / `sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684` |
+
+The previous test lock labeled Strimzi's official
+`1.2.0-kafka-4.3.0` image chain as Kafka 4.3.1. The corrected lock replaces
+that index and both platform children/configs in full; no identity from the
+mislabeled 4.3.0 chain remains eligible. After the Kafka resource is Ready and
+the complete namespace workload/exposure/image closure passes, the gate MUST
+execute `/opt/kafka/bin/kafka-topics.sh --version` in the exact selected
+`kafka` broker container. Before any KafkaTopic dry-run or apply, that bounded
+command MUST return exit zero, exact stdout `4.3.1\n`, and empty stderr. Its
+exact stdout is retained as secret-scanned `kafka-version.txt` evidence.
 
 Index digests remain the release-provenance roots. The gate MUST resolve the
 runner platform through every frozen index. Docker MUST pull and create the
@@ -701,6 +711,13 @@ secret-neutral scan-failure marker. Cleanup is enforced for success, ordinary
 failure, and internal timeout. Hosted-runner cancellation or an external
 SIGKILL can prevent process-level cleanup, so that case is best-effort and
 relies on runner disposal; it MUST NOT be described as a guaranteed trap.
+
+On every path that reaches the successful runtime-version proof, the full
+evidence inventory also contains `kafka-version.txt` with exactly `4.3.1\n`;
+the marker-only staging boundary still applies if a later evidence-safety
+failure occurs. A version probe failure is recorded by the fixed
+summary/capture failure surfaces and cannot cross the KafkaTopic mutation
+boundary.
 
 The pinned Strimzi support matrix includes Kubernetes 1.35 and Kafka 4.3.1.
 The test cluster is single-node, KRaft, ephemeral, loopback-published and
