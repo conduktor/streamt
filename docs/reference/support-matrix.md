@@ -18,6 +18,7 @@ are not enabled.
 | PostgreSQL deployment state | No | Bounded v1/v2 status, confirmed v1 initialization, non-reserving lock diagnostics, confirmed v1-to-v2 migration, and reviewed recovery | Ordinary plan/apply/adopt, exact reviewed Connector removal, and recovery through the exact v2 writer | Requires `streamt[postgres]`, `writer_dsn_env`, an exact v2 catalog/ACL, and a direct standalone primary. The owner/admin credential is never a runtime fallback. Version 1 remains administrative only. PostgreSQL 14 and 18 run real-server, command, ACL, mutation, recovery, installed-wheel, real-Connect, and independent-process contention gates. All poolers and every HA/failover topology are unsupported. |
 | AsyncAPI | AsyncAPI 3.1 export | No | No | Export is validated offline against the pinned official 3.1 JSON Schema plus local-reference semantics. It describes declared Kafka channels and contracts without live-broker or serializer claims. |
 | Open Data Contract Standard (ODCS) | ODCS 3.1.0 project-wide schema export | No | No | One parsed project becomes one offline-validated contract containing every declared source and model. Quality, SLA, team, role, server, import, catalog publication, runtime enrichment, and per-model documents are not supported. |
+| Strimzi KafkaTopic GitOps | Deterministic Strimzi 1.2.0 `KafkaTopic` YAML for managed compiled topics | No | No | `streamt export strimzi` is an offline artifact export validated against the pinned CRD and a real disposable reconciliation/replay gate. It omits external topics with a warning and rejects adopted topics. streamt does not contact Kubernetes, apply resources, install or operate Strimzi, manage credentials, prune, delete, or persist Kubernetes ownership state. |
 | Backstage Software Catalog | Backstage v1.54.2 core `System`, `Resource`, and `Component` export | No | No | Deterministic multi-document YAML is validated offline from one dry-run compile. Exact direct dependencies, explicit owners, cluster refs, and contract state are supported. The wheel/sdist schema gate, isolated-wheel smoke, and `@backstage/catalog-model@1.10.0` parity gate cover the packaged path. Backstage API publication, live catalog synchronization, Conduktor Console publication, and deployed-runtime claims are unsupported. DataHub metadata-file export is a separate command and identity contract. |
 | DataHub | DataHub v1.7.0 simplified-MCP metadata-file export | No | No | Deterministic canonical JSON is generated from one dry-run compile and validated without a runtime DataHub dependency. It maps one DataFlow, native Dataset URNs, actual DataJobs, and direct Dataset lineage; contract state is only a custom property. Python 3.10-3.12 installed-wheel/SDK gates validate the offline boundary. A separate exact v1.7.0 quickstart gate ingests both Kafka identity variants twice, reads back all five emitted aspect types, and verifies five direct Dataset relationships per variant. Production streamt has no GMS call, publisher, live synchronization, state, or deletion. |
 | OpenLineage | OpenLineage 1.53.0 static `DatasetEvent`/`JobEvent` export and opt-in finite `test` and durable `apply` `RunEvent` pairs | No | Opt-in apply-command telemetry | Static metadata and command events are validated offline against pinned official schemas plus local invariants. An apply run reuses its durable operation UUID and START timestamp, then reports COMPLETE only after ownership state commits and the operation marker clears. Explicit bounded File/HTTP transports are best effort; delivery cannot change deployment or recovery truth. Events describe the finite streamt command only—deployed Flink, Gateway, Connect, and Kafka resource lifecycles remain unobserved. |
@@ -25,9 +26,10 @@ are not enabled.
 ## Not supported as deployment backends
 
 Docker is supported for local development infrastructure, not as a streamt
-deployment backend. Kubernetes, the Flink Kubernetes Operator, Strimzi,
-Terraform/OpenTofu, and Confluent Cloud Flink Statements are not accepted as
-working targets today.
+deployment backend. Kubernetes and Strimzi direct operations, the Flink
+Kubernetes Operator, Terraform/OpenTofu, and Confluent Cloud Flink Statements
+are not accepted as working deployment targets today. The supported Strimzi
+boundary is the offline `KafkaTopic` artifact described above, not deployment.
 
 ## Integration priorities
 
@@ -37,11 +39,10 @@ unlock:
 1. Complete the exact-SHA `0.1.0a1` external trusted-publisher rehearsal and
    publication gate in the
    [first alpha release plan](../plans/2026-09-03-first-alpha-release.md).
-2. Add deterministic managed-topic-only Strimzi `KafkaTopic` GitOps output
-   under the [proposed export contract](../specs/strimzi-kafkatopic-export.md),
-   then consider Terraform/OpenTofu. Flink Kubernetes Operator output remains
-   gated because the current artifact is SQL rather than an application image
-   or JAR with a safe upgrade contract.
+2. Add a Terraform/OpenTofu backend under its own ownership, review, state, and
+   deletion contract. Flink Kubernetes Operator output remains gated because
+   the current artifact is SQL rather than an application image or JAR with a
+   safe upgrade contract.
 3. Add Confluent Cloud Flink Statements as an explicit backend rather than a
    REST-shaped configuration claim.
 4. Additional catalog boundaries: separately specified publication and

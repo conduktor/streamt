@@ -15,18 +15,19 @@ The project does not aim to replace Terraform, Kubernetes operators, managed
 cloud control planes, observability systems, or data catalogs. It should
 integrate with them.
 
-## Current execution order — 2026-09-03
+## Current execution order — 2026-09-04
 
 1. Finish the immutable `0.1.0a1` release gate and external publication under
    the [first public alpha release plan](docs/plans/2026-09-03-first-alpha-release.md).
    The source and exact-SHA workflow are prepared; TestPyPI and PyPI publication
    remain blocked on their external protected environments and trusted-
    publisher registrations.
-2. Add a deterministic managed-topic-only Strimzi `KafkaTopic` GitOps export
-   under the
-   [Strimzi export specification](docs/specs/strimzi-kafkatopic-export.md).
-   It remains an offline artifact until its installed-package and pinned real
-   Strimzi reconciliation gates pass.
+
+The deterministic managed-topic-only Strimzi 1.2.0 `KafkaTopic` GitOps export
+is complete under the
+[Strimzi export specification](docs/specs/strimzi-kafkatopic-export.md). Its
+support stops at the offline artifact; direct Kubernetes and Strimzi deployment
+remain outside the product boundary.
 
 PostgreSQL-v2-only explicit Kafka Connect removal is complete under its
 [Connector removal specification](docs/specs/connector-explicit-removal.md).
@@ -196,10 +197,10 @@ plane.
       an official supported API, authentication, idempotency, review, deletion,
       and recovery contract.
 - [ ] Add a Terraform/OpenTofu backend for Confluent Cloud resources.
-- [ ] Add GitOps output for Strimzi resources. The first proposed slice emits
-      only deterministic, offline-validated Strimzi 1.2.0 `KafkaTopic`
-      resources for managed compiled topics; it must pass a pinned real
-      reconciliation/replay/read-back gate before support is claimed.
+- [x] Add deterministic, offline-validated Strimzi 1.2.0 `KafkaTopic` GitOps
+      output for managed compiled topics. Installed-package parity and the
+      pinned real reconciliation/replay/read-back gate pass. This does not add
+      direct Kubernetes apply, controller management, credentials, or deletion.
 - [ ] Add a Flink Kubernetes Operator backend where its lifecycle semantics fit.
 - [ ] Add a real Confluent Cloud Flink Statements backend.
 

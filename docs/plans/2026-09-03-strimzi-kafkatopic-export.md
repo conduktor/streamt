@@ -21,8 +21,10 @@ run pass the complete flow, including an exact in-broker 4.3.1 proof; the
 reviewed arm64 operator/Kafka runtime IDs are frozen. Hosted Linux amd64 pilot
 run `33908141332` completed the same flow and recorded the exact selected child
 references as both runtime IDs; those reviewed amd64 values are now frozen.
-The permanent normal-mode CI lane is wired but its first green run remains
-before Slice 5 is complete. No current support claim changes.
+Permanent normal-mode CI run `33909664040`, Strimzi job `101143523418`, then
+passed the complete exact installed-wheel flow with cleanup and zero residue.
+Slices 0 through 6 are complete. The public claim is limited to deterministic
+offline managed-topic `KafkaTopic` export; no deployment boundary changed.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -325,7 +327,7 @@ python tests/package/strimzi_package_smoke.py --wheel dist/<wheel> --sdist dist/
 pytest -q tests/unit/test_release_workflow.py <distribution-inspection-test>
 ```
 
-## Slice 5 — pinned real Strimzi acceptance
+## Slice 5 — pinned real Strimzi acceptance (complete)
 
 ### Ownership
 
@@ -381,8 +383,8 @@ and Linux arm64 manifest/config
 `sha256:5f6ad7b02f27af240676afddbe36b63c419bc4cdfcf1b012db989b6d4fc4f684`.
 The earlier test lock was the official 4.3.0 chain under a 4.3.1 label and is
 fully replaced. The corrected arm64 runtime ID is frozen after a fresh reviewed
-pilot and successful frozen-ID normal run; the corrected amd64 runtime ID
-remains null until its hosted pilot is reviewed.
+pilot and successful frozen-ID normal run; the corrected amd64 runtime ID is
+frozen to its selected child after hosted pilot run `33908141332` was reviewed.
 
 The three image references above are multi-platform index pins and remain the
 provenance roots. `images.lock.json` also freezes the Linux amd64 and arm64
@@ -606,9 +608,10 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    combination in `images.lock.json`; CI then requires exact equality to those
    frozen values. Hosted Linux amd64 run `33908141332` recorded the exact
    operator and Kafka child references, which are now the frozen amd64 runtime
-   IDs. The permanent normal-mode lane still must pass before Slice 5 or any
-   public support claim completes. The gate MUST NOT accept an arbitrary index,
-   child-manifest, or config-digest form. This check is scoped to Strimzi
+   IDs. Permanent normal-mode CI
+   [run `33909664040`, job `101143523418`](https://github.com/conduktor/streamt/actions/runs/33909664040/job/101143523418)
+   passed this exact frozen-ID contract. The gate MUST NOT accept an arbitrary
+   index, child-manifest, or config-digest form. This check is scoped to Strimzi
    workloads; Kubernetes system images are inherited from the pinned kind node
    image.
    Select the one exact Ready broker Pod from that validated inventory and run
@@ -706,19 +709,20 @@ disposal is the final isolation boundary.
   deletion, TLS, authentication, multi-node durability, or GitOps-controller
   behavior.
 
-## Slice 6 — public claims
+## Slice 6 — public claims (complete)
 
-Only after Slices 0 through 5 and the full release workflow are green:
+After Slices 0 through 5 and the complete decisive CI workflow passed:
 
-1. Add a focused guide and CLI reference for `streamt export strimzi`.
-2. Add navigation, release-note, support-matrix, and roadmap changes.
-3. Mark only deterministic Strimzi 1.2.0 `KafkaTopic` GitOps output as
-   supported. Keep direct Kubernetes apply and every unsupported boundary from
-   the specification explicit.
-4. Do not mark the broader Kubernetes, Flink Kubernetes Operator,
-   Terraform/OpenTofu, or Confluent Cloud Flink Statements backends supported.
-5. Do not claim deletion safety, production cluster credentials, controller
-   installation, drift detection, or ownership-state integration.
+- [x] Add a focused guide and CLI reference for `streamt export strimzi`.
+- [x] Add navigation, release-note, support-matrix, and roadmap changes.
+- [x] Mark only deterministic Strimzi 1.2.0 `KafkaTopic` GitOps output as
+      supported. Keep direct Kubernetes apply and every unsupported boundary
+      from the specification explicit.
+- [x] Do not mark the broader Kubernetes, Flink Kubernetes Operator,
+      Terraform/OpenTofu, or Confluent Cloud Flink Statements backends
+      supported.
+- [x] Do not claim deletion safety, production cluster credentials, controller
+      installation, drift detection, or ownership-state integration.
 
 ## Final release gate
 
@@ -731,6 +735,9 @@ mkdocs build --strict
 ```
 
 The release workflow additionally requires Python 3.10 through 3.14 package
-parity and the single pinned real-cluster lane. A skipped, softened, or failed
-real-cluster lane leaves the feature proposed; offline schema validation alone
-cannot promote the support claim.
+parity and the single pinned real-cluster lane. Decisive push run
+[`33909664040`](https://github.com/conduktor/streamt/actions/runs/33909664040)
+passed all 24 jobs, including exact Strimzi normal-acceptance job
+[`101143523418`](https://github.com/conduktor/streamt/actions/runs/33909664040/job/101143523418).
+A future skipped, softened, or failed real-cluster lane invalidates the support
+evidence; offline schema validation alone cannot sustain the support claim.

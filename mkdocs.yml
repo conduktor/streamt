@@ -124,6 +124,7 @@ nav:
     - Release Notes: reference/release-notes.md
     - AsyncAPI Export: reference/asyncapi.md
     - ODCS Export: reference/odcs.md
+    - Strimzi KafkaTopic Export: reference/strimzi-kafkatopic.md
     - Backstage Catalog Export: reference/backstage-catalog.md
     - DataHub Catalog Export: reference/datahub-catalog.md
     - OpenLineage Export: reference/openlineage.md

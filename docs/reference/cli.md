@@ -14,6 +14,7 @@ Complete reference for all streamt CLI commands.
 | Check YAML is valid | `validate` | No |
 | Generate SQL/JSON artifacts | `compile` | No |
 | Package artifacts + manifest + checksums | `build` | No |
+| Export managed topics as Strimzi KafkaTopic YAML | `export strimzi` | No |
 | View data lineage | `lineage` | No |
 | Export Backstage catalog entities | `docs backstage` | No |
 | Export DataHub metadata-file proposals | `docs datahub` | No |
@@ -371,6 +372,60 @@ Checksums: build/checksums.sha256
 ```
 
 The `manifest.json` contains project metadata and file listing. The `checksums.sha256` file contains SHA-256 hashes of all artifacts for verification.
+
+---
+
+### export
+
+Generate deterministic infrastructure or interoperability artifacts without
+applying them.
+
+```bash
+streamt export COMMAND [OPTIONS]
+```
+
+#### export strimzi
+
+Export managed compiled topics as canonical, offline-validated Strimzi 1.2.0
+`KafkaTopic` YAML.
+
+```bash
+streamt export strimzi [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--namespace NAMESPACE` | Required exact Kubernetes namespace for every emitted KafkaTopic |
+| `--cluster-name NAME` | Required exact Strimzi Kafka cluster label value |
+| `--output-file PATH` | Atomically write canonical YAML instead of writing it to stdout |
+| `--project-dir PATH` | Project directory |
+| `--env ENV` | Target environment in a multi-environment project |
+
+```bash
+# Write a GitOps artifact without contacting Kubernetes or Kafka
+streamt export strimzi \
+  --namespace payments-prod \
+  --cluster-name payments-kafka \
+  --output-file kafkatopics.yaml
+
+# Return the validated documents, counts, and warnings in the normal envelope
+streamt --output json export strimzi \
+  --namespace payments-prod \
+  --cluster-name payments-kafka
+```
+
+Only managed topic artifacts are emitted. External topics are omitted with
+`W120_STRIMZI_EXTERNAL_TOPIC_OMITTED`; adopted topics fail with
+`E509_STRIMZI_INVALID`; non-topic artifacts produce the bounded
+`W121_STRIMZI_ARTIFACTS_OMITTED` warning. Text stdout is only the canonical YAML
+unless `--output-file` is used, in which case successful text stdout is empty.
+
+This command does not contact Kubernetes, apply resources, install or operate
+Strimzi, manage credentials, configure a GitOps controller, or provide deletion
+safety. See [Strimzi KafkaTopic export](strimzi-kafkatopic.md) for the exact
+mapping, file-safety, compatibility, and unsupported boundaries.
 
 ---
 

@@ -1,7 +1,8 @@
 # Strimzi KafkaTopic GitOps export
 
-Status: proposed. Nothing in this specification is implemented or supported
-until every release gate below passes.
+Status: implemented and supported only for deterministic offline export of
+managed topic artifacts as Strimzi 1.2.0 `KafkaTopic` YAML. Direct Kubernetes
+or Strimzi operations and every broader boundary below remain unsupported.
 
 This specification defines a deterministic, offline export of managed streamt
 topic artifacts as Strimzi `KafkaTopic` custom resources. It defines a GitOps
@@ -651,9 +652,12 @@ respectively as
 and
 `quay.io/strimzi/kafka@sha256:1699c345852618c02ed58a168923871ad3a4d9012e4181ecaa138c9bc55a8b6d`;
 those exact values are now frozen for Linux amd64. This pilot is discovery
-evidence only. The permanent normal-mode CI lane remains required to pass
-before this specification's proposed status or any public support claim may
-change.
+evidence only. Permanent normal-mode
+[CI run `33909664040`, job `101143523418`](https://github.com/conduktor/streamt/actions/runs/33909664040/job/101143523418)
+then passed the complete installed-wheel reconciliation, read-back, replay,
+isolation, evidence, and zero-residue cleanup contract. That success supports
+only the offline managed-topic export stated above; it does not turn the
+test-only cluster orchestration into product behavior.
 
 The test-only gate exposes pilot mode only while the selected operator and
 Kafka `imageID` locks are null. A pilot runs the full reconciliation and replay

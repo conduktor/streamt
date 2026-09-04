@@ -12,6 +12,39 @@ candidate currently being prepared and remain subject to the exact-SHA release
 gate in the
 [first public alpha release plan](../plans/2026-09-03-first-alpha-release.md).
 
+### Offline Strimzi 1.2.0 KafkaTopic export
+
+`streamt export strimzi` now emits deterministic, offline-validated
+`kafka.strimzi.io/v1` `KafkaTopic` YAML for managed compiled topic artifacts.
+Callers provide the exact namespace and Strimzi Kafka cluster label. Valid
+Kafka names that are Kubernetes DNS-1123 labels remain direct; other valid
+names receive a deterministic full-SHA-256 resource identity while preserving
+the exact Kafka name in `spec.topicName`. Topic configuration values are
+normalized to the pinned Strimzi contract, and optional file output uses an
+atomic replacement.
+
+External topics are deliberately omitted with
+`W120_STRIMZI_EXTERNAL_TOPIC_OMITTED`; adopted topics fail closed because an
+offline artifact cannot prove safe Topic Operator ownership. Other artifact
+kinds produce the bounded `W121_STRIMZI_ARTIFACTS_OMITTED` warning. Mapping,
+validation, serialization, and output failures use the secret-neutral
+`E509_STRIMZI_INVALID` boundary.
+
+Source, wheel, and direct-sdist exports are byte-identical on Python 3.10
+through 3.14. A digest-pinned test-only lane installs the built wheel and proves
+server-side admission, reconciliation, exact Kubernetes and Kafka read-back,
+and idempotent replay against disposable Strimzi 1.2.0 and Kafka 4.3.1. Decisive
+push [run 33909664040, job 101143523418](https://github.com/conduktor/streamt/actions/runs/33909664040/job/101143523418)
+passed that normal-mode gate after runtime-image discovery in
+[pilot run 33908141332](https://github.com/conduktor/streamt/actions/runs/33908141332).
+
+The production command still ends at the offline YAML bytes. It does not
+contact Kubernetes, apply or delete resources, install or operate Strimzi,
+manage credentials, configure a GitOps controller, detect drift, or persist
+Kubernetes ownership state. See the
+[Strimzi KafkaTopic export](strimzi-kafkatopic.md) for the complete supported
+boundary.
+
 ### Offline DataHub v1.7.0 metadata-file export
 
 `streamt docs datahub` now exports deterministic simplified DataHub Metadata
