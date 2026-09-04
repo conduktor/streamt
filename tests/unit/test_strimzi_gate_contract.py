@@ -6839,6 +6839,65 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     assert '--wheel "${wheel}"' in script
     assert "if (( pilot_status != 2 )); then" in script
     assert "Expected pilot exit 2" in script
+    assert "813dddcbea89c4337b89eb6c18272993450dbdc4cbeba619d8a7d97a13ef1a6b" in script
+    assert script.count("object_pairs_hook=reject_duplicates") == 2
+    assert script.count("parse_constant=reject_constant") == 2
+    assert "Pilot evidence candidate was not removed" in script
+    assert "pilot evidence artifact closure changed" in script
+    heredocs = [block.split("\nPY", 1)[0] for block in script.split("<<'PY'\n")[1:]]
+    assert len(heredocs) == 2
+    validator_tree = ast.parse(heredocs[1])
+    expected_files_assignment = next(
+        node
+        for node in validator_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "expected_files"
+            for target in node.targets
+        )
+    )
+    assert ast.literal_eval(expected_files_assignment.value) == {
+        "broker-0-configs.txt",
+        "broker-0-describe.txt",
+        "broker-1-configs.txt",
+        "broker-1-describe.txt",
+        "cleanup.json",
+        "ctr-images.txt",
+        "ctr-load-0-after.txt",
+        "ctr-load-0-before.txt",
+        "ctr-load-0-config.json",
+        "ctr-load-0-import-0.json",
+        "ctr-load-0-import-1.json",
+        "ctr-load-1-after.txt",
+        "ctr-load-1-before.txt",
+        "ctr-load-1-config.json",
+        "ctr-load-1-import-0.json",
+        "ctr-load-1-import-1.json",
+        "events.json",
+        "generated-checksums.json",
+        "kafka-version.txt",
+        "kafkatopic-crd-sha256.json",
+        "kafkatopic-crd.json",
+        "kubernetes-version.json",
+        "node-image.json",
+        "nodes.json",
+        "operator-deployment.json",
+        "operator.log",
+        "pilot-image-ids.json",
+        "strimzi-resources.json",
+        "summary.json",
+        "timeline.json",
+        "topic-first.json",
+        "topic-operator.log",
+        "topic-replay.json",
+        "workload-pods.json",
+    }
+    assert '(upload / "kafka-version.txt").read_bytes() != b"4.3.1\\n"' in script
+    assert "pilot cleanup was not exact and residue-free" in script
+    assert '"kafka-version-verified"' in script
+    assert "elapsed != sorted(elapsed)" in script
+    assert "pilot imageID evidence is not the exact normalized chain" in script
+    assert 'checksums["wheel_sha256"] != wheel_sha256' in script
     assert "summary != expected_summary" in script
     assert '"status": "pilot-pending"' in script
     assert '"platform": "linux/amd64"' in script
