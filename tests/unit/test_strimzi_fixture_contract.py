@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from streamt.compiler.manifest import Manifest
-from streamt.deployer.plan_file import manifest_checksum
+from streamt.core.manifest_identity import manifest_checksum
 
 FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "strimzi" / "1.2.0"
 JSON_FIXTURES = (

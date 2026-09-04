@@ -5,9 +5,11 @@
 Implement the narrow, deterministic boundary in
 [`Strimzi KafkaTopic GitOps export`](../specs/strimzi-kafkatopic-export.md).
 
-Status on 2026-09-04: Slice 0 is complete. The pinned CRD, license, provenance
-notice, reviewed byte fixtures, and wheel/sdist boundary checks are frozen;
-Slice 1 validation work is underway. No current support claim changes.
+Status on 2026-09-04: Slices 0 and 1 are complete. The pinned CRD, license,
+provenance notice, reviewed byte fixtures, wheel/sdist boundary checks, strict
+topic parser, pure manifest identity, closed document contract, and pinned-CRD
+validation are frozen; Slice 2 mapper work is underway. No current support
+claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -72,6 +74,7 @@ git diff --check -- src/streamt/integrations/gitops/schemas tests/fixtures/strim
 ### Ownership
 
 - `src/streamt/compiler/topic_artifact.py`
+- `src/streamt/compiler/__init__.py` (lazy compatibility exports)
 - `src/streamt/core/manifest_identity.py`
 - `src/streamt/integrations/gitops/strimzi_validation.py`
 - `src/streamt/deployer/plan_file.py` (import-only compatibility extraction)
@@ -114,6 +117,9 @@ the extracted pure checksum helper without changing its bytes.
 8. Allocate `E509_STRIMZI_INVALID`,
    `W120_STRIMZI_EXTERNAL_TOPIC_OMITTED`, and
    `W121_STRIMZI_ARTIFACTS_OMITTED` without changing other code semantics.
+9. Preserve the package-level `Compiler` and `Manifest` exports lazily so that
+   importing the strict topic boundary does not eagerly import runtime,
+   deployment, planner, provider, or state layers.
 
 ### Acceptance
 
@@ -129,6 +135,9 @@ the extracted pure checksum helper without changing its bytes.
   malformed document fields fail closed;
 - checksum parity, redacted-secret stability, non-secret sensitivity, and no
   deployer import are exact; and
+- fresh-process imports of the topic and Strimzi validation boundaries load no
+  runtime, deployment, planner, provider, or state modules while legacy
+  compiler exports retain exact identity; and
 - errors and representations contain no confidential sentinels or raw rejected
   values.
 

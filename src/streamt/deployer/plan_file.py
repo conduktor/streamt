@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import streamt.core.manifest_identity as _manifest_identity
 from streamt import __version__
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import secret_neutral_connector_changes
@@ -123,10 +124,11 @@ def _checksum(value: object) -> str:
 
 
 def manifest_checksum(manifest: Manifest) -> str:
-    """Hash deployable project content while excluding compilation time."""
-    manifest_data = manifest.to_dict()
-    manifest_data.pop("compiled_at", None)
-    return _checksum(manifest_data)
+    """Retain the deployer-facing PlanFileError compatibility boundary."""
+    try:
+        return _manifest_identity.manifest_checksum(manifest)
+    except _manifest_identity.ManifestIdentityError:
+        raise PlanFileError("Plan manifest content could not be checksummed") from None
 
 
 def environment_fingerprint(runtime: object, environment: str) -> str:
