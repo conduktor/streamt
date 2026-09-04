@@ -90,6 +90,10 @@ streamt export strimzi \
 project parsing, compilation, or file creation. Neither value is trimmed,
 case-folded, slugged, or inferred.
 
+The command validates those required values itself rather than delegating the
+missing-value case to Click, so absence and malformed input use the same
+`E509_STRIMZI_INVALID` boundary defined below.
+
 The namespace MUST be a Kubernetes DNS-1123 label: 1 through 63 lower-case
 ASCII alphanumeric or `-` characters, beginning and ending with an
 alphanumeric character. The cluster name MUST satisfy the same rule because it
@@ -111,6 +115,13 @@ stream is atomically written and stdout is empty. Quiet mode suppresses text
 and warnings but not errors or a requested file write. Quiet mode without an
 output file is invalid because it has no artifact sink.
 
+Quiet success with an output file emits no stdout or stderr, including when the
+root output mode is JSON. Quiet failure still emits the ordinary JSON error
+envelope in JSON mode and the fixed stderr error because quiet never suppresses
+errors. A non-quiet JSON success emits warnings only in the envelope and keeps
+stderr empty; a non-quiet text success emits each warning occurrence to stderr
+in its frozen order.
+
 JSON mode emits one ordinary streamt formatter envelope. Its `data` contains
 exactly `target_release`, `api_version`, `kind`, `manifest_checksum`,
 `documents`, `counts`, and nullable `output_file`; it does not interleave raw
@@ -122,6 +133,11 @@ lengths of the `schemas`, `flink_jobs`, `test_jobs`, `connectors`,
 collections. A missing additive removal collection has length zero. An
 unexpected artifact collection fails closed rather than being silently
 omitted.
+
+When present, JSON `output_file` is the exact lexical argument supplied by the
+caller, not a resolved absolute path. Project-parser compatibility warnings are
+suppressed at this boundary; only the frozen W120 and W121 mapper warnings can
+appear in Strimzi output.
 
 An export with no managed topics succeeds and its canonical YAML is zero bytes.
 
@@ -301,6 +317,15 @@ same-directory private temporary file is written, flushed, `fsync`ed, and
 atomically replaced. Failure preserves an existing target and removes every
 staging file. Symlink and non-regular-file targets fail closed.
 
+Missing parent directories are created before staging. The destination is
+checked with `lstat` before staging and again immediately before replacement;
+directories, FIFOs, sockets, devices, symlinks, and a destination swapped to
+one of those types all fail. The randomized staging file is in the destination
+directory with mode `0600`. Cleanup covers descriptor creation, wrapping,
+write, flush, `fsync`, close, and replacement failures, including
+`BaseException`, while command-level error conversion does not catch
+`BaseException`.
+
 ## Secret-neutral failure boundary
 
 The exporter never reads runtime endpoints or constructs provider/state
@@ -309,9 +334,40 @@ connector configuration, SQL, environment-variable values, Python exception
 text, temporary paths, or rejected configuration values in output, warnings,
 errors, logs, or object representations.
 
-All failures use `E509_STRIMZI_INVALID`, a fixed secret-neutral message, and a
-safe structural location. Tests MUST seed distinct confidential sentinels in
-Kafka runtime endpoints, Schema Registry, Flink, Connect, Gateway, state,
+All command failures use `E509_STRIMZI_INVALID` with the exact message
+`Strimzi export failed safely` and one safe structural location. The location
+is selected from this closed table:
+
+| Location | Failure phase |
+| --- | --- |
+| `target.namespace` | missing or invalid namespace |
+| `target.cluster_name` | missing or invalid cluster name |
+| `output` | quiet without an output-file sink or another output-mode invariant |
+| `project` | project path resolution, parsing, environment selection, or validation |
+| `manifest` | dry-run compilation |
+| `manifest_checksum` | whole-manifest identity calculation |
+| a mapper location from its closed allowlist | strict artifact mapping or document validation |
+| `output_file` | parent creation, destination validation, staging, write, sync, close, or replace |
+| `stdout` | final raw-text or JSON-envelope write/flush |
+| `export` | unexpected ordinary-exception containment fallback |
+
+The mapper allowlist is exactly `project`, `manifest_checksum`, `target`,
+`artifacts`, `artifacts/<KIND>` for one of the eight frozen artifact collection
+keys, `documents`, and the result-factory locations `export.manifest_checksum`,
+`export.counts`, `export.documents`, `export.warnings`, and `export.yaml`. Any
+other mapper location becomes `export`.
+
+The command catches its named parse, validation, compile, identity, mapper,
+schema, YAML, and I/O failures at the phase locations above. A final
+`except Exception` containment guard maps every remaining ordinary exception to
+`export` without exposing its text; it deliberately does not catch
+`BaseException`. Before emitting an error it clears any materialized data,
+warnings, and prior errors, so a late write failure cannot leak documents.
+Parser and compiler logging is suppressed for this command even under root
+`--verbose`.
+
+Tests MUST seed distinct confidential sentinels in Kafka runtime endpoints,
+Schema Registry, Flink, Connect, Gateway, state,
 connection configuration, SQL, omitted tags, and rejected topic-config values
 and prove that none reaches success or failure surfaces. Separate public
 identity sentinels MUST be used for project, physical topic, and logical owner
@@ -321,6 +377,13 @@ from warnings, errors, logs, exception text, and unrelated fields. An omitted
 external topic's public identities MUST not appear because it has no emitted
 document. Expected public identities in those allowlisted fields are not
 classified as secrets.
+
+A fresh import of `streamt.cli` and of its Strimzi export command module MUST
+not import deployers, the deployment planner, providers, state backends, state
+services, network clients, or subprocess helpers. Command invocation may load
+`streamt.core.runtime` and `streamt.core.deployment_state` only as project
+configuration models needed by the existing parser/compiler; it MUST NOT
+construct or import deployment behavior from those layers.
 
 ## Validation evidence levels
 

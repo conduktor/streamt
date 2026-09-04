@@ -220,6 +220,10 @@ Do not add target fields to streamt project YAML or runtime configuration.
 ### Work
 
 1. Add the `export` group and `strimzi` command with only the frozen options.
+   Convert top-level CLI registration to a lazy command registry first so a
+   fresh CLI import does not load every deployment command and state backend;
+   preserve all current names, aliases, help behavior, and command identities
+   on resolution.
 2. Validate namespace and cluster name before parsing. Parse and validate the
    project, compile dry-run exactly once, compute the secret-neutral
    `manifest_checksum()` through the pure helper, map, validate, serialize
@@ -229,12 +233,16 @@ Do not add target fields to streamt project YAML or runtime configuration.
 4. Reuse or extract a small same-directory atomic writer only when its behavior
    remains byte-for-byte compatible with existing exporters. Reject symlinks
    and non-regular destinations and clean staging files on every exception.
-5. Catch only defined parse/environment/export/schema/YAML/I/O failures at the
-   command boundary. Emit E509 with a fixed safe message and structural
-   location; never print arbitrary exception text.
+5. Catch the defined parse/environment/export/schema/YAML/I/O failures at their
+   frozen phase locations, followed by one ordinary-`Exception` containment
+   guard at `export`. Emit E509 with the exact fixed message and never print
+   arbitrary exception text. Do not catch `BaseException` at command level.
 6. Prove the command/import boundary does not import deployer, planner,
    provider, or state modules and that no Kubernetes client, socket,
    subprocess, or HTTP session is constructed.
+7. Suppress parser/compiler logging for this command even under `--verbose`,
+   suppress parser compatibility warnings, retain duplicate mapper warnings,
+   and clear all formatter data and diagnostics before every failure flush.
 
 ### Acceptance
 
