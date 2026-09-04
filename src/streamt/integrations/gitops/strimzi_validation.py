@@ -23,6 +23,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 
 from streamt.compiler.topic_artifact import (
     TopicArtifactFormatError,
+    is_canonical_yaml_text,
     kafka_topic_metadata_name,
     validate_dns1123_label,
     validate_kafka_topic_name,
@@ -115,11 +116,7 @@ def _exact_string(value: object, expected: str, location: str) -> str:
 
 
 def _safe_annotation_value(value: object) -> bool:
-    return (
-        type(value) is str
-        and bool(value)
-        and all(unicodedata.category(char) not in {"Cc", "Cs"} for char in value)
-    )
+    return type(value) is str and bool(value) and is_canonical_yaml_text(value)
 
 
 def _valid_config_key(value: object) -> bool:
@@ -161,9 +158,7 @@ def _validate_config(value: object) -> None:
     for key, item in config.items():
         if not _valid_config_key(key):
             raise _validation_failure("/spec/config")
-        if type(item) is not str or any(
-            unicodedata.category(char) in {"Cc", "Cs"} for char in item
-        ):
+        if not is_canonical_yaml_text(item):
             raise _validation_failure("/spec/config")
 
 

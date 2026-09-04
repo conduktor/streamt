@@ -220,9 +220,11 @@ spec:
 The lifecycle owner type MUST be exactly `model` or `source`; a source owner is
 expected for a compiler-generated managed DLQ attached to a source test. Any
 other owner type fails. All annotation keys and values are strings. Project and
-logical owner annotation values reject NUL, Unicode control characters, and
-surrogate code points but are otherwise exact. The complete annotation map MUST
-remain within the Kubernetes 256 KiB annotation limit. `config` is always
+logical owner annotation values reject NUL, Unicode control characters,
+surrogate code points, and the exact code points U+FEFF, U+FFFE, U+FFFF, and
+U+10FFFF that the pinned canonical YAML emitter would backslash-escape; accepted
+values are otherwise exact. The complete annotation map MUST remain within the
+Kubernetes 256 KiB annotation limit. `config` is always
 present; an empty map is emitted exactly as `config: {}`. No field in the shape
 above is omitted. Documents are sorted by
 `(spec.topicName, metadata.name)` using Unicode code point order.
@@ -258,7 +260,8 @@ All accepted values are emitted as YAML strings because Kafka configuration is
 textual at the Topic Operator boundary:
 
 - strings are preserved byte-for-byte after rejecting NUL, Unicode control
-  characters, and surrogate code points;
+  characters, surrogate code points, and U+FEFF, U+FFFE, U+FFFF, and U+10FFFF,
+  which the pinned canonical YAML emitter would otherwise backslash-escape;
 - booleans become lower-case `"true"` or `"false"`; and
 - integers become their base-10 representation without a leading `+`.
 
@@ -272,6 +275,25 @@ aliases, anchors, explicit tags, end markers, comments, timestamps, or
 environment-dependent values. Every non-empty document begins with `---`; the
 stream has one final newline and no trailing `...`. Mapping order is exactly
 the order specified above, with sorted configuration keys.
+
+Strings matching the frozen conservative quoting predicate derived from the
+Kubernetes YAML conversion stack's
+[go-yaml v2 resolver](https://github.com/go-yaml/yaml/blob/v2.4.0/resolve.go)
+MUST use single-quoted scalar style. The predicate contains the resolver's
+exact boolean, null, merge-key, infinity, and NaN words. It also removes every
+underscore and quotes lexical decimal/scientific-number forms, base-prefixed
+integer forms, and values with a timestamp-shaped `YYYY-M-D` prefix. This
+includes exponent-only floats such as `1e3`, YAML 1.2 octal values such as
+`0o7`, and ambiguous mapping keys. It is intentionally a conservative lexical
+superset: values such as `_1`, invalid timestamp-shaped strings, or numeric
+overflow strings MAY be quoted even when the resolver would retain a string.
+The quoting preserves the exact string type and value; it is not normalization.
+Strings outside this frozen predicate retain the pinned emitter's ordinary
+style, so the rule does not change the reviewed fixture bytes.
+
+No accepted scalar is serialized with a backslash-u or backslash-U Unicode
+escape. The narrow four-code-point exclusion above is part of the canonical
+transport contract; it does not normalize or rewrite accepted input.
 
 The complete document tuple MUST pass strict local validation before any byte
 is written. For `--output-file`, serialization completes in memory, then a

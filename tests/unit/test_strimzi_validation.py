@@ -95,6 +95,9 @@ class _HostileString(str):
 
 
 class _HostileValue:
+    def __bool__(self) -> bool:
+        raise AssertionError("private-hostile-truth-sentinel")
+
     def __eq__(self, _other: object) -> bool:
         raise AssertionError("private-hostile-equality-sentinel")
 
@@ -633,6 +636,10 @@ def test_closed_validator_requires_exact_metadata_name_for_physical_topic() -> N
     [
         ("streamt.dev/manifest-checksum", "sha256:" + "A" * 64),
         ("streamt.dev/owner-name", "bad\0owner"),
+        ("streamt.dev/owner-name", "escaped\ufeffowner"),
+        ("streamt.dev/owner-name", "noncharacter\ufffeowner"),
+        ("streamt.dev/owner-name", "noncharacter\uffffowner"),
+        ("streamt.dev/owner-name", "last\U0010ffffowner"),
         ("streamt.dev/owner-type", "connector"),
         ("streamt.dev/ownership-mode", "external"),
         ("streamt.dev/project", "bad\nproject"),
@@ -687,6 +694,10 @@ def test_closed_validator_accepts_exact_annotation_limit_and_rejects_one_more_by
         {"ordinary": True},
         {"ordinary": 1},
         {"ordinary": "bad\nvalue"},
+        {"ordinary": "escaped\ufeffvalue"},
+        {"ordinary": "noncharacter\ufffevalue"},
+        {"ordinary": "noncharacter\uffffvalue"},
+        {"ordinary": "last\U0010ffffvalue"},
         {"": "value"},
         {"caf\N{LATIN SMALL LETTER E WITH ACUTE}": "value"},
     ],

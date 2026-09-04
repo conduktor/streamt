@@ -5,11 +5,12 @@
 Implement the narrow, deterministic boundary in
 [`Strimzi KafkaTopic GitOps export`](../specs/strimzi-kafkatopic-export.md).
 
-Status on 2026-09-04: Slices 0 and 1 are complete. The pinned CRD, license,
+Status on 2026-09-04: Slices 0 through 2 are complete. The pinned CRD, license,
 provenance notice, reviewed byte fixtures, wheel/sdist boundary checks, strict
 topic parser, pure manifest identity, closed document contract, and pinned-CRD
-validation are frozen; Slice 2 mapper work is underway. No current support
-claim changes.
+validation are frozen. The pure mapper now emits defensive documents and
+canonical Kubernetes-safe YAML with exact omission warnings and counts; Slice 3
+CLI work is underway. No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -189,6 +190,10 @@ mypy src/streamt/compiler/topic_artifact.py src/streamt/core/manifest_identity.p
   binding;
 - deterministic warning order and exact canonical bytes across repeated runs;
 - caller mutations cannot affect the result; and
+- every accepted Unicode scalar remains unescaped in canonical YAML, while the
+  exact four code points the pinned emitter would escape fail closed; and
+- Go/Kubernetes-resolver-ambiguous string values and mapping keys retain their
+  string type through deterministic single quoting; and
 - confidential runtime, connector, SQL, tag, and rejected-config sentinels never
   leak; managed public project/topic/owner sentinels appear only in the exact
   allowlisted document fields; and omitted external identities remain absent.

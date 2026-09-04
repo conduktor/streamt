@@ -22,6 +22,9 @@ _TOPIC_FIELDS = frozenset(
 _OWNERSHIP_FIELDS = frozenset({"mode", "project", "type", "name"})
 _OWNER_TYPES = frozenset({"model", "source"})
 _SUPPORTED_OWNERSHIP_MODES = frozenset({"managed", "external"})
+_CANONICAL_YAML_ESCAPED_CHARACTERS = frozenset(
+    {"\ufeff", "\ufffe", "\uffff", "\U0010ffff"}
+)
 _DECIMAL_CHUNK_BASE = 1_000_000_000
 _DECIMAL_CHUNK_WIDTH = 9
 _KAFKA_TOPIC_NAME = re.compile(r"[A-Za-z0-9._-]{1,249}\Z", re.ASCII)
@@ -84,10 +87,17 @@ def _is_exact_dict(value: object) -> bool:
     return type(value) is dict
 
 
+def is_canonical_yaml_text(value: object) -> bool:
+    """Return whether exact text can be emitted without Unicode escapes."""
+    return type(value) is str and all(
+        unicodedata.category(char) not in {"Cc", "Cs"}
+        and char not in _CANONICAL_YAML_ESCAPED_CHARACTERS
+        for char in value
+    )
+
+
 def _is_safe_annotation_text(value: object) -> bool:
-    if type(value) is not str or not value:
-        return False
-    return all(unicodedata.category(char) not in {"Cc", "Cs"} for char in value)
+    return type(value) is str and bool(value) and is_canonical_yaml_text(value)
 
 
 def _require_exact_fields(
@@ -199,7 +209,7 @@ def _is_valid_config_key(value: object) -> bool:
 
 def _normalize_config_scalar(value: object) -> str:
     if type(value) is str:
-        if any(unicodedata.category(char) in {"Cc", "Cs"} for char in value):
+        if not is_canonical_yaml_text(value):
             raise TopicArtifactFormatError(
                 "compiled topic config contains an invalid string value"
             )
@@ -327,6 +337,7 @@ __all__ = [
     "ParsedTopicOwnership",
     "TopicArtifactFormatError",
     "is_dns1123_label",
+    "is_canonical_yaml_text",
     "kafka_topic_metadata_name",
     "parse_compiled_topic_artifact",
     "parse_compiled_topic_artifacts",

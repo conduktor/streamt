@@ -36,6 +36,14 @@ class _IntegerSubclass(int):
     pass
 
 
+class _HostileTruthValue:
+    def __bool__(self) -> bool:
+        raise RuntimeError("private-hostile-truth-sentinel")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("private-hostile-repr-sentinel")
+
+
 def test_importing_topic_boundary_does_not_import_runtime_or_deployment_layers(
     tmp_path: Path,
 ) -> None:
@@ -371,8 +379,19 @@ def test_sensitive_key_expression_does_not_overmatch(key: str) -> None:
     assert parsed.config[key] == "safe"
 
 
-@pytest.mark.parametrize("value", ["line\nfeed", "nul\0value", "surrogate\udfff"])
-def test_rejects_control_or_surrogate_config_strings(value: str) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "line\nfeed",
+        "nul\0value",
+        "surrogate\udfff",
+        "escaped\ufeffbom",
+        "noncharacter\ufffe",
+        "noncharacter\uffff",
+        "last-code-point\U0010ffff",
+    ],
+)
+def test_rejects_text_that_cannot_be_emitted_unescaped(value: str) -> None:
     with pytest.raises(TopicArtifactFormatError) as raised:
         parse_compiled_topic_artifact(
             _topic(config={"ordinary": value}),
@@ -381,6 +400,18 @@ def test_rejects_control_or_surrogate_config_strings(value: str) -> None:
     assert "line" not in str(raised.value)
     assert "nul" not in str(raised.value)
     assert "surrogate" not in str(raised.value)
+    assert "escaped" not in str(raised.value)
+    assert "noncharacter" not in str(raised.value)
+    assert "last-code-point" not in str(raised.value)
+
+
+@pytest.mark.parametrize("value", ["\ufeff", "\ufffe", "\uffff", "\U0010ffff"])
+def test_rejects_owner_text_that_canonical_yaml_would_escape(value: str) -> None:
+    with pytest.raises(TopicArtifactFormatError):
+        parse_compiled_topic_artifact(
+            _topic(owner_name=f"owner{value}"),
+            expected_project=PROJECT,
+        )
 
 
 @pytest.mark.parametrize("missing", ["name", "partitions", "replication_factor", "config", "ownership"])
@@ -454,6 +485,28 @@ def test_rejects_invalid_expected_project_without_echo() -> None:
     with pytest.raises(TopicArtifactFormatError) as raised:
         parse_compiled_topic_artifact(_topic(), expected_project=secret)
     assert "private" not in str(raised.value)
+
+
+@pytest.mark.parametrize("field", ["expected_project", "owner_project", "owner_name"])
+def test_hostile_truthiness_never_escapes_the_closed_ownership_boundary(field: str) -> None:
+    hostile = _HostileTruthValue()
+    raw = _topic()
+    expected_project: object = PROJECT
+    ownership = raw["ownership"]
+    assert isinstance(ownership, dict)
+    if field == "expected_project":
+        expected_project = hostile
+    elif field == "owner_project":
+        ownership["project"] = hostile
+    else:
+        ownership["name"] = hostile
+
+    with pytest.raises(TopicArtifactFormatError) as raised:
+        parse_compiled_topic_artifact(
+            raw,
+            expected_project=expected_project,  # type: ignore[arg-type]
+        )
+    assert "private-hostile" not in f"{raised.value!s} {raised.value!r}"
 
 
 def test_collection_is_tuple_and_rejects_non_list_and_duplicate_kafka_identity() -> None:
