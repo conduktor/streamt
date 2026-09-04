@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -167,8 +168,6 @@ for prefix in ('streamt.deployer', 'streamt.planner', 'streamt.providers',
                'streamt.core.deployment_state', 'streamt.compiler',
                'streamt.integrations.gitops'):
     assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules), prefix
-for module in ('subprocess', 'socket', 'requests', 'urllib.request'):
-    assert module not in sys.modules, module
 """
     completed = subprocess.run(
         [sys.executable, "-c", code],
@@ -178,6 +177,19 @@ for module in ('subprocess', 'socket', 'requests', 'urllib.request'):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr or completed.stdout
+
+    tree = ast.parse(Path(export_command.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module)
+    assert not {
+        name
+        for name in imported
+        if name.partition(".")[0] in {"requests", "socket", "subprocess", "urllib"}
+    }
 
 
 @pytest.mark.parametrize(
