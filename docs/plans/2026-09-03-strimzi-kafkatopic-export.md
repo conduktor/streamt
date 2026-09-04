@@ -12,8 +12,11 @@ validation are frozen. The pure mapper now emits defensive documents and
 canonical Kubernetes-safe YAML with exact omission warnings and counts. The
 offline CLI, lazy command registry, secret-neutral failure boundary, and atomic
 optional output are implemented. Clean source, wheel, and direct-sdist parity
-now runs on Python 3.10 through 3.14; Slice 5 real-cluster acceptance is next.
-No current support claim changes.
+now runs on Python 3.10 through 3.14. Slice 5's reviewed local Linux arm64 pilot
+and subsequent normal-mode run pass the complete real Strimzi 1.2.0/Kafka 4.3.1
+flow, and the learned Kubernetes image IDs are frozen. The Linux amd64 CI pilot
+and permanent normal-mode CI lane remain before Slice 5 is complete. No current
+support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
 must be resolved in the specification before code lands.
@@ -389,14 +392,22 @@ on a missing, duplicate, or additional image-bearing field:
   reference;
 - replace each of `STRIMZI_KAFKA_IMAGES`,
   `STRIMZI_KAFKA_CONNECT_IMAGES`, and
-  `STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES` with the single exact mapping
-  `4.3.1=<SELECTED-PLATFORM-KAFKA-CHILD-REFERENCE>`; and
+  `STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES` only after proving the exact ordered
+  source keys `4.2.0`, `4.2.1`, `4.3.0`, and `4.3.1`, then rewrite all four
+  ordered keys to `<SELECTED-PLATFORM-KAFKA-CHILD-REFERENCE>` with one canonical
+  newline-terminated entry per key; and
 - remove the optional and unreachable Kafka Bridge, Kaniko, Buildah, and Maven
   builder default-image environment variables. The exact Maven variable is
   `STRIMZI_DEFAULT_MAVEN_BUILDER`; it is part of the closed inventory even
   though its name does not end in `_IMAGE` or `_IMAGES`. No Bridge, Connect,
   build, MirrorMaker, User Operator, Kafka Exporter, or Cruise Control resource
   is permitted in the fixture.
+
+The first three Kafka version-map entries are startup-compatibility aliases
+required by Strimzi's complete supported-version lookup; they do not expand the
+tested Kafka versions. The reviewed Kafka custom resource still selects exactly
+`4.3.1`, every alias resolves to the same pinned 4.3.1 child, pull policy remains
+`Never`, and the runtime workload closure permits no other Kafka image.
 
 The same structural pass MUST close over namespaces. It adds
 `metadata.namespace` to exactly these seven namespaced objects in the
@@ -434,7 +445,12 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
 2. Download and verify all tools and assets and pull the selected-platform kind
    node, operator, and Kafka child manifests by exact digest while runner egress
    is still available. Verify every frozen index-to-child relationship and each
-   local child-to-config identity against `images.lock.json`. A locked GitHub
+   child manifest's own `config.digest` against `images.lock.json`. Treat the
+   host image-store `Id` as backend-specific: accept only classic
+   `Id=<config>` with no descriptor or containerd-store `Id=<child>` with an
+   exact child `Descriptor.digest`, in both cases with the exact singleton child
+   repo digest and selected Linux platform. Require the created node's resolved
+   image to use the corresponding frozen config-or-child form. A locked GitHub
    release URL may follow exactly one HTTPS redirect from `github.com` to
    `release-assets.githubusercontent.com`; all other redirect behavior fails
    closed. Raw GitHub and `dl.k8s.io` URLs remain direct. Install the
@@ -442,29 +458,76 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    YAML twice before creating any Docker network or cluster, and prove exact
    bytes under the offline exporter guards.
 3. Create the unique Docker network explicitly with `docker network create
-   --internal`. Inspect the exact network ID and require `Internal=true` before
-   giving it to kind. Set `KIND_EXPERIMENTAL_DOCKER_NETWORK` to that exact name
-   and invoke pinned kind with the API server bound to `127.0.0.1`. This selector
-   is experimental in kind v0.33.0, not a supported public interface; the gate
-   deliberately pins and tests that implementation and MUST fail if the
-   expected unsupported-selector warning or attachment behavior changes.
+   --driver bridge --opt
+   com.docker.network.bridge.enable_ip_masquerade=false`. Inspect the exact
+   network ID and require `Driver=bridge`, `Internal=false`, and exactly one of
+   two inspected option maps: the classic singleton containing only
+   `com.docker.network.bridge.enable_ip_masquerade=false`, or Docker
+   Desktop/containerd's triple that additionally reports
+   `com.docker.network.enable_ipv4=true` and
+   `com.docker.network.enable_ipv6=false`. Partial maps, wrong values, and
+   unknown options fail closed. Require no
+   initial container attachment before giving the network to kind. Do not use
+   Docker `--internal`: Docker Desktop suppresses the loopback host binding
+   needed by this gate, and kind cannot bootstrap DNS on that topology. Set
+   `KIND_EXPERIMENTAL_DOCKER_NETWORK` to the exact network name and invoke pinned
+   kind with the API server bound to `127.0.0.1`. This selector is experimental
+   in kind v0.33.0, not a supported public interface; the gate deliberately pins
+   and tests that implementation and MUST fail if the expected
+   unsupported-selector warning or attachment behavior changes.
 4. After cluster creation, inspect Docker rather than trusting configuration:
-   require every cluster node to be attached to the exact internal network and
-   no other Docker network, require the only published cluster port to be the
-   Kubernetes API bound to `127.0.0.1`, and require Kafka and operator services
-   to have no host port. Check that `bash` and `timeout` exist in the pinned node,
-   then run a bounded TCP probe from its network namespace to a literal external
-   IP; any successful connection fails the gate. `Internal!=true`, a skipped or
-   inoperable probe, or unexpected attachment/port also fails closed.
+   require the one derived control-plane node to be the network's only
+   attachment and to be attached to no other Docker network, require the only
+   published cluster port to be the Kubernetes API bound to `127.0.0.1`, and
+   require Kafka and operator services to have no host port. Immediately after
+   kind is ready, run exact `docker exec <node> ip route del default`, then
+   require exact empty output from both `ip -4 route show default` and
+   `ip -6 route show default`. Check that `bash` and `timeout` exist in the
+   pinned node, prove that the local `127.0.0.1:6443` TCP control succeeds, and
+   require a bounded TCP probe to literal `1.1.1.1:443` to fail. A skipped or
+   inoperable control, a nonempty default-route inventory, a successful external
+   probe, or an unexpected attachment/port fails closed. Repeat the exact
+   attachment and dual-stack route inventories after replay so later activity
+   cannot silently reopen the node. Apply no operator or Kafka object before the
+   initial isolation proof passes.
 5. Only after the nodes exist, load the exact selected-platform operator and
-   Kafka child images into every node. Enumerate the node's containerd store
-   and require both child manifests to map to their locked config identities
-   before applying any Strimzi object; `Never` pull policy prevents
-   reconciliation from substituting or fetching a tag.
+   Kafka child images into every node. Sample bounded exact `ctr
+   --namespace=k8s.io images list -q` output immediately before and after each
+   load and classify the exact inventory delta. The all-classic representation
+   adds only the exact Quay child plus its frozen config pseudo-reference. The
+   all-Docker-Desktop representation adds only the config pseudo-reference and
+   two bare, same-date, calendar-valid `import-YYYY-MM-DD@sha256:<digest>`
+   references: one child digest and one distinct outer digest. Reject mixed
+   modes and shared import identities across operator and Kafka.
+
+   For each Desktop delta, read the outer content by digest, require its raw
+   SHA-256 to equal that digest, and validate a closed schema-version-2 OCI
+   index containing exactly one positive-sized Docker schema-2 descriptor to
+   the frozen child with the exact corresponding Quay source annotation. Tag
+   the child import to the exact target, re-enumerate, then remove only the two
+   discovered import references using `ctr images rm` without `--sync` or
+   content deletion. Require the post-removal names to be exactly the prior
+   inventory plus the target and config pseudo-reference. The unique,
+   disposable, pre-workload node provides exclusive ownership across the
+   otherwise unavoidable final validation-to-removal interval.
+
+   After both Desktop images are normalized, restart containerd exactly once,
+   wait boundedly for the exact Kubernetes Node to report Ready, and repeat
+   node attachment, loopback API publication, dual-stack empty default-route,
+   positive local TCP, and negative external TCP checks. Prove the normalized
+   `ctr -q` inventory remains unchanged, then enumerate CRI and require each
+   selected record to have no repo tags, only its exact Quay child repo digest,
+   and its frozen config identity. The all-classic path performs no tag,
+   removal, or restart. Complete every check before applying any Strimzi object;
+   `Never` pull policy prevents reconciliation from substituting or fetching a
+   tag.
 6. Install the exact rewritten operator manifest in one namespace, create the
    single-node Kafka fixture, and poll with monotonic bounded deadlines: five
    minutes for operator availability, ten minutes for Kafka `Ready=True`, five
    minutes for all first-pass topic reconciliation, and five minutes for replay.
+   For the exact Kafka identity, an absent or null initial `.status` is pending;
+   any present non-mapping status is invalid, while a valid status whose
+   generation or `Ready` condition has not converged remains pending.
    The CI job timeout is 30 minutes. The gate has a shorter global internal
    deadline that reserves bounded time for evidence capture, cleanup/residue
    verification, and failure-only upload.
@@ -472,7 +535,15 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    apply the first copy. Enumerate all Cluster Operator and test-namespace Pod
    container and init-container image references and require only the exact
    selected-platform operator and Kafka child references permitted by the
-   closure. A first reviewed pilot records the exact Kubernetes `imageID`
+   closure. Each `spec.image` must be the exact child. Its corresponding
+   Kubernetes status `image` may be only that child or its own frozen bare
+   config digest, covering the two reviewed backend display forms without
+   admitting an index, manifest, tag, missing value, or another image's config.
+   Bind raw pod and service reads to Kubernetes 1.35's exact generic `v1/List`
+   envelope with metadata `{resourceVersion: ""}` and require every item to be
+   exact `v1/Pod` or `v1/Service` for that collection before normalization.
+   Reject typed raw list forms, mixed kinds, or extra/missing envelope fields.
+   A first reviewed pilot records the exact Kubernetes `imageID`
    representation for each workload under the pinned kind node/containerd
    combination in `images.lock.json`; CI then requires exact equality to those
    frozen values. It MUST NOT accept an arbitrary index, child-manifest, or
@@ -507,12 +578,18 @@ CRD digest, operator Deployment/Pod descriptions, operator and Topic Operator
 logs, Kafka/NodePool/Topic JSON, events, broker descriptions/configs, generated
 YAML checksums, and poll timeline. Kubeconfig, Secrets, service-account tokens,
 environment dumps, registry configuration, and unbounded logs are never
-uploaded.
+uploaded. A capture command returning nonzero produces fixed JSON at the
+original evidence filename with only its integer return code and a
+`capture-failed` status. A runner exception or timeout produces a fixed
+`<filename>.failed` artifact without raw diagnostic data. These neutral records
+complete an ordinary partial-cluster capture without forcing marker-only
+staging. Failure to represent every scheduled item before the capture deadline,
+or any candidate evidence secret/write failure, rejects the complete set.
 
 After capture, cleanup deletes the exact kind cluster, removes the exact
-internal Docker network and temporary runtime material, and verifies that no
-container/network with the unique prefix remains. Bounded capture and cleanup
-evidence remains in a candidate directory that is never uploaded directly.
+non-masquerading Docker bridge and temporary runtime material, and verifies
+that no container/network with the unique prefix remains. Bounded capture and
+cleanup evidence remains in a candidate directory that is never uploaded directly.
 The staging step creates a fresh upload directory and copies only files for
 which the complete bounded candidate set passed its final secret scan. On any
 secret match, size violation, or scan/read failure, it stages none of the
@@ -530,10 +607,11 @@ disposal is the final isolation boundary.
   digest, image transformation, timeout, experimental network selector,
   isolation assertion, pull policy, log allowlist, cleanup target, and wheel
   handoff statically;
-- runtime checks verify the internal network, node attachments, loopback-only
-  API publication, failed egress probe, local image digests, and exact image
-  IDs; no mutable Strimzi workload image or unverified downloaded byte is
-  instantiated;
+- runtime checks verify the exact non-masquerading bridge, sole node attachment,
+  empty IPv4 and IPv6 default-route inventories both before apply and after
+  replay, loopback-only API publication, positive local and negative external
+  TCP controls, local image digests, and exact image IDs; no mutable Strimzi
+  workload image or unverified downloaded byte is instantiated;
 - server-side admission, Topic Operator reconciliation, exact Kubernetes and
   Kafka read-back, and replay all pass; and
 - the gate cannot be confused with production apply, update, adoption,

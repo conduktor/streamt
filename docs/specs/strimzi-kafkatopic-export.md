@@ -430,6 +430,10 @@ The following evidence MUST remain distinct:
 4. **Real-cluster acceptance** applies the installed-wheel output to the pinned
    Strimzi Topic Operator and Kafka cluster, waits for `Ready=True`, and proves
    exact custom-resource and broker read-back plus idempotent replay.
+   Kafka identity metadata MUST validate before polling state is classified. An
+   absent or null initial `.status` is pending, a present non-mapping status is
+   invalid, and a structurally valid but not-yet-observed or not-yet-Ready
+   status remains pending.
 
 Passing levels 1 and 2 supports only the claim “offline validated Strimzi 1.2.0
 KafkaTopic output.” A working GitOps integration claim requires all four.
@@ -481,6 +485,21 @@ redirect source, target, or count fails. Raw GitHub and `dl.k8s.io` inputs are
 required to remain direct. In every case the bounded downloaded bytes MUST
 match the frozen SHA-256 before use.
 
+The reviewed 27-document operator asset contains exactly three Kafka image-map
+environment variables: `STRIMZI_KAFKA_IMAGES`,
+`STRIMZI_KAFKA_CONNECT_IMAGES`, and
+`STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES`. Each source value MUST be a canonical,
+newline-terminated map with the exact ordered keys `4.2.0`, `4.2.1`, `4.3.0`,
+and `4.3.1`; the operator contract freezes both that ordered key list and the
+complete source-value SHA-256. The structural rewrite MUST retain all four keys
+in that order and map every key to the same selected-platform pinned Kafka
+4.3.1 child reference. Missing, extra, duplicate, reordered, malformed,
+indirect, or mutable source or rewritten entries fail closed. Versions 4.2.0,
+4.2.1, and 4.3.0 are startup-compatibility aliases required by Strimzi's full
+lookup, not supported test workloads: the Kafka custom resource MUST still
+select exactly 4.3.1, pull policy remains `Never`, and workload image closure
+permits only the pinned child.
+
 The node, operator, and Kafka digests above are immutable multi-platform index
 identities. The gate's image lock MUST additionally freeze, for each supported
 Linux runner architecture, the selected child-manifest digest and that
@@ -495,9 +514,66 @@ manifest's config digest:
 Index digests remain the release-provenance roots. The gate MUST resolve the
 runner platform through every frozen index. Docker MUST pull and create the
 kind node from the selected node child and verify its frozen config identity.
+The gate MUST inspect each selected child manifest directly and require its
+`config.digest` to equal the frozen config digest; Docker's local image `Id`
+is not, by itself, config-digest evidence. Local inspection accepts only the
+two reviewed backend representations: the classic image store reports
+`Id=<config-digest>` with no descriptor, while Docker's containerd image store
+reports `Id=<child-manifest-digest>` and
+`Descriptor.digest=<child-manifest-digest>`. Both forms MUST also report the
+exact singleton child `RepoDigests` entry and the selected Linux OS and
+architecture. The created kind node's `Config.Image` MUST be that exact child
+reference, and its resolved `Image` MUST equal the corresponding frozen config
+or child digest according to those same two representations.
 The gate MUST pull and load the selected operator and Kafka children into the
-node, use those child references in applied workloads, and verify that the
-node's containerd maps each child manifest to its frozen config identity.
+node. It MUST sample bounded exact `ctr --namespace=k8s.io images list -q`
+output immediately before and after each load. A classic load delta is exactly
+the Quay child reference plus the frozen config-digest pseudo-reference. A
+Docker Desktop/containerd load delta is exactly the config pseudo-reference
+plus two bare, same-date, calendar-valid
+`import-YYYY-MM-DD@sha256:<digest>` references: one for the selected child and
+one distinct outer digest. Operator and Kafka MUST use the same representation,
+and discovered references and digests MUST not overlap across the two loads.
+
+For the Desktop form, the gate MUST read the exact outer content by digest.
+The raw content SHA-256 MUST equal that outer digest and decode as a closed OCI
+image index with schema version 2 and exactly one Docker schema-2 manifest
+descriptor. That descriptor MUST identify the frozen child, have a positive
+integer size, and contain exactly the locked Quay source annotation for
+`strimzi/operator` or `strimzi/kafka`. The gate MUST tag the child import to the
+exact Quay child, re-enumerate the names, remove only the two discovered import
+references with `ctr images rm` (never `--sync` or content deletion), and prove
+the resulting relevant name set is exactly the prior inventory plus the target
+and frozen config pseudo-reference. The pre-removal recheck closes accidental
+target expansion; its narrow observation-to-removal race is excluded by the
+gate's exclusive ownership of the unique, disposable, pre-workload node.
+
+If and only if both loads used the Desktop form, the gate MUST restart
+containerd exactly once, wait boundedly for that exact Kubernetes Node to be
+Ready, and repeat Docker attachment, loopback-port, empty IPv4/IPv6 default
+route, positive local TCP, and negative external TCP controls. It MUST then
+prove the normalized `ctr -q` inventory did not change. The final CRI record
+for each selected image MUST have no repo tags, contain only the exact Quay
+child repo digest, and map it to the frozen config identity. The all-classic
+path performs no tag, removal, or restart. Missing, extra, partial, mixed,
+ambiguous, or differently shaped identities fail before any Strimzi object is
+applied. The gate then uses those child references in applied workloads.
+For every selected workload container and init container, `spec.image` MUST be
+the exact pinned child reference. Kubernetes `status.*ContainerStatuses[].image`
+is a backend display field and may be only that same child reference or its own
+frozen bare config digest; an index, manifest digest, other image's config,
+tag, absent value, or non-string fails closed. The separate `imageID` field is
+the runtime identity: pilot mode records one exact consistent value per child,
+and normal mode requires exact equality to that reviewed lock. Accepting the
+config form in `status.image` does not relax or substitute the `imageID` check.
+Raw Kubernetes 1.35 pod and service collection reads MUST use the exact generic
+`apiVersion: v1`, `kind: List` envelope with root keys limited to
+`apiVersion`, `kind`, `metadata`, and `items`, and metadata exactly
+`{resourceVersion: ""}`. Every item MUST identify itself as `v1` and exactly
+`Pod` or `Service` for the requested collection. The gate may normalize a
+validated pod collection to an internal `PodList`; raw typed `PodList` and
+`ServiceList` envelopes, mixed item kinds, and malformed identities fail
+closed.
 Before the real lane is enabled, a reviewed pilot MUST record the exact
 Kubernetes `imageID` representation produced by the pinned node/runtime
 combination; subsequent runs compare exact values from the image lock rather
@@ -511,21 +587,52 @@ returns a distinct unsuccessful result. It is discovery evidence, never an
 acceptance pass. Normal mode rejects a null lock before mutation, pilot mode
 rejects an already frozen lock, and the permanent CI lane MUST use normal mode.
 
+The disposable kind topology uses one uniquely named Docker `bridge` network
+created with the exact option
+`com.docker.network.bridge.enable_ip_masquerade=false`. It is deliberately not
+a Docker `--internal` network: Docker Desktop suppresses the required
+loopback-published API binding on an internal network, and kind cannot finish
+bootstrapping DNS there because the node starts without a default route. The
+gate MUST require `Driver=bridge`, `Internal=false`, and exactly one of two
+reviewed option representations: the classic singleton containing only
+`com.docker.network.bridge.enable_ip_masquerade=false`, or Docker
+Desktop/containerd's map that additionally reports
+`com.docker.network.enable_ipv4=true` and
+`com.docker.network.enable_ipv6=false`. Partial maps, wrong values, and unknown
+options fail closed. The gate also requires no
+attachment before kind and exactly the derived control-plane attachment after
+kind. Immediately after kind becomes ready, the gate deletes the node's
+IPv4 default route, requires both `ip -4 route show default` and
+`ip -6 route show default` to return exact empty output, and only then proves a
+positive TCP connection to the node-local API on `127.0.0.1:6443` and a failed
+connection to literal external `1.1.1.1:443`. The attachment, sole loopback API
+publication, and empty dual-stack default-route inventories are fail-closed.
+The gate repeats the network-attachment and dual-stack route checks after topic
+replay, before declaring success. No operator or Kafka object may be applied
+until the first isolation proof passes.
+
 The gate has an internal deadline shorter than its CI job timeout so it can run
 bounded evidence capture and exact cleanup/residue checks before failure-only
 artifact staging and upload. Evidence candidates MUST remain outside a fresh
-upload directory. Only bounded files that pass a complete secret scan may be
-copied into that directory. On a match, size violation, or scan/read failure,
-no candidate file may be staged; the upload directory contains only a fixed
+upload directory. An evidence command that returns nonzero is represented at
+its original filename by fixed JSON containing only its integer return code and
+`capture-failed` status; a runner exception or timeout is represented by a
+fixed `<filename>.failed` artifact with no raw diagnostic. Either case remains
+a complete, safe capture and does not by itself force marker-only staging. Only
+bounded files that pass a complete secret scan may be copied into the upload
+directory. If the capture deadline prevents representing every scheduled item,
+or on a secret match, size violation, or candidate scan/read/write failure, no
+candidate file may be staged; the upload directory contains only a fixed
 secret-neutral scan-failure marker. Cleanup is enforced for success, ordinary
 failure, and internal timeout. Hosted-runner cancellation or an external
 SIGKILL can prevent process-level cleanup, so that case is best-effort and
 relies on runner disposal; it MUST NOT be described as a guaranteed trap.
 
 The pinned Strimzi support matrix includes Kubernetes 1.35 and Kafka 4.3.1.
-The test cluster is single-node, KRaft, ephemeral, loopback/internal-only, and
-contains no production data. Kafka process requests and limits are declared on
-the `KafkaNodePool`, as required by the pinned `v1` schema; Topic Operator
+The test cluster is single-node, KRaft, ephemeral, loopback-published and
+route-sealed from external networks, and contains no production data. Kafka
+process requests and limits are declared on the `KafkaNodePool`, as required
+by the pinned `v1` schema; Topic Operator
 requests and limits are declared on `Kafka.spec.entityOperator.topicOperator`.
 It validates interoperability; it is not a production deployment
 recommendation.

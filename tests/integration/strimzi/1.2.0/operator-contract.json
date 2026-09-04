@@ -210,17 +210,17 @@
       {
         "name": "STRIMZI_KAFKA_IMAGES",
         "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
-        "value_prefix": "4.3.1="
+        "version_keys": ["4.2.0", "4.2.1", "4.3.0", "4.3.1"]
       },
       {
         "name": "STRIMZI_KAFKA_CONNECT_IMAGES",
         "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
-        "value_prefix": "4.3.1="
+        "version_keys": ["4.2.0", "4.2.1", "4.3.0", "4.3.1"]
       },
       {
         "name": "STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES",
         "source_sha256": "a69a4bf90c7c52b49bd149ca56dfda2b39800f33c26241940596dc3f46ef79d8",
-        "value_prefix": "4.3.1="
+        "version_keys": ["4.2.0", "4.2.1", "4.3.0", "4.3.1"]
       }
     ],
     "remove": [

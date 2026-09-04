@@ -79,10 +79,10 @@
           "config": "sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3",
           "kubernetes_image_id": null
         },
-        "linux/arm64": {
-          "manifest": "sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927",
-          "config": "sha256:693db9e33a50f7cc1cd84cb763ee083c5209412b16f9f198ca013546da44f4f1",
-          "kubernetes_image_id": null
+      "linux/arm64": {
+        "manifest": "sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927",
+        "config": "sha256:693db9e33a50f7cc1cd84cb763ee083c5209412b16f9f198ca013546da44f4f1",
+        "kubernetes_image_id": "quay.io/strimzi/operator@sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927"
         }
       }
     },
@@ -96,10 +96,10 @@
           "config": "sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd",
           "kubernetes_image_id": null
         },
-        "linux/arm64": {
-          "manifest": "sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a",
-          "config": "sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c",
-          "kubernetes_image_id": null
+      "linux/arm64": {
+        "manifest": "sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a",
+        "config": "sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c",
+        "kubernetes_image_id": "quay.io/strimzi/kafka@sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a"
         }
       }
     }
