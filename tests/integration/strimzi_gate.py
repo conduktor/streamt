@@ -673,11 +673,19 @@ def _read_limited(path: Path, limit: int = MAX_INPUT_BYTES) -> bytes:
     return value
 
 
+def _reject_json_constant(_constant: str) -> None:
+    raise ValueError("Non-finite JSON constants are forbidden")
+
+
 def _load_json(path: Path) -> Any:
     raw = _read_limited(path)
     try:
-        return json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-    except (UnicodeError, json.JSONDecodeError) as error:
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, ValueError) as error:
         raise GateError("input_invalid", "A required JSON input is invalid") from error
 
 
@@ -2160,6 +2168,10 @@ def _parse_ctr_image_names(output: bytes) -> frozenset[str]:
                 "ctr image inventory digest suffix is invalid",
             )
     return frozenset(lines)
+
+
+def _canonical_ctr_image_names(names: Iterable[str]) -> bytes:
+    return "".join(f"{name}\n" for name in sorted(names)).encode("ascii")
 
 
 def _parse_ctr_import_source(source: str) -> tuple[str, str] | None:
@@ -3841,10 +3853,14 @@ def _cleanup(
 def _parse_json_bytes(raw: bytes, *, code: str) -> Any:
     _require(len(raw) <= MAX_PROCESS_OUTPUT_BYTES, code, "JSON subprocess output is too large")
     try:
-        return json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_json_constant,
+        )
     except GateError:
         raise
-    except (UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, ValueError) as error:
         raise GateError(code, "JSON subprocess output is invalid") from error
 
 
@@ -3943,11 +3959,40 @@ def _evidence_write(
 def _canonical_json_bytes(value: Any) -> bytes:
     try:
         raw = (
-            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            + "\n"
         ).encode("ascii")
     except (TypeError, ValueError, UnicodeError) as error:
         raise GateError("json_encode_failed", "Gate JSON evidence could not be encoded") from error
     return raw
+
+
+def _ctr_import_content_evidence(source: str, result: ProcessResult) -> bytes:
+    parsed_source = _parse_ctr_import_source(source)
+    _require(
+        parsed_source is not None and result.returncode == 0 and result.stderr == b"",
+        "ctr_content_invalid",
+        "ctr import content result changed",
+    )
+    content = _parse_json_bytes(result.stdout, code="ctr_content_invalid")
+    _require(
+        isinstance(content, dict),
+        "ctr_content_invalid",
+        "ctr import content is not a JSON object",
+    )
+    return _canonical_json_bytes(
+        {
+            "content": content,
+            "raw_content_sha256": f"sha256:{_sha256_bytes(result.stdout)}",
+            "source": source,
+        }
+    )
 
 
 def _validate_index_manifest(
@@ -5551,9 +5596,11 @@ def _execute_gate(
             images.kafka_manifest_digest,
             images.kafka_config_digest,
         }
-        for reference, config_digest in (
-            (images.operator_child_reference, images.operator_config_digest),
-            (images.kafka_child_reference, images.kafka_config_digest),
+        for load_index, (reference, config_digest) in enumerate(
+            (
+                (images.operator_child_reference, images.operator_config_digest),
+                (images.kafka_child_reference, images.kafka_config_digest),
+            )
         ):
             before_names = ctr_names
             _run_checked_before(
@@ -5582,6 +5629,61 @@ def _execute_gate(
                 "ctr image inventory wrote stderr",
             )
             post_load_names = _parse_ctr_image_names(ctr_inventory.stdout)
+            try:
+                _evidence_write(
+                    candidate,
+                    f"ctr-load-{load_index}-before.txt",
+                    _canonical_ctr_image_names(before_names),
+                    bundle.gate_contract.confidential_sentinels,
+                )
+                _evidence_write(
+                    candidate,
+                    f"ctr-load-{load_index}-after.txt",
+                    _canonical_ctr_image_names(post_load_names),
+                    bundle.gate_contract.confidential_sentinels,
+                )
+            except Exception:
+                capture_rejected = True
+                raise
+            import_sources = tuple(
+                sorted(
+                    name
+                    for name in post_load_names - before_names
+                    if _parse_ctr_import_source(name) is not None
+                )
+            )
+            _require(
+                len(import_sources) <= 2,
+                "ctr_inventory_invalid",
+                "ctr image load added too many import identities",
+            )
+            for import_index, source in enumerate(import_sources):
+                try:
+                    parsed_source = _parse_ctr_import_source(source)
+                    assert parsed_source is not None
+                    import_content = _run_checked_before(
+                        _ctr_content_get_command(
+                            docker,
+                            targets.node_name,
+                            parsed_source[1],
+                        ),
+                        cwd=runtime,
+                        environment=environment,
+                        deadline=execution_deadline,
+                        cap=30,
+                        runner=runner,
+                        monotonic=monotonic,
+                        code="ctr_content_invalid",
+                    )
+                    _evidence_write(
+                        candidate,
+                        f"ctr-load-{load_index}-import-{import_index}.json",
+                        _ctr_import_content_evidence(source, import_content),
+                        bundle.gate_contract.confidential_sentinels,
+                    )
+                except Exception:
+                    capture_rejected = True
+                    raise
             import_pair = _classify_ctr_image_load(
                 before_names,
                 post_load_names,

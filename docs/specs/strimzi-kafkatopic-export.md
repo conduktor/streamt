@@ -535,6 +535,28 @@ plus two bare, same-date, calendar-valid
 one distinct outer digest. Operator and Kafka MUST use the same representation,
 and discovered references and digests MUST not overlap across the two loads.
 
+Before classifying either load, the gate MUST write its already validated,
+lexicographically sorted before and after inventories as
+`ctr-load-<I>-before.txt` and `ctr-load-<I>-after.txt`, where `<I>` is exactly
+`0` for operator and `1` for Kafka. From the exact set difference it selects at
+most two names accepted by the strict, calendar-valid bare
+`import-YYYY-MM-DD@sha256:<digest>` grammar, sorts them lexicographically, and
+reads each digest with the existing bounded `ctr content get` command. Exit
+status MUST be zero and stderr empty. Each result MUST be a bounded JSON object
+parsed with duplicate-key rejection and is written as
+`ctr-load-<I>-import-<J>.json`, with `<J>` assigned by that sorted order. The
+canonical artifact has exactly `source`, `raw_content_sha256`, and `content`:
+the first is the import name, the second is the SHA-256 identity of the exact
+raw bytes, and the third is the parsed JSON value. It contains no base64 or
+opaque raw-content copy. Invalid JSON, duplicate keys, a secret match, or an
+evidence write failure rejects the candidate evidence set and produces only
+the fixed marker at staging. A nonzero result, nonempty stderr, runner
+exception, subprocess timeout, or exhausted global deadline during any
+selected import's read has the same marker-only result; a partial import
+diagnostic set is never staged. JSON `NaN`, `Infinity`, and `-Infinity` are
+invalid at this and every other gate JSON input boundary. These files are
+evidence only and MUST NOT widen or replace the unchanged load classifier.
+
 For the Desktop form, the gate MUST read the exact outer content by digest.
 The raw content SHA-256 MUST equal that outer digest and decode as a closed OCI
 image index with schema version 2 and exactly one Docker schema-2 manifest
@@ -614,7 +636,10 @@ until the first isolation proof passes.
 The gate has an internal deadline shorter than its CI job timeout so it can run
 bounded evidence capture and exact cleanup/residue checks before failure-only
 artifact staging and upload. Evidence candidates MUST remain outside a fresh
-upload directory. The exact evidence inventory includes `ctr-images.txt`, a
+upload directory. The exact evidence inventory includes one
+`ctr-load-<I>-{before,after}.txt` pair per attempted load (four files on the
+complete two-load path), zero to two conditional sorted
+`ctr-load-<I>-import-<J>.json` files per attempted load, and `ctr-images.txt`, a
 bounded, secret-scanned, lexicographically sorted canonicalization of
 `docker exec <exact-node> ctr --namespace=k8s.io images list -q`; capture MUST
 attempt it on success and failure paths, including when the node or kubeconfig

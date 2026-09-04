@@ -500,6 +500,21 @@ set on `Kafka.spec.entityOperator.topicOperator.resources`.
    references: one child digest and one distinct outer digest. Reject mixed
    modes and shared import identities across operator and Kafka.
 
+   Before the unchanged classifier runs, persist the already validated sorted
+   before and after inventories as `ctr-load-<I>-before.txt` and
+   `ctr-load-<I>-after.txt` (`I=0` operator, `I=1` Kafka). Select no more than
+   two newly added names matching the strict bare, calendar-valid import
+   grammar, sort them, and read their exact digests with the bounded existing
+   `ctr content get` command. Require zero status and empty stderr. Strictly
+   parse each bounded response as a duplicate-key-free JSON object and write
+   canonical `ctr-load-<I>-import-<J>.json` containing exactly its source,
+   raw-byte SHA-256 identity, and parsed content. Do not store base64 or opaque
+   raw bytes. Nonzero status, stderr, runner exception, timeout, deadline
+   exhaustion, non-finite/invalid/duplicate-key JSON, secret-scan failure, or
+   write failure makes final evidence marker-only; never stage a partial import
+   diagnostic set. Reject `NaN` and both infinities at every JSON input
+   boundary. These diagnostics do not participate in classification.
+
    For each Desktop delta, read the outer content by digest, require its raw
    SHA-256 to equal that digest, and validate a closed schema-version-2 OCI
    index containing exactly one positive-sized Docker schema-2 descriptor to
@@ -578,7 +593,11 @@ the canonical sorted node containerd image-reference inventory from exact
 `ctr --namespace=k8s.io images list -q`, CRD digest, operator Deployment/Pod
 descriptions, operator and Topic Operator logs, Kafka/NodePool/Topic JSON,
 events, broker descriptions/configs, generated YAML checksums, and poll
-timeline. `ctr-images.txt` is attempted even when the node or kubeconfig is
+timeline. The exact load-diagnostic inventory is one sorted before/after pair
+per attempted load (four files on the complete two-load path), plus zero to two
+sorted canonical import-content JSON files per attempted load, under the names
+frozen in step 5. `ctr-images.txt` is attempted even when the node or kubeconfig
+is
 absent. Its closed transform permits at most 4,096 LF-delimited, 512-byte
 printable-ASCII references, rejects control/URI/credential/query/fragment/
 backslash forms, requires an exact lowercase SHA-256 after every `@`, and sorts

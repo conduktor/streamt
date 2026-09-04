@@ -1518,6 +1518,105 @@ def test_ctr_q_inventory_parser_enforces_reference_count_bound() -> None:
         gate._parse_ctr_image_names(output)
 
 
+def test_ctr_load_diagnostic_canonicalizes_inventories_and_import_content() -> None:
+    names = frozenset(
+        {
+            "quay.io/strimzi/operator@sha256:" + "b" * 64,
+            "import-2026-09-04@sha256:" + "a" * 64,
+        }
+    )
+    assert (
+        gate._canonical_ctr_image_names(names)
+        == (
+            "import-2026-09-04@sha256:"
+            + "a" * 64
+            + "\nquay.io/strimzi/operator@sha256:"
+            + "b" * 64
+            + "\n"
+        ).encode()
+    )
+
+    source = "import-2026-09-04@sha256:" + "a" * 64
+    raw = b'{"z":1, "a":{"value":2}}\n'
+    evidence = gate._ctr_import_content_evidence(
+        source,
+        gate.ProcessResult(0, raw, b""),
+    )
+    assert evidence == gate._canonical_json_bytes(
+        {
+            "content": {"a": {"value": 2}, "z": 1},
+            "raw_content_sha256": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+            "source": source,
+        }
+    )
+
+
+def test_ctr_load_diagnostic_records_a_content_addressed_manifest_index_chain() -> None:
+    images = _platform()
+    inner_raw = gate._canonical_json_bytes(
+        {
+            "config": {
+                "digest": images.operator_config_digest,
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "size": 321,
+            },
+            "layers": [],
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "schemaVersion": 2,
+        }
+    )
+    inner_digest = f"sha256:{hashlib.sha256(inner_raw).hexdigest()}"
+    child_reference = f"quay.io/strimzi/operator@{inner_digest}"
+    inner_source = f"import-2026-09-04@{inner_digest}"
+    outer_raw = _ctr_outer_payload(child_reference)
+    outer_digest = f"sha256:{hashlib.sha256(outer_raw).hexdigest()}"
+    outer_source = f"import-2026-09-04@{outer_digest}"
+
+    inner = json.loads(
+        gate._ctr_import_content_evidence(
+            inner_source,
+            gate.ProcessResult(0, inner_raw, b""),
+        )
+    )
+    outer = json.loads(
+        gate._ctr_import_content_evidence(
+            outer_source,
+            gate.ProcessResult(0, outer_raw, b""),
+        )
+    )
+
+    assert inner["source"].rsplit("@", 1)[1] == inner["raw_content_sha256"]
+    assert inner["content"]["config"]["digest"] == images.operator_config_digest
+    assert outer["source"].rsplit("@", 1)[1] == outer["raw_content_sha256"]
+    assert outer["content"]["manifests"] == [
+        {
+            "annotations": {"containerd.io/distribution.source.quay.io": "strimzi/operator"},
+            "digest": inner["raw_content_sha256"],
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "size": 123,
+        }
+    ]
+
+
+def test_ctr_load_diagnostic_rejects_unsafe_or_ambiguous_import_content() -> None:
+    source = "import-2026-09-04@sha256:" + "a" * 64
+    invalid = (
+        (source, gate.ProcessResult(9, b"{}", b"")),
+        (source, gate.ProcessResult(0, b"{}", b"warning")),
+        (source, gate.ProcessResult(0, b"not-json", b"")),
+        (source, gate.ProcessResult(0, b'{"duplicate":1,"duplicate":2}', b"")),
+        (source, gate.ProcessResult(0, b"[]", b"")),
+        ("import-2026-02-30@sha256:" + "a" * 64, gate.ProcessResult(0, b"{}", b"")),
+        (
+            source,
+            gate.ProcessResult(0, b" " * (gate.MAX_PROCESS_OUTPUT_BYTES + 1), b""),
+        ),
+    )
+    for import_source, result in invalid:
+        with pytest.raises(gate.GateError):
+            gate._ctr_import_content_evidence(import_source, result)
+
+
 def test_ctr_tag_result_requires_exact_direct_child_acknowledgement() -> None:
     child = _platform().kafka_child_reference
     gate._validate_ctr_tag_result(gate.ProcessResult(0, f"{child}\n".encode(), b""), child)
@@ -3180,6 +3279,7 @@ def test_download_verifier_checks_exact_digest_bounds_cleanup_and_mode(
 
 
 def test_json_and_yaml_subprocess_parsers_reject_duplicates_and_bounds(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert gate._parse_json_bytes(b'{"ok":true}', code="probe_invalid") == {"ok": True}
@@ -3189,6 +3289,16 @@ def test_json_and_yaml_subprocess_parsers_reject_duplicates_and_bounds(
         gate._parse_yaml_bytes(b"name: first\nname: second\n", expected_count=1)
     with pytest.raises(gate.GateError):
         gate._parse_yaml_bytes(b"base: &base value\ncopy: *base\n", expected_count=1)
+    for index, constant in enumerate((b"NaN", b"Infinity", b"-Infinity")):
+        payload = b'{"value":' + constant + b"}"
+        with pytest.raises(gate.GateError):
+            gate._parse_json_bytes(payload, code="probe_invalid")
+        path = tmp_path / f"non-finite-{index}.json"
+        path.write_bytes(payload)
+        with pytest.raises(gate.GateError):
+            gate._load_json(path)
+    with pytest.raises(gate.GateError):
+        gate._canonical_json_bytes({"value": float("nan")})
 
     monkeypatch.setattr(gate, "MAX_PROCESS_OUTPUT_BYTES", 2)
     with pytest.raises(gate.GateError):
@@ -5051,12 +5161,19 @@ def _install_lifecycle_fakes(
     ctr_inventories = 0
     egress_probes = 0
     ctr_names = {"registry.k8s.io/pause@sha256:" + "a" * 64}
-    outer_payloads: dict[str, bytes] = {}
+    content_payloads: dict[str, bytes] = {}
     import_pairs: dict[str, Any] = {}
     for reference in (images.operator_child_reference, images.kafka_child_reference):
+        child_digest = reference.rsplit("@", 1)[1]
+        content_payloads[child_digest] = gate._canonical_json_bytes(
+            {
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "schemaVersion": 2,
+            }
+        )
         payload = _ctr_outer_payload(reference)
         pair = _ctr_pair_for_payload(reference, payload)
-        outer_payloads[pair.outer_digest] = payload
+        content_payloads[pair.outer_digest] = payload
         import_pairs[reference] = pair
 
     def runner(command: list[str], **_kwargs: Any) -> Any:
@@ -5116,6 +5233,11 @@ def _install_lifecycle_fakes(
                     else pair.outer_source
                 )
                 ctr_names.update({pair.child_source, outer_source, config})
+                if (
+                    failure == "ctr-too-many-imports"
+                    and reference == images.operator_child_reference
+                ):
+                    ctr_names.add("import-2026-09-04@sha256:" + "f" * 64)
             else:
                 assert ctr_mode in {"classic", "mixed"}
                 ctr_names.update({reference, config})
@@ -5140,7 +5262,22 @@ def _install_lifecycle_fakes(
         ):
             digest = encoded[-1]
             events.append(f"ctr-content:{digest}")
-            payload = outer_payloads[digest]
+            if digest in {
+                images.operator_manifest_digest,
+                images.kafka_manifest_digest,
+            }:
+                if failure == "ctr-diagnostic-nonzero":
+                    return gate.ProcessResult(19, b"", b"")
+                if failure == "ctr-diagnostic-exception":
+                    raise RuntimeError("CONFIDENTIAL_CTR_DIAGNOSTIC_EXCEPTION")
+                if failure == "ctr-diagnostic-timeout":
+                    raise gate.GateError("subprocess_timeout", "Bounded diagnostic timeout")
+            payload = content_payloads[digest]
+            if failure == "ctr-diagnostic-duplicate-json" and digest in {
+                images.operator_manifest_digest,
+                images.kafka_manifest_digest,
+            }:
+                payload = b'{"duplicate":1,"duplicate":2}'
             if failure == "ctr-content-hash":
                 payload += b" "
             return gate.ProcessResult(0, payload, b"")
@@ -5399,10 +5536,19 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
         images.kafka_child_reference,
         _ctr_outer_payload(images.kafka_child_reference),
     )
+    operator_diagnostic_digests = [
+        source.rsplit("@", 1)[1]
+        for source in sorted((operator_pair.child_source, operator_pair.outer_source))
+    ]
+    kafka_diagnostic_digests = [
+        source.rsplit("@", 1)[1]
+        for source in sorted((kafka_pair.child_source, kafka_pair.outer_source))
+    ]
     assert image_store_events == [
         "ctr-list",
         f"kind-load:{images.operator_child_reference}",
         "ctr-list",
+        *(f"ctr-content:{digest}" for digest in operator_diagnostic_digests),
         f"ctr-content:{operator_pair.outer_digest}",
         f"ctr-tag:{images.operator_child_reference}",
         "ctr-list",
@@ -5410,6 +5556,7 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
         "ctr-list",
         f"kind-load:{images.kafka_child_reference}",
         "ctr-list",
+        *(f"ctr-content:{digest}" for digest in kafka_diagnostic_digests),
         f"ctr-content:{kafka_pair.outer_digest}",
         f"ctr-tag:{images.kafka_child_reference}",
         "ctr-list",
@@ -5450,6 +5597,70 @@ def test_full_mocked_lifecycle_reconciles_replays_cleans_and_stages(
     assert harness["events"].index("cleanup-network") < harness["events"].index("stage")
     assert not arguments.evidence_candidate.exists()
     assert arguments.evidence_upload.is_dir()
+    ctr_diagnostic_names = {path.name for path in arguments.evidence_upload.glob("ctr-load-*")}
+    assert ctr_diagnostic_names == {
+        "ctr-load-0-before.txt",
+        "ctr-load-0-after.txt",
+        "ctr-load-0-import-0.json",
+        "ctr-load-0-import-1.json",
+        "ctr-load-1-before.txt",
+        "ctr-load-1-after.txt",
+        "ctr-load-1-import-0.json",
+        "ctr-load-1-import-1.json",
+    }
+    baseline = frozenset({"registry.k8s.io/pause@sha256:" + "a" * 64})
+    operator_after = baseline | {
+        operator_pair.child_source,
+        operator_pair.outer_source,
+        images.operator_config_digest,
+    }
+    operator_normalized = baseline | {
+        images.operator_child_reference,
+        images.operator_config_digest,
+    }
+    kafka_after = operator_normalized | {
+        kafka_pair.child_source,
+        kafka_pair.outer_source,
+        images.kafka_config_digest,
+    }
+    for name, names in {
+        "ctr-load-0-before.txt": baseline,
+        "ctr-load-0-after.txt": operator_after,
+        "ctr-load-1-before.txt": operator_normalized,
+        "ctr-load-1-after.txt": kafka_after,
+    }.items():
+        assert (arguments.evidence_upload / name).read_bytes() == gate._canonical_ctr_image_names(
+            names
+        )
+    for load_index, (reference, pair) in enumerate(
+        (
+            (images.operator_child_reference, operator_pair),
+            (images.kafka_child_reference, kafka_pair),
+        )
+    ):
+        child_payload = gate._canonical_json_bytes(
+            {
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "schemaVersion": 2,
+            }
+        )
+        outer_payload = _ctr_outer_payload(reference)
+        payloads = {
+            pair.child_source: child_payload,
+            pair.outer_source: outer_payload,
+        }
+        for import_index, source in enumerate(sorted(payloads)):
+            artifact = json.loads(
+                (
+                    arguments.evidence_upload / f"ctr-load-{load_index}-import-{import_index}.json"
+                ).read_bytes()
+            )
+            raw = payloads[source]
+            assert artifact == {
+                "content": json.loads(raw),
+                "raw_content_sha256": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+                "source": source,
+            }
     summary = json.loads((arguments.evidence_upload / "summary.json").read_bytes())
     assert summary == {
         "failure_code": None,
@@ -5652,6 +5863,7 @@ def test_lifecycle_rejects_mixed_ctr_modes_before_restart_or_apply(
         ("late-network-drift", "docker_network_invalid"),
         ("host-publish", "docker_port_invalid"),
         ("ctr-content-hash", "ctr_content_invalid"),
+        ("ctr-too-many-imports", "ctr_inventory_invalid"),
         ("ctr-pair-overlap", "ctr_inventory_invalid"),
         ("ctr-tag-output", "ctr_tag_invalid"),
         ("ctr-remove-output", "ctr_remove_invalid"),
@@ -5703,6 +5915,62 @@ def test_lifecycle_failure_still_captures_cleans_and_stages_safe_evidence(
     assert (arguments.evidence_upload / "ctr-images.txt").is_file()
     upload_bytes = b"".join(path.read_bytes() for path in arguments.evidence_upload.iterdir())
     assert b"CONFIDENTIAL_INTERNAL_FAILURE" not in upload_bytes
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "ctr-diagnostic-duplicate-json",
+        "ctr-diagnostic-nonzero",
+        "ctr-diagnostic-exception",
+        "ctr-diagnostic-timeout",
+        "ctr-diagnostic-write",
+    ],
+)
+def test_ctr_load_diagnostic_safety_failure_stages_only_the_fixed_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    runner_failure = None if failure == "ctr-diagnostic-write" else failure
+    harness = _install_lifecycle_fakes(
+        monkeypatch,
+        tmp_path,
+        _frozen_platform(),
+        failure=runner_failure,
+    )
+    if failure == "ctr-diagnostic-write":
+        evidence_writer = gate._evidence_write
+
+        def reject_diagnostic(
+            candidate: Path,
+            name: str,
+            payload: bytes,
+            confidential: Any,
+        ) -> None:
+            if name == "ctr-load-0-before.txt":
+                raise gate.GateError(
+                    "evidence_candidate_invalid",
+                    "Synthetic diagnostic write rejection",
+                )
+            evidence_writer(candidate, name, payload, confidential)
+
+        monkeypatch.setattr(gate, "_evidence_write", reject_diagnostic)
+    arguments = _lifecycle_arguments(tmp_path, pilot=False)
+
+    with pytest.raises(gate.GateError) as captured:
+        gate._execute_gate(
+            arguments,
+            runner=harness["runner"],
+            downloader=harness["downloader"],
+            monotonic=lambda: 100.0,
+        )
+
+    assert captured.value.code == "evidence_rejected"
+    assert not any("apply" in command for command in harness["commands"])
+    assert "cleanup-kind" in harness["events"]
+    assert "stage" in harness["events"]
+    _assert_marker_only(arguments.evidence_upload)
 
 
 def test_cleanup_failure_is_aggregated_only_after_capture_and_staging(
