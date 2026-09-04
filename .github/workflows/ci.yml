@@ -152,6 +152,111 @@ jobs:
         if: always()
         run: docker compose down --volumes --remove-orphans
 
+  connector-removal-real:
+    name: Kafka Connect 7.5.0 reviewed removal / PostgreSQL ${{ matrix.postgres-major }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-major: ['14', '18']
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-major }}
+        env:
+          POSTGRES_USER: streamt_ci_bootstrap
+          POSTGRES_PASSWORD: streamt-ci-bootstrap-only
+          POSTGRES_DB: streamt_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U streamt_ci_bootstrap -d streamt_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      STREAMT_TEST_POSTGRES_ADMIN_DSN: postgresql://streamt_ci_bootstrap:streamt-ci-bootstrap-only@127.0.0.1:5432/streamt_ci?sslmode=disable
+      STREAMT_TEST_POSTGRES_MAJOR: ${{ matrix.postgres-major }}
+      STREAMT_TEST_REAL_CONNECT_REMOVAL: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,postgres]"
+
+      - name: Verify PostgreSQL readiness and major
+        run: python tests/postgres/check_server.py
+
+      - name: Start pinned Kafka, Schema Registry, and Connect
+        timeout-minutes: 4
+        run: |
+          docker compose pull kafka schema-registry connect
+          docker compose up -d --wait --wait-timeout 180 \
+            kafka schema-registry connect
+
+      - name: Run public reviewed Connector removal gate
+        timeout-minutes: 4
+        run: >-
+          python -m pytest
+          tests/postgres/test_postgres_connector_removal_connect_real.py
+          --tb=short
+
+      - name: Collect bounded Connector service logs
+        if: always()
+        shell: bash
+        run: |
+          set -u
+
+          mkdir -p connector-removal-real-artifacts
+          timeout 15s docker compose ps \
+            > connector-removal-real-artifacts/compose-status.txt 2>&1 || true
+          raw_log="${RUNNER_TEMP}/connector-removal-real-compose.log"
+          timeout 30s docker compose logs --no-color --tail=500 \
+            kafka schema-registry connect \
+            > "${raw_log}" 2>&1 || true
+
+          scan_status=0
+          grep -Eq 'target-config-secret-|unrelated-config-secret-' \
+            "${raw_log}" || scan_status=$?
+          if [[ ${scan_status} -eq 0 ]]; then
+            printf '%s\n' \
+              'Provider logs contained a forbidden fixture-secret sentinel.' \
+              > connector-removal-real-artifacts/secret-scan-failed.txt
+            exit 1
+          fi
+          if [[ ${scan_status} -ne 1 ]]; then
+            printf '%s\n' \
+              'Provider log secrecy scan could not be completed.' \
+              > connector-removal-real-artifacts/secret-scan-failed.txt
+            exit 1
+          fi
+          cp "${raw_log}" connector-removal-real-artifacts/compose.log
+
+      - name: Upload Connector service logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: connector-removal-real-${{ matrix.postgres-major }}-logs
+          path: connector-removal-real-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop Connector services
+        if: always()
+        timeout-minutes: 2
+        run: docker compose down --volumes --remove-orphans
+
   postgres-conformance:
     name: PostgreSQL ${{ matrix.postgres-major }} conformance
     runs-on: ubuntu-latest
@@ -213,13 +318,18 @@ jobs:
           test_root="${isolated_root}/tests-root"
 
           python -m pip install build
-          python -m build --wheel --outdir "${wheel_dir}"
+          python -m build --sdist --wheel --outdir "${wheel_dir}"
           python -m venv "${venv_dir}"
           python -m venv "${base_venv_dir}"
 
           wheels=("${wheel_dir}"/*.whl)
           if [[ ${#wheels[@]} -ne 1 || ! -f "${wheels[0]}" ]]; then
             echo "Expected exactly one wheel in ${wheel_dir}" >&2
+            exit 1
+          fi
+          sdists=("${wheel_dir}"/*.tar.gz)
+          if [[ ${#sdists[@]} -ne 1 || ! -f "${sdists[0]}" ]]; then
+            echo "Expected exactly one sdist in ${wheel_dir}" >&2
             exit 1
           fi
           "${venv_dir}/bin/python" -m pip install "${wheels[0]}[postgres]" pytest
@@ -253,6 +363,8 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_connector_recovery_mixed_real.py"
           cp tests/postgres/test_postgres_connector_removal_process_contention_real.py \
             "${test_root}/tests/postgres/test_postgres_connector_removal_process_contention_real.py"
+          cp tests/package/connector_removal_wheel_smoke.py \
+            "${test_root}/connector_removal_wheel_smoke.py"
 
           cd "${test_root}"
           env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
@@ -288,6 +400,8 @@ jobs:
             tests/postgres/test_postgres_connector_recovery_mixed_real.py \
             tests/postgres/test_postgres_connector_removal_process_contention_real.py \
             -m postgres --tb=short
+          env -u PYTHONPATH STREAMT_CHECKOUT="${GITHUB_WORKSPACE}" \
+            "${venv_dir}/bin/python" -I connector_removal_wheel_smoke.py
 
   package:
     runs-on: ubuntu-latest
