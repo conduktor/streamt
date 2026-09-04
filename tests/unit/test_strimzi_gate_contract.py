@@ -5775,6 +5775,12 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     assert self_test["run"] == (
         "env -u PYTHONPATH python -I tests/integration/strimzi_gate.py --self-test"
     )
+    install = next(
+        step for step in steps if step["name"] == "Install standalone gate dependency"
+    )
+    assert install["run"] == (
+        "python -m pip install --disable-pip-version-check --no-input 'PyYAML==6.0.3'"
+    )
     pilot = next(
         step
         for step in steps
@@ -5786,6 +5792,10 @@ def test_temporary_strimzi_amd64_pilot_ci_job_is_manual_and_deliberately_red() -
     assert "set -euo pipefail" in script
     assert "--pilot" in script
     assert "env -u PYTHONPATH python -I" in script
+    assert script.count("env -u PYTHONPATH python -I -") == 2
+    assert "import sys" in script
+    assert "Path(sys.argv[1])" in script
+    assert 'python -I - "${upload}"' in script
     assert '--wheel "${wheel}"' in script
     assert "if (( pilot_status != 2 )); then" in script
     assert "Expected pilot exit 2" in script

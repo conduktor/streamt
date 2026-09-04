@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      strimzi_amd64_pilot:
+        description: Run the temporary non-acceptance Strimzi amd64 imageID pilot
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   test:
@@ -742,6 +749,155 @@ jobs:
             --wheel "${wheels[0]}" \
             --sdist "${source_distributions[0]}" \
             --source-root "${GITHUB_WORKSPACE}"
+
+  strimzi-amd64-pilot:
+    name: TEMPORARY NON-ACCEPTANCE - Strimzi 1.2.0 amd64 imageID pilot (expected red)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.strimzi_amd64_pilot == true }}
+    needs: [package, strimzi-package-parity]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Download exact release-candidate distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-distributions-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/streamt-strimzi-wheel
+
+      - name: Install standalone gate dependency
+        run: python -m pip install --disable-pip-version-check --no-input 'PyYAML==6.0.3'
+
+      - name: Self-test standalone gate
+        run: env -u PYTHONPATH python -I tests/integration/strimzi_gate.py --self-test
+
+      - name: Run amd64 pilot, validate staged evidence, and remain deliberately red
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          artifact_dir="${RUNNER_TEMP}/streamt-strimzi-wheel"
+          candidate="${RUNNER_TEMP}/streamt-strimzi-evidence-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          upload="${RUNNER_TEMP}/streamt-strimzi-evidence-upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          mapfile -d '' -t artifacts < <(
+            find "${artifact_dir}" -mindepth 1 -maxdepth 1 -print0
+          )
+          mapfile -d '' -t wheels < <(
+            find "${artifact_dir}" -mindepth 1 -maxdepth 1 -type f -name '*.whl' -print0
+          )
+          mapfile -d '' -t source_distributions < <(
+            find "${artifact_dir}" -mindepth 1 -maxdepth 1 -type f -name '*.tar.gz' -print0
+          )
+          if (( ${#artifacts[@]} != 2 || ${#wheels[@]} != 1 || ${#source_distributions[@]} != 1 )); then
+            echo "Expected exactly one regular wheel and one regular source distribution" >&2
+            exit 1
+          fi
+          if [[ -L "${wheels[0]}" || -L "${source_distributions[0]}" ]]; then
+            echo "Distribution artifacts must not be symbolic links" >&2
+            exit 1
+          fi
+          wheel="$(realpath -- "${wheels[0]}")"
+
+          if [[ -e "${candidate}" || -L "${candidate}" || -e "${upload}" || -L "${upload}" ]]; then
+            echo "Pilot evidence paths must start absent" >&2
+            exit 1
+          fi
+
+          env -u PYTHONPATH python -I - \
+            "${GITHUB_WORKSPACE}/tests/integration/strimzi/1.2.0/images.lock.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          lock = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          for image in ("operator", "kafka"):
+              platforms = lock["images"][image]["platforms"]
+              arm64_id = platforms["linux/arm64"]["kubernetes_image_id"]
+              amd64_id = platforms["linux/amd64"]["kubernetes_image_id"]
+              if not isinstance(arm64_id, str) or not arm64_id:
+                  raise SystemExit(f"{image} linux/arm64 imageID is not frozen")
+              if amd64_id is not None:
+                  raise SystemExit(f"{image} linux/amd64 imageID is already frozen")
+          PY
+
+          set +e
+          env -u PYTHONPATH python -I \
+            "${GITHUB_WORKSPACE}/tests/integration/strimzi_gate.py" \
+            --wheel "${wheel}" \
+            --evidence-candidate "${candidate}" \
+            --evidence-upload "${upload}" \
+            --pilot
+          pilot_status=$?
+          set -e
+
+          if (( pilot_status != 2 )); then
+            echo "Expected pilot exit 2, received ${pilot_status}" >&2
+            exit 1
+          fi
+
+          env -u PYTHONPATH python -I - "${upload}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          upload = Path(sys.argv[1])
+          summary = json.loads((upload / "summary.json").read_text(encoding="utf-8"))
+          expected_summary = {
+              "failure_code": None,
+              "platform": "linux/amd64",
+              "release": "1.2.0",
+              "status": "pilot-pending",
+          }
+          if summary != expected_summary:
+              raise SystemExit("pilot summary.json did not match the exact pending contract")
+
+          image_ids = json.loads(
+              (upload / "pilot-image-ids.json").read_text(encoding="utf-8")
+          )
+          if set(image_ids) != {"schema_version", "platform", "images"}:
+              raise SystemExit("pilot imageID evidence has unexpected root keys")
+          if image_ids["schema_version"] != 1 or image_ids["platform"] != "linux/amd64":
+              raise SystemExit("pilot imageID evidence has unexpected identity")
+          if set(image_ids["images"]) != {"operator", "kafka"}:
+              raise SystemExit("pilot imageID evidence has unexpected image keys")
+          for image in ("operator", "kafka"):
+              entry = image_ids["images"][image]
+              if set(entry) != {
+                  "child_reference",
+                  "config_digest",
+                  "kubernetes_image_id",
+              }:
+                  raise SystemExit(f"{image} evidence has unexpected keys")
+              if not isinstance(entry["child_reference"], str) or "@sha256:" not in entry["child_reference"]:
+                  raise SystemExit(f"{image} evidence has an invalid child reference")
+              if not isinstance(entry["config_digest"], str) or not entry["config_digest"].startswith("sha256:"):
+                  raise SystemExit(f"{image} evidence has an invalid config digest")
+              image_id = entry["kubernetes_image_id"]
+              if not isinstance(image_id, str) or "@sha256:" not in image_id:
+                  raise SystemExit(f"{image} evidence has an invalid Kubernetes imageID")
+          PY
+
+          echo "::notice::Validated amd64 pilot evidence; this temporary job fails intentionally."
+          exit 2
+
+      - name: Upload only scanned amd64 pilot evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: strimzi-1.2.0-amd64-pilot-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/streamt-strimzi-evidence-upload-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 7
 
   datahub-release-oracle:
     name: DataHub 1.7.0 oracle (Python ${{ matrix.python-version }})
