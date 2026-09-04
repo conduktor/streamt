@@ -32,6 +32,8 @@ The frozen upstream evidence is:
 | Cluster Operator install | [strimzi-cluster-operator-1.2.0.yaml](https://github.com/strimzi/strimzi-kafka-operator/releases/download/1.2.0/strimzi-cluster-operator-1.2.0.yaml) | `a0b1ae3e375a7da0674eb3894df8aa955bc50abe8190bc9344e30b83bbee4775` |
 | KafkaTopic CRD | [`043-Crd-kafkatopic.yaml`](https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/6c7b43c4af0db547c10463ba09d1dfa6f5e156a0/packaging/install/cluster-operator/043-Crd-kafkatopic.yaml) | `36390f0731c699448076d4ee739e8b7f331d083e91a7fb71500aaa830ab1127e` |
 | KafkaTopic example | [`examples/topic/kafka-topic.yaml`](https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/6c7b43c4af0db547c10463ba09d1dfa6f5e156a0/examples/topic/kafka-topic.yaml) | `58b929f6d1d07e208d99ce44c3884b36e2e8ddd1e8400ae6ca5cf302ae0d352c` |
+| Single-node example | [`examples/kafka/kafka-single-node.yaml`](https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/6c7b43c4af0db547c10463ba09d1dfa6f5e156a0/examples/kafka/kafka-single-node.yaml) | `2e7739e13dc250ccd00872bc6acf08dbf7fe768b9b76afcbef0dc733ede7b9ea` |
+| Ephemeral-storage example | [`examples/kafka/kafka-ephemeral.yaml`](https://raw.githubusercontent.com/strimzi/strimzi-kafka-operator/6c7b43c4af0db547c10463ba09d1dfa6f5e156a0/examples/kafka/kafka-ephemeral.yaml) | `dd12c1e217e7ff348f5be81f9289a6f8c809db5bf4d5bb6b14e24ef7156d4930` |
 
 The normative behavior is also grounded in the versioned official
 [topic-management and naming documentation](https://strimzi.io/docs/operators/1.2.0/deploying.html#assembly-using-the-topic-operator-str),
@@ -461,6 +463,39 @@ mutation. It is test-only and pinned to:
 - `kubectl` v1.35.8, whose official Linux amd64 and arm64 SHA-256 values are
   respectively `874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf`
   and `cc749967b62f4422260bc9c0aa7a7c55f45175ae38cb8d95767b5d2b7e04c1fd`.
+
+The node, operator, and Kafka digests above are immutable multi-platform index
+identities. The gate's image lock MUST additionally freeze, for each supported
+Linux runner architecture, the selected child-manifest digest and that
+manifest's config digest:
+
+| Image | Linux amd64 manifest / config | Linux arm64 manifest / config |
+| --- | --- | --- |
+| kind node | `sha256:0c58cebbb66d7fa5fd497235dfae1e4e722ff84104e24a6f736ce8cd607cbe7c` / `sha256:194068f84949f79dca8527c1e0578d9cd90f0bcd82a359bdb0d2d5bfe9d61185` | `sha256:b38a25576c835bfedc9d06368f87ec40863459a4d5dcbdbab2fd5f58ecf97466` / `sha256:664b3989afaffcd2268ece28d6cf012b27700e6b8e81c3c7641cc167889075f5` |
+| Strimzi operator | `sha256:6df3bf9f92d3d1907aca08ade8c6df6cdacd2e235756afad419ad582ce6a2c4e` / `sha256:307ebd6e0fd9121e0775b1cf0f06a5658cece38c58d46082512b910a7d095ce3` | `sha256:ee8d9fb08ede3778120c33c42c70da16762b531d70e32790b9e2ff932e040927` / `sha256:693db9e33a50f7cc1cd84cb763ee083c5209412b16f9f198ca013546da44f4f1` |
+| Kafka 4.3.1 | `sha256:63a2dd081b781951d1327626071760525734f4047acfb2d05b1a2878ad4135a5` / `sha256:d6950337889e76dec427c5ce1ec9c9b8de79e024fc2743c10884027db58d69cd` | `sha256:b82defb185ed5f91542a678108af5cce08ecc704c98615d43175d113f9f1be4a` / `sha256:2774fb129b66688c2d958e65a12349a8905e186466a124ccde1190742ba1454c` |
+
+Index digests remain the release-provenance roots. The gate MUST resolve the
+runner platform through every frozen index. Docker MUST pull and create the
+kind node from the selected node child and verify its frozen config identity.
+The gate MUST pull and load the selected operator and Kafka children into the
+node, use those child references in applied workloads, and verify that the
+node's containerd maps each child manifest to its frozen config identity.
+Before the real lane is enabled, a reviewed pilot MUST record the exact
+Kubernetes `imageID` representation produced by the pinned node/runtime
+combination; subsequent runs compare exact values from the image lock rather
+than accepting an arbitrary index, child, or config form.
+
+The gate has an internal deadline shorter than its CI job timeout so it can run
+bounded evidence capture and exact cleanup/residue checks before failure-only
+artifact staging and upload. Evidence candidates MUST remain outside a fresh
+upload directory. Only bounded files that pass a complete secret scan may be
+copied into that directory. On a match, size violation, or scan/read failure,
+no candidate file may be staged; the upload directory contains only a fixed
+secret-neutral scan-failure marker. Cleanup is enforced for success, ordinary
+failure, and internal timeout. Hosted-runner cancellation or an external
+SIGKILL can prevent process-level cleanup, so that case is best-effort and
+relies on runner disposal; it MUST NOT be described as a guaranteed trap.
 
 The pinned Strimzi support matrix includes Kubernetes 1.35 and Kafka 4.3.1.
 The test cluster is single-node, KRaft, ephemeral, loopback/internal-only, and

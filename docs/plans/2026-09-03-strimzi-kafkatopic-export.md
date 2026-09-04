@@ -5,13 +5,14 @@
 Implement the narrow, deterministic boundary in
 [`Strimzi KafkaTopic GitOps export`](../specs/strimzi-kafkatopic-export.md).
 
-Status on 2026-09-04: Slices 0 through 3 are complete. The pinned CRD, license,
+Status on 2026-09-04: Slices 0 through 4 are complete. The pinned CRD, license,
 provenance notice, reviewed byte fixtures, wheel/sdist boundary checks, strict
 topic parser, pure manifest identity, closed document contract, and pinned-CRD
 validation are frozen. The pure mapper now emits defensive documents and
 canonical Kubernetes-safe YAML with exact omission warnings and counts. The
 offline CLI, lazy command registry, secret-neutral failure boundary, and atomic
-optional output are implemented; Slice 4 installed-package parity is underway.
+optional output are implemented. Clean source, wheel, and direct-sdist parity
+now runs on Python 3.10 through 3.14; Slice 5 real-cluster acceptance is next.
 No current support claim changes.
 
 The specification owns the public contract. A test or implementation conflict
@@ -339,6 +340,12 @@ production code from the checkout.
   for arm64;
 - Kubernetes `v1.35.8` node image at
   `kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0`;
+- pinned upstream fixture inputs from commit
+  `6c7b43c4af0db547c10463ba09d1dfa6f5e156a0`:
+  `examples/kafka/kafka-single-node.yaml` at SHA-256
+  `2e7739e13dc250ccd00872bc6acf08dbf7fe768b9b76afcbef0dc733ede7b9ea`
+  and `examples/kafka/kafka-ephemeral.yaml` at SHA-256
+  `dd12c1e217e7ff348f5be81f9289a6f8c809db5bf4d5bb6b14e24ef7156d4930`;
 - exact Strimzi install asset and digest from the specification, rewritten by a
   strict checked script according to the exhaustive image closure below;
 - operator image
@@ -348,6 +355,16 @@ production code from the checkout.
   and
 - exact `kubectl` v1.35.8 binary/checksum selected by runner architecture.
 
+The three image references above are multi-platform index pins and remain the
+provenance roots. `images.lock.json` also freezes the Linux amd64 and arm64
+child-manifest and config digests listed in the specification. At runtime the
+gate selects only the runner's locked platform and proves each child belongs to
+its frozen index. Docker pulls and creates the kind node from its selected
+child. The gate pulls and loads the operator and Kafka children into that node
+and proves the CRI content maps them to the locked configs. Applied Strimzi
+operator and Kafka image references use selected child digests, not index
+digests.
+
 The rewriter MUST parse YAML and classify every executable image field and
 every Cluster Operator environment variable ending in `_IMAGE` or `_IMAGES`;
 text replacement is insufficient. It MUST make exactly this closure and fail
@@ -356,17 +373,38 @@ on a missing, duplicate, or additional image-bearing field:
 - rewrite the Cluster Operator Deployment image and
   `STRIMZI_DEFAULT_TOPIC_OPERATOR_IMAGE`,
   `STRIMZI_DEFAULT_USER_OPERATOR_IMAGE`, and
-  `STRIMZI_DEFAULT_KAFKA_INIT_IMAGE` to the pinned operator digest;
+  `STRIMZI_DEFAULT_KAFKA_INIT_IMAGE` to the selected-platform operator child
+  reference;
 - rewrite `STRIMZI_DEFAULT_KAFKA_EXPORTER_IMAGE` and
-  `STRIMZI_DEFAULT_CRUISE_CONTROL_IMAGE` to the pinned Kafka digest;
+  `STRIMZI_DEFAULT_CRUISE_CONTROL_IMAGE` to the selected-platform Kafka child
+  reference;
 - replace each of `STRIMZI_KAFKA_IMAGES`,
   `STRIMZI_KAFKA_CONNECT_IMAGES`, and
   `STRIMZI_KAFKA_MIRROR_MAKER_2_IMAGES` with the single exact mapping
-  `4.3.1=<PINNED-KAFKA-DIGEST>`; and
+  `4.3.1=<SELECTED-PLATFORM-KAFKA-CHILD-REFERENCE>`; and
 - remove the optional and unreachable Kafka Bridge, Kaniko, Buildah, and Maven
-  builder default-image environment variables. No Bridge, Connect, build,
-  MirrorMaker, User Operator, Kafka Exporter, or Cruise Control resource is
-  permitted in the fixture.
+  builder default-image environment variables. The exact Maven variable is
+  `STRIMZI_DEFAULT_MAVEN_BUILDER`; it is part of the closed inventory even
+  though its name does not end in `_IMAGE` or `_IMAGES`. No Bridge, Connect,
+  build, MirrorMaker, User Operator, Kafka Exporter, or Cruise Control resource
+  is permitted in the fixture.
+
+The same structural pass MUST close over namespaces. It adds
+`metadata.namespace` to exactly these seven namespaced objects in the
+27-document operator asset: the four RoleBindings named below and the
+ServiceAccount, Deployment, and ConfigMap each named
+`strimzi-cluster-operator`. It also rewrites exactly seven ServiceAccount
+subject namespaces from `myproject` to the unique test namespace. The subjects
+occur in the three
+ClusterRoleBindings `strimzi-cluster-operator`,
+`strimzi-cluster-operator-kafka-broker-delegation`, and
+`strimzi-cluster-operator-kafka-client-delegation`, plus the four RoleBindings
+`strimzi-cluster-operator-watched`,
+`strimzi-cluster-operator-entity-operator-delegation`,
+`strimzi-cluster-operator`, and
+`strimzi-cluster-operator-leader-election`. A missing, duplicate, unexpected,
+or already-divergent namespace target fails closed; `kubectl -n` is not treated
+as a namespace rewriter.
 
 Set `STRIMZI_IMAGE_PULL_POLICY=Never`. After rewriting, no tag-form image
 reference may remain in an executable image field or `_IMAGE`/`_IMAGES`
@@ -382,9 +420,10 @@ limits.
 1. Use unique, validated names for the kind cluster, Docker network, namespace,
    Kafka cluster, temp directory, and kubeconfig. Kubeconfig permissions are
    `0600`; its contents are never logged or uploaded.
-2. Download and verify all tools and assets and pull the kind node, operator,
-   and Kafka images by exact digest while runner egress is still available.
-   Verify each local image's `RepoDigests` contains the exact pin. Install the
+2. Download and verify all tools and assets and pull the kind node index plus
+   the selected-platform operator and Kafka child manifests by exact digest
+   while runner egress is still available. Verify the local index-to-child and
+   child-to-config chains against `images.lock.json`. Install the
    supplied wheel in a clean location outside the checkout, generate canonical
    YAML twice before creating any Docker network or cluster, and prove exact
    bytes under the offline exporter guards.
@@ -403,22 +442,28 @@ limits.
    then run a bounded TCP probe from its network namespace to a literal external
    IP; any successful connection fails the gate. `Internal!=true`, a skipped or
    inoperable probe, or unexpected attachment/port also fails closed.
-5. Only after the nodes exist, load the exact operator and Kafka digest images
-   into every node. Enumerate the node's containerd store and require both exact
-   digests before applying any Strimzi object; `Never` pull policy prevents
+5. Only after the nodes exist, load the exact selected-platform operator and
+   Kafka child images into every node. Enumerate the node's containerd store
+   and require both child manifests to map to their locked config identities
+   before applying any Strimzi object; `Never` pull policy prevents
    reconciliation from substituting or fetching a tag.
 6. Install the exact rewritten operator manifest in one namespace, create the
    single-node Kafka fixture, and poll with monotonic bounded deadlines: five
    minutes for operator availability, ten minutes for Kafka `Ready=True`, five
    minutes for all first-pass topic reconciliation, and five minutes for replay.
-   The job timeout is 30 minutes.
+   The CI job timeout is 30 minutes. The gate has a shorter global internal
+   deadline that reserves bounded time for evidence capture, cleanup/residue
+   verification, and failure-only upload.
 7. Run server-side dry-run on the already-generated canonical stream, then
    apply the first copy. Enumerate all Cluster Operator and test-namespace Pod
    container and init-container image references and require only the exact
-   operator and Kafka digest references permitted by the closure. Require each
-   corresponding runtime `imageID` to contain the expected digest. This check is
-   scoped to Strimzi workloads; Kubernetes system images are inherited from the
-   pinned kind node image.
+   selected-platform operator and Kafka child references permitted by the
+   closure. A first reviewed pilot records the exact Kubernetes `imageID`
+   representation for each workload under the pinned kind node/containerd
+   combination in `images.lock.json`; CI then requires exact equality to those
+   frozen values. It MUST NOT accept an arbitrary index, child-manifest, or
+   config-digest form. This check is scoped to Strimzi workloads; Kubernetes
+   system images are inherited from the pinned kind node image.
 8. For both the direct and hashed identities, require the exact namespace,
    metadata name, cluster label, annotations, spec, `status.topicName`, nonempty
    `status.topicId`, `status.observedGeneration == metadata.generation`, and a
@@ -436,7 +481,7 @@ limits.
 
 ### Failure artifacts and cleanup
 
-A trap runs on success, failure, cancellation, and timeout. Before cleanup it
+On success, ordinary failure, and internal timeout, the orchestrator first
 captures bounded, secret-scanned artifacts: Kubernetes version and node image,
 CRD digest, operator Deployment/Pod descriptions, operator and Topic Operator
 logs, Kafka/NodePool/Topic JSON, events, broker descriptions/configs, generated
@@ -444,10 +489,20 @@ YAML checksums, and poll timeline. Kubeconfig, Secrets, service-account tokens,
 environment dumps, registry configuration, and unbounded logs are never
 uploaded.
 
-Artifacts are uploaded on failure with short retention. Cleanup then deletes
-the exact kind cluster, removes the exact internal Docker network and temporary
-directory, and verifies that no container/network with the unique prefix
-remains. Cleanup failures fail the job after evidence upload.
+After capture, cleanup deletes the exact kind cluster, removes the exact
+internal Docker network and temporary runtime material, and verifies that no
+container/network with the unique prefix remains. Bounded capture and cleanup
+evidence remains in a candidate directory that is never uploaded directly.
+The staging step creates a fresh upload directory and copies only files for
+which the complete bounded candidate set passed its final secret scan. On any
+secret match, size violation, or scan/read failure, it stages none of the
+candidate evidence, replaces the upload directory with only a fixed
+secret-neutral scan-failure marker, and fails the job. A failure-only,
+short-retention upload then publishes either the fully passing evidence set or
+that marker, so cleanup/residue failures are represented without exposing a
+rejected candidate. Hosted-runner cancellation or external SIGKILL can prevent
+these process-level steps, so cleanup in that case is best-effort and runner
+disposal is the final isolation boundary.
 
 ### Acceptance
 
