@@ -1,0 +1,2 @@
+sqlglot==29.0.1
+pytest==9.0.2
