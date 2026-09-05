@@ -1,11 +1,39 @@
 ---
 title: Exposures
-description: Document downstream consumers and data contracts
+description: Declare custom application inputs, outputs, and owners
 ---
 
 # Exposures
 
-Exposures document how your data is consumed by downstream systems. They don't deploy anything — they provide lineage documentation, SLA tracking, and impact analysis.
+Exposures describe custom applications and downstream consumers alongside SQL
+models. They add declared dependencies to lineage and impact analysis; they do
+not build or deploy application code. SLA fields are metadata, not enforcement.
+
+## Custom streaming applications
+
+A Kafka Streams, Java, or Python processor can declare both inputs and outputs:
+
+```yaml
+exposures:
+  - name: fraud_processor
+    type: application
+    role: both
+    owner: risk-team
+    repo: https://example.com/risk/fraud-processor
+    language: java
+    tool: kafka-streams
+    consumes:
+      - source: raw_orders
+    produces:
+      - source: scored_orders
+```
+
+Declare both sources elsewhere in the project. Each `consumes`, `produces`, or
+`depends_on` entry takes exactly one `source` (source name) or `ref` (model name).
+Inputs point into the application; outputs point from it to the referenced node.
+Producing a topic does not transfer its lifecycle ownership. `role` describes the
+application; it does not discard declared edges. Names must be unique across
+sources, models, and exposures, and feedback cycles are currently rejected.
 
 ## What is an Exposure?
 

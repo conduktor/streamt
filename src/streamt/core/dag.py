@@ -410,6 +410,10 @@ class DAGBuilder:
 
         # Add exposure nodes
         for exposure in self.project.exposures:
+            if exposure.name in dag.nodes:
+                raise ValueError(
+                    f"Exposure '{exposure.name}' shares a name with another graph node"
+                )
             dag.add_node(
                 DAGNode(
                     name=exposure.name,
@@ -475,10 +479,12 @@ class DAGBuilder:
 
     def _build_exposure_edges(self, dag: DAG, exposure: Exposure) -> None:
         """Build edges for an exposure."""
-        # Consumer exposures depend on models they consume
+        # Applications can consume either existing sources or model outputs.
         for ref in exposure.consumes:
             if ref.ref:
                 dag.add_edge(ref.ref, exposure.name)
+            if ref.source:
+                dag.add_edge(ref.source, exposure.name)
 
         # depends_on
         for ref in exposure.depends_on:
@@ -487,7 +493,9 @@ class DAGBuilder:
             if ref.source:
                 dag.add_edge(ref.source, exposure.name)
 
-        # Producer exposures are upstream of sources they produce
+        # Producing data does not transfer lifecycle ownership of its resource.
         for ref in exposure.produces:
             if ref.source:
                 dag.add_edge(exposure.name, ref.source)
+            if ref.ref:
+                dag.add_edge(exposure.name, ref.ref)

@@ -532,6 +532,14 @@ class ProjectValidator:
     def _validate_exposures(self) -> None:
         """Validate exposure declarations."""
         for exposure in self.project.exposures:
+            if exposure.name in self.source_names | self.model_names:
+                self.result.add_error(
+                    "NAME_COLLISION",
+                    f"Exposure '{exposure.name}' shares a name with a source or model. "
+                    "Graph node names must be distinct across these declarations.",
+                    f"exposure '{exposure.name}'",
+                )
+
             # Warn about SLA configuration (metadata-only, not enforced)
             if exposure.sla:
                 self.result.add_warning(
@@ -541,45 +549,57 @@ class ProjectValidator:
                     f"exposure '{exposure.name}'",
                 )
 
-            # Validate produces references
-            for ref in exposure.produces:
-                if ref.source and ref.source not in self.source_names:
-                    self.result.add_error(
-                        "EXPOSURE_SOURCE_NOT_FOUND",
-                        errors.exposure_source_not_found(
-                            exposure.name, ref.source, list(self.source_names)
-                        ),
-                    )
+            for relationship, references in (
+                ("produces", exposure.produces),
+                ("consumes", exposure.consumes),
+                ("depends_on", exposure.depends_on),
+            ):
+                for index, ref in enumerate(references):
+                    location = f"exposure '{exposure.name}'.{relationship}[{index}]"
+                    specified = [value for value in (ref.source, ref.ref) if value is not None]
+                    if len(specified) != 1 or not specified[0].strip():
+                        self.result.add_error(
+                            "EXPOSURE_REFERENCE_INVALID",
+                            "An exposure reference must set exactly one non-empty "
+                            "'source' or 'ref'.",
+                            location,
+                        )
+                        continue
+                    for kind, name, known in (
+                        ("source", ref.source, self.source_names),
+                        ("model", ref.ref, self.model_names),
+                    ):
+                        if name is None or name in known:
+                            continue
+                        if relationship == "depends_on":
+                            code = "EXPOSURE_DEPENDENCY_NOT_FOUND"
+                            message = errors.exposure_dependency_not_found(
+                                exposure.name, name, kind, sorted(known)
+                            )
+                        elif kind == "source":
+                            code = "EXPOSURE_SOURCE_NOT_FOUND"
+                            message = errors.exposure_source_not_found(
+                                exposure.name, name, sorted(known)
+                            )
+                        else:
+                            code = "EXPOSURE_MODEL_NOT_FOUND"
+                            message = errors.exposure_model_not_found(
+                                exposure.name, name, sorted(known)
+                            )
+                        self.result.add_error(code, message, location)
 
-            # Validate consumes references
-            for ref in exposure.consumes:
-                if ref.ref and ref.ref not in self.model_names:
-                    self.result.add_error(
-                        "EXPOSURE_MODEL_NOT_FOUND",
-                        errors.exposure_model_not_found(
-                            exposure.name, ref.ref, list(self.model_names)
-                        ),
-                    )
+        if self.project.exposures and self.result.is_valid:
+            from streamt.core.dag import DAGBuilder, DAGCycleError
 
-            # Validate depends_on references
-            for ref in exposure.depends_on:
-                if ref.ref and ref.ref not in self.model_names:
-                    self.result.add_error(
-                        "EXPOSURE_DEPENDENCY_NOT_FOUND",
-                        errors.exposure_dependency_not_found(
-                            exposure.name, ref.ref, "model", list(self.model_names)
-                        ),
-                    )
-                if ref.source and ref.source not in self.source_names:
-                    self.result.add_error(
-                        "EXPOSURE_DEPENDENCY_NOT_FOUND",
-                        errors.exposure_dependency_not_found(
-                            exposure.name, ref.source, "source", list(self.source_names)
-                        ),
-                    )
+            try:
+                DAGBuilder(self.project).build().topological_sort()
+            except DAGCycleError as error:
+                self.result.add_error("CYCLE_DETECTED", str(error))
 
     def _validate_dag(self) -> None:
         """Validate DAG has no cycles."""
+        if any(error.code == "CYCLE_DETECTED" for error in self.result.errors):
+            return
         graph: dict[str, set[str]] = {m.name: set() for m in self.project.models}
 
         for model in self.project.models:
@@ -1002,7 +1022,7 @@ class ProjectValidator:
             self.result.add_warning(code, msg, ctx)
 
     def _validate_unused_sources(self) -> None:
-        """Warn when declared sources have no downstream consumers."""
+        """Warn when sources are not referenced by models or external applications."""
         if not self.parser:
             return
 
@@ -1012,12 +1032,17 @@ class ProjectValidator:
                 sources, _ = self.parser.extract_refs_from_sql(model.sql)
                 consumed_sources.update(sources)
 
+        for exposure in self.project.exposures:
+            for ref in (*exposure.produces, *exposure.consumes, *exposure.depends_on):
+                if ref.source:
+                    consumed_sources.add(ref.source)
+
         for source in self.project.sources:
             if source.name not in consumed_sources:
                 self.result.add_warning(
                     "UNUSED_SOURCE",
-                    f"Source '{source.name}' is declared but not referenced by any model. "
-                    f"Consider removing it or adding a model that reads from it.",
+                    f"Source '{source.name}' is declared but not referenced by any model "
+                    "or exposure. Consider declaring the application that uses it.",
                     f"source '{source.name}'",
                 )
 
