@@ -344,6 +344,11 @@ def preflight_recovery_intent(
         if action.resource_id in action_ids:
             raise _target_error(action, "is duplicated in the blocked intent")
         action_ids.add(action.resource_id)
+        if identity.kind == "kafka_streams_job":
+            raise _target_error(
+                action,
+                "Kafka Streams recovery is not yet supported; pending operation must remain intact",
+            )
         if identity.kind not in _SUPPORTED_ACTIONS:
             raise _target_error(action, "has an unsupported resource kind")
         kind = cast(_Kind, identity.kind)

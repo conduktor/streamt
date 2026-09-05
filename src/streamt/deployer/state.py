@@ -675,6 +675,29 @@ def desired_managed_records(
         for requirement in getattr(plan, "ownership_requirements", [])
     }
 
+    from streamt.compiler.manifest import parse_compiled_kafka_streams_job_artifact
+    from streamt.deployer.kafka_streams import KafkaStreamsJobChange
+
+    for runner_change in getattr(plan, "kafka_streams_changes", []):
+        if type(runner_change) is not KafkaStreamsJobChange or runner_change.desired is None:
+            raise StateFormatError("Kafka Streams state projection requires an exact desired job change")
+        desired = parse_compiled_kafka_streams_job_artifact(runner_change.desired.to_dict())
+        ownership = ArtifactOwnership.from_dict(desired.ownership)
+        if ownership is None or ownership.project != project:
+            raise StateIdentityError("Kafka Streams state projection has foreign or invalid ownership")
+        if ownership.mode == "external":
+            if runner_change.action != "none" or runner_change.current is not None or runner_change.backend_identity is not None:
+                raise StateFormatError("External Kafka Streams state projection must be declaration-only")
+            continue
+        backend = runner_change.backend_identity
+        if type(backend) is not str or re.fullmatch(r"kafka-streams-docker:v1:[0-9a-f]{64}", backend) is None:
+            raise StateFormatError("Kafka Streams state projection requires an exact Docker/Kafka backend identity")
+        _add_desired_record(
+            resources, project=project, environment=environment, kind="kafka_streams_job",
+            physical_name=desired.application_id, backend=backend, artifact=desired,
+            blocked_resource_ids=blocked_resource_ids,
+        )
+
     for schema_change in getattr(plan, "schema_changes", []):
         _add_desired_record(
             resources,

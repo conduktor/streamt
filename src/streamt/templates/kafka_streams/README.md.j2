@@ -1,0 +1,123 @@
+# Kafka Streams starter
+
+This project declares `raw_orders -> eligible_orders -> fraud_app`.
+The two topics and the SQL runner are managed by streamt. `fraud_app` records
+a custom application's input and expected columns; streamt does not deploy,
+run, or monitor its code. There is no producer application in this starter.
+
+The supported deployment path is create/no-op only. Changing a running model
+is blocked pending replacement/recovery support. The runtime-level update
+experiment does not establish a supported CLI update workflow.
+
+## Inspect the topology offline
+
+```bash
+streamt validate --strict
+streamt lineage
+streamt compile --dry-run
+streamt plan --offline
+```
+
+These commands do not require running infrastructure. The offline plan assumes
+managed resources are absent; it is not a live diff. Validation checks declared
+contracts and references, not broker contents or whether `fraud_app` is running.
+
+## Create the managed resources
+
+The runner image must already exist on your local Docker daemon. To build the
+packaged runner explicitly, run `streamt -o json runtime build`, then copy its
+`data.image` ID into `runtime.kafka_streams.image`.
+
+Before a live plan/apply, provide a Kafka broker that supports transactions,
+the configured local Docker bridge network, and matching advertised broker
+addresses. `runtime.kafka.bootstrap_servers` is reachable from your CLI;
+`bootstrap_servers_internal` is reachable from the runner container. Inside
+that container, `localhost` is the runner itself. The default `broker:19092`
+requires your own network/broker configuration; init does not create either.
+The default Docker `bridge` does not provide service-name DNS. Use an existing
+user-defined bridge network when your broker address uses its container name.
+
+The sample uses one partition and replication factor one for local testing.
+These topic settings are not a production recommendation. Review the image,
+network, broker addresses, and `initial_offset` in `stream_project.yml` before:
+
+```bash
+streamt plan --out reviewed-plan.json
+streamt apply --plan reviewed-plan.json
+streamt status --health
+streamt plan
+```
+
+The first apply creates the input/output topics and one runner container. An
+unchanged second plan should be a no-op. Creation initializes source offsets
+explicitly from the chosen earliest/latest policy; it does not reset an
+existing group. The runner itself uses `auto.offset.reset=none`.
+
+Authentication belongs in runtime configuration through environment references,
+not SQL, JSON plans, or sample records. This starter uses plaintext local Kafka.
+TLS/SASL broker acceptance and production hardening remain separate work.
+
+## Produce and read a sample
+
+`sample_events.jsonl` contains four raw UTF-8 JSON objects. With
+[Kafka's CLI tools](https://kafka.apache.org/43/getting-started/quickstart/) on
+your PATH, run these commands against the host-facing broker address
+configured in your project (replace `localhost:9092` if needed):
+
+```bash
+kafka-console-producer.sh --bootstrap-server localhost:9092 \
+  --topic {{ raw_topic }} < sample_events.jsonl
+kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic {{ output_topic }} --from-beginning --max-messages 1 \
+  --timeout-ms 10000 --consumer-property isolation.level=read_committed
+```
+
+For this fresh input, the expected output is one JSON object:
+
+```json
+{"id":"large-paid","amount":150}
+```
+
+The smaller paid order, unpaid order, and null amount do not pass the predicate.
+Repeating production sends new records; it is not a deduplicated seed command.
+The runner preserves Kafka keys, including null keys. These CLI sample records
+have null keys. Consumers should use `read_committed` to read committed output.
+
+Values must contain exactly `id`, `amount`, and `paid`. Missing/extra fields,
+wrong types, malformed JSON, and integers outside signed 64-bit range stop the
+runner. Nullable `amount` must be explicit JSON null, not an omitted property.
+Tombstones are dropped. This is append-stream behavior, not an upsert table.
+
+## Absorb an existing source
+
+Do not declare an existing topic as `raw_orders` and assume streamt will adopt
+it. In a new project, remove the `raw_orders` managed model, then preview and
+import the exact existing topic:
+
+```bash
+streamt import --include existing.orders.v1 --no-schemas --dry-run
+streamt import --include existing.orders.v1 --no-schemas
+```
+
+Review the imported source's name and its `ownership.mode: external`. Import
+without schemas cannot infer the record fields. Add the matching raw JSON
+columns to that source declaration:
+
+```yaml
+columns:
+  - {name: id, type: STRING, required: true}
+  - {name: amount, type: BIGINT, required: false}
+  - {name: paid, type: BOOLEAN, required: true}
+```
+
+Change the SQL input from `{% raw %}{{ ref("raw_orders") }}{% endraw %}` to
+`{% raw %}{{ source("<imported_source_name>") }}{% endraw %}`. Validate and review a live
+plan before applying the new consumer. The source stays external: streamt does
+not create, adopt, reconfigure, seed, or continuously reconcile it. Runner
+preflight still verifies the topic identity and usable offsets needed to run
+the managed SQL consumer. Only its output topic and SQL runner are created.
+
+Keep the custom application's declared consumed columns aligned with the SQL
+output. Rename/remove a projected column and offline validation can identify
+the affected declaration before any deployment. Fixing that declaration does
+not deploy the application's code.

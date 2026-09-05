@@ -584,6 +584,7 @@ def _validate_process(
         "flink",
         "gateway",
         "connect",
+        "kafka_streams",
     }:
         raise BackstageExportError(
             "Catalog process kind is unsupported",

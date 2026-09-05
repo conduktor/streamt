@@ -64,6 +64,12 @@ def resolve_project_models(project: StreamtProject) -> ResolvedModels:
     resolved: dict[str, ResolvedModel] = {}
     for declaration in sorted(project.models, key=lambda candidate: candidate.name):
         model = declaration.model_copy(deep=True)
+        # Public Pydantic copies may bypass validation; compilation still must
+        # reject conflicting explicit execution contracts before any artifacts.
+        try:
+            model.check_executor_configuration()
+        except ValueError as error:
+            raise CompileError(f"Model '{model.name}': {error}") from error
         if model.macro:
             rendered_sql = _render_macro_sql(project, model)
             model = model.model_copy(

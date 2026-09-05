@@ -681,6 +681,15 @@
       "title": "EventTimeConfig",
       "type": "object"
     },
+    "Executor": {
+      "description": "Explicit SQL runtime; omission preserves existing executor inference.",
+      "enum": [
+        "flink",
+        "kafka_streams"
+      ],
+      "title": "Executor",
+      "type": "string"
+    },
     "Exposure": {
       "additionalProperties": false,
       "description": "Exposure declaration.",
@@ -1786,6 +1795,55 @@
       "title": "KafkaConfig",
       "type": "object"
     },
+    "KafkaStreamsConfig": {
+      "additionalProperties": false,
+      "description": "Bounded local Docker runner configuration; never a remote scheduler.",
+      "properties": {
+        "backend": {
+          "const": "docker",
+          "default": "docker",
+          "title": "Backend",
+          "type": "string"
+        },
+        "image": {
+          "title": "Image",
+          "type": "string"
+        },
+        "network": {
+          "default": "bridge",
+          "title": "Network",
+          "type": "string"
+        },
+        "initial_offset": {
+          "default": "earliest",
+          "enum": [
+            "earliest",
+            "latest"
+          ],
+          "title": "Initial Offset",
+          "type": "string"
+        },
+        "startup_timeout": {
+          "default": 60,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Startup Timeout",
+          "type": "integer"
+        },
+        "stop_timeout": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "title": "Stop Timeout",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "title": "KafkaStreamsConfig",
+      "type": "object"
+    },
     "LegacyConnectorConfig": {
       "additionalProperties": false,
       "description": "Legacy connector spelling retained during the alpha migration window.",
@@ -2123,6 +2181,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/MaterializedType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Executor"
             },
             {
               "type": "null"
@@ -2762,6 +2831,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ConduktorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kafka_streams": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KafkaStreamsConfig"
             },
             {
               "type": "null"

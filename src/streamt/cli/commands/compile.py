@@ -57,6 +57,8 @@ def compile(
 
         artifacts = manifest.artifacts
         artifact_kinds = ["topics", "flink_jobs", "connectors", "gateway_rules", "schemas"]
+        if artifacts.get("kafka_streams_jobs"):
+            artifact_kinds.append("kafka_streams_jobs")
         counts = {kind: len(artifacts.get(kind, [])) for kind in artifact_kinds}
         data: dict[str, object] = {
             "dry_run": dry_run,
@@ -72,6 +74,10 @@ def compile(
             },
             "counts": counts,
         }
+        if artifacts.get("kafka_streams_jobs"):
+            data["artifacts"]["kafka_streams_jobs"] = [  # type: ignore[index]
+                job["name"] for job in artifacts["kafka_streams_jobs"]
+            ]
         if not dry_run:
             data["output_dir"] = str(compiler.output_dir)
 

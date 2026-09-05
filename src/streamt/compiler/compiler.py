@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 from streamt.compiler.compiled_models import (
     CompiledModels,
@@ -25,6 +26,7 @@ from streamt.compiler.manifest import (
     FlinkJobArtifact,
     GatewayRuleArtifact,
     GatewayRuleRemovalArtifact,
+    KafkaStreamsJobArtifact,
     Manifest,
     SchemaArtifact,
     TopicArtifact,
@@ -40,7 +42,10 @@ from streamt.compiler.sql_generator import SQLGeneratorMixin
 from streamt.compiler.type_inference import TypeInferenceMixin
 from streamt.core.dag import DAG, DAGBuilder
 from streamt.core.models import (
+    ColumnDefinition,
+    ContractColumn,
     DataTest,
+    Executor,
     MaterializedType,
     Model,
     Source,
@@ -99,6 +104,8 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.schemas: list[SchemaArtifact] = []
         self.topics: list[TopicArtifact] = []
         self.flink_jobs: list[FlinkJobArtifact] = []
+        self.kafka_streams_jobs: list[KafkaStreamsJobArtifact] = []
+        self._kafka_streams_schemas: dict[str, dict[str, object]] = {}
         self.test_jobs: list[FlinkJobArtifact] = []
         self.connectors: list[ConnectorArtifact] = []
         self.connector_removals: list[ConnectorRemovalArtifact] = []
@@ -172,6 +179,8 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         self.schemas = []
         self.topics = []
         self.flink_jobs = []
+        self.kafka_streams_jobs = []
+        self._kafka_streams_schemas = {}
         self.test_jobs = []
         self.connectors = []
         self.connector_removals = []
@@ -198,6 +207,7 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             self._compile_model(resolved_models[model_name])
             for model_name in model_order
         ]
+        self._validate_kafka_streams_topology()
 
         # Compile continuous tests as Flink jobs (DDL-style, backward compat)
         for test in self.project.tests:
@@ -237,6 +247,44 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             self._write_artifacts()
 
         return manifest, compiled_models
+
+    def _validate_kafka_streams_topology(self) -> None:
+        """Validate physical feedback and consumers against proven projection schemas."""
+        if not self.kafka_streams_jobs:
+            return
+        from streamt.core.dag import DAGNode, NodeType
+        from streamt.core.validator import _known_declared_contract_type
+
+        physical_graph = DAG()
+        for job in self.kafka_streams_jobs:
+            for name in (str(job.plan["input_topic"]), str(job.plan["output_topic"])):
+                if name not in physical_graph.nodes:
+                    physical_graph.add_node(DAGNode(name=name, type=NodeType.MODEL))
+            physical_graph.add_edge(str(job.plan["input_topic"]), str(job.plan["output_topic"]))
+        try:
+            physical_graph.topological_sort()
+        except ValueError as error:
+            raise CompileError("Kafka Streams physical topic feedback is unsupported") from error
+
+        for exposure in self.project.exposures:
+            for dependency in exposure.consumes:
+                schema = self._kafka_streams_schemas.get(dependency.ref or "")
+                if schema is None:
+                    continue
+                for column in exposure.columns:
+                    actual = schema.get(column.name)
+                    if not isinstance(actual, dict):
+                        raise CompileError(
+                            f"Application '{exposure.name}' consumes '{column.name}', "
+                            f"absent from Kafka Streams model '{dependency.ref}' output"
+                        )
+                    expected_type = _known_declared_contract_type(column.type)
+                    actual_type = _known_declared_contract_type(str(actual["type"]))
+                    if expected_type is not None and expected_type != actual_type:
+                        raise CompileError(
+                            f"Application '{exposure.name}' input '{column.name}' type "
+                            f"conflicts with Kafka Streams model '{dependency.ref}' output"
+                        )
 
     def _compile_connector_removals(self) -> None:
         """Compile Connector tombstones without runtime, state, or provider access."""
@@ -415,6 +463,8 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         model = resolved.model
         materialized = resolved.materialized
 
+        if model.executor == Executor.KAFKA_STREAMS:
+            return self._compile_kafka_streams_model(resolved)
         if materialized == MaterializedType.TOPIC:
             return self._compile_topic_model(model)
         if materialized == MaterializedType.VIRTUAL_TOPIC:
@@ -424,6 +474,147 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
         if materialized == MaterializedType.SINK:
             return self._compile_sink_model(model)
         raise CompileError(f"Unsupported materialization for model '{model.name}'")
+
+    @staticmethod
+    def _declared_kafka_streams_schema(
+        columns: list[ColumnDefinition] | list[ContractColumn] | None,
+    ) -> dict[str, object]:
+        from streamt.compiler.kafka_streams import KafkaStreamsPlanError, validate_schema
+
+        schema: dict[str, object] = {}
+        for column in columns or []:
+            if column.name in schema or (isinstance(column, ColumnDefinition) and column.proctime):
+                raise KafkaStreamsPlanError("Kafka Streams columns cannot be duplicated or generated processing-time fields")
+            nullable = (
+                not column.required if isinstance(column, ColumnDefinition)
+                else column.nullable if column.nullable is not None else True
+            )
+            schema[column.name] = {"type": column.type, "nullable": nullable}
+        return dict(validate_schema(schema))
+
+    def _kafka_streams_input(
+        self, resolved: ResolvedModel,
+    ) -> tuple[str, dict[str, object]]:
+        from streamt.compiler.kafka_streams import KafkaStreamsPlanError
+
+        if len(resolved.dependencies) != 1:
+            raise KafkaStreamsPlanError("Kafka Streams SQL requires exactly one declared source() or ref() input")
+        dependency = resolved.dependencies[0]
+        if dependency.kind == "source":
+            source = self.project.get_source(dependency.name)
+            if source is None:
+                raise KafkaStreamsPlanError("Kafka Streams source does not exist")
+            if source.cluster is not None:
+                raise KafkaStreamsPlanError("Kafka Streams input must use the project's Kafka cluster")
+            schema_ref = source.schema_
+            if schema_ref is not None and (
+                schema_ref.format != "json"
+                or schema_ref.registry is not None
+                or schema_ref.subject is not None
+                or schema_ref.definition is not None
+            ):
+                raise KafkaStreamsPlanError("Kafka Streams input requires raw JSON columns, not Schema Registry framing or an unknown serialization")
+            schema = self._declared_kafka_streams_schema(source.columns)
+            if schema_ref is not None and schema_ref.fields is not None:
+                if schema != self._declared_kafka_streams_schema(schema_ref.fields):
+                    raise KafkaStreamsPlanError("Kafka Streams source columns disagree with schema.fields")
+            return source.topic, schema
+
+        upstream = self.resolved_models[dependency.name]
+        if upstream.materialized not in (MaterializedType.TOPIC, MaterializedType.FLINK):
+            raise KafkaStreamsPlanError("Kafka Streams cannot consume a Gateway or Connector output")
+        model = upstream.model
+        topic = model.get_topic_config()
+        topic_name = topic.name if topic and topic.name else model.name
+        if model.name in self._kafka_streams_schemas:
+            return topic_name, self._kafka_streams_schemas[model.name]
+        declared = model.columns or (model.contract.columns if model.contract else None)
+        schema = self._declared_kafka_streams_schema(declared)
+        if model.columns is not None and model.contract is not None and model.contract.columns:
+            if schema != self._declared_kafka_streams_schema(model.contract.columns):
+                raise KafkaStreamsPlanError("Kafka Streams input model columns disagree with its contract")
+        if model.sql:
+            inferred = dict(self._extract_select_columns_with_types(
+                model.sql, schema_context=self._build_source_schema(model),
+            ))
+            declared_types = {column.name: column.type for column in declared or []}
+            if inferred != declared_types:
+                raise KafkaStreamsPlanError("Kafka Streams input model columns disagree with its inferred SQL output")
+        return topic_name, schema
+
+    def _compile_kafka_streams_model(self, resolved: ResolvedModel) -> CompiledModelView:
+        from streamt.compiler.kafka_streams import (
+            FieldSchema,
+            KafkaStreamsPlanError,
+            application_id,
+            compile_plan,
+            output_schema,
+        )
+
+        model = resolved.model
+        runtime = self.project.runtime.kafka_streams
+        if runtime is None:
+            raise CompileError(f"Model '{model.name}': executor kafka_streams requires runtime.kafka_streams")
+        topic_config = model.get_topic_config()
+        output_topic = topic_config.name if topic_config and topic_config.name else model.name
+        try:
+            input_topic, declared_schema = self._kafka_streams_input(resolved)
+            # Resolve only source()/ref() calls, never arbitrary Jinja. A fixed
+            # SQL alias decouples the closed SQL grammar from logical names.
+            sql = re.sub(
+                r'\{\{\s*(?:source|ref)\s*\(\s*["\'][^"\']+["\']\s*\)\s*\}\}',
+                "streamt_input",
+                model.sql or "",
+            )
+            plan = compile_plan(
+                sql, cast(dict[str, FieldSchema], declared_schema), "streamt_input",
+                input_topic, output_topic,
+            )
+            inferred_schema = output_schema(plan)
+            if model.columns is not None and self._declared_kafka_streams_schema(model.columns) != inferred_schema:
+                raise KafkaStreamsPlanError("Kafka Streams declared output columns disagree with inferred projection types or nullability")
+            if model.contract and model.contract.columns:
+                contract = model.contract.columns
+                if len({column.name for column in contract}) != len(contract) or {
+                    column.name for column in contract
+                } != set(inferred_schema):
+                    raise KafkaStreamsPlanError("Kafka Streams output contract columns disagree with inferred projection")
+                for column in contract:
+                    actual = inferred_schema[column.name]
+                    if (
+                        (column.type is not None and column.type != actual["type"])
+                        or (column.nullable is not None and column.nullable != actual["nullable"])
+                    ):
+                        raise KafkaStreamsPlanError("Kafka Streams output contract disagrees with inferred type or nullability")
+            job = KafkaStreamsJobArtifact(
+                name=model.name,
+                application_id=application_id(
+                    self.project.project.name, self.project.environment_name, model.name,
+                ),
+                image=runtime.image,
+                network=runtime.network,
+                initial_offset=runtime.initial_offset,
+                plan=plan,
+                ownership=self._ownership("model", model.name),
+            )
+        except ValueError as error:
+            raise CompileError(f"Model '{model.name}': {error}") from error
+
+        # Publish this model only after its full declaration is validated.
+        self.kafka_streams_jobs.append(job)
+        self._kafka_streams_schemas[model.name] = dict(inferred_schema)
+        self.topics.append(TopicArtifact(
+            name=output_topic,
+            partitions=(topic_config.partitions if topic_config else None) or self._topic_defaults.partitions,
+            replication_factor=(topic_config.replication_factor if topic_config else None) or self._topic_defaults.replication_factor,
+            config=dict(topic_config.config) if topic_config else {},
+            ownership=self._ownership("model", model.name),
+        ))
+        return CompiledModelView(
+            model_name=model.name, materialized=MaterializedType.TOPIC,
+            process_kind="kafka_streams", output_kind="kafka", output_name=output_topic,
+            gateway_physical_input=None, connector_inputs=(),
+        )
 
     def _compile_topic_model(self, model: Model) -> CompiledModelView:
         """Compile a topic model (creates real Kafka topic)."""
@@ -720,11 +911,16 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             artifacts["connector_removals"] = [
                 removal.to_dict() for removal in self.connector_removals
             ]
+        if self.kafka_streams_jobs:
+            artifacts["kafka_streams_jobs"] = [job.to_dict() for job in self.kafka_streams_jobs]
         return Manifest(
             version=self.project.project.version or "0.0.0",
             project_name=self.project.project.name,
             sources=[s.model_dump() for s in self.project.sources],
-            models=[m.model_dump() for m in self.project.models],
+            models=[
+                m.model_dump(exclude={"executor"} if m.executor is None else set())
+                for m in self.project.models
+            ],
             tests=[t.model_dump() for t in self.project.tests],
             exposures=[e.model_dump() for e in self.project.exposures],
             dag=self.dag.to_dict(),
@@ -774,6 +970,14 @@ class Compiler(SQLGeneratorMixin, TypeInferenceMixin):
             config_path = flink_dir / f"{safe}.json"
             with open(config_path, "w") as f:
                 json.dump(job.to_dict(), f, indent=2)
+
+        if self.kafka_streams_jobs:
+            runner_dir = self.output_dir / "kafka_streams"
+            runner_dir.mkdir(exist_ok=True)
+            for runner_job in self.kafka_streams_jobs:
+                safe = self._safe_filename(runner_job.name, "Kafka Streams job")
+                path = runner_dir / f"{safe}.json"
+                path.write_text(json.dumps(runner_job.to_dict(), indent=2) + "\n", encoding="utf-8")
 
         # Write connectors
         connect_dir = self.output_dir / "connect"

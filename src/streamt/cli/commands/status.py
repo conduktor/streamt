@@ -20,6 +20,7 @@ from streamt.cli.helpers import (
     make_formatter,
     make_gateway_deployer,
     make_kafka_deployer,
+    make_kafka_streams_deployer,
     make_sr_deployer,
     redact_sensitive_text,
 )
@@ -219,7 +220,7 @@ def status(
                 status_artifacts[kind] = []
                 for compiled_artifact in artifacts:
                     artifact_name = None
-                    if kind in {"schemas", "topics", "flink_jobs", "connectors", "gateway_rules"}:
+                    if kind in {"schemas", "topics", "flink_jobs", "kafka_streams_jobs", "connectors", "gateway_rules"}:
                         artifact_name = _artifact_str(
                             compiled_artifact, "subject" if kind == "schemas" else "name"
                         )
@@ -254,6 +255,7 @@ def status(
         source_topics: list[SourceTopicStatus] = []
         topics: list[TopicStatus] = []
         flink_jobs: list[FlinkJobStatus] = []
+        kafka_streams_jobs: list[dict[str, object]] = []
         connectors: list[ConnectorStatus] = []
         gateway_rules: list[GatewayRuleStatus] = []
         group_statuses: list[ConsumerGroupStatus] = []
@@ -522,6 +524,32 @@ def status(
             if fd is None:
                 observation_incomplete = True
 
+        # Explicitly observed managed runners (external artifacts were filtered
+        # before any factory unless --include-external was requested).
+        if manifest.artifacts.get("kafka_streams_jobs"):
+            data["kafka_streams_jobs"] = kafka_streams_jobs
+        if status_artifacts.get("kafka_streams_jobs"):
+            from streamt.compiler.manifest import parse_compiled_kafka_streams_job_artifact
+
+            streams = make_kafka_streams_deployer(project, fmt, state_dir=project_path / ".streamt")
+            if streams is None:
+                observation_incomplete = True
+            else:
+                deployers_to_close.append(streams)
+                with _deployer_section(fmt, is_text, "Kafka Streams"):
+                    for raw_job in status_artifacts["kafka_streams_jobs"]:
+                        streams_artifact = parse_compiled_kafka_streams_job_artifact(raw_job)
+                        if not matches(streams_artifact.name):
+                            continue
+                        state = streams.get_job_state(streams_artifact)
+                        kafka_streams_jobs.append({
+                            "name": streams_artifact.name, "application_id": streams_artifact.application_id,
+                            "exists": state.exists, "container_id": state.container_id,
+                            "status": state.status,
+                        })
+                        if is_text:
+                            fmt.print(f"  Kafka Streams: {streams_artifact.name} ({state.status or 'missing'})")
+
         # Connectors
         if status_artifacts.get("connectors"):
             if is_text:
@@ -676,6 +704,7 @@ def status(
             )
             or any(topic["status"] != "OK" for topic in topics)
             or any(not job["exists"] or job["status"] != "RUNNING" for job in flink_jobs)
+            or any(not job["exists"] or job["status"] != "running" for job in kafka_streams_jobs)
             or any(
                 not connector["exists"] or connector["status"] != "RUNNING"
                 for connector in connectors

@@ -59,6 +59,23 @@ SCAFFOLD_DIRS = ["sources", "models", "tests"]
 )
 @click.option("--force", is_flag=True, help="Overwrite existing project files")
 @click.option(
+    "--executor",
+    type=click.Choice(["flink", "kafka_streams"]),
+    default="flink",
+    show_default=True,
+    help="SQL executor for the offline starter (not discovery).",
+)
+@click.option(
+    "--runner-image", help="Immutable Kafka Streams runner image ID or repository digest."
+)
+@click.option("--docker-network", help="Existing local Docker bridge network for Kafka Streams.")
+@click.option("--kafka-internal", help="Kafka address reachable from the Kafka Streams container.")
+@click.option(
+    "--initial-offset",
+    type=click.Choice(["earliest", "latest"]),
+    help="Kafka Streams first-create offset choice (default: earliest); never resets an existing group.",
+)
+@click.option(
     "--discover", is_flag=True, help="Discover sources from existing Kafka infrastructure"
 )
 @click.option(
@@ -90,6 +107,11 @@ def init(
     project_dir: str,
     project_name: Optional[str],
     force: bool,
+    executor: str,
+    runner_image: Optional[str],
+    docker_network: Optional[str],
+    kafka_internal: Optional[str],
+    initial_offset: Optional[str],
     discover: bool,
     kafka: Optional[str],
     schema_registry: Optional[str],
@@ -107,6 +129,41 @@ def init(
     fmt = make_formatter(ctx, "init")
     project_path = Path(project_dir).resolve()
 
+    option_error = None
+    if executor != "kafka_streams" and any(
+        value is not None
+        for value in (runner_image, docker_network, kafka_internal, initial_offset)
+    ):
+        option_error = "Kafka Streams starter options require --executor kafka_streams."
+    elif executor == "kafka_streams" and discover:
+        option_error = (
+            "The Kafka Streams starter cannot be combined with --discover. "
+            "Import existing resources separately, then declare their SQL consumers."
+        )
+    elif executor == "kafka_streams" and any(
+        value is not None
+        for value in (
+            schema_registry,
+            security_protocol,
+            sasl_mechanism,
+            sasl_username,
+            sasl_password,
+            sr_username,
+            sr_password,
+            include,
+            exclude,
+        )
+    ):
+        option_error = (
+            "Discovery and authentication flags are not accepted by the Kafka Streams starter. "
+            "Configure runtime credentials with environment references in the generated project."
+        )
+    if option_error:
+        fmt.add_error(StructuredError(code="INIT_OPTIONS_INVALID", message=option_error))
+        fmt.print_error(option_error)
+        fmt.flush()
+        ctx.exit(1)
+
     project_file = project_path / "stream_project.yml"
     if project_file.exists() and not force and not dry_run:
         fmt.add_error(
@@ -121,7 +178,59 @@ def init(
 
     name = project_name or project_path.name
 
-    if discover:
+    if executor == "kafka_streams":
+        from streamt.templates import create_kafka_streams_starter
+
+        try:
+            created = create_kafka_streams_starter(
+                project_path,
+                name=name,
+                runner_image=runner_image,
+                kafka=kafka,
+                kafka_internal=kafka_internal,
+                docker_network=docker_network,
+                initial_offset=initial_offset,
+                dry_run=dry_run,
+                force=force,
+            )
+        except (ValueError, OSError) as error:
+            message = str(error) if isinstance(error, ValueError) else "Cannot write starter files."
+            fmt.add_error(StructuredError(code="INIT_STARTER_FAILED", message=message))
+            fmt.print_error(message)
+            fmt.flush()
+            ctx.exit(1)
+        fmt.set_data(
+            {
+                "project_name": name,
+                "created_files": created,
+                "executor": "kafka_streams",
+                "dry_run": dry_run,
+                "topology": ["raw_orders", "eligible_orders", "fraud_app"],
+                "managed_models": ["raw_orders", "eligible_orders"],
+                "metadata_only_applications": ["fraud_app"],
+                "support": "create_noop_only",
+            }
+        )
+        if dry_run:
+            fmt.print(
+                "Would create the Kafka Streams starter; no files or runtime resources changed."
+            )
+        else:
+            fmt.print(f"[green]Initialized project '{escape(name)}'[/green]")
+            fmt.print("  raw_orders -> eligible_orders -> fraud_app")
+            fmt.print("  Two managed topics, one SQL runner; fraud_app is metadata-only.")
+            fmt.print(f"  cd {escape(shlex.quote(str(project_path)))}")
+            fmt.print("  streamt validate --strict")
+            fmt.print("  streamt lineage")
+            fmt.print("  streamt compile --dry-run")
+            fmt.print("  streamt plan --offline  # Assume absent; not a live diff")
+            fmt.print("Read README.md before live plan/apply and sample event production.")
+            fmt.print(
+                "Init did not build an image, contact Kafka/Docker, create topics, or seed events."
+            )
+            fmt.print("Support is create/no-op only; updates are blocked pending recovery support.")
+        fmt.flush()
+    elif discover:
         _init_discover(
             fmt,
             project_path,
@@ -307,9 +416,7 @@ def _init_discover(
             )
             sr_deployer.list_subjects()  # Test connection
         except Exception as e:
-            fmt.print_warning(
-                f"Cannot connect to Schema Registry: {redact_sensitive_text(e)}"
-            )
+            fmt.print_warning(f"Cannot connect to Schema Registry: {redact_sensitive_text(e)}")
             close_deployers(sr_deployer)
             sr_deployer = None
 

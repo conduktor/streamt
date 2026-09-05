@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import re
+from typing import Literal, Optional
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 
@@ -255,6 +256,35 @@ class ConduktorConfig(BaseModel):
     console: Optional[ConsoleConfig] = None
 
 
+class KafkaStreamsConfig(BaseModel):
+    """Bounded local Docker runner configuration; never a remote scheduler."""
+
+    backend: Literal["docker"] = "docker"
+    image: str
+    network: str = "bridge"
+    initial_offset: Literal["earliest", "latest"] = "earliest"
+    startup_timeout: int = Field(default=60, ge=1, le=300, strict=True)
+    stop_timeout: int = Field(default=30, ge=1, le=300, strict=True)
+
+    @field_validator("image")
+    @classmethod
+    def validate_immutable_image(cls, value: str) -> str:
+        """Require a local image ID or an immutable repository digest."""
+        if "://" in value or "//" in value or not re.fullmatch(
+            r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64})",
+            value,
+        ):
+            raise ValueError("Kafka Streams image must be an immutable sha256 ID or repository digest")
+        return value
+
+    @field_validator("network")
+    @classmethod
+    def validate_network(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+            raise ValueError("Kafka Streams network must be one explicit Docker network name")
+        return value
+
+
 class RuntimeConfig(BaseModel):
     """Runtime configuration for all external systems."""
 
@@ -263,3 +293,4 @@ class RuntimeConfig(BaseModel):
     flink: Optional[FlinkConfig] = None
     connect: Optional[ConnectConfig] = None
     conduktor: Optional[ConduktorConfig] = None
+    kafka_streams: Optional[KafkaStreamsConfig] = None

@@ -23,6 +23,7 @@ from streamt.cli.helpers import (
     make_formatter,
     make_gateway_deployer,
     make_kafka_deployer,
+    make_kafka_streams_deployer,
     make_sr_deployer,
     redact_sensitive_text,
     required_deployer_services,
@@ -274,6 +275,10 @@ def plan(
                     make_gateway_deployer(project, fmt)
                     if "Conduktor Gateway" in required_services else None
                 )
+                kafka_streams_deployer = (
+                    make_kafka_streams_deployer(project, fmt, state_dir=project_path / ".streamt")
+                    if "Kafka Streams" in required_services else None
+                )
 
                 if not check_required_deployers(
                     project,
@@ -284,6 +289,7 @@ def plan(
                     gateway_deployer,
                     fmt,
                     required_services=required_services,
+                    kafka_streams_deployer=kafka_streams_deployer,
                 ):
                     close_deployers(
                         sr_deployer,
@@ -291,6 +297,7 @@ def plan(
                         flink_deployer,
                         connect_deployer,
                         gateway_deployer,
+                        kafka_streams_deployer,
                     )
                     fmt.flush()
                     sys.exit(1)
@@ -301,6 +308,7 @@ def plan(
                         schema_registry_deployer=sr_deployer,
                         kafka_deployer=kafka_deployer,
                         flink_deployer=flink_deployer,
+                        kafka_streams_deployer=kafka_streams_deployer,
                         connect_deployer=connect_deployer,
                         gateway_deployer=gateway_deployer,
                         project=project,
@@ -323,6 +331,7 @@ def plan(
                         flink_deployer,
                         connect_deployer,
                         gateway_deployer,
+                        kafka_streams_deployer,
                     )
 
                 if plan_output:
@@ -369,6 +378,12 @@ def plan(
                         "action": flink_change.action,
                     }
                 )
+        for streams_change in deployment_plan.kafka_streams_changes:
+            if streams_change.action != "none":
+                changes.append({
+                    "type": "kafka_streams_job", "name": streams_change.job_name,
+                    "action": streams_change.action, "changes": streams_change.changes,
+                })
         for connector_change in deployment_plan.connector_changes:
             if connector_change.action != "none":
                 changes.append(_connector_change_data(connector_change))

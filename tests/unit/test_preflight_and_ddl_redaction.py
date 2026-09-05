@@ -136,6 +136,7 @@ class TestCheckRequiredDeployers:
         if has_connect:
             project.runtime.connect.clusters = {"default": MagicMock()}
         project.runtime.conduktor = MagicMock() if has_gateway else None
+        project.runtime.kafka_streams = None
         if has_gateway:
             project.runtime.conduktor.gateway = MagicMock()
         return project

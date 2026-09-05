@@ -30,7 +30,7 @@ DataHubFabric = Literal[
 DataHubEntityType = Literal["dataFlow", "dataset", "dataJob"]
 DataHubDatasetTransport = Literal["kafka", "gateway"]
 DataHubLogicalKind = Literal["source", "model"]
-DataHubProcessKind = Literal["flink", "gateway", "connect"]
+DataHubProcessKind = Literal["flink", "gateway", "connect", "kafka_streams"]
 DataHubContractStatus = Literal["declared", "enforced"]
 
 DATAHUB_FABRICS = frozenset(
@@ -547,6 +547,7 @@ class DataHubJobIdentity:
             "flink",
             "gateway",
             "connect",
+            "kafka_streams",
         }:
             raise DataHubValidationError(
                 "DataJob process kind is unsupported",

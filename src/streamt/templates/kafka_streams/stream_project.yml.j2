@@ -1,0 +1,79 @@
+# raw_orders -> eligible_orders -> fraud_app
+# The topics and SQL runner are managed here. The custom app is metadata-only.
+# Create/no-op is supported; updates remain blocked pending recovery support.
+apiVersion: streamt.dev/v1alpha1
+project:
+  name: {{ project_name | tojson }}
+  version: "1.0.0"
+
+runtime:
+  kafka:
+    # The CLI runs on the host; the JVM connects from the Docker network.
+    bootstrap_servers: {{ kafka_bootstrap | tojson }}
+    bootstrap_servers_internal: {{ kafka_internal | tojson }}
+  kafka_streams:
+    backend: docker
+    image: {{ runner_image | tojson }}
+    network: {{ docker_network | tojson }}
+    # Journaled first-create choice; an existing group is never silently reset.
+    initial_offset: {{ initial_offset | tojson }}
+
+# To absorb an existing topic, import it as an external source instead of
+# declaring it as a managed model. See README.md; import is not adoption.
+models:
+  - name: raw_orders
+    description: New raw JSON input topic; produce matching events separately.
+    ownership:
+      mode: managed
+    materialized: topic
+    # No SQL or executor: this declaration creates a topic, not a producer.
+    columns:
+      - {name: id, type: STRING, required: true}
+      - {name: amount, type: BIGINT, required: false}
+      - {name: paid, type: BOOLEAN, required: true}
+    topic:
+      name: {{ raw_topic | tojson }}
+      partitions: 1
+      replication_factor: 1
+
+  - name: eligible_orders
+    description: Paid orders of at least 100 units for downstream fraud checks.
+    ownership:
+      mode: managed
+    materialized: topic
+    executor: kafka_streams
+    sql: |
+      SELECT id, amount
+      FROM {% raw %}{{ ref("raw_orders") }}{% endraw %}
+      WHERE amount >= 100 AND paid = TRUE
+    columns:
+      - {name: id, type: STRING, required: true}
+      - {name: amount, type: BIGINT, required: false}
+    topic:
+      name: {{ output_topic | tojson }}
+      partitions: 1
+      replication_factor: 1
+
+exposures:
+  # External application declaration: streamt checks its declared dependencies
+  # and consumed columns. It does not deploy, start, or observe this application.
+  - name: fraud_app
+    type: application
+    role: consumer
+    description: Custom fraud service, documented here but deployed separately.
+    owner: payments-team
+    language: python
+    consumer_group: {{ consumer_group | tojson }}
+    consumes:
+      - ref: eligible_orders
+    columns:
+      - {name: id, type: STRING}
+      - {name: amount, type: BIGINT}
+
+tests:
+  - name: eligible_orders_required_id
+    model: eligible_orders
+    type: schema
+    assertions:
+      - not_null:
+          columns: [id]

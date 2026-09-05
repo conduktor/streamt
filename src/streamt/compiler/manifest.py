@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -117,6 +118,81 @@ class FlinkJobArtifact:
             "state_backend": self.state_backend,
             "state_ttl_ms": self.state_ttl_ms,
         }, self.ownership)
+
+
+class KafkaStreamsArtifactFormatError(ValueError):
+    """A compiled runner artifact has ambiguous identity or unsupported fields."""
+
+
+@dataclass(frozen=True)
+class KafkaStreamsJobArtifact:
+    """Secret-free desired identity and versioned plan for one fixed runner."""
+
+    name: str
+    application_id: str
+    image: str
+    network: str
+    initial_offset: str
+    plan: dict[str, object]
+    ownership: ArtifactOwnership | dict[str, str]
+
+    def __post_init__(self) -> None:
+        from streamt.compiler.kafka_streams import validate_plan
+        from streamt.core.runtime import KafkaStreamsConfig
+
+        if (
+            type(self.name) is not str
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", self.name)
+            or type(self.application_id) is not str
+            or not re.fullmatch(r"streamt-[0-9a-f]{32}", self.application_id)
+        ):
+            raise KafkaStreamsArtifactFormatError("Kafka Streams artifact has an invalid model or application identity")
+        try:
+            KafkaStreamsConfig.model_validate({
+                "image": self.image, "network": self.network, "initial_offset": self.initial_offset,
+            })
+            validated = validate_plan(self.plan)
+        except ValueError as error:
+            raise KafkaStreamsArtifactFormatError("Kafka Streams artifact has invalid runtime or plan fields") from error
+        ownership = ArtifactOwnership.from_dict(self.ownership)
+        if (
+            ownership is None
+            or ownership.mode not in {"managed", "adopted", "external"}
+            or ownership.owner_type != "model"
+            or ownership.owner_name != self.name
+            or not ownership.project.strip()
+            or (
+                isinstance(self.ownership, dict)
+                and set(self.ownership) != {"mode", "project", "type", "name"}
+            )
+        ):
+            raise KafkaStreamsArtifactFormatError("Kafka Streams artifact requires exact model ownership")
+        object.__setattr__(self, "ownership", ownership)
+        object.__setattr__(self, "plan", validated)
+
+    def to_dict(self) -> dict[str, object]:
+        from streamt.compiler.kafka_streams import validate_plan
+
+        return _with_ownership({
+            "name": self.name,
+            "application_id": self.application_id,
+            "image": self.image,
+            "network": self.network,
+            "initial_offset": self.initial_offset,
+            "plan": validate_plan(self.plan),
+        }, self.ownership)
+
+
+def parse_compiled_kafka_streams_job_artifact(value: object) -> KafkaStreamsJobArtifact:
+    """Reject unknown fields and malformed ownership at the deployment boundary."""
+    if type(value) is not dict or set(value) != {
+        "name", "application_id", "image", "network", "initial_offset", "plan", "ownership",
+    }:
+        raise KafkaStreamsArtifactFormatError("Kafka Streams artifact must contain exactly its declared fields")
+    try:
+        return KafkaStreamsJobArtifact(**value)
+    except (TypeError, ValueError) as error:
+        raise KafkaStreamsArtifactFormatError("Invalid compiled Kafka Streams artifact") from error
 
 
 @dataclass

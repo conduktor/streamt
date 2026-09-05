@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "input_topic": "orders.input",
+  "output_topic": "orders.output",
+  "schema": {
+    "id": {"type": "STRING", "nullable": false},
+    "amount": {"type": "BIGINT", "nullable": true},
+    "active": {"type": "BOOLEAN", "nullable": false}
+  },
+  "projection": [{"column": "id", "as": "order_id"}, {"column": "amount", "as": "amount"}],
+  "predicates": [{"column": "amount", "op": "ge", "value": 50}, {"column": "active", "op": "eq", "value": true}]
+}

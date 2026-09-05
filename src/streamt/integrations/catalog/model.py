@@ -20,7 +20,7 @@ from streamt.core.models import (
 
 DatasetLogicalKind = Literal["source", "model"]
 DatasetTransport = Literal["kafka", "gateway"]
-CatalogProcessKind = Literal["flink", "gateway", "connect"]
+CatalogProcessKind = Literal["flink", "gateway", "connect", "kafka_streams"]
 ContractStatus = Literal["declared", "enforced"]
 LogicalDataset = tuple[DatasetLogicalKind, str]
 
@@ -168,7 +168,7 @@ class CatalogProcess:
             label="Process logical name",
             location="process.logical_name",
         )
-        if self.process_kind not in {"flink", "gateway", "connect"}:
+        if self.process_kind not in {"flink", "gateway", "connect", "kafka_streams"}:
             raise CatalogProjectionError(
                 "Catalog process kind is unsupported",
                 location="process.process_kind",
@@ -602,7 +602,7 @@ def _validate_compiled_shape(compiled: CompiledModelView, location: str) -> None
     materialized = compiled.materialized
     shape = (compiled.process_kind, compiled.output_kind)
     valid_shapes: dict[MaterializedType, set[tuple[object, object]]] = {
-        MaterializedType.TOPIC: {(None, "kafka"), ("flink", "kafka")},
+        MaterializedType.TOPIC: {(None, "kafka"), ("flink", "kafka"), ("kafka_streams", "kafka")},
         MaterializedType.FLINK: {("flink", "kafka")},
         MaterializedType.VIRTUAL_TOPIC: {("gateway", "gateway")},
         MaterializedType.SINK: {("connect", None)},

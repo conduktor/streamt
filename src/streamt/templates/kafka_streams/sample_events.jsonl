@@ -1,0 +1,4 @@
+{"id":"large-paid","amount":150,"paid":true}
+{"id":"small-paid","amount":25,"paid":true}
+{"id":"large-unpaid","amount":200,"paid":false}
+{"id":"unknown-amount","amount":null,"paid":true}

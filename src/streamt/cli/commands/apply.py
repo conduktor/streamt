@@ -29,6 +29,7 @@ from streamt.cli.helpers import (
     make_formatter,
     make_gateway_deployer,
     make_kafka_deployer,
+    make_kafka_streams_deployer,
     make_sr_deployer,
     redact_sensitive_text,
     required_deployer_services,
@@ -100,6 +101,7 @@ _SELECTABLE_ARTIFACT_KINDS = (
     "schemas",
     "topics",
     "flink_jobs",
+    "kafka_streams_jobs",
     "test_jobs",
     "connectors",
     "gateway_rules",
@@ -857,12 +859,17 @@ def apply(
         gateway = (
             make_gateway_deployer(project, fmt) if "Conduktor Gateway" in required_services else None
         )
+        kafka_streams = (
+            make_kafka_streams_deployer(project, fmt, state_dir=project_path / ".streamt")
+            if "Kafka Streams" in required_services else None
+        )
 
         # Pre-flight: abort if required deployers are unavailable
         if not check_required_deployers(
             project, kafka, sr, flink, connect, gateway, fmt, required_services=required_services,
+            kafka_streams_deployer=kafka_streams,
         ):
-            close_deployers(sr, kafka, flink, connect, gateway)
+            close_deployers(sr, kafka, flink, connect, gateway, kafka_streams)
             fmt.flush()
             sys.exit(1)
 
@@ -872,6 +879,7 @@ def apply(
                 schema_registry_deployer=sr,
                 kafka_deployer=kafka,
                 flink_deployer=flink,
+                kafka_streams_deployer=kafka_streams,
                 connect_deployer=connect,
                 gateway_deployer=gateway,
                 project=project,
@@ -989,7 +997,7 @@ def apply(
                     }
                 )
                 fmt.flush()
-                close_deployers(sr, kafka, flink, connect, gateway)
+                close_deployers(sr, kafka, flink, connect, gateway, kafka_streams)
                 return
 
             # Bind the durable intent to a fresh state/control pair immediately
@@ -1411,7 +1419,7 @@ def apply(
                     lineage.close()
                 raise
         finally:
-            close_deployers(sr, kafka, flink, connect, gateway)
+            close_deployers(sr, kafka, flink, connect, gateway, kafka_streams)
 
     except (EnvVarError, ParseError, EnvironmentError) as e:
         handle_parse_error(fmt, e, ErrorCode.PARSE_ERROR)

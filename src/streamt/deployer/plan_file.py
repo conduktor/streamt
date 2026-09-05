@@ -167,6 +167,24 @@ def deployment_plan_payload(plan: DeploymentPlan) -> dict[str, object]:
         add("topic", topic_change.topic, topic_change.action, topic_change.changes)
     for flink_change in plan.flink_changes:
         add("flink_job", flink_change.job_name, flink_change.action)
+    for runner_change in plan.kafka_streams_changes:
+        current = runner_change.current
+        add("kafka_streams_job", runner_change.job_name, runner_change.action, {
+            **runner_change.changes,
+            "backend_identity": runner_change.backend_identity,
+            "blocker": runner_change.blocker,
+            "current": None if current is None else {
+                "exists": current.exists,
+                "container_id": current.container_id,
+                "status": current.status,
+                "artifact_hash": current.artifact_hash,
+                "plan_hash": current.plan_hash,
+                "image_id": current.image_id,
+                "input_topic_id": current.input_topic_id,
+                "output_topic_id": current.output_topic_id,
+                "network_id": current.network_id,
+            },
+        })
     for connector_change in plan.connector_changes:
         add(
             "connector",

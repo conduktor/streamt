@@ -27,7 +27,9 @@ from streamt.compiler.manifest import (
     ConnectorArtifactFormatError,
     ConnectorRemovalArtifact,
     GatewayRuleArtifact,
+    KafkaStreamsJobArtifact,
     Manifest,
+    parse_compiled_kafka_streams_job_artifact,
 )
 from streamt.core.deployment_state import (
     PostgresDeploymentStateConfig,
@@ -70,6 +72,11 @@ from streamt.deployer.gateway import (
     secret_neutral_gateway_changes,
 )
 from streamt.deployer.kafka import KafkaDeployer, TopicChange
+from streamt.deployer.kafka_streams import (
+    KafkaStreamsDeployer,
+    KafkaStreamsJobChange,
+    KafkaStreamsJobState,
+)
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
 from streamt.deployer.state import (
     LocalState,
@@ -1352,6 +1359,7 @@ _SAFETY_KIND_ORDER = {
     "flink_job": 2,
     "connector": 3,
     "gateway_rule": 4,
+    "kafka_streams_job": 5,
 }
 _CHANGE_KIND_ORDER = {
     "schema": 0,
@@ -1359,6 +1367,7 @@ _CHANGE_KIND_ORDER = {
     "flink_job": 2,
     "connector": 3,
     "gateway_rule": 4,
+    "kafka_streams_job": 5,
 }
 _RISK_ASSESSMENTS = (
     "safe",
@@ -1399,6 +1408,7 @@ class DeploymentPlan:
     flink_changes: list[FlinkJobChange] = field(default_factory=list)
     connector_changes: list[ConnectorChange] = field(default_factory=list)
     gateway_changes: list[GatewayRuleChange] = field(default_factory=list)
+    kafka_streams_changes: list[KafkaStreamsJobChange] = field(default_factory=list, kw_only=True)
     connector_removal_assessments: tuple[ConnectorRemovalAssessment, ...] = field(
         default_factory=tuple,
         kw_only=True,
@@ -1457,6 +1467,17 @@ class DeploymentPlan:
     def refresh_safety_blockers(self) -> None:
         """Rebuild blockers from final effective backend actions."""
         blockers: list[SafetyBlocker] = []
+
+        for runner_change in self.kafka_streams_changes:
+            blocker = runner_change.blocker
+            if runner_change.action not in {"create", "none"}:
+                blocker = blocker or "kafka_streams_replacement_not_verified"
+            if blocker:
+                blockers.append(SafetyBlocker(
+                    code=blocker, kind="kafka_streams_job", resource=runner_change.job_name,
+                    action=runner_change.action,
+                    message="Kafka Streams lifecycle transition lacks verified identity, state, or replacement evidence; apply is blocked.",
+                ))
 
         for change in self.schema_changes:
             changes = change.changes or {}
@@ -1822,6 +1843,13 @@ class DeploymentPlan:
                 ),
             )
         if action == "update":
+            if kind == "kafka_streams_job":
+                return ChangeRisk(
+                    kind=kind, resource=resource, action=action,
+                    assessment="state_migration_required",
+                    risk_flags=("offset_continuity_unverified", "replacement_not_verified"),
+                    evidence=self._risk_evidence("unavailable", "same_identity_replacement_not_verified"),
+                )
             if topic_change is not None:
                 return self._topic_risk(topic_change, impact_by_resource)
             if schema_change is not None:
@@ -1895,6 +1923,13 @@ class DeploymentPlan:
         """Derive canonical per-resource assessments from the current plan."""
         impact_by_resource = {entry.resource: entry for entry in self.impact_radius}
         assessments: list[ChangeRisk] = []
+        for runner_change in self.kafka_streams_changes:
+            if runner_change.action != "none":
+                assessments.append(self._classify_change(
+                    kind="kafka_streams_job", resource=runner_change.job_name,
+                    action=runner_change.action, current=runner_change.current,
+                    changes=runner_change.changes, impact_by_resource=impact_by_resource,
+                ))
         for change in self.schema_changes:
             if change.action != "none":
                 assessments.append(
@@ -1998,6 +2033,7 @@ class DeploymentPlan:
             or any(c.action != "none" for c in self.flink_changes)
             or any(c.action != "none" for c in self.connector_changes)
             or any(c.action != "none" for c in self.gateway_changes)
+            or any(c.action != "none" for c in self.kafka_streams_changes)
         )
 
     @property
@@ -2009,6 +2045,7 @@ class DeploymentPlan:
             + sum(1 for c in self.flink_changes if c.action == "submit")
             + sum(1 for c in self.connector_changes if c.action == "create")
             + sum(1 for c in self.gateway_changes if c.action == "create")
+            + sum(1 for c in self.kafka_streams_changes if c.action == "create")
         )
 
     @property
@@ -2020,6 +2057,7 @@ class DeploymentPlan:
             + sum(1 for c in self.flink_changes if c.action == "update")
             + sum(1 for c in self.connector_changes if c.action == "update")
             + sum(1 for c in self.gateway_changes if c.action == "update")
+            + sum(1 for c in self.kafka_streams_changes if c.action == "update")
         )
 
     @property
@@ -2031,6 +2069,7 @@ class DeploymentPlan:
             + sum(1 for c in self.flink_changes if c.action == "cancel")
             + sum(1 for c in self.connector_changes if c.action == "delete")
             + sum(1 for c in self.gateway_changes if c.action == "delete")
+            + sum(1 for c in self.kafka_streams_changes if c.action == "delete")
         )
 
     @property
@@ -2132,6 +2171,12 @@ class DeploymentPlan:
                 lines.append(_upd(f"~ flink_job: {change.job_name}"))
             elif change.action == "cancel":
                 lines.append(_rm(f"- flink_job: {change.job_name}"))
+
+        for runner_change in self.kafka_streams_changes:
+            if runner_change.action == "create":
+                lines.append(_add(f"+ kafka_streams_job: {runner_change.job_name}"))
+            elif runner_change.action != "none":
+                lines.append(_upd(f"~ kafka_streams_job: {runner_change.job_name} (blocked)"))
 
         for change in self.connector_changes:
             if change.action == "create":
@@ -2271,6 +2316,7 @@ class DeploymentPlanner:
         prior_state: Optional[LocalState] = None,
         project_name: Optional[str] = None,
         environment: Optional[str] = None,
+        kafka_streams_deployer: Optional[KafkaStreamsDeployer] = None,
     ) -> None:
         """Initialize deployment planner."""
         self.manifest = manifest
@@ -2279,6 +2325,7 @@ class DeploymentPlanner:
         self.flink_deployer = flink_deployer
         self.connect_deployer = connect_deployer
         self.gateway_deployer = gateway_deployer
+        self.kafka_streams_deployer = kafka_streams_deployer
         self.project = project
         self.prior_state = prior_state
         self.project_name = project_name or manifest.project_name
@@ -2411,7 +2458,7 @@ class DeploymentPlanner:
 
     def _validate_manifest_ownership(self) -> None:
         """Never reinterpret malformed ownership as a legacy managed declaration."""
-        for kind in ("schemas", "topics", "flink_jobs", "connectors", "gateway_rules"):
+        for kind in ("schemas", "topics", "flink_jobs", "connectors", "gateway_rules", "kafka_streams_jobs"):
             for artifact in self.manifest.artifacts.get(kind, []):
                 if not isinstance(artifact, dict) or "ownership" not in artifact:
                     continue
@@ -2450,6 +2497,143 @@ class DeploymentPlanner:
                         "and managed; resolve the conflicting declarations before planning"
                     )
                 claims[physical_name] = external
+
+    def _validated_kafka_streams_artifacts(self) -> tuple[KafkaStreamsJobArtifact, ...]:
+        """Resolve all new runner identity claims without observing either provider."""
+        from streamt.compiler.kafka_streams import application_id
+
+        raw = self.manifest.artifacts.get("kafka_streams_jobs", [])
+        if type(raw) is not list:
+            raise StateIdentityError("Compiled kafka_streams_jobs must be an artifact list")
+        artifacts = tuple(parse_compiled_kafka_streams_job_artifact(item) for item in raw)
+        seen: set[str] = set()
+        for artifact in artifacts:
+            ownership = ArtifactOwnership.from_dict(artifact.ownership)
+            if ownership is None or artifact.application_id != application_id(
+                ownership.project, self.environment, artifact.name,
+            ):
+                raise StateIdentityError("Kafka Streams application identity does not match its project, environment, and model")
+            if artifact.application_id in seen:
+                raise StateIdentityError("Compiled Kafka Streams jobs contain duplicate application identity claims")
+            seen.add(artifact.application_id)
+        return artifacts
+
+    def _append_kafka_streams_changes(
+        self, plan: DeploymentPlan, artifacts: tuple[KafkaStreamsJobArtifact, ...], *, offline: bool,
+    ) -> None:
+        new_topics = frozenset(change.topic for change in plan.topic_changes if change.action == "create")
+        for artifact in artifacts:
+            if self._is_external_ownership(artifact.ownership):
+                change = KafkaStreamsJobChange(artifact.name, "none", desired=artifact)
+            elif offline:
+                change = KafkaStreamsJobChange(artifact.name, "create", desired=artifact)
+            else:
+                if self.kafka_streams_deployer is None:
+                    raise StateIdentityError("Managed Kafka Streams planning requires a bound Docker deployer")
+                change = self.kafka_streams_deployer.plan_job(artifact, new_topics=new_topics)
+                if (
+                    type(change) is not KafkaStreamsJobChange
+                    or change.desired != artifact
+                    or change.job_name != artifact.name
+                    or type(change.current) is not KafkaStreamsJobState
+                    or change.current.name != artifact.name
+                    or change.backend_identity != self.kafka_streams_deployer.backend_identity
+                ):
+                    raise StateIdentityError("Kafka Streams provider returned inconsistent job evidence")
+                prior = self.prior_state.resources.get(resource_id(
+                    self.project_name, self.environment, "kafka_streams_job", artifact.name,
+                )) if self.prior_state else None
+                if prior is not None:
+                    if not change.current.exists:
+                        change.blocker = "kafka_streams_owned_container_missing"
+                    elif prior.artifact_checksum != change.current.artifact_hash:
+                        change.blocker = "kafka_streams_owned_artifact_drift"
+            self._apply_ownership_policy(
+                plan, kind="kafka_streams_job", logical_name=artifact.name,
+                physical_name=artifact.application_id, ownership=artifact.ownership,
+                change=change, current=change.current, create_actions=frozenset({"create"}),
+                expected_backend=change.backend_identity,
+            )
+            plan.kafka_streams_changes.append(change)
+
+    def _preflight_kafka_streams_changes(self, plan: DeploymentPlan, *, observe: bool) -> None:
+        """Reject incomplete/unsupported runner work before any ordinary mutation."""
+        artifacts = {artifact.name: artifact for artifact in self._validated_kafka_streams_artifacts()}
+        seen: set[str] = set()
+        for change in plan.kafka_streams_changes:
+            if (
+                type(change) is not KafkaStreamsJobChange
+                or change.job_name in seen or change.job_name not in artifacts
+                or type(change.desired) is not KafkaStreamsJobArtifact
+                or change.desired.to_dict() != artifacts[change.job_name].to_dict()
+                or type(change.action) is not str
+                or change.action not in {"create", "none", "update"}
+                or type(change.changes) is not dict
+            ):
+                raise StateIdentityError("Kafka Streams plan does not match exact compiled job declarations")
+            seen.add(change.job_name)
+            desired = artifacts[change.job_name]
+            ownership = ArtifactOwnership.from_dict(desired.ownership)
+            if ownership is None or ownership.project != self.project_name:
+                raise StateIdentityError("Kafka Streams action ownership belongs to another project")
+            if ownership.mode == "external":
+                if change.action != "none" or change.current is not None or change.backend_identity is not None or change.blocker:
+                    raise StateIdentityError("External Kafka Streams declarations cannot carry runtime mutation evidence")
+                continue
+            deployer = self.kafka_streams_deployer
+            if deployer is None:
+                raise StateIdentityError("Managed Kafka Streams plan requires a bound Docker deployer")
+            if (
+                change.blocker or change.action not in {"create", "none"}
+                or type(change.current) is not KafkaStreamsJobState
+                or type(change.current.exists) is not bool
+                or change.current.name != desired.name
+                or change.backend_identity != deployer.backend_identity
+                or not isinstance(change.backend_identity, str)
+                or re.fullmatch(r"kafka-streams-docker:v1:[0-9a-f]{64}", change.backend_identity) is None
+            ):
+                raise StateIdentityError("Kafka Streams lifecycle lacks verified current/backend/replacement evidence")
+            prior = self.prior_state.resources.get(resource_id(
+                self.project_name, self.environment, "kafka_streams_job", desired.name,
+            )) if self.prior_state else None
+            if prior is None:
+                if ownership.mode != "managed" or change.current.exists or change.action != "create":
+                    raise StateIdentityError("Existing Kafka Streams application requires explicit persisted ownership")
+            elif (
+                prior.backend != change.backend_identity or prior.physical_name != desired.application_id
+                or not change.current.exists or prior.artifact_checksum != change.current.artifact_hash
+                or change.action != "none" or prior.artifact_checksum != artifact_checksum(desired.to_dict())
+            ):
+                raise StateIdentityError("Kafka Streams persisted ownership does not match current application evidence")
+            if observe:
+                deployer.preflight(change)
+        if seen != set(artifacts):
+            raise StateIdentityError("Kafka Streams plan omits a compiled job declaration")
+
+    @staticmethod
+    def _kafka_streams_created_topic_receipts(plan: DeploymentPlan) -> frozenset[str]:
+        """Resolve new-topic evidence locally without changing the reviewed plan."""
+        required: set[str] = set()
+        for change in plan.kafka_streams_changes:
+            # External declarations and existing jobs must never trigger this
+            # observation. The full runner preflight has validated ownership.
+            if change.action != "create":
+                continue
+            desired = change.desired
+            bindings = change.changes.get("topic_bindings")
+            if desired is None or type(bindings) is not dict or set(bindings) != {
+                desired.plan["input_topic"], desired.plan["output_topic"],
+            }:
+                raise StateIdentityError("Kafka Streams creation requires complete topic bindings")
+            required.update(topic for topic, identity in bindings.items() if identity is None)
+        for topic in required:
+            matches = [change for change in plan.topic_changes if change.topic == topic]
+            if (
+                len(matches) != 1 or matches[0].action != "create"
+                or matches[0].desired is None or matches[0].desired.name != topic
+            ):
+                raise StateIdentityError("Kafka Streams unbound topic requires one exact reviewed topic creation")
+        return frozenset(required)
 
     def _connect_binding_from_project(self) -> ConnectClusterBinding:
         """Resolve the exact default Connect binding without constructing a deployer."""
@@ -3157,6 +3341,7 @@ class DeploymentPlanner:
         from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
         self._validate_manifest_ownership()
+        runner_artifacts = self._validated_kafka_streams_artifacts()
         plan = DeploymentPlan()
         raw_connector_removals = self.manifest.artifacts.get(
             "connector_removals",
@@ -3251,6 +3436,8 @@ class DeploymentPlanner:
             except (KeyError, TypeError):
                 pass
 
+        self._append_kafka_streams_changes(plan, runner_artifacts, offline=True)
+
         connector_data = self.manifest.artifacts.get("connectors", [])
         connector_binding = self._connect_binding_from_project() if connector_data else None
         connector_artifacts = (
@@ -3312,6 +3499,9 @@ class DeploymentPlanner:
     ) -> DeploymentPlan:
         """Create a deployment plan."""
         self._validate_manifest_ownership()
+        runner_artifacts = self._validated_kafka_streams_artifacts()
+        if any(not self._is_external_ownership(artifact.ownership) for artifact in runner_artifacts) and self.kafka_streams_deployer is None:
+            raise StateIdentityError("Managed Kafka Streams planning requires a bound Docker deployer")
         plan = DeploymentPlan()
 
         raw_connector_removals = self.manifest.artifacts.get(
@@ -3556,6 +3746,8 @@ class DeploymentPlanner:
                 except (KeyError, TypeError) as e:
                     logger.error("Malformed flink_job artifact: %s in %s", e, job_data)
 
+        self._append_kafka_streams_changes(plan, runner_artifacts, offline=False)
+
         # Plan connectors only through one exact bound cluster.
         if (
             connector_data
@@ -3785,12 +3977,23 @@ class DeploymentPlanner:
         return plan
 
     def _compute_impact_radius(self, plan: DeploymentPlan) -> None:
-        """Compute canonical graph and live-consumer evidence for changed topics."""
+        """Compute downstream evidence for topic changes and runner-only evolution."""
         plan.impact_radius.clear()
-        changed_topics = sorted(
-            (change.topic, change.action)
+        topic_actions = {
+            change.topic: (change.action, f"topic_{change.action}")
             for change in plan.topic_changes
             if change.action in ("create", "update")
+        }
+        for runner_change in plan.kafka_streams_changes:
+            if runner_change.action not in {"create", "update"} or runner_change.desired is None:
+                continue
+            output_topic = str(runner_change.desired.plan["output_topic"])
+            if output_topic not in topic_actions or runner_change.action == "update":
+                topic_actions[output_topic] = (
+                    runner_change.action, f"kafka_streams_job_{runner_change.action}",
+                )
+        changed_topics = sorted(
+            (topic, action, change_type) for topic, (action, change_type) in topic_actions.items()
         )
         if not changed_topics:
             return
@@ -3811,6 +4014,20 @@ class DeploymentPlanner:
                 continue
             if physical_name not in ambiguous_topics:
                 ownership_by_topic[physical_name] = ownership
+
+        for runner_change in plan.kafka_streams_changes:
+            desired = runner_change.desired
+            if desired is None:
+                continue
+            physical_name = str(desired.plan["output_topic"])
+            ownership = ArtifactOwnership.from_dict(desired.ownership)
+            if ownership is not None and physical_name not in ambiguous_topics:
+                previous = ownership_by_topic.get(physical_name)
+                if previous is not None and previous != ownership:
+                    ambiguous_topics.add(physical_name)
+                    ownership_by_topic.pop(physical_name, None)
+                else:
+                    ownership_by_topic[physical_name] = ownership
 
         dag = None
         graph_failure: dict[str, object] | None = None
@@ -3839,7 +4056,7 @@ class DeploymentPlanner:
             if isinstance(getattr(exposure, "name", None), str)
         }
 
-        for topic_name, action in changed_topics:
+        for topic_name, _action, change_type in changed_topics:
             ownership = ownership_by_topic.get(topic_name)
             if ownership is not None:
                 logical_type = ownership.owner_type
@@ -3885,7 +4102,7 @@ class DeploymentPlanner:
                             logical_type=logical_type,
                             logical_name=logical_name,
                             logical_resource=logical_resource,
-                            change_type=("topic_create" if action == "create" else "topic_update"),
+                            change_type=change_type,
                             owners=sorted(owners),
                             consumers=consumers,
                             identity_evidence=identity_evidence,
@@ -3960,7 +4177,7 @@ class DeploymentPlanner:
                     logical_type=logical_type,
                     logical_name=logical_name,
                     logical_resource=logical_resource,
-                    change_type="topic_create" if action == "create" else "topic_update",
+                    change_type=change_type,
                     downstream_models=downstream_models,
                     exposures=exposure_entries,
                     owners=sorted(owners),
@@ -4263,6 +4480,7 @@ class DeploymentPlanner:
         action_index: list[int] | None = None,
         stop_on_error: bool = False,
         stop_requested: list[bool] | None = None,
+        after_upsert: Callable[[object, str], None] | None = None,
     ) -> None:
         """Apply a homogeneous list of resource changes, recording outcomes into results."""
         if not deployer:
@@ -4282,6 +4500,8 @@ class DeploymentPlanner:
                 try:
                     result = apply_fn(change.desired)
                     results[self._bucket_for(result, create_verb)].append(label)
+                    if after_upsert is not None:
+                        after_upsert(change, result)
                 except Exception as e:
                     results["errors"].append(f"{label}: {_sanitize_error(e)}")
                     if after_action is not None:
@@ -4312,6 +4532,7 @@ class DeploymentPlanner:
 
     def operation_actions(self, plan: DeploymentPlan) -> list[tuple[str, str]]:
         """Return the exact ordered runtime actions apply will attempt."""
+        self._preflight_kafka_streams_changes(plan, observe=False)
         actions: list[tuple[str, str]] = []
         gateway_changes = list(getattr(plan, "gateway_changes", []))
         actionable_gateway_changes = [
@@ -4362,6 +4583,9 @@ class DeploymentPlanner:
             delete_action="cancel",
             delete_ready=lambda change: bool(change.current and change.current.job_id),
         )
+        for runner_change in plan.kafka_streams_changes:
+            if runner_change.action == "create":
+                actions.append((f"kafka_streams_job:{runner_change.job_name}", "create"))
         add_changes(
             self.connect_deployer,
             list(getattr(plan, "connector_changes", [])),
@@ -4487,6 +4711,7 @@ class DeploymentPlanner:
 
     def planned_actions(self, plan: DeploymentPlan) -> list[PlannedAction]:
         """Return ordered runtime actions with canonical ownership identities."""
+        self._preflight_kafka_streams_changes(plan, observe=False)
         actions: list[PlannedAction] = []
         gateway_changes = list(getattr(plan, "gateway_changes", []))
         actionable_gateway_changes = [
@@ -4557,6 +4782,17 @@ class DeploymentPlanner:
             delete_action="cancel",
             delete_ready=lambda change: bool(change.current and change.current.job_id),
         )
+        for runner_change in plan.kafka_streams_changes:
+            if runner_change.action == "create" and runner_change.desired is not None:
+                actions.append(PlannedAction(
+                    resource_id=self._planned_resource_id(
+                        kind="kafka_streams_job", change=runner_change,
+                        physical_name=runner_change.desired.application_id,
+                        expected_backend=runner_change.backend_identity,
+                    ),
+                    runtime_label=f"kafka_streams_job:{runner_change.job_name}", action="create",
+                ))
+
         if self.connect_deployer is not None:
             for connector_change in list(getattr(plan, "connector_changes", [])):
                 connector_action = str(connector_change.action)
@@ -4619,6 +4855,14 @@ class DeploymentPlanner:
         """Apply a deployment plan."""
         if plan is None:
             plan = self.plan()
+        # Runner lifecycle and ownership failures must stop the complete plan,
+        # not arrive after ordinary topics or schemas have already changed.
+        self._preflight_kafka_streams_changes(plan, observe=True)
+        runner_created_topics = self._kafka_streams_created_topic_receipts(plan)
+        if plan.kafka_streams_changes:
+            plan.refresh_safety_blockers()
+            if plan.is_apply_blocked:
+                raise StateIdentityError("Kafka Streams deployment plan is blocked before mutation")
         cd = self.connect_deployer
         connector_removal_source = connector_removals_requested(
             self.manifest.artifacts.get("connector_removals", [])
@@ -4760,6 +5004,28 @@ class DeploymentPlanner:
         }
         action_index = [0]
         stop_requested = [False]
+        kafka_streams_mutation_started = False
+        runner_topic_receipt_failed = False
+
+        def record_runner_topic_receipt(change: object, result: str) -> None:
+            nonlocal runner_topic_receipt_failed
+            if not isinstance(change, TopicChange) or change.topic not in runner_created_topics:
+                return
+            try:
+                if change.action != "create" or result != "created":
+                    raise StateIdentityError("Kafka Streams topic creation was not acknowledged as created")
+                runner = self.kafka_streams_deployer
+                if runner is None:
+                    raise StateIdentityError("Kafka Streams topic receipt requires a bound deployer")
+                # This read-after-create receipt freezes the UUID before any
+                # next provider action. Kafka creation does not provide an
+                # atomic UUID receipt; concurrent external replacement in the
+                # create/read gap cannot be claimed to be a broker CAS.
+                runner.record_created_topic(change.topic)
+            except Exception:
+                runner_topic_receipt_failed = True
+                stop_requested[0] = True
+                raise
 
         # Apply schemas first (before topics that may use them)
         sr = self.schema_registry_deployer
@@ -4792,8 +5058,11 @@ class DeploymentPlanner:
             before_action=before_action,
             after_action=after_action,
             action_index=action_index,
-            stop_on_error=stop_on_error,
+            # A failed dependency cannot be followed by a runner start even
+            # when direct callers requested best-effort ordinary deployment.
+            stop_on_error=stop_on_error or bool(runner_created_topics),
             stop_requested=stop_requested,
+            after_upsert=record_runner_topic_receipt,
         )
 
         # Flink: "submitted" maps to created/updated based on action; delete is "cancel"
@@ -4841,6 +5110,33 @@ class DeploymentPlanner:
                         if after_action is not None:
                             after_action(label, current_index, True)
                     action_index[0] += 1
+
+        runner = self.kafka_streams_deployer
+        if runner is not None:
+            for runner_change in plan.kafka_streams_changes:
+                if stop_requested[0]:
+                    break
+                if runner_change.action == "none":
+                    continue
+                label = f"kafka_streams_job:{runner_change.job_name}"
+                current_index = action_index[0]
+                if before_action is not None:
+                    before_action(label, current_index)
+                kafka_streams_mutation_started = True
+                try:
+                    result = runner.apply_job(runner_change)
+                    if result != "created":
+                        raise StateIdentityError("Kafka Streams create returned an invalid result")
+                    results["created"].append(label)
+                except Exception as error:
+                    results["errors"].append(f"{label}: {_sanitize_error(error)}")
+                    if after_action is not None:
+                        after_action(label, current_index, False)
+                    stop_requested[0] = True
+                else:
+                    if after_action is not None:
+                        after_action(label, current_index, True)
+                action_index[0] += 1
 
         if cd is not None:
             for action, connector_name, value in connector_actions:
@@ -4925,7 +5221,13 @@ class DeploymentPlanner:
                 action_index[0] += 1
 
         # Track rollback candidates (newly created resources that could be undone)
-        results["rollback_candidates"] = list(results["created"]) if results["errors"] else []
+        # Once a runner may be consuming, deleting an output topic is not a
+        # valid rollback. Preserve its durable pending operation for recovery.
+        results["rollback_candidates"] = (
+            list(results["created"])
+            if results["errors"] and not kafka_streams_mutation_started and not runner_topic_receipt_failed
+            else []
+        )
         results["summary"] = {
             "total": sum(len(v) for v in results.values() if isinstance(v, list)),
             "succeeded": len(results["created"])
@@ -5054,3 +5356,5 @@ class DeploymentPlanner:
                 raise StateIdentityError(
                     "Gateway managed rollback delete returned an invalid result"
                 )
+        else:
+            raise StateIdentityError("Rollback resource kind is unsupported or its deployer is unavailable")

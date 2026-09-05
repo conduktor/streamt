@@ -245,7 +245,7 @@ def _build_static_export(context: _StaticContext) -> StaticOpenLineageExport:
         inputs = _job_inputs(context, model_name, compiled, datasets, location)
         output = datasets.get(("model", model_name))
         outputs: tuple[DatasetIdentity, ...] = ()
-        if compiled.process_kind in {"flink", "gateway"}:
+        if compiled.process_kind in {"flink", "gateway", "kafka_streams"}:
             if output is None:
                 raise OpenLineageStaticError(
                     "Compiled processing model has no output dataset",
@@ -412,6 +412,7 @@ def _validate_compiled_shape(compiled: CompiledModelView, location: str) -> None
         valid = compiled.output_kind == "kafka" and compiled.process_kind in {
             None,
             "flink",
+            "kafka_streams",
         }
     elif materialized == MaterializedType.FLINK:
         valid = compiled.output_kind == "kafka" and compiled.process_kind == "flink"

@@ -543,6 +543,7 @@ def _validate_process(
         "flink",
         "gateway",
         "connect",
+        "kafka_streams",
     }:
         raise DataHubExportError(
             "Catalog process kind is unsupported",

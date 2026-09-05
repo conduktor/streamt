@@ -1,0 +1,89 @@
+{
+  "date": "2026-09-05",
+  "scope": "Maintained fixed stateless version-1 runner; local Docker acceptance, not production certification",
+  "versions": {
+    "runner": "0.1.1",
+    "plan": 1,
+    "kafka_streams": "4.3.1",
+    "acceptance_broker": "4.3.1",
+    "java_runtime": "Temurin 21",
+    "java_release_target": 17
+  },
+  "host_built_application_jar_sha256": "a47116e3f381cb5641c74b548dd1871d689277ed89508dc5be2ace5d6841c341",
+  "jvm_unit_tests": {
+    "PlanTest": 33,
+    "ClientPropertiesTest": 44,
+    "RunnerTest": 13,
+    "IdentityGateTest": 25,
+    "total_passed": 115
+  },
+  "local_build_command": "streamt -o json runtime build --timeout 600",
+  "local_build_inputs": {
+    "files": 14,
+    "sha256": "46831266d360d989b97ce6502c845a6fca6a5eaf1cbd57688ee6a1bd0655ee18",
+    "published": false,
+    "tagged": false
+  },
+  "docker_acceptance": {
+    "fixture_owner": "f0865b8486f9",
+    "image_id": "sha256:52b296a0da1b28d5f0eb0f11b3254cfbeb4114069fbb331ffd7208871920c6c5",
+    "architecture": "arm64",
+    "container_user": "10001:10001",
+    "anonymous_image_volumes": false,
+    "selected_processing_setting": "exactly_once_v2",
+    "default_offset_reset": "none",
+    "container_generations": 9,
+    "junit_elapsed_seconds": 100.3,
+    "source_partitions": 1,
+    "output_partitions": 1,
+    "missing_offsets_failed_before_fixture_initialization": true,
+    "initialization": "Explicit fixture Admin.alterConsumerGroupOffsets(0), after group inactivity verification",
+    "startup_identity_checks": {
+      "wrong_expected_cluster_refused": true,
+      "wrong_expected_input_uuid_refused": true,
+      "wrong_expected_output_uuid_refused": true,
+      "pending_input_records": 6,
+      "valid_committed_offset_unchanged": 0,
+      "output_records": 0,
+      "retained_status_unchanged": true,
+      "fixed_failure_reason": "identity_verification_failed",
+      "verified_cluster_id": "5L6g3nShT-eMCtK--X86sw",
+      "verified_input_topic_id": "HyQ24tS9Sl6HPtNcDcQ-dQ",
+      "verified_output_topic_id": "s8HdZQEDTQq2RAz1cOafpg"
+    },
+    "initial_committed_offset": 6,
+    "updated_committed_offset": 9,
+    "poison_committed_offset": 9,
+    "deliberately_invalid_committed_offset_unchanged": 1000,
+    "output_ids_after_update": ["a", "d", "e", "g"],
+    "application_identity_preserved": true,
+    "named_state_volume_preserved_across_replacement": true,
+    "mandatory_clean_stop_checks": 2,
+    "raw_and_null_keys_preserved": true,
+    "tombstones_dropped": true,
+    "secret_record_canary_absent_from_logs": true,
+    "network_none_local_validation_passed": true,
+    "owned_containers_state_volume_broker_mount_volumes_network_removed": true,
+    "raw_evidence_path_not_distributed": "target/acceptance/f0865b8486f9/"
+  },
+  "historical_runner_0_1_0_wheel_build": {
+    "scope": "Earlier runner evidence only; not verification of current runner 0.1.1 assets",
+    "wheel": "streamt-0.1.0a1-py3-none-any.whl",
+    "isolated_zip_import_actual_local_build_passed": true,
+    "source_wheel_sdist_build_input_byte_parity": true,
+    "build_context_sha256": "d496c81339426c7e7c92279d81fa5786cb67d27d7e657112181de100d446d197",
+    "image_id": "sha256:c7b9b815fd92ae5c897ee632c3ff2a52c103afc2d5e23cd2f97815979e8d5ea8",
+    "byte_reproducible_image_claimed": false,
+    "full_record_acceptance_on_wheel_built_image": false
+  },
+  "not_established": [
+    "Authenticated TLS/SASL broker acceptance",
+    "Broker failures or hard-kill recovery during transactions",
+    "Throughput, memory envelope, or multi-partition acceptance",
+    "Stateful plans, schema evolution, and distributed rollouts",
+    "End-to-end deployment lifecycle guarantee",
+    "Atomic protection against topic deletion or broker rerouting after the startup identity check",
+    "A hard bound on host/JVM DNS resolution during client construction",
+    "Image publication, SBOM, vulnerability review, signing, or redistribution approval"
+  ]
+}

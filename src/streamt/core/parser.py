@@ -196,6 +196,9 @@ class ProjectParser:
             exposures=exposures,
             udfs=udfs,
             project_path=self.project_path,
+            environment_name=(
+                self.env_config.environment.name if self.env_config is not None else "default"
+            ),
         )
 
     def _parse_deployment_state(
@@ -219,7 +222,7 @@ class ProjectParser:
         allowed = {
             field.alias or name
             for name, field in StreamtProject.model_fields.items()
-            if name != "project_path"
+            if name not in {"project_path", "environment_name"}
         }
         # Kept temporarily for the existing migration warning below.
         allowed.add("environments")

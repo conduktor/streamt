@@ -1,0 +1,5 @@
+{
+  "id": {"type": "STRING", "nullable": false},
+  "amount": {"type": "BIGINT", "nullable": true},
+  "active": {"type": "BOOLEAN", "nullable": false}
+}

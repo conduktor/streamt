@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from streamt.deployer.flink import FlinkDeployer
     from streamt.deployer.gateway import GatewayDeployer
     from streamt.deployer.kafka import KafkaDeployer
+    from streamt.deployer.kafka_streams import KafkaStreamsDeployer
     from streamt.deployer.schema_registry import SchemaRegistryDeployer
 
 _DeployerT = TypeVar("_DeployerT")
@@ -159,6 +160,7 @@ def required_deployer_services(manifest: Manifest) -> frozenset[str]:
     services_by_kind = {
         "topics": "Kafka", "schemas": "Schema Registry", "flink_jobs": "Flink",
         "connectors": "Kafka Connect", "gateway_rules": "Conduktor Gateway",
+        "kafka_streams_jobs": "Kafka Streams",
         "connector_removals": "Kafka Connect", "gateway_rule_removals": "Conduktor Gateway",
     }
     required: set[str] = set()
@@ -202,6 +204,7 @@ def check_required_deployers(
     fmt: OutputFormatter,
     *,
     required_services: frozenset[str] | None = None,
+    kafka_streams_deployer: Optional[KafkaStreamsDeployer] = None,
 ) -> bool:
     """Return False (with errors in fmt) if any configured deployer failed to connect."""
     from streamt.core.errors import ErrorCode
@@ -210,6 +213,7 @@ def check_required_deployers(
     checks: list[tuple[bool, Optional[object], str]] = [
         (bool(rt.kafka), kafka_deployer, "Kafka"),
         (bool(rt.schema_registry), sr_deployer, "Schema Registry"),
+        (bool(getattr(rt, "kafka_streams", None)), kafka_streams_deployer, "Kafka Streams"),
         (bool(rt.flink and getattr(rt.flink, "clusters", None)), flink_deployer, "Flink"),
         (
             bool(rt.connect and getattr(rt.connect, "clusters", None)),
@@ -269,6 +273,21 @@ def make_kafka_deployer(project: StreamtProject, fmt: OutputFormatter) -> Option
         return KafkaDeployer(bootstrap, **cfg)
 
     return _try_create_deployer(_create, fmt, "Kafka")
+
+
+def make_kafka_streams_deployer(
+    project: StreamtProject, fmt: OutputFormatter, *, state_dir: Path,
+) -> Optional[KafkaStreamsDeployer]:
+    """Create a runner binding only when selected managed work needs it."""
+    from streamt.deployer.kafka_streams import KafkaStreamsDeployer
+
+    config = project.runtime.kafka_streams
+    if config is None:
+        return None
+    return _try_create_deployer(
+        lambda: KafkaStreamsDeployer(config, project.runtime.kafka, state_dir=state_dir),
+        fmt, "Kafka Streams",
+    )
 
 
 def make_sr_deployer(

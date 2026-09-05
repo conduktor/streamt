@@ -167,6 +167,19 @@ class ProjectValidator:
         self._validate_schema_versions()
         self._validate_unused_sources()
         self._validate_source_columns()
+        if self.result.is_valid and any(
+            model.executor and model.executor.value == "kafka_streams" for model in self.project.models
+        ):
+            # The bounded executor has a closed grammar and exact inferred
+            # output schema. Validate must enforce that same compiler contract,
+            # without writing artifacts or constructing providers.
+            from streamt.compiler import Compiler
+            from streamt.compiler.model_resolution import CompileError
+
+            try:
+                Compiler(self.project).compile(dry_run=True)
+            except (ValueError, CompileError) as error:
+                self.result.add_error("KAFKA_STREAMS_INVALID", str(error), "project")
         return self.result
 
     def _validate_duplicates(self) -> None:

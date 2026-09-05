@@ -42,6 +42,13 @@ class MaterializedType(str, Enum):
     SINK = "sink"
 
 
+class Executor(str, Enum):
+    """Explicit SQL runtime; omission preserves existing executor inference."""
+
+    FLINK = "flink"
+    KAFKA_STREAMS = "kafka_streams"
+
+
 class DataTestType(str, Enum):
     """Types of data tests."""
 
@@ -819,6 +826,7 @@ class Model(BaseModel):
 
     # Materialization is auto-inferred from SQL if not provided
     materialized: Optional[MaterializedType] = None
+    executor: Optional[Executor] = None
 
     # Other top-level fields
     access: AccessLevel = AccessLevel.PRIVATE
@@ -875,6 +883,35 @@ class Model(BaseModel):
         self.get_virtual_topic_name()
         return self
 
+    @model_validator(mode="after")
+    def validate_executor_configuration(self) -> Model:
+        self.check_executor_configuration()
+        return self
+
+    def check_executor_configuration(self) -> None:
+        """Do not silently reinterpret runtime-specific declarations."""
+        if self.executor is None:
+            return
+        if self.executor not in (Executor.FLINK, Executor.KAFKA_STREAMS):
+            raise ValueError("Unknown model executor")
+        if not self.sql and not self.macro:
+            raise ValueError("An explicit executor requires SQL or a SQL macro")
+        if self.executor == Executor.KAFKA_STREAMS:
+            if self.materialized not in (None, MaterializedType.TOPIC):
+                raise ValueError("executor kafka_streams requires materialized topic")
+            unsupported = (
+                "flink", "flink_cluster", "gateway", "sink", "connector",
+                "connect_cluster", "key", "primary_key", "security", "ml_outputs", "from_",
+            )
+            if any(getattr(self, name) is not None for name in unsupported):
+                raise ValueError(
+                    "executor kafka_streams does not support other runtime, key, or security configuration"
+                )
+        elif self.materialized not in (None, MaterializedType.TOPIC, MaterializedType.FLINK):
+            raise ValueError("executor flink requires materialized topic or flink")
+        elif self.gateway is not None or self.sink is not None or self.connector is not None:
+            raise ValueError("executor flink conflicts with Gateway or Connector configuration")
+
     def get_materialized(self) -> MaterializedType:
         """Get materialization type, auto-inferring if not explicitly set.
 
@@ -899,6 +936,11 @@ class Model(BaseModel):
         - ML_PREDICT, ML_EVALUATE (Confluent Flink specific)
         """
         import re
+
+        if self.executor == Executor.KAFKA_STREAMS:
+            return MaterializedType.TOPIC
+        if self.executor == Executor.FLINK and self.materialized is None:
+            return MaterializedType.FLINK
 
         # If explicitly set, use that
         if self.materialized is not None:
@@ -1336,6 +1378,7 @@ class StreamtProject(BaseModel):
 
     # Internal - set after parsing
     project_path: Optional[Path] = Field(default=None, exclude=True)
+    environment_name: str = Field(default="default", exclude=True)
 
     def get_source(self, name: str) -> Optional[Source]:
         """Get source by name."""

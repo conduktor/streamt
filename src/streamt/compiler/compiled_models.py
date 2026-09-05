@@ -9,7 +9,7 @@ from typing import Literal
 
 from streamt.core.models import MaterializedType
 
-ProcessKind = Literal["flink", "gateway", "connect"]
+ProcessKind = Literal["flink", "gateway", "connect", "kafka_streams"]
 OutputKind = Literal["kafka", "gateway"]
 
 
@@ -31,7 +31,7 @@ class CompiledModelView:
             raise ValueError("Compiled model name must be non-blank")
         if not isinstance(self.materialized, MaterializedType):
             raise ValueError("Compiled model materialization must be a MaterializedType")
-        if self.process_kind not in (None, "flink", "gateway", "connect"):
+        if self.process_kind not in (None, "flink", "gateway", "connect", "kafka_streams"):
             raise ValueError("Compiled model process kind is unsupported")
         if self.output_kind not in (None, "kafka", "gateway"):
             raise ValueError("Compiled model output kind is unsupported")
@@ -49,7 +49,7 @@ class CompiledModelView:
             MaterializedType,
             tuple[set[ProcessKind | None], OutputKind | None],
         ] = {
-            MaterializedType.TOPIC: ({None, "flink"}, "kafka"),
+            MaterializedType.TOPIC: ({None, "flink", "kafka_streams"}, "kafka"),
             MaterializedType.FLINK: ({"flink"}, "kafka"),
             MaterializedType.VIRTUAL_TOPIC: ({"gateway"}, "gateway"),
             MaterializedType.SINK: ({"connect"}, None),

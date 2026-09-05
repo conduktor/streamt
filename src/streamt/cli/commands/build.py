@@ -79,6 +79,9 @@ def build(
     fmt.print(f"  Schemas: {summary['schemas']}")
     fmt.print(f"  Topics: {summary['topics']}")
     fmt.print(f"  Flink jobs: {summary['flink_jobs']}")
+    if artifacts.get("kafka_streams_jobs"):
+        summary["kafka_streams_jobs"] = len(artifacts["kafka_streams_jobs"])
+        fmt.print(f"  Kafka Streams jobs: {summary['kafka_streams_jobs']}")
     fmt.print(f"  Connectors: {summary['connectors']}")
     fmt.print(f"  Gateway rules: {summary['gateway_rules']}")
     fmt.print(f"  Total files: {summary['files']}")

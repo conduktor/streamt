@@ -80,6 +80,7 @@ _COMMANDS = (
     ("envs", "streamt.cli.commands.envs", "envs"),
     ("diff", "streamt.cli.commands.diff", "diff_resources"),
     ("build", "streamt.cli.commands.build", "build"),
+    ("runtime", "streamt.cli.commands.runtime", "runtime"),
     ("init", "streamt.cli.commands.init", "init"),
     ("import", "streamt.cli.commands.import_cmd", "import_resources"),
     ("export", "streamt.cli.commands.export", "export"),
