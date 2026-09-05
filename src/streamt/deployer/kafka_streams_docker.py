@@ -9,14 +9,23 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import tarfile
 import uuid
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from streamt.deployer.kafka_streams_evidence import KafkaStreamsVolumeEvidence
+from streamt.deployer.kafka_streams_time import parse_utc_timestamp
+
+if TYPE_CHECKING:
+    from streamt.deployer.kafka_streams_replacement import ReplacementGeneration
 
 
 class KafkaStreamsDockerError(ValueError):
@@ -35,6 +44,36 @@ LABEL_BACKEND = "io.streamt.backend"
 LABEL_INPUT = "io.streamt.input-topic-id"
 LABEL_OUTPUT = "io.streamt.output-topic-id"
 LABEL_VOLUME = "io.streamt.state-volume-token"
+LABEL_OPERATION = "io.streamt.operation-id"
+LABEL_ACTION_INDEX = "io.streamt.operation-action-index"
+LABEL_EVIDENCE = "io.streamt.replacement-fingerprint"
+_TMPFS_SPEC = "rw,nosuid,nodev,noexec,size=64m,mode=1777"
+_TMPFS_PATH = "/tmp"  # noqa: S108 - fixed path inside the container, not a host file
+_PLAN_PATH = "/run/streamt/plan.json"
+_PROPERTIES_PATH = "/run/streamt/client.properties"
+_STATE_PATH = "/var/lib/streamt/state"
+
+
+def normalize_docker_timestamp(value: object) -> str:
+    """Normalize RFC3339 offsets to UTC without truncating nanosecond fractions."""
+    if not isinstance(value, str):
+        raise KafkaStreamsDockerError("Invalid Docker timestamp")
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})", value,
+    )
+    if match is None or match[3] == "-00:00":
+        raise KafkaStreamsDockerError("Invalid Docker timestamp")
+    if match[3] != "Z" and (int(match[3][1:3]) > 23 or int(match[3][4:6]) > 59):
+        raise KafkaStreamsDockerError("Invalid Docker timestamp")
+    try:
+        # Parse only whole seconds; datetime would otherwise discard digits7-9.
+        instant = datetime.fromisoformat(match[1] + match[3].replace("Z", "+00:00"))
+        utc = instant.astimezone(timezone.utc).isoformat(timespec="seconds")
+        normalized = utc.removesuffix("+00:00") + (match[2] or "") + "Z"
+        parse_utc_timestamp(normalized)
+        return normalized
+    except (ValueError, OverflowError):
+        raise KafkaStreamsDockerError("Invalid Docker timestamp") from None
 
 
 def _json_object(raw: bytes, *, message: str) -> dict[str, object]:
@@ -46,13 +85,48 @@ def _json_object(raw: bytes, *, message: str) -> dict[str, object]:
             result[key] = value
         return result
 
+    def invalid_constant(_value: str) -> object:
+        raise ValueError
+
     try:
-        result = json.loads(raw, object_pairs_hook=unique_object)
-    except (UnicodeError, ValueError):
+        result = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=invalid_constant)
+        pending = [(result, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 64 or (isinstance(value, float) and not math.isfinite(value)):
+                raise ValueError
+            if isinstance(value, str):
+                value.encode("utf-8")
+            elif isinstance(value, dict):
+                pending.extend((item, depth + 1) for pair in value.items() for item in pair)
+            elif isinstance(value, list):
+                pending.extend((item, depth + 1) for item in value)
+    except (UnicodeError, ValueError, RecursionError):
         raise KafkaStreamsDockerError(message) from None
     if not isinstance(result, dict):
         raise KafkaStreamsDockerError(message)
     return result
+
+
+@dataclass(frozen=True)
+class KafkaStreamsPlanWitness:
+    """Exact bounded mounted bytes; decoding never exposes client properties."""
+
+    raw_bytes: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.raw_bytes) is not bytes or len(self.raw_bytes) > 1024 * 1024:
+            raise KafkaStreamsDockerError("Invalid runner plan witness")
+        _json_object(self.raw_bytes, message="Invalid runner plan witness")
+
+    @property
+    def sha256(self) -> str:
+        return "sha256:" + hashlib.sha256(self.raw_bytes).hexdigest()
+
+    @property
+    def document(self) -> dict[str, object]:
+        # Give each caller a defensive decode; nested edits cannot change the witness.
+        return _json_object(self.raw_bytes, message="Invalid runner plan witness")
 
 
 def _text(raw: bytes) -> str:
@@ -194,6 +268,58 @@ class LocalDockerRunner:
             raise KafkaStreamsDockerError("Container identity changed during observation")
         return data
 
+    def inspect_exact(self, container_id: str) -> dict[str, object] | None:
+        """Observe a physical container independently of the application name slot.
+
+        A renamed old container remains present. The caller must also validate
+        its ownership/name before deciding on a lifecycle action.
+        """
+        if not isinstance(container_id, str) or not _ID.fullmatch(container_id):
+            raise KafkaStreamsDockerError("Invalid runner container ID")
+        self.verify_daemon()
+        raw = self._run([
+            "container", "ls", "--all", "--no-trunc", "--filter", f"id={container_id}",
+            "--format", "{{.ID}}",
+        ])
+        try:
+            identities = raw.decode("ascii").split()
+        except UnicodeError:
+            raise KafkaStreamsDockerError("Invalid container identity response") from None
+        if not identities:
+            return None
+        if identities != [container_id]:
+            raise KafkaStreamsDockerError("Ambiguous container identity")
+        data = _json_object(
+            self._run(["container", "inspect", "--format", "{{json .}}", container_id]),
+            message="Invalid container inspection",
+        )
+        if data.get("Id") != container_id:
+            raise KafkaStreamsDockerError("Container identity changed during observation")
+        return data
+
+    @staticmethod
+    def generation(data: dict[str, object]) -> ReplacementGeneration | None:
+        """Read an all-or-none generation binding, never infer one from a name."""
+        from streamt.deployer.kafka_streams_replacement import ReplacementGeneration
+
+        config = data.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            raise KafkaStreamsDockerError("Invalid runner generation labels")
+        names = {LABEL_OPERATION, LABEL_ACTION_INDEX, LABEL_EVIDENCE}
+        present = names.intersection(labels)
+        if not present:
+            return None
+        if present != names:
+            raise KafkaStreamsDockerError("Incomplete runner generation labels")
+        index = labels[LABEL_ACTION_INDEX]
+        if not isinstance(index, str) or re.fullmatch(r"0|[1-9][0-9]{0,18}", index) is None:
+            raise KafkaStreamsDockerError("Invalid runner generation labels")
+        try:
+            return ReplacementGeneration(labels[LABEL_OPERATION], int(index), labels[LABEL_EVIDENCE])
+        except (ValueError, TypeError):
+            raise KafkaStreamsDockerError("Invalid runner generation labels") from None
+
     @staticmethod
     def require_owned(data: dict[str, object], application_id: str, backend: str) -> str:
         config = data.get("Config")
@@ -248,10 +374,10 @@ class LocalDockerRunner:
         token = labels.get(LABEL_VOLUME) if isinstance(labels, dict) else None
         created = data.get("CreatedAt")
         try:
+            created = normalize_docker_timestamp(created)
             valid_generation = (
                 isinstance(token, str) and str(uuid.UUID(token)) == token
-                and uuid.UUID(token).int != 0 and isinstance(created, str)
-                and datetime.fromisoformat(created.replace("Z", "+00:00")).utcoffset() is not None
+                and uuid.UUID(token).int != 0
             )
         except (ValueError, OverflowError):
             valid_generation = False
@@ -264,11 +390,63 @@ class LocalDockerRunner:
         return {"name": name, "driver": "local", "created_at": created,
                 "application_id": application_id, "backend_identity": backend, "token": token}
 
+    def require_volume(self, expected: KafkaStreamsVolumeEvidence) -> None:
+        """Require the reviewed same-instance witness without creating a volume."""
+        if type(expected) is not KafkaStreamsVolumeEvidence:
+            raise KafkaStreamsDockerError("An exact state volume witness is required")
+        observed = self.volume_witness(expected.application_id, expected.backend_identity)
+        if observed != expected.to_dict():
+            raise KafkaStreamsDockerError("State volume identity changed after review")
+
+    def validate_mounts(self, data: dict[str, object], expected: KafkaStreamsVolumeEvidence) -> None:
+        """Check actual fixed mounts and the existing volume, without reading secrets."""
+        if type(expected) is not KafkaStreamsVolumeEvidence:
+            raise KafkaStreamsDockerError("An exact state volume witness is required")
+        self.require_owned(data, expected.application_id, expected.backend_identity)
+        mounts, host = data.get("Mounts"), data.get("HostConfig")
+        if not isinstance(mounts, list) or not isinstance(host, dict):
+            raise KafkaStreamsDockerError("Invalid runner mount layout")
+        by_destination: dict[str, dict[str, object]] = {}
+        for mount in mounts:
+            if not isinstance(mount, dict) or not isinstance(mount.get("Destination"), str):
+                raise KafkaStreamsDockerError("Invalid runner mount layout")
+            destination = mount["Destination"]
+            if destination in by_destination:
+                raise KafkaStreamsDockerError("Invalid runner mount layout")
+            by_destination[destination] = mount
+        required = {_PLAN_PATH, _PROPERTIES_PATH, _STATE_PATH}
+        if set(by_destination) not in (required, required | {_TMPFS_PATH}):
+            raise KafkaStreamsDockerError("Invalid runner mount layout")
+        for destination in (_PLAN_PATH, _PROPERTIES_PATH):
+            mount = by_destination[destination]
+            source = mount.get("Source")
+            if (
+                mount.get("Type") != "bind" or mount.get("RW") is not False
+                or not isinstance(source, str) or not Path(source).is_absolute()
+                or any(character in source for character in ",\r\n\x00")
+            ):
+                raise KafkaStreamsDockerError("Invalid runner mount layout")
+        if by_destination[_PLAN_PATH]["Source"] == by_destination[_PROPERTIES_PATH]["Source"]:
+            raise KafkaStreamsDockerError("Invalid runner mount layout")
+        state = by_destination[_STATE_PATH]
+        if (
+            state.get("Type") != "volume" or state.get("Name") != expected.name
+            or state.get("Driver") != "local" or state.get("RW") is not True
+            or host.get("Tmpfs") != {_TMPFS_PATH: _TMPFS_SPEC}
+        ):
+            raise KafkaStreamsDockerError("Invalid runner mount layout")
+        temporary = by_destination.get(_TMPFS_PATH)
+        if temporary is not None and (temporary.get("Type") != "tmpfs" or temporary.get("RW") is not True):
+            raise KafkaStreamsDockerError("Invalid runner mount layout")
+        self.require_volume(expected)
+
     def create(
         self, *, application_id: str, image_id: str, network: str,
         plan_file: Path, properties_file: Path, state_volume: str,
         artifact_hash: str, plan_hash: str, backend: str,
         input_topic_id: str, output_topic_id: str, cluster_id: str,
+        generation: ReplacementGeneration | None = None,
+        expected_volume: KafkaStreamsVolumeEvidence | None = None,
     ) -> str:
         name = self.container_name(application_id)
         if not _IMAGE.fullmatch(image_id) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", network):
@@ -277,6 +455,23 @@ class LocalDockerRunner:
             raise KafkaStreamsDockerError("Runner requires an isolated Docker bridge network")
         if state_volume != name + "-state":
             raise KafkaStreamsDockerError("Invalid runner state volume identity")
+        generation_args: list[str] = []
+        if generation is not None:
+            from streamt.deployer.kafka_streams_replacement import ReplacementGeneration
+
+            if (
+                type(generation) is not ReplacementGeneration or type(expected_volume) is not KafkaStreamsVolumeEvidence
+                or expected_volume.name != state_volume or expected_volume.application_id != application_id
+                or expected_volume.backend_identity != backend
+            ):
+                raise KafkaStreamsDockerError("Replacement creation requires exact generation and existing volume evidence")
+            generation_args = [
+                "--label", f"{LABEL_OPERATION}={generation.operation_id}",
+                "--label", f"{LABEL_ACTION_INDEX}={generation.action_index}",
+                "--label", f"{LABEL_EVIDENCE}={generation.evidence_fingerprint}",
+            ]
+        elif expected_volume is not None:
+            raise KafkaStreamsDockerError("Replacement volume evidence requires a generation")
         if (
             not re.fullmatch(r"[A-Za-z0-9_-]{22}", input_topic_id)
             or not re.fullmatch(r"[A-Za-z0-9_-]{22}", output_topic_id)
@@ -292,20 +487,25 @@ class LocalDockerRunner:
                 raise KafkaStreamsDockerError("Invalid private runner input path")
         self.verify_daemon()
         network_id = self.network_id(network)
-        self.ensure_state_volume(application_id, backend)
+        if generation is None:
+            self.ensure_state_volume(application_id, backend)
+        else:
+            assert expected_volume is not None
+            self.require_volume(expected_volume)
         raw = self._run([
             "container", "create", "--pull=never", "--name", name,
             "--restart=no", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--user=10001:10001", "--network", network_id,
             "--pids-limit=128", "--memory=512m", "--cpus=1",
             # This path is inside the isolated container, not a host temp file.
-            "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777",  # noqa: S108
+            "--tmpfs", "/tmp:" + _TMPFS_SPEC,  # noqa: S108
             "--label", f"{LABEL_APP}={application_id}",
             "--label", f"{LABEL_BACKEND}={backend}",
             "--label", f"{LABEL_ARTIFACT}={artifact_hash}",
             "--label", f"{LABEL_PLAN}={plan_hash}",
             "--label", f"{LABEL_INPUT}={input_topic_id}",
             "--label", f"{LABEL_OUTPUT}={output_topic_id}",
+            *generation_args,
             "--mount", f"type=bind,source={plan_file},target=/run/streamt/plan.json,readonly",
             "--mount", f"type=bind,source={properties_file},target=/run/streamt/client.properties,readonly",
             "--mount", f"type=volume,source={state_volume},target=/var/lib/streamt/state",
@@ -346,15 +546,24 @@ class LocalDockerRunner:
         """Read only the fixed SQL plan mount, never runtime client properties."""
         return self._container_document(container_id, "/run/streamt/plan.json", maximum=1024 * 1024)
 
+    def plan_witness(self, container_id: str) -> KafkaStreamsPlanWitness:
+        return KafkaStreamsPlanWitness(self._container_payload(container_id, _PLAN_PATH, maximum=1024 * 1024))
+
     def _container_document(self, container_id: str, path: str, *, maximum: int) -> dict[str, object]:
-        if not _ID.fullmatch(container_id):
+        return _json_object(self._container_payload(container_id, path, maximum=maximum), message="Invalid runner document")
+
+    def _container_payload(self, container_id: str, path: str, *, maximum: int) -> bytes:
+        if not isinstance(container_id, str) or not _ID.fullmatch(container_id):
             raise KafkaStreamsDockerError("Invalid runner container ID")
         raw = self._run(["container", "cp", f"{container_id}:{path}", "-"])
         try:
+            if len(raw) > maximum + 10240:
+                raise ValueError
             with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
                 members = archive.getmembers()
                 if (
                     len(members) != 1 or not members[0].isfile()
+                    or members[0].issparse()
                     or members[0].name != path.rsplit("/", 1)[-1]
                     or members[0].size > maximum or members[0].size < 0
                 ):
@@ -363,6 +572,8 @@ class LocalDockerRunner:
                 if handle is None:
                     raise ValueError
                 content = handle.read(maximum + 1)
+                if len(content) != members[0].size or len(content) > maximum:
+                    raise ValueError
         except (OSError, ValueError, tarfile.TarError):
             raise KafkaStreamsDockerError("Invalid runner document") from None
-        return _json_object(content, message="Invalid runner document")
+        return content
