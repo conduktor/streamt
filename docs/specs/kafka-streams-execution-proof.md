@@ -7,8 +7,9 @@ supported backend. For that experiment, use a fixed Java Kafka Streams runner
 that accepts a versioned JSON plan compiled from a closed SQL subset.
 
 The implementation lives in `experiments/kafka-streams/`, outside `src/streamt`.
-It adds no CLI command, runtime configuration, automatic executor selection, or
-published JAR/image. Existing Flink compilation and update blockers are unchanged.
+It is excluded from Python wheel/source distributions and adds no CLI command,
+runtime configuration, automatic executor selection, or published JAR/image.
+Existing Flink compilation and update blockers are unchanged.
 Maintaining and distributing a runtime requires the product owner's next decision.
 
 ## Problem and alternatives

@@ -71,6 +71,10 @@ Changelog = "https://conduktor.github.io/streamt/reference/release-notes/"
 [tool.hatch.build.targets.wheel]
 packages = ["src/streamt"]
 
+[tool.hatch.build.targets.sdist]
+# Repository-only experiment; do not ship its runner, build outputs, or local evidence.
+exclude = ["/experiments/kafka-streams"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

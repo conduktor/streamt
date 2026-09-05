@@ -258,7 +258,7 @@ Final local verification on the frozen product source:
 
 | Check | Result |
 | --- | --- |
-| `.venv/bin/pytest -q -o addopts='' --tb=short tests/unit tests/scenarios` | 5,409 passed, 28 skipped |
+| `.venv/bin/pytest -q -o addopts='' --tb=short tests/unit tests/scenarios` | 5,412 passed, 29 skipped |
 | `.venv/bin/ruff check src tests` | Passed |
 | `.venv/bin/mypy src/streamt` | Zero errors, 105 source files |
 | `.venv/bin/mkdocs build --strict` | Passed; parser-backed documentation checks also passed |
@@ -275,10 +275,26 @@ not retrospectively pruned because their exact provenance was not saved.
 
 These tests do not claim crash-safe production updates, stateful migration,
 throughput, Java 17 runtime coverage, or first-output time for a new user.
-The prototype is not installed by the Python wheel. External Connect/Gateway
-declarations still need local runtime identity configuration; offline parsing
+The prototype is excluded from Python wheel/source distributions. External
+Connect/Gateway declarations still need local runtime identity configuration; offline parsing
 still resolves configured environment variables. Compiled identity protection
 does not reserve uncompiled source names or reconcile unselected managed work.
+
+Packaging follow-up: the first push exposed duplicate exposure names in the
+Backstage package fixture. The downstream DataHub fixture had the same problem.
+Both application identities were made distinct without weakening graph checks;
+three collected unit cases now compile and export those exact package fixtures
+with provider access forbidden. Their source/installed-wheel parity checks and
+the ODCS installed smoke pass.
+
+A local source build after the Kafka Streams experiment also included generated
+JARs because the builder does not apply nested `.gitignore` files. The explicit
+sdist exclusion now keeps this repository-only experiment out of distribution.
+The new distribution gate fails on the retained 195,102,284-byte archive and
+passes on the corrected 1,937,919-byte archive, with the generated JARs still on
+disk. Corrected artifacts are at `/tmp/streamt-corrected-dist.EsWcGk`; all three
+version/distribution checks pass with `STREAMT_TEST_DISTRIBUTIONS_DIR` pointing
+there. No production Python module changed in this follow-up.
 
 Unrelated user files remain outside the commits. Ordinary pushes do not imply
 release publication; no release tag, package upload, or production change is part

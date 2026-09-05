@@ -2,7 +2,8 @@
 
 This experiment tests whether a small SQL projection/filter can run on Kafka
 Streams without Flink. It is separate from streamt's compiler, configuration,
-deployers, and installed Python package. It does not add a supported executor.
+deployers, and Python wheel/source distributions. Clone the repository to run
+the experiment; it does not add a supported executor.
 
 Python parses SQL with sqlglot and emits a version-1 JSON plan. A Java runner
 validates the plan independently, builds a Kafka Streams topology, and runs it.
