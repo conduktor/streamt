@@ -26,6 +26,7 @@ from streamt.compiler.manifest import parse_compiled_kafka_streams_job_artifact
 from streamt.core.parser import ProjectParser
 from streamt.deployer.kafka_streams import KafkaStreamsDeployer
 from streamt.deployer.kafka_streams_docker import KafkaStreamsDockerError
+from streamt.deployer.kafka_streams_progress import KafkaStreamsProgressError
 from streamt.deployer.kafka_streams_replacement_executor import (
     KafkaStreamsReplacementExecutionError,
     KafkaStreamsReplacementExecutor,
@@ -197,11 +198,26 @@ def verify_updated_records(journey, runtime, evidence):
             message = consumer.poll(0.25)
             if message is not None:
                 append(message)
-            current = runtime.progress.observe(desired.application_id, input_topic, output_topic)
+            # Processing is asynchronous. An unavailable complete observation
+            # is not success, but the next read may establish it. Never repeat
+            # the producer writes, or catch invalid observed evidence below.
+            try:
+                current = runtime.progress.observe(desired.application_id, input_topic, output_topic)
+            except KafkaStreamsProgressError:
+                continue
+            if time.monotonic() >= deadline:
+                raise AssertionError("Progress observation exceeded the verification polling deadline")
             current.require_resumable()
             if current.partitions[0].committed == 8 and len(outputs) >= 3:
-                while (extra := consumer.poll(0.5)) is not None:
+                while time.monotonic() < deadline:
+                    extra = consumer.poll(0.5)
+                    if extra is None:
+                        break
                     append(extra)
+                else:
+                    raise AssertionError("Output verification exceeded the polling deadline")
+                if time.monotonic() >= deadline:
+                    raise AssertionError("Output verification exceeded the polling deadline")
                 break
         else:
             raise AssertionError("Replacement records or committed offset did not reach the expected result")
