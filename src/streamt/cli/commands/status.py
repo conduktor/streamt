@@ -42,8 +42,9 @@ class SchemaStatus(TypedDict):
 class SourceTopicStatus(TypedDict):
     name: str
     topic: str
-    exists: bool
+    exists: bool | None
     partitions: int | None
+    observation: Literal["not_requested", "verified"]
 
 
 class DriftStatus(TypedDict):
@@ -155,6 +156,10 @@ def _deployer_section(
 @click.option("--lag", is_flag=True, help="Show consumer lag for topics")
 @click.option("--consumer-groups", is_flag=True, help="Show per-consumer-group lag")
 @click.option(
+    "--include-external", is_flag=True,
+    help="Explicitly inspect external resources as well as managed resources",
+)
+@click.option(
     "--health", is_flag=True, help="Health check mode: exit 1 if any resource is MISSING or DRIFT"
 )
 @click.option(
@@ -177,9 +182,11 @@ def status(
     health: bool,
     output_format: Optional[str],
     filter_pattern: Optional[str],
+    include_external: bool = False,
 ) -> None:
     """Show status of deployed resources."""
     from streamt.compiler import Compiler
+    from streamt.compiler.manifest import ArtifactOwnership
     from streamt.core.environment import EnvironmentError
     from streamt.core.parser import EnvVarError, ParseError, ProjectParser
 
@@ -202,6 +209,47 @@ def status(
         compiler = Compiler(project)
         manifest = compiler.compile(dry_run=True)
 
+        # External declarations describe dependencies, not observed runtime truth.
+        # Filter before constructing clients so a declaration-only project does
+        # not connect to configured providers just to report its existence.
+        status_artifacts: dict[str, list[dict[str, object]]] = {}
+        external_resources: list[dict[str, str]] = []
+        try:
+            for kind, artifacts in manifest.artifacts.items():
+                status_artifacts[kind] = []
+                for compiled_artifact in artifacts:
+                    artifact_name = None
+                    if kind in {"schemas", "topics", "flink_jobs", "connectors", "gateway_rules"}:
+                        artifact_name = _artifact_str(
+                            compiled_artifact, "subject" if kind == "schemas" else "name"
+                        )
+                    if artifact_name is not None and not matches(artifact_name):
+                        continue
+                    ownership = ArtifactOwnership.from_dict(compiled_artifact.get("ownership"))
+                    if (
+                        not include_external
+                        and ownership is not None
+                        and ownership.mode == "external"
+                        and ownership.project == project.project.name
+                    ):
+                        if artifact_name is not None:
+                            external_resources.append({
+                                "kind": kind,
+                                "name": artifact_name,
+                                "observation": "not_requested",
+                            })
+                        continue
+                    status_artifacts[kind].append(compiled_artifact)
+        except (AttributeError, TypeError, ValueError) as exc:
+            # Prefiltering runs before provider sections. Preserve the structured
+            # error contract without exposing malformed artifact values or opening clients.
+            message = "Compiled status artifact metadata is invalid; recompile the project."
+            fmt.add_error(StructuredError(code=ErrorCode.PARSE_ERROR, message=message))
+            if is_text:
+                fmt.print_error(message)
+            fmt.flush()
+            raise click.exceptions.Exit(1) from exc
+
         schemas: list[SchemaStatus] = []
         source_topics: list[SourceTopicStatus] = []
         topics: list[TopicStatus] = []
@@ -217,17 +265,24 @@ def status(
             "flink_jobs": flink_jobs,
             "connectors": connectors,
             "gateway_rules": gateway_rules,
+            "observation_scope": "managed_and_external" if include_external else "managed",
+            "external_resources": external_resources,
         }
+        if is_text and external_resources:
+            fmt.print(
+                "External artifacts are declared, not inspected. "
+                "Use --include-external for live observations."
+            )
 
         # Schemas
-        if manifest.artifacts.get("schemas"):
+        if status_artifacts.get("schemas"):
             if is_text:
                 fmt.print("\n[cyan]Schemas:[/cyan]")
             sd = make_sr_deployer(project, fmt)
             if sd is not None:
                 deployers_to_close.append(sd)
                 with _deployer_section(fmt, is_text, "Schema Registry"):
-                    for schema_artifact in manifest.artifacts["schemas"]:
+                    for schema_artifact in status_artifacts["schemas"]:
                         subject = _artifact_str(schema_artifact, "subject")
                         if not matches(subject):
                             continue
@@ -259,11 +314,28 @@ def status(
             data["source_topics"] = source_topics
             if is_text:
                 fmt.print("\n[cyan]Source Topics:[/cyan]")
-            skd = make_kafka_deployer(project, fmt)
+            observed_sources = []
+            for src in project.sources:
+                if not matches(src.name) and not matches(src.topic):
+                    continue
+                if not include_external and src.ownership.mode.value == "external":
+                    source_topics.append({
+                        "name": src.name, "topic": src.topic,
+                        "exists": None, "partitions": None,
+                        "observation": "not_requested",
+                    })
+                    if is_text:
+                        fmt.print(
+                            f"  DECLARED {src.name} -> {src.topic} "
+                            "(external; use --include-external to inspect)"
+                        )
+                else:
+                    observed_sources.append(src)
+            skd = make_kafka_deployer(project, fmt) if observed_sources else None
             if skd is not None:
                 deployers_to_close.append(skd)
                 with _deployer_section(fmt, is_text, "Kafka (sources)"):
-                    for src in project.sources:
+                    for src in observed_sources:
                         if not matches(src.name) and not matches(src.topic):
                             continue
                         source_state = skd.get_topic_state(src.topic)
@@ -274,6 +346,7 @@ def status(
                             "partitions": (
                                 source_state.partitions if source_state.exists else None
                             ),
+                            "observation": "verified",
                         }
                         source_topics.append(source_entry)
                         if is_text:
@@ -284,19 +357,19 @@ def status(
                                 )
                             else:
                                 fmt.print(f"  [red]MISSING[/red] {src.name} → {src.topic}")
-            elif is_text:
+            elif is_text and observed_sources:
                 fmt.print("  [yellow]No Kafka configured[/yellow]")
-            if skd is None:
+            if skd is None and observed_sources:
                 observation_incomplete = True
 
         # Topics
         if is_text:
             fmt.print("\n[cyan]Topics:[/cyan]")
-        kd = make_kafka_deployer(project, fmt)
+        kd = make_kafka_deployer(project, fmt) if status_artifacts.get("topics") else None
         if kd is not None:
             deployers_to_close.append(kd)
             with _deployer_section(fmt, is_text, "Kafka"):
-                for topic_artifact in manifest.artifacts.get("topics", []):
+                for topic_artifact in status_artifacts.get("topics", []):
                     topic_name = _artifact_str(topic_artifact, "name")
                     if not matches(topic_name):
                         continue
@@ -365,7 +438,7 @@ def status(
                             fmt.print(line)
                         else:
                             fmt.print(f"  [red]MISSING[/red] {topic_name}")
-        elif manifest.artifacts.get("topics"):
+        elif status_artifacts.get("topics"):
             observation_incomplete = True
 
         # Consumer group lag (STATUS-3)
@@ -377,7 +450,7 @@ def status(
                 groups = kd.get_consumer_groups()
                 topic_names = [
                     _artifact_str(topic_artifact, "name")
-                    for topic_artifact in manifest.artifacts.get("topics", [])
+                    for topic_artifact in status_artifacts.get("topics", [])
                 ]
                 for group_id in sorted(groups):
                     topic_lags: list[ConsumerTopicLagStatus] = []
@@ -417,14 +490,14 @@ def status(
                                 )
 
         # Flink jobs
-        if manifest.artifacts.get("flink_jobs"):
+        if status_artifacts.get("flink_jobs"):
             if is_text:
                 fmt.print("\n[cyan]Flink Jobs:[/cyan]")
             fd = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
             if fd is not None:
                 deployers_to_close.append(fd)
                 with _deployer_section(fmt, is_text, "Flink"):
-                    for job_artifact in manifest.artifacts["flink_jobs"]:
+                    for job_artifact in status_artifacts["flink_jobs"]:
                         job_name = _artifact_str(job_artifact, "name")
                         if not matches(job_name):
                             continue
@@ -450,14 +523,14 @@ def status(
                 observation_incomplete = True
 
         # Connectors
-        if manifest.artifacts.get("connectors"):
+        if status_artifacts.get("connectors"):
             if is_text:
                 fmt.print("\n[cyan]Connectors:[/cyan]")
             cd = make_connect_deployer(project, fmt)
             if cd is not None:
                 deployers_to_close.append(cd)
                 with _deployer_section(fmt, is_text, "Connect"):
-                    for connector_artifact in manifest.artifacts["connectors"]:
+                    for connector_artifact in status_artifacts["connectors"]:
                         connector_name = _artifact_str(connector_artifact, "name")
                         if not matches(connector_name):
                             continue
@@ -487,7 +560,7 @@ def status(
                 observation_incomplete = True
 
         # Gateway rules
-        if manifest.artifacts.get("gateway_rules"):
+        if status_artifacts.get("gateway_rules"):
             if is_text:
                 fmt.print("\n[cyan]Gateway Rules:[/cyan]")
             gd = make_gateway_deployer(project, fmt)
@@ -495,7 +568,7 @@ def status(
                 deployers_to_close.append(gd)
                 with _deployer_section(fmt, is_text, "Gateway"):
                     resolved_rules = resolve_managed_gateway_rules(
-                        manifest.artifacts["gateway_rules"],
+                        status_artifacts["gateway_rules"],
                         gd.cluster_binding,
                     )
 
@@ -597,7 +670,10 @@ def status(
             observation_incomplete
             or bool(fmt.get_result().errors)
             or any(not schema["exists"] for schema in schemas)
-            or any(not source["exists"] for source in source_topics)
+            or any(
+                source["observation"] == "verified" and not source["exists"]
+                for source in source_topics
+            )
             or any(topic["status"] != "OK" for topic in topics)
             or any(not job["exists"] or job["status"] != "RUNNING" for job in flink_jobs)
             or any(
