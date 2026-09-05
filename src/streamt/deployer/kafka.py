@@ -190,11 +190,15 @@ class KafkaDeployer:
         *,
         strict_config: bool = False,
     ) -> TopicState:
-        """Get current state of a topic.
+        """Get current state of a topic, including explicit topic overrides only.
 
         ``strict_config`` makes configuration observation fail closed. It is
         required for workflows such as adoption that grant future mutation
         authority based on the attributes shown to the user.
+
+        Broker-level overrides are inherited values, not topic configuration
+        owned by this resource. ``is_default`` alone cannot distinguish them
+        from explicit topic overrides; use the broker-reported source instead.
         """
         self._check_closed()
         metadata = self.admin.list_topics(timeout=DEFAULT_TIMEOUT)
@@ -228,7 +232,12 @@ class KafkaDeployer:
                 topic_config = {
                     entry.name: entry.value
                     for entry in config_entries.values()
-                    if not entry.is_default
+                    if (
+                        entry.source is ConfigSource.DYNAMIC_TOPIC_CONFIG
+                        # Native describe_configs responses expose the integer
+                        # code in some SDK versions, unlike Python ConfigEntry.
+                        or (type(entry.source) is int and entry.source == ConfigSource.DYNAMIC_TOPIC_CONFIG.value)
+                    )
                 }
             except Exception as e:
                 if strict_config:
@@ -348,9 +357,11 @@ class KafkaDeployer:
             incremental_configs = [
                 ConfigEntry(
                     name=config_name,
-                    value=str(config_value),
+                    value=None if config_value is None else str(config_value),
                     source=ConfigSource.DYNAMIC_TOPIC_CONFIG,
-                    incremental_operation=AlterConfigOpType.SET,
+                    incremental_operation=(
+                        AlterConfigOpType.DELETE if config_value is None else AlterConfigOpType.SET
+                    ),
                 )
                 for config_name, config_value in config_changes.items()
             ]
