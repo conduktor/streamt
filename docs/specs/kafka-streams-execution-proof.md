@@ -1,5 +1,10 @@
 # Kafka Streams execution proof: architecture decision
 
+On 2026-09-05 the owner approved bounded Docker-based productization under the
+[topology/runtime execution plan](../plans/2026-09-05-topology-runtime-execution.md).
+The experiment and results below remain historical evidence. Approval does not
+extend the tested guarantees or make an incomplete backend supported.
+
 ## Decision and status
 
 The 2026-09-04 execution authorization covers a bounded experiment, not a new

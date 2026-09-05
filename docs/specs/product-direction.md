@@ -18,6 +18,12 @@ governs claims about what works today.
 
 ## Product promise
 
+The owner reaffirmed on 2026-09-05 that streamt must absorb an existing topology
+or start a new one and maintain coherence through development and infrastructure
+evolution. The approved [runtime implementation cycle](../plans/2026-09-05-topology-runtime-execution.md)
+must prove both entry paths and their dependency/contract checks, not just a
+working SQL runner.
+
 streamt is a framework for developing, testing, deploying, and evolving
 streaming data applications as versioned projects.
 

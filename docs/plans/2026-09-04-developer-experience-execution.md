@@ -1,5 +1,9 @@
 # Developer experience execution plan
 
+The 2026-09-05 [topology/runtime execution plan](2026-09-05-topology-runtime-execution.md)
+now governs active work. The owner approved bounded runtime productization and
+Docker execution; the prototype-only stop below records the previous cycle.
+
 ## Status and objective
 
 Execution authorized on 2026-09-04. This is the active implementation plan after the

@@ -17,14 +17,21 @@ The project does not aim to replace Terraform, Kubernetes operators, managed
 cloud control planes, observability systems, or data catalogs. It should
 integrate with them.
 
-## Current execution order: 2026-09-04
+## Current execution order: 2026-09-05
+
+The owner approved bounded Kafka Streams productization with Docker execution.
+The [topology/runtime plan](docs/plans/2026-09-05-topology-runtime-execution.md)
+now governs work: import existing or create new topology, validate contracts,
+deploy managed processing, and prove coherent changes on stable identities.
+The earlier prototype gate below is satisfied as an investment decision, not
+as evidence that production lifecycle guarantees have already been implemented.
 
 The [product direction](docs/specs/product-direction.md),
 [developer workflow specification](docs/specs/developer-workflow.md), and
 [execution plan](docs/plans/2026-09-04-developer-experience-execution.md) govern
 the current cycle. The owner authorized M1, a bounded M2 proof, and independent
 scaffold repairs. Custom artifact deployment and stateful upgrades are deferred.
-Productizing the new runtime still requires a separate decision.
+The new runtime's implementation is now approved under the bounded plan above.
 
 1. Record confirmed decisions and autonomy limits (M0, complete).
 2. Make external and managed applications coexist in a usable project, with
