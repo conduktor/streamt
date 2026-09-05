@@ -48,9 +48,12 @@ integration. Disposable real-Kafka acceptance passes from source and an installe
 wheel, including import, the managed starter, exact output/offset checks, and
 negative cases that preserve provider resources and ownership state. The same
 installed journey now passes its two-SDK CI gate. All 26 jobs passed for
-`8a3114d`, including real DataHub and Strimzi. Typed replacement evidence and
-reviewed format-6 binding are implemented, but public replacement and recovery
-remain blocked. A standalone runner update is not a safe product update workflow.
+`5f9566d`, including real DataHub and Strimzi. Typed replacement evidence,
+reviewed format-6 binding and an internal journaled driver are implemented.
+Real source and installed tests prove continuation after a lost Docker-create
+response, with the same application and offsets. Public replacement and recovery
+remain blocked until durable resume authority, CLI integration and the complete
+user-facing interruption journey pass.
 
 The immutable `0.1.0a1` [release procedure](docs/plans/2026-09-03-first-alpha-release.md)
 remains open and unchanged. External publication is not the next implementation

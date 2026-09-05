@@ -136,6 +136,22 @@ journal format. Resume cannot discard that record or append fictional earlier
 checkpoints. Uncertain execution failures must retain the last actual boundary,
 not manufacture a completion outcome.
 
+The internal driver now records the ordered boundaries, checks the locked
+snapshot before every mutation and leaves state commit/finalization to its
+caller. A missing write acknowledgement stops that invocation with its last
+acknowledged snapshot. Explicit internal continuation can re-observe a candidate
+created by the same operation, without creating another candidate or resetting
+offsets. Read-only startup polling is bounded, including when status is briefly
+unavailable at the start of a resumed invocation.
+
+A real source and installed probe covers a lost create response, the same
+operation's continuation, changed filter output and offsets advancing from 5 to
+8. It uses separate driver invocations in one Python process under the same
+held local lock. It leaves the original ownership state and completed pending
+journal intact. This is not a public CLI resume, an operating-system crash
+test or a remote-state acceptance. See
+`tests/package/verification/kafka-streams-replacement-executor.json`.
+
 ## Acceptance before activation
 
 - Prove the installed import and fresh-init paths through a predicate change,
@@ -147,6 +163,30 @@ not manufacture a completion outcome.
 - Keep ordinary create/no-op, legacy reviewed plans, local/PostgreSQL state,
   Connector/Gateway removal and external-resource behavior unchanged.
 - Verify the public resume/recovery flow, not only a standalone Java restart.
+
+## Remaining integration order
+
+1. Add a durable, same-operation resume transition to both state providers.
+   It must retain the exact intent and checkpoint sequence, compare the full
+   locked state/control snapshot, and record the transition in history. It must
+   not turn a terminal failed action into an unfinished action. The internal
+   driver currently accepts only `in_progress`; it cannot authorize a transition
+   out of `recovery_required` by changing a local object.
+2. Attach observed replacement evidence to planner actions only after the full
+   predicate/identity/ownership checks pass. Enforce the sole-mutation and
+   unselected-project bounds before removing any existing blocker. External
+   declarations remain outside runtime observation and mutation.
+3. Wire apply to the original reviewed tuple and locked driver, including durable
+   completion and desired ownership commit. No generic create/update handler may
+   bypass those checkpoints. An uncertain runtime response retains the last
+   actual boundary rather than recording a terminal failed completion.
+4. Add explicit same-operation CLI resume and read-only recovery reporting.
+   Resume must verify the original plan and desired project, not create a fresh
+   plan against the partially replaced topology. Unknown outcomes cannot clear
+   pending work; a missing candidate after removal is still incomplete.
+5. Run the installed public change/resume journey with failures on both sides
+   of journal and runtime boundaries. Only then advertise the update workflow
+   and proceed to declared Git base/head comparison and downstream impact.
 
 Docker daemon access and exclusive ownership of the application ID remain trust
 boundaries. Kafka does not provide a compare-and-set across topic identities,

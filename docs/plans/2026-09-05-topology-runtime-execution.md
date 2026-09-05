@@ -210,3 +210,34 @@ Read-only replacement observation checkpoint:
 - These readers and proofs do not activate public replacement, recovery or
   resume. The reviewed plan, runtime driver, durable resume authority and CLI
   still need their complete installed change/interruption acceptance.
+
+Internal journaled driver checkpoint:
+
+- The driver now verifies the full locked snapshot before each transition,
+  records started/close/removal/creation/completion in order, and retains its
+  last acknowledged snapshot on errors. It never retries uncertain writes,
+  initializes offsets, creates a replacement volume or commits/clears state.
+  `recovery_required` still needs a separate durable resume authorization.
+- Source fixture `7168ba0d57cb` (SDK 2.13.2) and installed fixture `4200e1c75970`
+  (SDK 2.15.0) passed a deliberately lost Docker-create acknowledgement. Both
+  retained `old_removed`, found the single never-started candidate on the next
+  invocation, and finished all journal boundaries without recreating it. The
+  filter changed from 100 to 200; a new 150 record was rejected, 250 and 300
+  records were emitted with their original binary/null keys, the prior 120
+  result remained unique, and input offsets advanced from 5 to 8.
+- Those probes used one held local lock and two driver invocations, not an OS
+  process restart or public CLI resume. They left prior ownership state and
+  the completed pending operation intact. Cleanup verified only owned fixture
+  IDs and volumes, with TERM-only stops and no force escalation. Evidence is in
+  `tests/package/verification/kafka-streams-replacement-executor.json`.
+- The final driver cohort matched all 117 Python modules across source, sdist,
+  wheel and installation, plus 159 package files and 14 unchanged runner assets.
+  This is a separate cohort from the preceding observer record. Both probes now
+  run in the two installed Kafka SDK CI lanes.
+- Driver tests cover 89 cases, including lost journal/provider acknowledgements,
+  stale snapshots, lost locks, transient startup reads and explicit continuation.
+  Full Python 3.10 and 3.12 suites each passed 6,916 tests with 32 skips. Ruff,
+  mypy (117 files), documentation and workflow checks passed. CI for the prior
+  reviewed-action commit `5f9566d` passed all 26 jobs (run `33978991330`).
+- Public update activation remains open. Follow the remaining integration order
+  in the replacement contract before removing its existing planner/CLI blockers.
