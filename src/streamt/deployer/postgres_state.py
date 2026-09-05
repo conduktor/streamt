@@ -793,6 +793,9 @@ _V1_OPERATION_EVENT_KINDS = {
     "intent",
     "progress_started",
     "progress_completed",
+    # Operation-control version 4 is independent of the SQL schema version.
+    # The strict control parser rejects checkpoints in older control payloads.
+    "progress_checkpoint",
     "recovery_required",
     "cleared_before_mutation",
     "succeeded",
@@ -3694,7 +3697,7 @@ class PrivatePostgresStateV2Migrator:
                         and control.intent == base_intent
                         and not control.progress
                     )
-                elif kind in {"progress_started", "progress_completed"}:
+                elif kind in {"progress_started", "progress_checkpoint", "progress_completed"}:
                     valid = (
                         control.status == "in_progress"
                         and control.intent == base_intent
@@ -3721,7 +3724,7 @@ class PrivatePostgresStateV2Migrator:
                     raise StateBackendInvalidStateError(
                         "PostgreSQL deployment operation history is invalid"
                     )
-                if kind in {"progress_started", "progress_completed"}:
+                if kind in {"progress_started", "progress_checkpoint", "progress_completed"}:
                     prior_progress = control.progress
             if events[-1][1] not in {"succeeded", "cleared_before_mutation"}:
                 unfinished_operations[(operation_address, operation_id)] = (
@@ -3729,16 +3732,11 @@ class PrivatePostgresStateV2Migrator:
                     events[-1][2],
                 )
             if events[-1][1] == "succeeded":
-                expected_progress: list[tuple[int, str, bool | None]] = [
-                    (action.index, status, succeeded)
-                    for action in base_intent.actions
-                    for status, succeeded in (("started", None), ("completed", True))
-                ]
-                actual_progress: list[tuple[int, str, bool | None]] = [
-                    (progress.action_index, progress.status, progress.succeeded)
-                    for progress in prior_progress
-                ]
-                if actual_progress != expected_progress:
+                completed_control = OperationControlState(
+                    address=operation_address, status="in_progress",
+                    intent=base_intent, progress=prior_progress,
+                )
+                if not completed_control.actions_completed:
                     raise StateBackendInvalidStateError(
                         "PostgreSQL deployment operation history is incomplete"
                     )
@@ -3817,9 +3815,14 @@ class PrivatePostgresStateV2Migrator:
                 "PostgreSQL deployment operation history is incomplete"
             )
         state_history_owners = set(successful_operations) | set(changing_recoveries)
+        runner_replacements = {
+            key for key, intent in successful_operations.items()
+            if any(action.kafka_streams_evidence is not None for action in intent.actions)
+        }
         if (
             not history_operation_ids <= state_history_owners
             or not set(changing_recoveries) <= history_operation_ids
+            or not runner_replacements <= history_operation_ids
         ):
             raise StateBackendInvalidStateError(
                 "PostgreSQL deployment state history operation is invalid"
@@ -3836,6 +3839,13 @@ class PrivatePostgresStateV2Migrator:
                     recovery = changing_recoveries.get(history_key)
                     valid_owner = False
                     if intent is not None:
+                        try:
+                            intent.validate_kafka_streams_prior_state(previous_state)
+                            intent.validate_kafka_streams_result_state(state)
+                        except StateError:
+                            raise StateBackendInvalidStateError(
+                                "PostgreSQL runner replacement ownership history is invalid"
+                            ) from None
                         valid_owner = (
                             intent.prior_state_serial == previous_state.serial
                             and intent.prior_state_checksum == state_checksum(previous_state)

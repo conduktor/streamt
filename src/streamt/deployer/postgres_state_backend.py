@@ -81,6 +81,7 @@ _OPERATION_EVENTS = {
     "intent",
     "progress_started",
     "progress_completed",
+    "progress_checkpoint",
     "recovery_required",
     "cleared_before_mutation",
     "succeeded",
@@ -665,19 +666,7 @@ class _PostgresStateReadOperation:
     @staticmethod
     def _require_completed(snapshot: OperationSnapshot) -> OperationIntent:
         intent = _PostgresStateReadOperation._require_active(snapshot)
-        expected: list[tuple[int, str, bool | None]] = []
-        for action in intent.actions:
-            expected.extend(
-                (
-                    (action.index, "started", None),
-                    (action.index, "completed", True),
-                )
-            )
-        actual = [
-            (item.action_index, item.status, item.succeeded)
-            for item in snapshot.control.control.progress
-        ]
-        if actual != expected:
+        if not snapshot.control.control.actions_completed:
             raise StateBackendRecoveryRequiredError(
                 "deployment operation is incomplete; explicit recovery is required"
             )
@@ -1720,6 +1709,7 @@ class _PostgresStateReadOperation:
             raise StateBackendConflictError(
                 "operation intent does not match its prior state snapshot"
             )
+        intent.validate_kafka_streams_prior_state(observation.state.state)
         replacement = OperationControlState(
             address=self._address,
             status="in_progress",
@@ -2003,6 +1993,7 @@ class _PostgresStateReadOperation:
         replacement: LocalState | None,
     ) -> OperationSnapshot:
         intent = self._require_completed(observation)
+        intent.validate_kafka_streams_result_state(replacement if replacement is not None else observation.state.state)
         self._last_attempted_operation_id = intent.operation_id
         committed = self._transition(
             expected=observation,

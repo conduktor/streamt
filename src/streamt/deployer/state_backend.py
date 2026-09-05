@@ -26,6 +26,12 @@ from streamt.core.deployment_state import (
     DeploymentStateConfig,
     PostgresDeploymentStateConfig,
 )
+from streamt.deployer.kafka_streams_evidence import (
+    KAFKA_STREAMS_CHECKPOINT_PHASES,
+    KAFKA_STREAMS_CONTROL_VERSION,
+    KafkaStreamsActionEvidence,
+    KafkaStreamsCheckpointEvidence,
+)
 from streamt.deployer.state import (
     LocalState,
     LocalStateOperationLock,
@@ -64,7 +70,9 @@ _INLINE_SECRET = re.compile(
     r"\s*[=:]\s*\S+",
     re.IGNORECASE,
 )
-_CONTROL_VERSIONS = (1, 2, CURRENT_CONTROL_VERSION)
+# Unrelated operations deliberately keep their existing v3 wire format. Only
+# evidenced runner replacements opt into v4; old readers then fail closed.
+_CONTROL_VERSIONS = (1, 2, 3, KAFKA_STREAMS_CONTROL_VERSION)
 
 
 class StateBackendError(StateError):
@@ -568,6 +576,7 @@ class OperationAction:
     action: str
     gateway_evidence: GatewayActionEvidence | None = None
     connector_evidence: ConnectorActionEvidence | None = None
+    kafka_streams_evidence: KafkaStreamsActionEvidence | None = None
     _wire_version: int = field(
         default=CURRENT_CONTROL_VERSION,
         init=False,
@@ -584,9 +593,10 @@ class OperationAction:
 
         gateway_evidence = self.gateway_evidence
         connector_evidence = self.connector_evidence
-        if gateway_evidence is not None and connector_evidence is not None:
+        kafka_streams_evidence = self.kafka_streams_evidence
+        if sum(item is not None for item in (gateway_evidence, connector_evidence, kafka_streams_evidence)) > 1:
             raise StateFormatError(
-                "operation action Gateway and Connector evidence are mutually exclusive"
+                "operation action Gateway, Connector and Kafka Streams evidence are mutually exclusive"
             )
         if gateway_evidence is not None and type(gateway_evidence) is not GatewayActionEvidence:
             raise StateFormatError("operation action Gateway evidence is invalid")
@@ -595,13 +605,17 @@ class OperationAction:
             and type(connector_evidence) is not ConnectorActionEvidence
         ):
             raise StateFormatError("operation action Connector evidence is invalid")
-        if gateway_evidence is None and connector_evidence is None:
+        if kafka_streams_evidence is not None and type(kafka_streams_evidence) is not KafkaStreamsActionEvidence:
+            raise StateFormatError("operation action Kafka Streams evidence is invalid")
+        if gateway_evidence is None and connector_evidence is None and kafka_streams_evidence is None:
             try:
                 identity = ResourceIdentity.parse(self.resource_id)
             except StateFormatError:
                 return
             if identity.kind == "connector" and self.action == "delete":
                 raise StateFormatError("Connector deletion requires exact action evidence")
+            if identity.kind == "kafka_streams_job" and self.action == "update":
+                raise StateFormatError("Kafka Streams replacement requires exact action evidence")
             return
         try:
             identity = ResourceIdentity.parse(self.resource_id)
@@ -640,6 +654,18 @@ class OperationAction:
             raise StateFormatError(
                 "Connector action evidence is allowed only for connector delete actions"
             )
+        if kafka_streams_evidence is not None:
+            from streamt.compiler.kafka_streams import application_id
+
+            artifact = kafka_streams_evidence.prior_artifact.artifact
+            ownership = cast(dict[str, str], artifact.to_dict()["ownership"])
+            if (
+                identity.kind != "kafka_streams_job" or self.action != "update"
+                or identity.logical_name != artifact.name or identity.project != ownership["project"]
+                or artifact.application_id != application_id(identity.project, identity.environment, identity.logical_name)
+            ):
+                raise StateFormatError("Kafka Streams action evidence requires the exact replacement resource identity")
+            object.__setattr__(self, "_wire_version", KAFKA_STREAMS_CONTROL_VERSION)
 
     def _is_connector_delete(self) -> bool:
         try:
@@ -652,6 +678,8 @@ class OperationAction:
         version = self._wire_version if control_version is None else control_version
         if type(version) is not int or version not in _CONTROL_VERSIONS:
             raise StateFormatError("operation action control version is unsupported")
+        if version < KAFKA_STREAMS_CONTROL_VERSION and self.kafka_streams_evidence is not None:
+            raise StateFormatError("Kafka Streams replacement evidence requires control version 4")
         if version == 1:
             if self.gateway_evidence is not None or self.connector_evidence is not None:
                 raise StateFormatError("control version 1 cannot contain action evidence")
@@ -675,7 +703,7 @@ class OperationAction:
             }
         if self._is_connector_delete() and self.connector_evidence is None:
             raise StateFormatError("control version 3 Connector deletion requires action evidence")
-        return {
+        result: dict[str, object] = {
             "index": self.index,
             "resource_id": self.resource_id,
             "action": self.action,
@@ -686,6 +714,11 @@ class OperationAction:
                 self.connector_evidence.to_dict() if self.connector_evidence is not None else None
             ),
         }
+        if version >= KAFKA_STREAMS_CONTROL_VERSION:
+            result["kafka_streams_evidence"] = (
+                self.kafka_streams_evidence.to_dict() if self.kafka_streams_evidence is not None else None
+            )
+        return result
 
     @classmethod
     def from_dict(
@@ -699,6 +732,7 @@ class OperationAction:
         version = control_version
         if version is None:
             version = (
+                4 if "kafka_streams_evidence" in value else
                 3 if "connector_evidence" in value else 2 if "gateway_evidence" in value else 1
             )
         if type(version) is not int or version not in _CONTROL_VERSIONS:
@@ -708,6 +742,8 @@ class OperationAction:
             expected.add("gateway_evidence")
         if version >= 3:
             expected.add("connector_evidence")
+        if version >= 4:
+            expected.add("kafka_streams_evidence")
         data = _strict_object(
             value,
             label="operation action",
@@ -715,6 +751,7 @@ class OperationAction:
         )
         raw_evidence = data.get("gateway_evidence")
         raw_connector_evidence = data.get("connector_evidence")
+        raw_kafka_streams_evidence = data.get("kafka_streams_evidence")
         action = cls(
             index=cast(int, data["index"]),
             resource_id=cast(str, data["resource_id"]),
@@ -726,6 +763,10 @@ class OperationAction:
                 None
                 if raw_connector_evidence is None
                 else ConnectorActionEvidence.from_dict(raw_connector_evidence)
+            ),
+            kafka_streams_evidence=(
+                None if raw_kafka_streams_evidence is None
+                else KafkaStreamsActionEvidence.from_dict(raw_kafka_streams_evidence)
             ),
         )
         action.to_dict(control_version=version)
@@ -777,6 +818,10 @@ class OperationIntent:
             raise StateFormatError("operation actions must contain exact actions")
         if [action.index for action in self.actions] != list(range(len(self.actions))):
             raise StateFormatError("operation action indexes must be contiguous from zero")
+        if any(action.kafka_streams_evidence is not None for action in self.actions):
+            if self.kind != "apply":
+                raise StateFormatError("Kafka Streams replacement requires an apply operation")
+            object.__setattr__(self, "_wire_version", KAFKA_STREAMS_CONTROL_VERSION)
 
     def to_dict(self, *, control_version: int | None = None) -> dict[str, object]:
         version = self._wire_version if control_version is None else control_version
@@ -792,6 +837,31 @@ class OperationIntent:
                 action.to_dict(control_version=version) for action in self.actions
             ],
         }
+
+    def validate_kafka_streams_prior_state(self, state: LocalState) -> None:
+        """A retained preimage must match protected ownership, never just labels."""
+        self._validate_kafka_streams_records(state, desired=False)
+
+    def validate_kafka_streams_result_state(self, state: LocalState) -> None:
+        """Never clear completed replacement evidence while retaining old ownership."""
+        self._validate_kafka_streams_records(state, desired=True)
+
+    def _validate_kafka_streams_records(self, state: LocalState, *, desired: bool) -> None:
+        for action in self.actions:
+            evidence = action.kafka_streams_evidence
+            if evidence is None:
+                continue
+            artifact = evidence.desired_artifact if desired else evidence.prior_artifact
+            record = state.resources.get(action.resource_id)
+            ownership = cast(dict[str, str], artifact.to_dict()["ownership"])
+            if record is None or (
+                record.physical_name != evidence.application_id
+                or record.backend != evidence.backend_identity
+                or record.artifact_checksum != artifact.checksum
+                or record.ownership != ownership["mode"]
+            ):
+                surface = "result" if desired else "preimage"
+                raise StateBackendConflictError(f"Kafka Streams replacement {surface} does not match protected ownership state")
 
     @classmethod
     def from_dict(
@@ -842,7 +912,7 @@ class OperationIntent:
         return intent
 
 
-ProgressStatus = Literal["started", "completed"]
+ProgressStatus = Literal["started", "checkpoint", "completed"]
 
 
 @dataclass(frozen=True)
@@ -856,6 +926,7 @@ class OperationProgress:
     status: ProgressStatus
     succeeded: bool | None
     recorded_at: str
+    kafka_streams_checkpoint: KafkaStreamsCheckpointEvidence | None = None
 
     def __post_init__(self) -> None:
         _require_uuid(self.operation_id, "progress operation_id")
@@ -864,16 +935,29 @@ class OperationProgress:
         _require_safe_text(self.resource_id, "progress resource_id")
         if not isinstance(self.action, str) or not _ACTION_PATTERN.fullmatch(self.action):
             raise StateFormatError("progress action must be a lowercase action identifier")
-        if self.status not in ("started", "completed"):
-            raise StateFormatError("progress status must be 'started' or 'completed'")
-        if self.status == "started" and self.succeeded is not None:
-            raise StateFormatError("started progress cannot have an outcome")
+        if self.status not in ("started", "checkpoint", "completed"):
+            raise StateFormatError("progress status must be 'started', 'checkpoint' or 'completed'")
+        if self.status in ("started", "checkpoint") and self.succeeded is not None:
+            raise StateFormatError("started/checkpoint progress cannot have an outcome")
         if self.status == "completed" and type(self.succeeded) is not bool:
             raise StateFormatError("completed progress requires a boolean outcome")
+        checkpoint = self.kafka_streams_checkpoint
+        if self.status == "checkpoint":
+            if type(checkpoint) is not KafkaStreamsCheckpointEvidence:
+                raise StateFormatError("checkpoint progress requires exact Kafka Streams evidence")
+            if checkpoint.operation_id != self.operation_id or checkpoint.action_index != self.action_index:
+                raise StateFormatError("checkpoint generation does not match progress operation/action")
+        elif checkpoint is not None:
+            raise StateFormatError("Kafka Streams checkpoint evidence requires checkpoint progress")
         _require_timestamp(self.recorded_at, "progress recorded_at")
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, control_version: int | None = None) -> dict[str, object]:
+        version = control_version if control_version is not None else (4 if self.status == "checkpoint" else 3)
+        if type(version) is not int or version not in _CONTROL_VERSIONS:
+            raise StateFormatError("operation progress control version is unsupported")
+        if self.status == "checkpoint" and version < 4:
+            raise StateFormatError("Kafka Streams checkpoint requires control version 4")
+        result: dict[str, object] = {
             "operation_id": self.operation_id,
             "action_index": self.action_index,
             "resource_id": self.resource_id,
@@ -882,26 +966,25 @@ class OperationProgress:
             "succeeded": self.succeeded,
             "recorded_at": self.recorded_at,
         }
+        # Non-checkpoint boundaries retain their exact v1-3 representation.
+        if self.kafka_streams_checkpoint is not None:
+            result["kafka_streams_checkpoint"] = self.kafka_streams_checkpoint.to_dict()
+        return result
 
     @classmethod
-    def from_dict(cls, value: object) -> OperationProgress:
+    def from_dict(cls, value: object, *, control_version: int | None = None) -> OperationProgress:
+        expected = {"operation_id", "action_index", "resource_id", "action", "status", "succeeded", "recorded_at"}
+        if isinstance(value, dict) and value.get("status") == "checkpoint":
+            expected.add("kafka_streams_checkpoint")
         data = _strict_object(
             value,
             label="operation progress",
-            expected={
-                "operation_id",
-                "action_index",
-                "resource_id",
-                "action",
-                "status",
-                "succeeded",
-                "recorded_at",
-            },
+            expected=expected,
         )
         status = data["status"]
-        if status not in ("started", "completed"):
-            raise StateFormatError("progress status must be 'started' or 'completed'")
-        return cls(
+        if status not in ("started", "checkpoint", "completed"):
+            raise StateFormatError("progress status must be 'started', 'checkpoint' or 'completed'")
+        result = cls(
             operation_id=cast(str, data["operation_id"]),
             action_index=cast(int, data["action_index"]),
             resource_id=cast(str, data["resource_id"]),
@@ -909,7 +992,13 @@ class OperationProgress:
             status=cast(ProgressStatus, status),
             succeeded=cast(bool | None, data["succeeded"]),
             recorded_at=cast(str, data["recorded_at"]),
+            kafka_streams_checkpoint=(
+                KafkaStreamsCheckpointEvidence.from_dict(data["kafka_streams_checkpoint"])
+                if status == "checkpoint" else None
+            ),
         )
+        result.to_dict(control_version=control_version)
+        return result
 
 
 @dataclass(frozen=True)
@@ -1000,13 +1089,13 @@ class OperationControlState:
         if (
             self.control_version == CURRENT_CONTROL_VERSION
             and self.intent is not None
-            and self.intent._wire_version in (1, 2)
+            and self.intent._wire_version in (1, 2, KAFKA_STREAMS_CONTROL_VERSION)
         ):
             object.__setattr__(self, "control_version", self.intent._wire_version)
         if type(self.control_version) is not int or self.control_version not in _CONTROL_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {self.control_version!r}; "
-                f"expected 1, 2, or {CURRENT_CONTROL_VERSION}"
+                "expected 1, 2, 3, or 4"
             )
         if self.status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
@@ -1027,7 +1116,7 @@ class OperationControlState:
             raise StateFormatError("control version 2 cannot contain Connector action evidence")
         for action in self.intent.actions:
             action.to_dict(control_version=self.control_version)
-        if self.control_version in (2, CURRENT_CONTROL_VERSION):
+        if self.control_version >= 2:
             for action in self.intent.actions:
                 try:
                     identity = ResourceIdentity.parse(action.resource_id)
@@ -1047,6 +1136,11 @@ class OperationControlState:
                     raise StateFormatError(
                         "Connector action evidence belongs to another state address"
                     )
+                if action.kafka_streams_evidence is not None and (
+                    identity.project != self.address.project
+                    or identity.environment != self.address.environment
+                ):
+                    raise StateFormatError("Kafka Streams action evidence belongs to another state address")
                 if (
                     identity.kind == "gateway_rule"
                     and action.action in ("create", "update", "delete", "adopt")
@@ -1057,7 +1151,7 @@ class OperationControlState:
                         "action evidence"
                     )
                 if (
-                    self.control_version == CURRENT_CONTROL_VERSION
+                    self.control_version >= 3
                     and identity.kind == "connector"
                     and action.action == "delete"
                     and action.connector_evidence is None
@@ -1088,10 +1182,16 @@ class OperationControlState:
     def _validate_progress(self) -> None:
         if self.intent is None:
             return
+        if type(self.progress) is not tuple:
+            raise StateFormatError("operation progress must be an immutable ordered tuple")
         seen: set[tuple[int, str]] = set()
         successfully_completed: set[int] = set()
         previous_index = -1
+        checkpoint_counts: dict[int, int] = {}
         for item in self.progress:
+            if type(item) is not OperationProgress:
+                raise StateFormatError("operation progress requires exact typed boundaries")
+            item.to_dict(control_version=self.control_version)
             if item.operation_id != self.intent.operation_id:
                 raise StateFormatError("progress operation_id does not match intent")
             if item.action_index >= len(self.intent.actions):
@@ -1111,17 +1211,43 @@ class OperationControlState:
                 raise StateFormatError(
                     "operation progress cannot advance unless the prior action succeeded"
                 )
-            key = (item.action_index, item.status)
+            if (item.action_index, "completed") in seen:
+                raise StateFormatError("operation progress cannot follow a completed boundary")
+            checkpoint = item.kafka_streams_checkpoint
+            key = (item.action_index, checkpoint.phase if checkpoint is not None else item.status)
             if key in seen:
                 raise StateFormatError("operation progress contains a duplicate boundary")
             if item.status == "completed" and (item.action_index, "started") not in seen:
                 raise StateFormatError("completed progress requires a started boundary")
             if item.action_index > previous_index and item.status != "started":
                 raise StateFormatError("a new progress action must start before completion")
+            if checkpoint is not None:
+                evidence = action.kafka_streams_evidence
+                if evidence is None or action.action != "update":
+                    raise StateFormatError("checkpoint progress requires an evidenced Kafka Streams replacement")
+                checkpoint.validate_action(evidence)
+                phase_index = checkpoint_counts.get(item.action_index, 0)
+                if checkpoint.phase != KAFKA_STREAMS_CHECKPOINT_PHASES[phase_index]:
+                    raise StateFormatError("Kafka Streams checkpoints must follow old_closed, old_removed, replacement_created")
+                checkpoint_counts[item.action_index] = phase_index + 1
+            if (
+                item.status == "completed" and item.succeeded is True
+                and action.kafka_streams_evidence is not None
+                and checkpoint_counts.get(item.action_index, 0) != len(KAFKA_STREAMS_CHECKPOINT_PHASES)
+            ):
+                raise StateFormatError("Kafka Streams replacement cannot succeed before all durable checkpoints")
             seen.add(key)
             if item.status == "completed" and item.succeeded is True:
                 successfully_completed.add(item.action_index)
             previous_index = item.action_index
+
+    @property
+    def actions_completed(self) -> bool:
+        """Phase validation above makes successful boundaries authoritative."""
+        return self.intent is not None and {
+            item.action_index for item in self.progress
+            if item.status == "completed" and item.succeeded is True
+        } == set(range(len(self.intent.actions)))
 
     @classmethod
     def clear(cls, address: StateAddress) -> OperationControlState:
@@ -1137,7 +1263,7 @@ class OperationControlState:
                 if self.intent is not None
                 else None
             ),
-            "progress": [item.to_dict() for item in self.progress],
+            "progress": [item.to_dict(control_version=self.control_version) for item in self.progress],
             "recovery": self.recovery.to_dict() if self.recovery is not None else None,
         }
 
@@ -1173,7 +1299,7 @@ class OperationControlState:
         if type(control_version) is not int or control_version not in _CONTROL_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {control_version!r}; "
-                f"expected 1, 2, or {CURRENT_CONTROL_VERSION}"
+                "expected 1, 2, 3, or 4"
             )
         return cls(
             control_version=control_version,
@@ -1187,7 +1313,7 @@ class OperationControlState:
                     control_version=control_version,
                 )
             ),
-            progress=tuple(OperationProgress.from_dict(item) for item in raw_progress),
+            progress=tuple(OperationProgress.from_dict(item, control_version=control_version) for item in raw_progress),
             recovery=(
                 None
                 if data["recovery"] is None
@@ -1840,6 +1966,7 @@ class _LocalDeploymentStateOperation:
             raise StateBackendConflictError(
                 "operation intent does not match its prior state snapshot"
             )
+        intent.validate_kafka_streams_prior_state(snapshot.state.state)
 
     def ensure_ready(
         self,
@@ -1882,7 +2009,7 @@ class _LocalDeploymentStateOperation:
     ) -> OperationSnapshot | ControlObservation:
         snapshot, return_snapshot = self._snapshot_for_control(observation)
         self.ensure_ready(snapshot)
-        if return_snapshot:
+        if return_snapshot or any(action.kafka_streams_evidence is not None for action in intent.actions):
             self._validate_intent_state(snapshot, intent)
         # The legacy control-only delegate cannot bind the caller's prior
         # state revision. Its existing CAS path remains responsible for the
@@ -2012,6 +2139,11 @@ class _LocalDeploymentStateOperation:
     ) -> OperationSnapshot | ControlObservation:
         snapshot, return_snapshot = self._snapshot_for_control(observation)
         self._backend._validate_active_control(self._address, snapshot.control)
+        intent = cast(OperationIntent, snapshot.control.control.intent)
+        if any(action.kafka_streams_evidence is not None for action in intent.actions):
+            raise StateBackendRecoveryRequiredError(
+                "Kafka Streams replacement requires typed commit or explicit recovery, not legacy clear"
+            )
         cleared = self._backend._save_control_locked(
             self._address,
             snapshot.control,
@@ -2027,13 +2159,7 @@ class _LocalDeploymentStateOperation:
 
     @staticmethod
     def _require_completed_operation(snapshot: OperationSnapshot) -> None:
-        intent = cast(OperationIntent, snapshot.control.control.intent)
-        completed = {
-            progress.action_index
-            for progress in snapshot.control.control.progress
-            if progress.status == "completed" and progress.succeeded is True
-        }
-        if completed != set(range(len(intent.actions))):
+        if not snapshot.control.control.actions_completed:
             raise StateBackendRecoveryRequiredError(
                 "deployment operation is incomplete; explicit recovery is required"
             )
@@ -2056,6 +2182,8 @@ class _LocalDeploymentStateOperation:
             observation.control,
         )
         self._require_completed_operation(observation)
+        intent = cast(OperationIntent, observation.control.control.intent)
+        intent.validate_kafka_streams_result_state(replacement if replacement is not None else observation.state.state)
         current_control = self._backend._read_control(self._address)
         if current_control.revision != observation.control.revision:
             raise StateBackendConflictError(
@@ -2089,8 +2217,12 @@ class _LocalDeploymentStateOperation:
                 "deployment operation may have started mutation; explicit recovery "
                 "is required"
             )
-        cleared = self.clear_operation(observation)
-        return cleared
+        cleared = self._backend._save_control_locked(
+            self._address, observation.control,
+            OperationControlState.clear(self._address), self._lock,
+        )
+        self._active_operation_id = None
+        return OperationSnapshot(state=observation.state, control=cleared)
 
     def finalize_recovery(
         self,
