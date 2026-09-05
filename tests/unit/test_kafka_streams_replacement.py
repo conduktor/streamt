@@ -162,32 +162,96 @@ def test_term_is_not_removal_permission_while_old_process_has_not_exited(runner_
 @pytest.mark.parametrize("changes", [
     {"status_fresh": False}, {"runner_state": None, "status_fresh": False},
     {"runner_state": "closing"}, {"runner_state": "failed"},
-    {"exit_code": None}, {"exit_code": 1}, {"exit_code": 137},
+    {"exit_code": None}, {"exit_code": 1}, {"exit_code": 137}, {"exit_code": 130},
     {"forced_exit": True}, {"forced_exit": None},
 ])
 @pytest.mark.parametrize("prefix", [1, 2])
-def test_exit_zero_alone_stale_missing_nonzero_or_forced_closure_never_permits_removal(prefix, changes) -> None:
-    observed = _observation(old="exited", prior_container=_container(state="exited", **changes))
-    decision = decide_replacement(_control(_boundaries()[:prefix]), 0, observed)
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_allowed_exit_alone_stale_missing_or_forced_closure_never_permits_removal(prefix, changes, exit_code) -> None:
+    old = replace(_container(state="exited", exit_code=exit_code), **changes)
+    assert not old.cleanly_closed
+    observed = _observation(old="exited", prior_container=old)
+    decision = decide_replacement(_control(_boundaries(exit_code=exit_code)[:prefix]), 0, observed)
     assert decision.step == "blocked"
     assert decision.checkpoint is None
+
+
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_clean_close_checkpoint_preserves_exact_raw_exit_through_next_observation(exit_code) -> None:
+    old = _container(state="exited", exit_code=exit_code)
+    assert old.cleanly_closed
+    observed = _observation(old="exited", prior_container=old)
+    control = _control((_boundary(),))
+    decision = decide_replacement(control, 0, observed)
+    assert decision.step == "record_old_closed"
+    assert not decision.provider_mutation
+    assert decision.checkpoint.exit_code == exit_code
+    checkpoint = OperationProgress(OPERATION, 0, RESOURCE, "update", "checkpoint", None, STAMP, decision.checkpoint)
+    durable = replace(control, progress=(*control.progress, checkpoint))
+    restored = OperationControlState.from_dict(durable.to_dict(), expected_address=ADDRESS)
+    assert restored.progress[1].kafka_streams_checkpoint.exit_code == exit_code
+    removal = decide_replacement(restored, 0, observed)
+    assert removal.step == "remove_old"
+    assert removal.container_id == OLD_ID
+
+
+@pytest.mark.parametrize(("recorded_code", "observed_code"), [(0, 143), (143, 0)])
+def test_durable_close_raw_exit_cannot_change_to_another_allowed_code(recorded_code, observed_code) -> None:
+    old = _container(state="exited", exit_code=observed_code)
+    assert old.cleanly_closed
+    observed = _observation(old="exited", prior_container=old)
+    control = _control(_boundaries(exit_code=recorded_code)[:2])
+    decision = decide_replacement(control, 0, observed)
+    assert decision.reason == "prior_changed_after_durable_clean_close"
+    assert decision.step == "blocked"
+    assert not decision.provider_mutation
+
+
+@pytest.mark.parametrize("exit_code", [True, False, "143", "unknown", -1, 256])
+def test_exit_observation_rejects_bool_string_and_out_of_range_code(exit_code) -> None:
+    with pytest.raises(StateFormatError, match="exit code is invalid"):
+        _container(state="exited", exit_code=exit_code)
+
+
+@pytest.mark.parametrize("exit_code", [0, 143])
+@pytest.mark.parametrize("prefix", [1, 2, 4])
+def test_allowed_clean_exit_with_active_group_blocks_close_removal_and_resume(exit_code, prefix) -> None:
+    is_candidate = prefix == 4
+    container = _container(candidate=is_candidate, state="exited", exit_code=exit_code)
+    assert container.cleanly_closed
+    observed = _observation(
+        old=None if is_candidate else "exited", candidate="exited" if is_candidate else None,
+        prior_container=None if is_candidate else container,
+        candidate_container=container if is_candidate else None, members=1,
+    )
+    control = _control(_boundaries(exit_code=exit_code)[:prefix])
+    for mode in ("execute", "resume", "recover"):
+        decision = decide_replacement(control, 0, observed, mode=mode)
+        assert decision.step == "blocked"
+        assert not decision.provider_mutation
+        assert decision.checkpoint is None
 
 
 @pytest.mark.parametrize("changes", [
     {"status_fresh": False}, {"runner_state": None, "status_fresh": False},
     {"runner_state": "running"}, {"runner_state": "failed"}, {"exit_code": None},
-    {"exit_code": 1}, {"exit_code": 137}, {"forced_exit": True}, {"forced_exit": None},
+    {"exit_code": 1}, {"exit_code": 137}, {"exit_code": 130},
+    {"forced_exit": True}, {"forced_exit": None},
 ])
-def test_candidate_resume_needs_exact_fresh_clean_closed_status(changes) -> None:
-    candidate = _container(candidate=True, state="exited", **changes)
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_candidate_resume_needs_exact_fresh_clean_closed_status(changes, exit_code) -> None:
+    candidate = replace(_container(candidate=True, state="exited", exit_code=exit_code), **changes)
+    assert not candidate.cleanly_closed
     observed = _observation(old=None, candidate="exited", candidate_container=candidate)
     for mode in ("execute", "resume", "recover"):
         decision = decide_replacement(_control(_boundaries()[:4]), 0, observed, mode=mode)
         assert decision.step == "blocked"
 
 
-def test_clean_candidate_restart_is_resume_only_and_never_reinitializes_offsets() -> None:
-    observed = _observation(old=None, candidate="exited", committed=70)
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_clean_candidate_restart_is_resume_only_and_never_reinitializes_offsets(exit_code) -> None:
+    candidate = _container(candidate=True, state="exited", exit_code=exit_code)
+    observed = _observation(old=None, candidate="exited", committed=70, candidate_container=candidate)
     # Candidate already consumed the original close point, now outside retention.
     observed = replace(observed, progress=replace(observed.progress, partitions=(KafkaStreamsPartitionEvidence(0, 60, 100, 70),)))
     control = _control(_boundaries()[:4])

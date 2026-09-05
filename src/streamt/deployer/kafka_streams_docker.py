@@ -220,6 +220,28 @@ class LocalDockerRunner:
             raise KafkaStreamsDockerError("Image is not a compatible fixed streamt runner")
         return identity
 
+    def validate_process_environment(self, data: dict[str, object], image_id: str) -> None:
+        """Require the fixed runner's immutable image environment, never overrides."""
+        if type(image_id) is not str or _IMAGE.fullmatch(image_id) is None:
+            raise KafkaStreamsDockerError("Runner process requires an exact image identity")
+        image = _json_object(
+            self._run(["image", "inspect", "--format", "{{json .}}", image_id]),
+            message="Cannot inspect runner image process configuration",
+        )
+        baseline, config = image.get("Config"), data.get("Config")
+        if image.get("Id") != image_id or type(baseline) is not dict or type(config) is not dict:
+            raise KafkaStreamsDockerError("Runner image process configuration is incomplete")
+        environment = baseline.get("Env")
+        if (
+            type(environment) is not list
+            or any(type(item) is not str or "=" not in item for item in environment)
+            or len({item.split("=", 1)[0] for item in environment}) != len(environment)
+            or baseline.get("WorkingDir") != "/opt/streamt/runner"
+            or config.get("Env") != environment
+            or config.get("WorkingDir") != baseline["WorkingDir"]
+        ):
+            raise KafkaStreamsDockerError("Runner process environment differs from its fixed image")
+
     def network_id(self, network: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", network):
             raise KafkaStreamsDockerError("Invalid Docker network")
@@ -267,6 +289,25 @@ class LocalDockerRunner:
         if data.get("Id") != ids[0] or data.get("Name") != f"/{name}":
             raise KafkaStreamsDockerError("Container identity changed during observation")
         return data
+
+    def application_containers(self, application_id: str) -> tuple[str, ...]:
+        """Inventory every labelled generation, including renamed stopped ones."""
+        name = self.container_name(application_id)
+        self.verify_daemon()
+        raw = self._run([
+            "container", "ls", "--all", "--no-trunc", "--filter", f"label={LABEL_APP}={name}",
+            "--format", "{{.ID}}",
+        ])
+        try:
+            identities = raw.decode("ascii").split()
+        except UnicodeError:
+            raise KafkaStreamsDockerError("Invalid runner application inventory") from None
+        if (
+            len(identities) > 1024 or len(set(identities)) != len(identities)
+            or any(_ID.fullmatch(identity) is None for identity in identities)
+        ):
+            raise KafkaStreamsDockerError("Invalid runner application inventory")
+        return tuple(sorted(identities))
 
     def inspect_exact(self, container_id: str) -> dict[str, object] | None:
         """Observe a physical container independently of the application name slot.

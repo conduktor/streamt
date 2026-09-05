@@ -117,19 +117,19 @@ def _boundary(status: str = "started", *, succeeded: bool | None = None) -> Oper
     return OperationProgress(OPERATION, 0, RESOURCE, "update", status, succeeded, STAMP)  # type: ignore[arg-type]
 
 
-def _checkpoint(phase: str) -> OperationProgress:
+def _checkpoint(phase: str, *, exit_code: int = 0) -> OperationProgress:
     closed = phase == "old_closed"
     checkpoint = KafkaStreamsCheckpointEvidence(
         1, phase, OPERATION, 0, OLD_ID, NEW_ID if phase == "replacement_created" else None,
-        _evidence().prior_artifact.plan_hash if closed else None, 0 if closed else None,
+        _evidence().prior_artifact.plan_hash if closed else None, exit_code if closed else None,
         _progress(committed=20, active_members=0) if closed else None,
     )
     return OperationProgress(OPERATION, 0, RESOURCE, "update", "checkpoint", None, STAMP, checkpoint)
 
 
-def _boundaries() -> tuple[OperationProgress, ...]:
+def _boundaries(*, exit_code: int = 0) -> tuple[OperationProgress, ...]:
     return (
-        _boundary(), _checkpoint("old_closed"), _checkpoint("old_removed"),
+        _boundary(), _checkpoint("old_closed", exit_code=exit_code), _checkpoint("old_removed"),
         _checkpoint("replacement_created"), _boundary("completed", succeeded=True),
     )
 
@@ -265,8 +265,9 @@ def test_existing_gateway_connector_evidence_stays_v3_and_cannot_mix_with_runner
             replace(action, kafka_streams_evidence=_evidence())
 
 
-def test_every_ordered_replacement_prefix_round_trips_and_only_full_success_completes() -> None:
-    boundaries = _boundaries()
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_every_ordered_replacement_prefix_round_trips_and_only_full_success_completes(exit_code) -> None:
+    boundaries = _boundaries(exit_code=exit_code)
     for count in range(len(boundaries) + 1):
         control = _control(boundaries[:count])
         assert OperationControlState.from_dict(control.to_dict(), expected_address=ADDRESS) == control
@@ -292,7 +293,9 @@ def test_checkpoint_gaps_reordering_duplicates_and_post_completion_progress_fail
 @pytest.mark.parametrize(("field", "value"), [
     ("operation_id", TOKEN), ("action_index", 1), ("prior_container_id", NEW_ID),
     ("closed_plan_hash", "sha256:" + "f" * 64), ("exit_code", 1),
-    ("exit_code", False), ("replacement_container_id", NEW_ID),
+    ("exit_code", 137), ("exit_code", 130), ("exit_code", None),
+    ("exit_code", False), ("exit_code", True), ("exit_code", "143"),
+    ("exit_code", "unknown"), ("replacement_container_id", NEW_ID),
     ("version", True), ("phase", "unknown"),
 ])
 def test_checkpoint_mismatched_generation_container_plan_and_close_proof_fail(field, value) -> None:
@@ -300,14 +303,27 @@ def test_checkpoint_mismatched_generation_container_plan_and_close_proof_fail(fi
         _control((_boundary(), replace(_checkpoint("old_closed"), kafka_streams_checkpoint=replace(_checkpoint("old_closed").kafka_streams_checkpoint, **{field: value}))))
 
 
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_close_checkpoint_wire_format_requires_explicit_raw_exit_code(exit_code) -> None:
+    checkpoint = _checkpoint("old_closed", exit_code=exit_code).kafka_streams_checkpoint
+    payload = checkpoint.to_dict()
+    assert type(payload["exit_code"]) is int
+    assert payload["exit_code"] == exit_code
+    assert KafkaStreamsCheckpointEvidence.from_dict(json.loads(json.dumps(payload))) == checkpoint
+    del payload["exit_code"]
+    with pytest.raises(StateFormatError, match="invalid fields"):
+        KafkaStreamsCheckpointEvidence.from_dict(payload)
+
+
+@pytest.mark.parametrize("exit_code", [0, 143])
 @pytest.mark.parametrize("progress", [
     _progress(active_members=1), _progress(committed=9, active_members=0),
     replace(_progress(active_members=0), input_topic_id="AAAAAAAAAAAAAAAAAAAAAw"),
     replace(_progress(active_members=0), cluster_id="other-cluster"),
 ])
-def test_close_checkpoint_requires_inactive_same_identity_and_monotonic_offsets(progress) -> None:
+def test_close_checkpoint_requires_inactive_same_identity_and_monotonic_offsets(progress, exit_code) -> None:
     with pytest.raises(StateFormatError):
-        _control((_boundary(), replace(_checkpoint("old_closed"), kafka_streams_checkpoint=replace(_checkpoint("old_closed").kafka_streams_checkpoint, progress=progress))))
+        _control((_boundary(), replace(_checkpoint("old_closed", exit_code=exit_code), kafka_streams_checkpoint=replace(_checkpoint("old_closed", exit_code=exit_code).kafka_streams_checkpoint, progress=progress))))
 
 
 def test_checkpoint_cannot_attach_to_another_action_or_advance_past_failed_action() -> None:
@@ -326,12 +342,13 @@ def _local(tmp_path: Path):
     return make_deployment_state_service(tmp_path, project="payments", environment="prod", config=local_deployment_state_config())
 
 
-def test_local_durable_checkpoints_survive_reopen_and_old_artifact_removal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_local_durable_checkpoints_survive_reopen_and_old_artifact_removal(tmp_path: Path, exit_code) -> None:
     service = _local(tmp_path)
     with service.operation() as operation:
         snapshot = operation.observe()
         active = operation.begin_operation(snapshot, _intent(snapshot.state.state))
-        for boundary in _boundaries()[:3]:
+        for boundary in _boundaries(exit_code=exit_code)[:3]:
             active = operation.record_progress(active, boundary)
         with pytest.raises(StateBackendRecoveryRequiredError):
             operation.commit_operation(active, None)
@@ -340,6 +357,8 @@ def test_local_durable_checkpoints_survive_reopen_and_old_artifact_removal(tmp_p
     control = service.read_control().control
     assert control.progress[-1].kafka_streams_checkpoint.phase == "old_removed"
     assert control.intent.actions[0].kafka_streams_evidence == _evidence()
+    assert control.progress[1].kafka_streams_checkpoint.exit_code == exit_code
+    assert control.to_dict()["progress"][1]["kafka_streams_checkpoint"]["exit_code"] == exit_code
     assert control.progress[1].kafka_streams_checkpoint.progress.partitions[0].committed == 20
     with service.operation() as operation, pytest.raises(StateBackendRecoveryRequiredError):
         operation.ensure_ready(operation.observe())
@@ -358,12 +377,13 @@ def test_local_failed_checkpoint_persistence_retains_last_durable_prefix(tmp_pat
         assert service.read_control().control.progress == (_boundary(),)
 
 
-def test_local_success_requires_exact_candidate_ownership_and_cannot_use_legacy_clear(tmp_path) -> None:
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_local_success_requires_exact_candidate_ownership_and_cannot_use_legacy_clear(tmp_path, exit_code) -> None:
     service = _local(tmp_path)
     with service.operation() as operation:
         initial = operation.observe()
         active = operation.begin_operation(initial, _intent(initial.state.state))
-        for boundary in _boundaries():
+        for boundary in _boundaries(exit_code=exit_code):
             active = operation.record_progress(active, boundary)
         with pytest.raises(StateBackendRecoveryRequiredError, match="legacy clear"):
             operation.clear_operation(active)
@@ -419,11 +439,12 @@ def _postgres(monkeypatch):
     return operation, database, owner, driver
 
 
-def test_postgres_records_all_checkpoint_prefixes_and_completes_atomically(monkeypatch) -> None:
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_postgres_records_all_checkpoint_prefixes_and_completes_atomically(monkeypatch, exit_code) -> None:
     operation, database, _owner, _driver = _postgres(monkeypatch)
     initial = operation.observe()
     active = operation.begin_operation(initial, _intent(initial.state.state))
-    for boundary in _boundaries():
+    for boundary in _boundaries(exit_code=exit_code):
         active = operation.record_progress(active, boundary)
     with pytest.raises(StateBackendConflictError, match="result"):
         operation.commit_operation(active, None)
@@ -435,7 +456,10 @@ def test_postgres_records_all_checkpoint_prefixes_and_completes_atomically(monke
     for index, _kind, raw in database.operation_history[:-1]:
         parsed = OperationControlState.from_dict(json.loads(raw), expected_address=database.address)
         assert parsed.control_version == 4
-        assert parsed.progress == _boundaries()[:index]
+        assert parsed.progress == _boundaries(exit_code=exit_code)[:index]
+        if index >= 2:
+            assert parsed.progress[1].kafka_streams_checkpoint.exit_code == exit_code
+            assert json.loads(raw)["progress"][1]["kafka_streams_checkpoint"]["exit_code"] == exit_code
 
 
 def test_postgres_checkpoint_dml_failure_retains_prior_checkpoint(monkeypatch) -> None:
@@ -462,11 +486,12 @@ def test_postgres_prior_ownership_mismatch_blocks_before_intent_or_history_write
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
-def test_postgres_restore_history_validation_accepts_complete_v4_and_rejects_tampering(monkeypatch, schema_version) -> None:
+@pytest.mark.parametrize("exit_code", [0, 143])
+def test_postgres_restore_history_validation_accepts_complete_v4_and_rejects_tampering(monkeypatch, schema_version, exit_code) -> None:
     operation, database, _owner, _driver = _postgres(monkeypatch)
     initial = operation.observe()
     active = operation.begin_operation(initial, _intent(initial.state.state))
-    for boundary in _boundaries():
+    for boundary in _boundaries(exit_code=exit_code):
         active = operation.record_progress(active, boundary)
     operation.commit_operation(active, _desired_state())
     address = database.address

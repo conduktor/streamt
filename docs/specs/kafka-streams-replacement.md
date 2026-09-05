@@ -8,12 +8,14 @@ Creation and no-op repeat apply are supported. Replacement remains blocked
 while this protocol is implemented and tested; this document is not a claim
 that an update or resume command is available.
 
-The current journal foundation requires exit zero for clean-close evidence.
-Real runner 0.1.1 TERM observations returned 143. The cleanup observations did
-not verify the full closed-status and inactive-group conditions. This unresolved
-mismatch blocks activation: neither the adapter nor the journal may
-rewrite the observed exit code to zero. The close contract must explicitly
-account for JVM signal termination and be verified with the full runtime proof.
+Clean-close evidence admits raw exit codes 0 and 143. The latter accounts for
+the fixed JVM runner's TERM shutdown. Neither code alone proves success: the
+observer also requires a fresh closed status, complete non-OOM/error-free
+process evidence and an inactive group with retained offsets. The journal
+preserves the actual code; no adapter rewrites 143 to zero. A dedicated real
+Docker/Kafka probe now verifies these conditions, separately from the earlier
+cleanup observations. Its evidence is in
+`tests/package/verification/kafka-streams-replacement-observer.json`.
 
 Changing a filter must preserve the topology's resource identities and source
 progress. It must also expose the affected downstream applications even when
@@ -39,6 +41,12 @@ name. Replacement verifies the existing volume and actual mounts. It never
 creates a missing volume, initializes offsets, builds an image or pulls one.
 The fixed runner's container-side Kafka identity gate also applies to the new
 process before it can consume or emit records.
+
+Read-only observation checks the container's environment against the pinned
+image, its fixed execution options and actual mounted inputs. It inventories
+all containers labelled with the application ID, including renamed ones, and
+rejects unaccounted generations. A final process/state re-read must still match
+the initial exact-ID observation; a name or image label alone is insufficient.
 
 Projection, schema, topic, partition, image, application identity, network and
 stateful changes remain blocked. A Git revert is another proposed change, not
@@ -82,7 +90,7 @@ the caller durably records a checkpoint before crossing the next boundary.
 | --- | --- | --- |
 | Intent only | Exact prior runner, valid progress, matching protected state | Record action started |
 | Started | Same prior generation and unchanged identities | Request TERM, then wait within the configured close bound |
-| Started, close observed | Fresh old-plan closed status, exit zero, no forced/OOM failure, inactive group, resumable monotonic offsets | Record `old_closed` with its final progress |
+| Started, close observed | Fresh old-plan closed status, raw exit 0 or 143, no forced/OOM failure, inactive group, resumable monotonic offsets | Record `old_closed` with its final progress |
 | `old_closed` | Same stopped old container, volume and inactive progress | Remove that exact stopped container without force or volume removal |
 | Old absent after `old_closed` | Exact absence and retained volume/progress | Record `old_removed` |
 | `old_removed` | Old and candidate absent, retained volume, inactive resumable progress | Create one stopped candidate with this operation's generation labels |
@@ -101,7 +109,7 @@ only while the resume positions remain available. A committed offset jump while
 the runner is stopped cannot come from that process and is rejected.
 Once the candidate has started, its committed positions may advance normally.
 
-Unknown exit, nonzero exit, OOM, stale status, changed volume, replaced topic,
+Unknown exit, any code other than 0 or 143, OOM, stale status, changed volume, replaced topic,
 missing offsets or progress outside retention blocks the transition. A timeout
 does not permit force kill. A failed candidate readiness attempt may request
 TERM for that exact generation, but the request alone is not clean-close proof.

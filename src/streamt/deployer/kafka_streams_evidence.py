@@ -22,6 +22,8 @@ from streamt.deployer.kafka_streams_time import parse_utc_timestamp
 from streamt.deployer.state import StateFormatError, artifact_checksum
 
 KAFKA_STREAMS_CONTROL_VERSION = 4
+# These are admissible raw outcomes, not proof of a clean shutdown by themselves.
+KAFKA_STREAMS_CLEAN_EXIT_CODES = frozenset({0, 143})
 MAX_KAFKA_STREAMS_EVIDENCE_BYTES = 262144
 MAX_KAFKA_STREAMS_ARTIFACT_BYTES = 65536
 MAX_KAFKA_STREAMS_PARTITIONS = 1024
@@ -352,8 +354,8 @@ class KafkaStreamsCheckpointEvidence:
             raise StateFormatError("Kafka Streams replacement ID precedes its creation checkpoint")
         if self.phase == "old_closed":
             _match(self.closed_plan_hash, _CHECKSUM, "closed plan hash")
-            if type(self.exit_code) is not int or self.exit_code != 0:
-                raise StateFormatError("Kafka Streams old container did not close with exit zero")
+            if type(self.exit_code) is not int or self.exit_code not in KAFKA_STREAMS_CLEAN_EXIT_CODES:
+                raise StateFormatError("Kafka Streams old container requires raw exit code 0 or 143")
             if type(self.progress) is not KafkaStreamsProgressEvidence or self.progress.active_members != 0:
                 raise StateFormatError("Kafka Streams closed checkpoint requires inactive resumable progress")
         elif self.closed_plan_hash is not None or self.exit_code is not None or self.progress is not None:

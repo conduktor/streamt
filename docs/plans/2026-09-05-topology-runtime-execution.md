@@ -151,10 +151,9 @@ Follow-up implementation checkpoint:
   verify fixed mounts and the retained volume instance, and bind a candidate to
   its operation/action/fingerprint. A disposable never-started Docker fixture
   verified these readers and was removed with its owned volume afterward.
-- The real runner's TERM exits were 143, not the journal foundation's required
-  zero. Cleanup alone did not establish the full clean-close conditions. This
-  remains an explicit activation blocker in the replacement
-  contract. No provider exit code is normalized or treated as successful by fiat.
+- The initial TERM cleanup observations returned 143, not the journal's then
+  required zero. Cleanup alone did not establish clean-close conditions. The
+  follow-up contract below addresses that mismatch without normalizing codes.
 - CI for `a7ab3e2` passed both installed Kafka SDK lanes and real DataHub, but
   failed Python 3.10 timestamp parsing and all five Strimzi package lanes. The
   timestamp fix preserves nanoseconds across Python versions. The Strimzi guard
@@ -181,3 +180,33 @@ Follow-up implementation checkpoint:
   blocks replacement; no executable update can be introduced by editing a plan
   envelope. The focused plan/action and existing removal CLI checks passed
   205 tests before this checkpoint.
+
+Read-only replacement observation checkpoint:
+
+- The close contract now admits raw 0 or 143 only with fresh closed status,
+  complete non-OOM/error-free process evidence and inactive resumable progress.
+  Ordered checkpoints preserve the observed code and reject later code drift.
+- The observer reconstructs the prior artifact from actual mounted bytes and
+  the locked ownership checksum. It verifies fixed image environment, process
+  options, mounts, volume instance and provider identities. Exact-ID process
+  re-reads and a complete application-label inventory reject a restarted,
+  failed or renamed generation; no read error becomes proof of absence.
+- Source fixture `e35cf840ab73` (SDK 2.13.2) and installed fixture `0b92ac642e37`
+  (SDK 2.15.0) passed the real fresh-init/create/no-op journey
+  (17 commands, six expected refusals), then the full read-only close proof:
+  raw 143, fresh closed status within process start/finish, group members 1→0,
+  retained offset 5 and unchanged identities/volume/mounts. A separately created,
+  never-started extra container was renamed and correctly rejected. All exact
+  fixture-owned resources were cleaned up. The new evidence record is
+  `tests/package/verification/kafka-streams-replacement-observer.json`. Both runs
+  used the same 117-module cohort, verified against source/sdist/wheel/install.
+  The included but unexercised executor module changed afterward; the observer
+  record does not attest that later change. CI now repeats this observer probe
+  in both installed SDK lanes, separately from the two-path creation journey.
+- Independent review reproduced and verified the three observer corrections.
+  The observer now has 120 tests. The complete suite before the last added
+  absence case and executor tests passed 6,826 tests with 32 skips; the focused
+  Python 3.10 evidence/plan/observer tests passed 631 tests.
+- These readers and proofs do not activate public replacement, recovery or
+  resume. The reviewed plan, runtime driver, durable resume authority and CLI
+  still need their complete installed change/interruption acceptance.

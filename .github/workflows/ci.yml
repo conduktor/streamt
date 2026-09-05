@@ -737,7 +737,8 @@ jobs:
           python -m venv "${lane_root}/venv"
           "${lane_root}/venv/bin/pip" install "${wheels[0]}" "confluent-kafka==${KAFKA_CLIENT_VERSION}"
           "${lane_root}/venv/bin/pip" check
-          cp tests/package/kafka_streams_journey.py "${lane_root}/journey.py"
+          cp tests/package/kafka_streams_journey.py "${lane_root}/kafka_streams_journey.py"
+          cp tests/package/kafka_streams_replacement_probe.py "${lane_root}/kafka_streams_replacement_probe.py"
           cd "${lane_root}"
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --dry-run > build-inputs.json
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --timeout 900 > build-result.json
@@ -752,7 +753,20 @@ jobs:
             'import json,sys; print(json.load(open(sys.argv[1]))["data"]["image"])' \
             "${lane_root}/build-result.json")
           cd "${lane_root}"
-          "${lane_root}/venv/bin/python" -I journey.py \
+          "${lane_root}/venv/bin/python" -I kafka_streams_journey.py \
+            --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
+            --evidence-dir "${lane_root}/evidence"
+
+      - name: Prove read-only clean-close evidence and refuse renamed generations
+        shell: bash
+        run: |
+          set -euo pipefail
+          lane_root="${RUNNER_TEMP}/streamt-kafka-streams-installed"
+          image_id=$("${lane_root}/venv/bin/python" -I -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["data"]["image"])' \
+            "${lane_root}/build-result.json")
+          cd "${lane_root}"
+          "${lane_root}/venv/bin/python" -I kafka_streams_replacement_probe.py \
             --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
             --evidence-dir "${lane_root}/evidence"
 

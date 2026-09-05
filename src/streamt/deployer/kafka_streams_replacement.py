@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from streamt.deployer.kafka_streams_evidence import (
+    KAFKA_STREAMS_CLEAN_EXIT_CODES,
     KafkaStreamsActionEvidence,
     KafkaStreamsCheckpointEvidence,
     KafkaStreamsProgressEvidence,
@@ -132,7 +133,8 @@ class ReplacementContainerObservation:
     def cleanly_closed(self) -> bool:
         return (
             self.process_state == "exited" and self.runner_state == "closed"
-            and self.status_fresh and self.exit_code == 0 and self.forced_exit is False
+            and self.status_fresh and self.exit_code in KAFKA_STREAMS_CLEAN_EXIT_CODES
+            and self.forced_exit is False
         )
 
     @property
@@ -333,10 +335,12 @@ def decide_replacement(
             return blocked("prior_clean_close_or_inactive_group_not_proved")
         checkpoint = KafkaStreamsCheckpointEvidence(
             1, "old_closed", intent.operation_id, action_index, old.container_id, None,
-            evidence.prior_artifact.plan_hash, 0, observed.progress,
+            evidence.prior_artifact.plan_hash, old.exit_code, observed.progress,
         )
         return decision("record_old_closed", "persist_clean_close_before_removal", checkpoint=checkpoint)
-    if stage == 1 and old is not None and not old.cleanly_closed:
+    if stage == 1 and old is not None and (
+        not old.cleanly_closed or old.exit_code != checkpoints[0].exit_code
+    ):
         return blocked("prior_changed_after_durable_clean_close")
     # The original resume point must still be retained before a candidate ever
     # starts. A running/cleanly exited candidate may already have consumed it.
