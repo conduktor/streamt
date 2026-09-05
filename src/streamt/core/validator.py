@@ -59,6 +59,21 @@ def _normalize_contract_type(t: str) -> str:
     return _CONTRACT_TYPE_GROUPS.get(base, base.lower())
 
 
+def _known_declared_contract_type(value: str | None) -> str | None:
+    """Compare recognized local type families without guessing unknown schemas.
+
+    This reuses the contract aliases, not a precision, nullability, or runtime
+    compatibility proof. Complex and undeclared types remain unknown.
+    """
+    if (
+        not value
+        or value.split("(")[0].upper().strip() not in _CONTRACT_TYPE_GROUPS
+        or re.fullmatch(r"\s*[A-Za-z]+\s*(?:\(\s*\d+\s*(?:,\s*\d+\s*)?\))?\s*", value) is None
+    ):
+        return None
+    return _normalize_contract_type(value)
+
+
 class ValidationLevel(str, Enum):
     """Validation message level."""
 
@@ -746,29 +761,63 @@ class ProjectValidator:
                                 "CONTRACT_TYPE_MISMATCH", msg, f"model '{model.name}'"
                             )
 
-        # Breaking change detection: exposure columns vs contract
+        self._validate_exposure_contracts()
+
+    def _validate_exposure_contracts(self) -> None:
+        """Check consumed columns against explicit declarations, never live schemas.
+
+        Exposure.columns is a flat requirement on every consumed input, as in
+        the existing contract check; it cannot express per-input requirements.
+        """
         for exposure in self.project.exposures:
-            exposure_cols = {c.name for c in exposure.columns}
-            if not exposure_cols:
+            if not exposure.columns:
                 continue
 
             for ref in exposure.consumes:
-                if not ref.ref:
+                # Invalid references have their own diagnostics. Do not select
+                # one interpretation of an ambiguous source/ref declaration.
+                if bool(ref.ref) == bool(ref.source):
                     continue
-                ref_model = self.project.get_model(ref.ref)
-                if not ref_model or not ref_model.contract:
-                    continue
+                declared: dict[str, str | None]
+                if ref.ref:
+                    model = self.project.get_model(ref.ref)
+                    if model is None:
+                        continue
+                    if model.contract is not None:
+                        declared = {column.name: column.type for column in model.contract.columns}
+                        origin = f"model '{model.name}' declared contract"
+                    elif model.columns is not None:
+                        declared = {column.name: column.type for column in model.columns}
+                        origin = f"model '{model.name}' declared columns"
+                    else:
+                        continue
+                else:
+                    source = self.project.get_source(ref.source or "")
+                    if source is None or not source.columns:
+                        # Import without enrichment has no column evidence.
+                        continue
+                    declared = {column.name: column.type for column in source.columns}
+                    origin = f"source '{source.name}' declared columns"
 
-                contract_cols = {col.name for col in ref_model.contract.columns}
-                breaking = exposure_cols - contract_cols
-                for missing_col in breaking:
-                    self.result.add_warning(
-                        "CONTRACT_BREAKING_CHANGE",
-                        f"Exposure '{exposure.name}' references column '{missing_col}' "
-                        f"which is not in model '{ref_model.name}' contract — "
-                        "potential breaking change",
-                        f"exposure '{exposure.name}'",
-                    )
+                for column in exposure.columns:
+                    if column.name not in declared:
+                        self.result.add_error(
+                            "CONTRACT_BREAKING_CHANGE",
+                            f"Exposure '{exposure.name}' consumes column '{column.name}' "
+                            f"which is absent from {origin}",
+                            f"exposure '{exposure.name}'",
+                        )
+                        continue
+                    expected = _known_declared_contract_type(column.type)
+                    actual = _known_declared_contract_type(declared[column.name])
+                    if expected is not None and actual is not None and expected != actual:
+                        self.result.add_error(
+                            "CONTRACT_CONSUMER_TYPE_MISMATCH",
+                            f"Exposure '{exposure.name}' consumes column '{column.name}' "
+                            f"as '{column.type}', but {origin} specifies "
+                            f"'{declared[column.name]}'",
+                            f"exposure '{exposure.name}'",
+                        )
 
     def _validate_references(self) -> None:
         from streamt.core import ref_validators as rv

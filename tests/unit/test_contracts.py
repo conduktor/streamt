@@ -249,10 +249,10 @@ class TestContractValidation:
 
 
 class TestContractBreakingChangeDetection:
-    """Validator warns when an exposure's declared consumption conflicts with contract."""
+    """Validator rejects declared consumption that conflicts with a local contract."""
 
-    def test_breaking_change_warning_when_exposure_consumes_removed_column(self):
-        """Warning when exposure declares it consumes a column not in model contract."""
+    def test_breaking_change_error_when_exposure_consumes_removed_column(self):
+        """Error when exposure declares it consumes a column not in model contract."""
         with tempfile.TemporaryDirectory() as d:
             cfg = {
                 **BASE,
@@ -283,7 +283,7 @@ class TestContractBreakingChangeDetection:
             result = ProjectValidator(project).validate()
             breaking = [
                 m
-                for m in result.messages
+                for m in result.errors
                 if "BREAKING" in m.code or "breaking" in m.message.lower()
             ]
             assert len(breaking) >= 1
