@@ -15,6 +15,7 @@ from streamt.core.redaction import redact_sensitive_text as _redact_sensitive_te
 from streamt.output import OutputFormatter, StructuredError, get_output_format_from_context
 
 if TYPE_CHECKING:
+    from streamt.compiler.manifest import Manifest
     from streamt.core.models import StreamtProject
     from streamt.deployer.connect import ConnectDeployer
     from streamt.deployer.flink import FlinkDeployer
@@ -145,6 +146,52 @@ def _resolve_secret(val: SecretStr | str | None) -> str | None:
     return val.get_secret_value() if isinstance(val, SecretStr) else val
 
 
+def required_deployer_services(manifest: Manifest) -> frozenset[str]:
+    """Select live services without treating external declarations as drift targets.
+
+    Kafka remains required for managed work, including consumer-impact evidence.
+    Retained removal artifacts keep their provider requirement regardless of
+    ordinary declaration ownership. This is not a replacement for planner
+    binding, collision, state, or recovery preflights.
+    """
+    from streamt.compiler.manifest import ArtifactOwnership
+
+    services_by_kind = {
+        "topics": "Kafka", "schemas": "Schema Registry", "flink_jobs": "Flink",
+        "connectors": "Kafka Connect", "gateway_rules": "Conduktor Gateway",
+        "connector_removals": "Kafka Connect", "gateway_rule_removals": "Conduktor Gateway",
+    }
+    required: set[str] = set()
+    for kind, service in services_by_kind.items():
+        artifacts = manifest.artifacts.get(kind, [])
+        if not isinstance(artifacts, list):
+            raise ValueError(f"Compiled {kind} must be an artifact list")
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                raise ValueError(f"Compiled {kind} must contain artifact objects")
+            raw_ownership = artifact.get("ownership")
+            ownership = ArtifactOwnership.from_dict(raw_ownership)
+            if "ownership" in artifact and (
+                ownership is None
+                or ownership.mode not in {"external", "managed", "adopted"}
+                or not all(value.strip() for value in (
+                    ownership.project, ownership.owner_type, ownership.owner_name,
+                ))
+            ):
+                raise ValueError(f"Compiled {kind} has invalid ownership metadata")
+            if (
+                kind not in {"connector_removals", "gateway_rule_removals"}
+                and ownership is not None
+                and ownership.mode == "external"
+                and ownership.project == manifest.project_name
+            ):
+                continue
+            required.add(service)
+    if required:
+        required.add("Kafka")
+    return frozenset(required)
+
+
 def check_required_deployers(
     project: StreamtProject,
     kafka_deployer: Optional[KafkaDeployer],
@@ -153,6 +200,8 @@ def check_required_deployers(
     connect_deployer: Optional[ConnectDeployer],
     gateway_deployer: Optional[GatewayDeployer],
     fmt: OutputFormatter,
+    *,
+    required_services: frozenset[str] | None = None,
 ) -> bool:
     """Return False (with errors in fmt) if any configured deployer failed to connect."""
     from streamt.core.errors import ErrorCode
@@ -176,6 +225,15 @@ def check_required_deployers(
 
     ok = True
     for is_configured, deployer, name in checks:
+        if required_services is not None:
+            if name not in required_services:
+                continue
+            if not is_configured:
+                message = f"{name} is required by selected managed resources but is not configured."
+                fmt.add_error(StructuredError(code=ErrorCode.MISSING_CONFIG, message=message))
+                fmt.print_error(message)
+                ok = False
+                continue
         if is_configured and deployer is None:
             fmt.add_error(
                 StructuredError(

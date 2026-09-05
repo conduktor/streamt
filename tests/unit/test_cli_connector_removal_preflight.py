@@ -514,9 +514,13 @@ def test_successful_preflight_reaches_provider_construction_under_lock(
     assert not (tmp_path / "reviewed.json").exists()
     if reviewed is not None:
         reviewed.verify_context.assert_called_once()
-    factories[0].assert_called_once()
-    for factory in factories[1:]:
-        factory.assert_not_called()
+    # Kafka is still needed for managed consumer-impact evidence; unrelated
+    # Schema Registry, Flink and Gateway clients are no longer constructed.
+    for name, factory in zip(_RUNTIME_FACTORIES, factories, strict=True):
+        if name == "make_kafka_deployer":
+            factory.assert_called_once()
+        else:
+            factory.assert_not_called()
     _assert_no_state_writes(operation)
 
 
@@ -742,11 +746,8 @@ def test_exact_locked_preflight_trace_precedes_review_and_runtime(
         "ensure-ready",
         "resolver",
         *(["reviewed-context"] if command == "apply" else []),
-        "runtime:make_sr_deployer",
         "runtime:make_kafka_deployer",
-        "runtime:make_flink_deployer",
         "runtime:make_connect_deployer",
-        "runtime:make_gateway_deployer",
         "exit-operation",
     ]
     if command == "apply":

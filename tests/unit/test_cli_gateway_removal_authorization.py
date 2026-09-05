@@ -171,4 +171,4 @@ def test_apply_without_gateway_removal_keeps_existing_dry_run_path(
     assert payload["data"]["dry_run"] is True
     assert payload["data"]["has_changes"] is False
     for factory in (make_sr, make_kafka, make_flink, make_connect, make_gateway):
-        factory.assert_called_once()
+        factory.assert_not_called()

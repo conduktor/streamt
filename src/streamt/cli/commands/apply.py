@@ -31,6 +31,7 @@ from streamt.cli.helpers import (
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
+    required_deployer_services,
     state_operation_error_details,
 )
 from streamt.compiler.connector_artifact import (
@@ -55,6 +56,7 @@ from streamt.deployer.state import (
     ManagedGatewayResourceDeletion,
     StateError,
     StateFormatError,
+    StateIdentityError,
     local_state_path,
     updated_local_state,
 )
@@ -198,11 +200,26 @@ def _artifact_is_selected(
     artifact: dict[str, object],
     selected_models: set[str],
     selected_sources: set[str],
+    *,
+    project_name: str,
 ) -> bool:
-    """Return whether explicit artifact ownership is inside the selection."""
+    """Keep selected managed artifacts and all external identity claims."""
     ownership = ArtifactOwnership.from_dict(artifact.get("ownership"))
-    if not ownership or ownership.mode not in ("managed", "adopted"):
+    if "ownership" in artifact and (
+        ownership is None
+        or ownership.mode not in ("managed", "adopted", "external")
+        or any(
+            not isinstance(value, str) or not value.strip()
+            for value in (ownership.project, ownership.owner_type, ownership.owner_name)
+        )
+    ):
+        raise StateFormatError("Selected manifest contains malformed ownership metadata")
+    if ownership is None:
         return False
+    if ownership.project != project_name:
+        raise StateIdentityError("Selected manifest ownership belongs to another project")
+    if ownership.mode == "external":
+        return True
     if ownership.owner_type == "model":
         return ownership.owner_name in selected_models
     if ownership.owner_type == "source":
@@ -215,7 +232,23 @@ def filter_manifest_for_selection(
     selected_models: set[str],
     selected_sources: set[str],
 ) -> None:
-    """Restrict a compiled manifest to the explicitly selected ownership closure."""
+    """Select managed work while retaining external claims for identity checks."""
+    selected_artifacts: dict[str, list[dict[str, object]]] = {}
+    for kind in _SELECTABLE_ARTIFACT_KINDS:
+        if kind not in manifest.artifacts:
+            continue
+        artifacts = manifest.artifacts[kind]
+        if not isinstance(artifacts, list) or any(
+            not isinstance(artifact, dict) for artifact in artifacts
+        ):
+            raise StateFormatError(f"Selected manifest {kind} must contain artifact objects")
+        selected_artifacts[kind] = [
+            artifact for artifact in artifacts
+            if _artifact_is_selected(
+                artifact, selected_models, selected_sources, project_name=manifest.project_name,
+            )
+        ]
+
     manifest.models = [m for m in manifest.models if m.get("name") in selected_models]
     manifest.sources = [s for s in manifest.sources if s.get("name") in selected_sources]
     manifest.tests = [
@@ -223,13 +256,7 @@ def filter_manifest_for_selection(
         for test in manifest.tests
         if test.get("model") in selected_models or test.get("model") in selected_sources
     ]
-    for kind in _SELECTABLE_ARTIFACT_KINDS:
-        if kind in manifest.artifacts:
-            manifest.artifacts[kind] = [
-                artifact
-                for artifact in manifest.artifacts[kind]
-                if _artifact_is_selected(artifact, selected_models, selected_sources)
-            ]
+    manifest.artifacts.update(selected_artifacts)
 
 
 def destructive_operations_allowed(
@@ -819,14 +846,22 @@ def apply(
             )
 
         # Create deployers
-        sr = make_sr_deployer(project, fmt)
-        kafka = make_kafka_deployer(project, fmt)
-        flink = make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
-        connect = make_connect_deployer(project, fmt)
-        gateway = make_gateway_deployer(project, fmt)
+        required_services = required_deployer_services(manifest)
+        sr = make_sr_deployer(project, fmt) if "Schema Registry" in required_services else None
+        kafka = make_kafka_deployer(project, fmt) if "Kafka" in required_services else None
+        flink = (
+            make_flink_deployer(project, fmt, state_dir=project_path / ".streamt")
+            if "Flink" in required_services else None
+        )
+        connect = make_connect_deployer(project, fmt) if "Kafka Connect" in required_services else None
+        gateway = (
+            make_gateway_deployer(project, fmt) if "Conduktor Gateway" in required_services else None
+        )
 
         # Pre-flight: abort if required deployers are unavailable
-        if not check_required_deployers(project, kafka, sr, flink, connect, gateway, fmt):
+        if not check_required_deployers(
+            project, kafka, sr, flink, connect, gateway, fmt, required_services=required_services,
+        ):
             close_deployers(sr, kafka, flink, connect, gateway)
             fmt.flush()
             sys.exit(1)

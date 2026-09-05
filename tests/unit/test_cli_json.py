@@ -495,6 +495,11 @@ class TestDestructiveSafety:
             )
 
             with (
+                # This test isolates environment authorization after the live
+                # provider preflight, which has its own connectivity tests.
+                patch("streamt.cli.commands.apply.check_required_deployers", return_value=True),
+                patch("streamt.cli.commands.apply.make_kafka_deployer", return_value=None),
+                patch("streamt.cli.commands.apply.make_flink_deployer", return_value=None),
                 patch(
                     "streamt.deployer.planner.DeploymentPlanner.plan",
                     return_value=mock_plan,
@@ -537,6 +542,9 @@ class TestDestructiveSafety:
             }
 
             with (
+                patch("streamt.cli.commands.apply.check_required_deployers", return_value=True),
+                patch("streamt.cli.commands.apply.make_kafka_deployer", return_value=None),
+                patch("streamt.cli.commands.apply.make_flink_deployer", return_value=None),
                 patch(
                     "streamt.deployer.planner.DeploymentPlanner.plan",
                     return_value=mock_plan,

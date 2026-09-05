@@ -2341,7 +2341,10 @@ class DeploymentPlanner:
             )
         elif ownership_mode == "external":
             reason = "external"
-            message = "Resource is declared external and is observe-only."
+            message = (
+                "Resource is declared external. This is a declaration-only entry; "
+                "live state and drift were not observed."
+            )
         elif ownership_mode not in ("managed", "adopted"):
             reason = "invalid_ownership"
             message = f"Unknown ownership mode {ownership_mode!r}; mutation is blocked."
@@ -2399,6 +2402,54 @@ class DeploymentPlanner:
                 message=message,
             )
         )
+
+    @staticmethod
+    def _is_external_ownership(ownership: object) -> bool:
+        """Select declaration-only handling without inventing a live observation."""
+        parsed = ArtifactOwnership.from_dict(ownership)
+        return parsed is not None and parsed.mode == "external"
+
+    def _validate_manifest_ownership(self) -> None:
+        """Never reinterpret malformed ownership as a legacy managed declaration."""
+        for kind in ("schemas", "topics", "flink_jobs", "connectors", "gateway_rules"):
+            for artifact in self.manifest.artifacts.get(kind, []):
+                if not isinstance(artifact, dict) or "ownership" not in artifact:
+                    continue
+                ownership = ArtifactOwnership.from_dict(artifact["ownership"])
+                if (
+                    ownership is None
+                    or ownership.mode not in ("external", "managed", "adopted")
+                    or any(
+                        not isinstance(value, str) or not value.strip()
+                        for value in (
+                            ownership.project,
+                            ownership.owner_type,
+                            ownership.owner_name,
+                            ownership.mode,
+                        )
+                    )
+                ):
+                    raise StateIdentityError(
+                        f"Compiled {kind} artifact contains malformed ownership"
+                    )
+
+        # External claims remain inert, but another declaration must not claim
+        # permission to mutate the same compiled provider identity.
+        for kind, identity_field in (("topics", "name"), ("schemas", "subject")):
+            claims: dict[str, bool] = {}
+            for artifact in self.manifest.artifacts.get(kind, []):
+                if not isinstance(artifact, dict):
+                    continue
+                physical_name = artifact.get(identity_field)
+                if not isinstance(physical_name, str) or not physical_name:
+                    continue
+                external = self._is_external_ownership(artifact.get("ownership"))
+                if physical_name in claims and claims[physical_name] != external:
+                    raise StateIdentityError(
+                        f"Compiled {kind} contain an identity declared both external "
+                        "and managed; resolve the conflicting declarations before planning"
+                    )
+                claims[physical_name] = external
 
     def _connect_binding_from_project(self) -> ConnectClusterBinding:
         """Resolve the exact default Connect binding without constructing a deployer."""
@@ -2888,6 +2939,10 @@ class DeploymentPlanner:
                     )
                 desired = desired_rule.desired
                 desired_ownership = ArtifactOwnership.from_dict(desired_rule.artifact.ownership)
+                if self._is_external_ownership(desired_ownership):
+                    raise StateIdentityError(
+                        "Gateway recovery cannot mutate a rule now declared external"
+                    )
                 if action.action == "adopt" and (
                     desired_ownership
                     != ArtifactOwnership(
@@ -3006,6 +3061,28 @@ class DeploymentPlanner:
         )
         plan.gateway_changes.append(change)
 
+    def _append_external_gateway_rule(
+        self,
+        plan: DeploymentPlan,
+        rule: ResolvedManagedGatewayRule,
+    ) -> None:
+        """Retain a resolved external declaration, not a fabricated managed surface."""
+        change = GatewayRuleChange(
+            name=rule.artifact.name,
+            action="none",
+            desired=rule.artifact,
+        )
+        self._apply_ownership_policy(
+            plan,
+            kind="gateway_rule",
+            logical_name=rule.logical_owner,
+            physical_name=rule.artifact.virtual_topic,
+            ownership=rule.artifact.ownership,
+            change=change,
+            create_actions=frozenset(),
+        )
+        plan.gateway_changes.append(change)
+
     def _append_planned_gateway_removal(
         self,
         plan: DeploymentPlan,
@@ -3079,6 +3156,7 @@ class DeploymentPlanner:
         )
         from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
+        self._validate_manifest_ownership()
         plan = DeploymentPlan()
         raw_connector_removals = self.manifest.artifacts.get(
             "connector_removals",
@@ -3115,7 +3193,7 @@ class DeploymentPlanner:
                 )
                 change = SchemaChange(
                     subject=artifact.subject,
-                    action="register",
+                    action="none" if self._is_external_ownership(artifact.ownership) else "register",
                     desired=artifact,
                 )
                 self._apply_ownership_policy(
@@ -3134,7 +3212,11 @@ class DeploymentPlanner:
         for topic_data in self.manifest.artifacts.get("topics", []):
             try:
                 artifact = TopicArtifact(**topic_data)
-                change = TopicChange(topic=artifact.name, action="create", desired=artifact)
+                change = TopicChange(
+                    topic=artifact.name,
+                    action="none" if self._is_external_ownership(artifact.ownership) else "create",
+                    desired=artifact,
+                )
                 self._apply_ownership_policy(
                     plan,
                     kind="topic",
@@ -3153,7 +3235,7 @@ class DeploymentPlanner:
                 artifact = FlinkJobArtifact(**job_data)
                 change = FlinkJobChange(
                     job_name=artifact.name,
-                    action="submit",
+                    action="none" if self._is_external_ownership(artifact.ownership) else "submit",
                     desired=artifact,
                 )
                 self._apply_ownership_policy(
@@ -3179,7 +3261,7 @@ class DeploymentPlanner:
         for artifact in connector_artifacts:
             change = ConnectorChange(
                 connector_name=artifact.name,
-                action="create",
+                action="none" if self._is_external_ownership(artifact.ownership) else "create",
                 desired=artifact,
                 backend_identity=connector_binding.backend_identity,
             )
@@ -3203,6 +3285,9 @@ class DeploymentPlanner:
             else:
                 gateway_rules = gateway_targets.desired_rules
             for rule in gateway_rules:
+                if self._is_external_ownership(rule.artifact.ownership):
+                    self._append_external_gateway_rule(plan, rule)
+                    continue
                 self._append_planned_gateway_rule(
                     plan,
                     rule,
@@ -3226,6 +3311,7 @@ class DeploymentPlanner:
         connector_recovery_actions: tuple[OperationAction, ...] = (),
     ) -> DeploymentPlan:
         """Create a deployment plan."""
+        self._validate_manifest_ownership()
         plan = DeploymentPlan()
 
         raw_connector_removals = self.manifest.artifacts.get(
@@ -3258,12 +3344,21 @@ class DeploymentPlanner:
         connector_removals: tuple[ResolvedConnectorRemoval, ...] = ()
         validated_connector_recovery_actions: tuple[OperationAction, ...] = ()
         preflight_deployer_binding: ConnectClusterBinding | None = None
-        if connector_targets is not None or connector_recovery_actions:
-            configured_connector_binding = (
-                connector_targets.binding
-                if connector_targets is not None
-                else self._connect_binding_from_project()
-            )
+        if connector_data or connector_targets is not None or connector_recovery_actions:
+            if connector_targets is not None:
+                configured_connector_binding = connector_targets.binding
+            elif isinstance(self.project, StreamtProject):
+                configured_connector_binding = self._connect_binding_from_project()
+            elif self.connect_deployer is not None:
+                configured_connector_binding = self.connect_deployer.require_cluster_binding()
+                if type(configured_connector_binding) is not ConnectClusterBinding:
+                    raise ConnectClusterBindingError(
+                        "Connect deployer returned an invalid exact cluster binding"
+                    )
+            else:
+                raise ConnectClusterBindingError(
+                    "Connector planning requires parsed runtime or a bound Connect deployer"
+                )
             preflight_connector_artifacts = (
                 connector_targets.desired_connectors
                 if connector_targets is not None
@@ -3284,20 +3379,29 @@ class DeploymentPlanner:
                     removals=connector_removals,
                 )
             )
-            if self.connect_deployer is None:
-                raise ConnectClusterBindingError(
-                    "Live Connector planning requires a bound Connect deployer"
+            needs_connector_observation = (
+                any(
+                    not self._is_external_ownership(artifact.ownership)
+                    for artifact in preflight_connector_artifacts
                 )
-            deployer_binding = self.connect_deployer.require_cluster_binding()
-            if type(deployer_binding) is not ConnectClusterBinding:
-                raise ConnectClusterBindingError(
-                    "Connect deployer returned an invalid exact cluster binding"
-                )
-            if deployer_binding != configured_connector_binding:
-                raise ConnectClusterBindingError(
-                    "Connect deployer binding does not match project runtime configuration"
-                )
-            preflight_deployer_binding = deployer_binding
+                or bool(connector_removals)
+                or bool(validated_connector_recovery_actions)
+            )
+            if needs_connector_observation:
+                if self.connect_deployer is None:
+                    raise ConnectClusterBindingError(
+                        "Live Connector planning requires a bound Connect deployer"
+                    )
+                deployer_binding = self.connect_deployer.require_cluster_binding()
+                if type(deployer_binding) is not ConnectClusterBinding:
+                    raise ConnectClusterBindingError(
+                        "Connect deployer returned an invalid exact cluster binding"
+                    )
+                if deployer_binding != configured_connector_binding:
+                    raise ConnectClusterBindingError(
+                        "Connect deployer binding does not match project runtime configuration"
+                    )
+                preflight_deployer_binding = deployer_binding
 
         raw_gateway_removals = self.manifest.artifacts.get(
             "gateway_rule_removals",
@@ -3333,12 +3437,6 @@ class DeploymentPlanner:
                 if gateway_targets is not None
                 else self._gateway_binding_from_project()
             )
-            if gateway_deployer is None:
-                raise GatewayBindingError("Live Gateway planning requires a bound Gateway deployer")
-            if gateway_deployer.cluster_binding != configured_gateway_binding:
-                raise GatewayBindingError(
-                    "Gateway deployer binding does not match project runtime configuration"
-                )
             gateway_rules = (
                 gateway_targets.desired_rules
                 if gateway_targets is not None
@@ -3350,9 +3448,25 @@ class DeploymentPlanner:
                 binding=configured_gateway_binding,
                 rules=gateway_rules,
             )
+            if (
+                any(
+                    not self._is_external_ownership(rule.artifact.ownership)
+                    for rule in gateway_rules
+                )
+                or gateway_removals
+                or validated_gateway_recovery_actions
+            ):
+                if gateway_deployer is None:
+                    raise GatewayBindingError(
+                        "Live Gateway planning requires a bound Gateway deployer"
+                    )
+                if gateway_deployer.cluster_binding != configured_gateway_binding:
+                    raise GatewayBindingError(
+                        "Gateway deployer binding does not match project runtime configuration"
+                    )
 
         # Plan schemas first (before topics that may depend on them)
-        if self.schema_registry_deployer:
+        if self.manifest.artifacts.get("schemas"):
             from streamt.deployer.schema_registry import SchemaArtifact as SRArtifact
 
             for schema_data in self.manifest.artifacts.get("schemas", []):
@@ -3364,7 +3478,14 @@ class DeploymentPlanner:
                         compatibility=schema_data.get("compatibility"),
                         ownership=ArtifactOwnership.from_dict(schema_data.get("ownership")),
                     )
-                    change = self.schema_registry_deployer.plan_schema(artifact)
+                    if self._is_external_ownership(artifact.ownership):
+                        change = SchemaChange(
+                            subject=artifact.subject, action="none", desired=artifact
+                        )
+                    elif self.schema_registry_deployer is not None:
+                        change = self.schema_registry_deployer.plan_schema(artifact)
+                    else:
+                        continue
                     self._apply_ownership_policy(
                         plan,
                         kind="schema",
@@ -3380,13 +3501,18 @@ class DeploymentPlanner:
                     logger.error("Malformed schema artifact, missing key %s: %s", e, schema_data)
 
         # Plan topics
-        if self.kafka_deployer:
+        if self.manifest.artifacts.get("topics"):
             from streamt.compiler.manifest import TopicArtifact
 
             for topic_data in self.manifest.artifacts.get("topics", []):
                 try:
                     artifact = TopicArtifact(**topic_data)
-                    change = self.kafka_deployer.plan_topic(artifact)
+                    if self._is_external_ownership(artifact.ownership):
+                        change = TopicChange(topic=artifact.name, action="none", desired=artifact)
+                    elif self.kafka_deployer is not None:
+                        change = self.kafka_deployer.plan_topic(artifact)
+                    else:
+                        continue
                     self._apply_ownership_policy(
                         plan,
                         kind="topic",
@@ -3402,13 +3528,20 @@ class DeploymentPlanner:
                     logger.error("Malformed topic artifact: %s in %s", e, topic_data)
 
         # Plan Flink jobs
-        if self.flink_deployer:
+        if self.manifest.artifacts.get("flink_jobs"):
             from streamt.compiler.manifest import FlinkJobArtifact
 
             for job_data in self.manifest.artifacts.get("flink_jobs", []):
                 try:
                     artifact = FlinkJobArtifact(**job_data)
-                    change = self.flink_deployer.plan_job(artifact)
+                    if self._is_external_ownership(artifact.ownership):
+                        change = FlinkJobChange(
+                            job_name=artifact.name, action="none", desired=artifact
+                        )
+                    elif self.flink_deployer is not None:
+                        change = self.flink_deployer.plan_job(artifact)
+                    else:
+                        continue
                     self._apply_ownership_policy(
                         plan,
                         kind="flink_job",
@@ -3429,39 +3562,16 @@ class DeploymentPlanner:
             or connector_targets is not None
             or validated_connector_recovery_actions
         ):
-            if self.connect_deployer is None:
-                raise ConnectClusterBindingError(
-                    "Live Connector planning requires a bound Connect deployer"
-                )
             connector_binding = (
                 preflight_deployer_binding
                 if preflight_deployer_binding is not None
-                else self.connect_deployer.require_cluster_binding()
+                else configured_connector_binding
             )
             if type(connector_binding) is not ConnectClusterBinding:
                 raise ConnectClusterBindingError(
                     "Connect deployer returned an invalid exact cluster binding"
                 )
-            if configured_connector_binding is not None:
-                configured_binding = configured_connector_binding
-                if connector_binding != configured_binding:
-                    raise ConnectClusterBindingError(
-                        "Connect deployer binding does not match Connector preflight"
-                    )
-            elif isinstance(self.project, StreamtProject):
-                configured_binding = self._connect_binding_from_project()
-                if connector_binding != configured_binding:
-                    raise ConnectClusterBindingError(
-                        "Connect deployer binding does not match project runtime configuration"
-                    )
-            connector_artifacts = (
-                list(preflight_connector_artifacts)
-                if configured_connector_binding is not None
-                else self._resolved_connector_artifacts(
-                    connector_binding,
-                    resolver=self.connect_deployer.resolve_connector_artifact,
-                )
-            )
+            connector_artifacts = list(preflight_connector_artifacts)
             observations: dict[
                 tuple[str, str],
                 ManagedConnectorObservation,
@@ -3474,6 +3584,10 @@ class DeploymentPlanner:
                 )
                 if locator in observations:
                     return observations[locator]
+                if self.connect_deployer is None:
+                    raise ConnectClusterBindingError(
+                        "Live Connector observation requires a bound Connect deployer"
+                    )
                 try:
                     current = self.connect_deployer.observe_managed_connector(
                         connector_name
@@ -3528,15 +3642,23 @@ class DeploymentPlanner:
                 or bool(validated_connector_recovery_actions)
             )
             for artifact in connector_artifacts:
-                change = (
-                    self._plan_connector_from_observation(
-                        artifact,
-                        connector_binding,
-                        observe_connector(artifact.name),
+                if self._is_external_ownership(artifact.ownership):
+                    change = ConnectorChange(
+                        connector_name=artifact.name,
+                        action="none",
+                        desired=artifact,
+                        backend_identity=connector_binding.backend_identity,
                     )
-                    if use_shared_observations
-                    else self.connect_deployer.plan_connector(artifact)
-                )
+                elif use_shared_observations:
+                    change = self._plan_connector_from_observation(
+                        artifact, connector_binding, observe_connector(artifact.name)
+                    )
+                elif self.connect_deployer is not None:
+                    change = self.connect_deployer.plan_connector(artifact)
+                else:
+                    raise ConnectClusterBindingError(
+                        "Live Connector planning requires a bound Connect deployer"
+                    )
                 if (
                     change.backend_identity != connector_binding.backend_identity
                     or change.desired != artifact
@@ -3583,8 +3705,14 @@ class DeploymentPlanner:
                 )
             plan.connector_recovery_observations = tuple(recovery_observations)
 
-        # Plan all Gateway rules from one exact, complete two-list snapshot.
-        if gateway_rules or gateway_removals or validated_gateway_recovery_actions:
+        # All rules retain their identity claims, but external rules are not diffed.
+        observed_gateway_rules = [
+            rule for rule in gateway_rules
+            if not self._is_external_ownership(rule.artifact.ownership)
+        ]
+
+        # Managed rules, removals and recovery share one complete two-list snapshot.
+        if observed_gateway_rules or gateway_removals or validated_gateway_recovery_actions:
             if gateway_deployer is None:  # pragma: no cover - preflight narrows this
                 raise GatewayBindingError("Live Gateway planning requires a bound Gateway deployer")
             snapshot = gateway_deployer.observe_managed_gateway_snapshot()
@@ -3608,6 +3736,9 @@ class DeploymentPlanner:
                 return current
 
             for rule in gateway_rules:
+                if self._is_external_ownership(rule.artifact.ownership):
+                    self._append_external_gateway_rule(plan, rule)
+                    continue
                 current = observe(
                     rule.artifact.name,
                     rule.artifact.virtual_topic,
@@ -3643,6 +3774,9 @@ class DeploymentPlanner:
                     )
                 )
             plan.gateway_recovery_observations = tuple(recovery_observations)
+        else:
+            for rule in gateway_rules:
+                self._append_external_gateway_rule(plan, rule)
 
         # Compute impact radius for planned changes
         plan.refresh_safety_blockers()

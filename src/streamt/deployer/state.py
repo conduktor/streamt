@@ -733,6 +733,22 @@ def desired_managed_records(
         if desired is None:
             continue
         backend_identity = getattr(gateway_change, "backend_identity", None)
+        if (
+            gateway_change.action == "none"
+            and gateway_change.current is None
+            and backend_identity is None
+        ):
+            # Declaration-only Gateway entries have no observed managed surface.
+            # Validate the artifact before exempting it from backend evidence;
+            # foreign, malformed and actionable entries keep the strict path.
+            external_desired = parse_compiled_gateway_rule_artifact(desired.to_dict())
+            ownership = ArtifactOwnership.from_dict(external_desired.ownership)
+            if (
+                ownership is not None
+                and ownership.project == project
+                and ownership.mode == "external"
+            ):
+                continue
         if not isinstance(backend_identity, str):
             raise StateFormatError(
                 "desired Gateway change requires a strict artifact and backend identity"

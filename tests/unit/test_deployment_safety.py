@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
 from streamt.cli.commands.apply import (
     destructive_operations_allowed,
     filter_manifest_for_selection,
 )
 from streamt.compiler.manifest import ArtifactOwnership, Manifest
 from streamt.core.environment import EnvironmentConfig, EnvironmentInfo, SafetyConfig
+from streamt.deployer.state import StateFormatError, StateIdentityError
 
 
 def _ownership(owner_type: str, owner_name: str, mode: str = "managed") -> dict[str, str]:
@@ -130,11 +135,11 @@ class TestSelectiveManifestFiltering:
         )
 
         assert [schema["subject"] for schema in manifest.artifacts["schemas"]] == [
-            "raw-value"
+            "raw-value", "external-value"
         ]
-        assert [topic["name"] for topic in manifest.artifacts["topics"]] == ["target"]
+        assert [topic["name"] for topic in manifest.artifacts["topics"]] == ["target", "external"]
 
-    def test_external_and_unowned_artifacts_are_not_selected(self):
+    def test_external_claims_are_retained_but_unowned_artifacts_are_not_selected(self):
         manifest = Manifest(
             version="1.0",
             project_name="payments",
@@ -151,7 +156,48 @@ class TestSelectiveManifestFiltering:
 
         filter_manifest_for_selection(manifest, {"target"}, set())
 
-        assert manifest.artifacts["topics"] == []
+        assert [artifact["name"] for artifact in manifest.artifacts["topics"]] == ["external"]
+
+    @pytest.mark.parametrize("ownership", [None, {}, {"mode": "external"}, "external"])
+    def test_invalid_unselected_ownership_is_not_silently_discarded(self, ownership):
+        manifest = Manifest(
+            version="1.0",
+            project_name="payments",
+            models=[{"name": "target"}, {"name": "unrelated"}],
+            artifacts={"topics": [{"name": "unrelated", "ownership": ownership}]},
+        )
+        original = deepcopy(manifest)
+        with pytest.raises(StateFormatError, match="malformed ownership"):
+            filter_manifest_for_selection(manifest, {"target"}, set())
+        assert manifest == original
+
+    @pytest.mark.parametrize("mode", ["managed", "adopted", "external"])
+    def test_foreign_unselected_ownership_is_not_silently_discarded(self, mode):
+        manifest = Manifest(
+            version="1.0",
+            project_name="payments",
+            artifacts={"topics": [{
+                "name": "unrelated",
+                "ownership": ArtifactOwnership("foreign", "model", "unrelated", mode).to_dict(),
+            }]},
+        )
+        original = deepcopy(manifest)
+        with pytest.raises(StateIdentityError, match="another project"):
+            filter_manifest_for_selection(manifest, {"target"}, set())
+        assert manifest == original
+
+    def test_retaining_external_claims_does_not_include_unselected_managed_work(self):
+        manifest = Manifest(
+            version="1.0",
+            project_name="payments",
+            artifacts={"topics": [
+                {"name": "target", "ownership": _ownership("model", "target")},
+                {"name": "unrelated", "ownership": _ownership("model", "unrelated")},
+                {"name": "external", "ownership": _ownership("model", "external", "external")},
+            ]},
+        )
+        filter_manifest_for_selection(manifest, {"target"}, set())
+        assert [artifact["name"] for artifact in manifest.artifacts["topics"]] == ["target", "external"]
 
 
 class TestDestructiveDefaults:

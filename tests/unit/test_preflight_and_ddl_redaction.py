@@ -28,7 +28,7 @@ class TestPreflightConnectivityPlan:
         project.runtime.conduktor = None
 
         manifest = MagicMock()
-        manifest.artifacts = {}
+        manifest.artifacts = {"topics": [{"name": "managed.orders"}]}
 
         with (
             patch("streamt.core.parser.ProjectParser") as mock_parser,
@@ -62,7 +62,7 @@ class TestPreflightConnectivityPlan:
         project.runtime.conduktor = None
 
         manifest = MagicMock()
-        manifest.artifacts = {}
+        manifest.artifacts = {"topics": [{"name": "managed.orders"}]}
 
         mock_kafka = MagicMock()
         empty_plan = DeploymentPlan()
@@ -102,7 +102,7 @@ class TestPreflightConnectivityApply:
         project.runtime.conduktor = None
 
         manifest = MagicMock()
-        manifest.artifacts = {}
+        manifest.artifacts = {"topics": [{"name": "managed.orders"}]}
 
         with (
             patch("streamt.core.parser.ProjectParser") as mock_parser,

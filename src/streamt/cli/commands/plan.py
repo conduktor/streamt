@@ -25,6 +25,7 @@ from streamt.cli.helpers import (
     make_kafka_deployer,
     make_sr_deployer,
     redact_sensitive_text,
+    required_deployer_services,
 )
 from streamt.compiler.connector_artifact import (
     ConnectorRemovalClusterReferenceError,
@@ -254,15 +255,25 @@ def plan(
                     )
 
                 # Create deployers only after provider-free identity validation.
-                sr_deployer = make_sr_deployer(project, fmt)
-                kafka_deployer = make_kafka_deployer(project, fmt)
+                required_services = required_deployer_services(manifest)
+                sr_deployer = (
+                    make_sr_deployer(project, fmt) if "Schema Registry" in required_services else None
+                )
+                kafka_deployer = (
+                    make_kafka_deployer(project, fmt) if "Kafka" in required_services else None
+                )
                 flink_deployer = make_flink_deployer(
                     project,
                     fmt,
                     state_dir=project_path / ".streamt",
+                ) if "Flink" in required_services else None
+                connect_deployer = (
+                    make_connect_deployer(project, fmt) if "Kafka Connect" in required_services else None
                 )
-                connect_deployer = make_connect_deployer(project, fmt)
-                gateway_deployer = make_gateway_deployer(project, fmt)
+                gateway_deployer = (
+                    make_gateway_deployer(project, fmt)
+                    if "Conduktor Gateway" in required_services else None
+                )
 
                 if not check_required_deployers(
                     project,
@@ -272,6 +283,7 @@ def plan(
                     connect_deployer,
                     gateway_deployer,
                     fmt,
+                    required_services=required_services,
                 ):
                     close_deployers(
                         sr_deployer,
