@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import base64
 import re
+import time
 from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import TypeGuard, TypeVar
 
 from confluent_kafka import (
+    ConsumerGroupState,
     ConsumerGroupTopicPartitions,
+    ConsumerGroupType,
     KafkaError,
+    KafkaException,
     TopicCollection,
     TopicPartition,
     Uuid,
@@ -144,9 +148,9 @@ class KafkaStreamsProgress:
             raise KafkaStreamsProgressError("Kafka progress client initialization failed") from None
         self.timeout = timeout
 
-    def _result(self, future: Future[_ResultT]) -> _ResultT:
+    def _result(self, future: Future[_ResultT], *, timeout: float | None = None) -> _ResultT:
         try:
-            return future.result(timeout=self.timeout)
+            return future.result(timeout=self.timeout if timeout is None else timeout)
         except Exception:
             # Provider exceptions can echo client configuration. Preserve only
             # the boundary that failed, not arbitrary broker/client messages.
@@ -167,8 +171,19 @@ class KafkaStreamsProgress:
             raise KafkaStreamsProgressError("Kafka response identities are incomplete or unexpected")
         return {name: self._result(futures[name]) for name in sorted(names)}
 
-    def _group_ids(self) -> set[str]:
-        listing = self._result(self.admin.list_consumer_groups(request_timeout=self.timeout))
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KafkaStreamsProgressError("Kafka application group readiness timed out")
+        return remaining
+
+    def _group_ids(self, *, deadline: float | None = None) -> set[str]:
+        timeout = self.timeout if deadline is None else self._remaining(deadline)
+        future = self.admin.list_consumer_groups(request_timeout=timeout)
+        listing = self._result(future, timeout=self.timeout if deadline is None else self._remaining(deadline))
+        if deadline is not None:
+            self._remaining(deadline)
         valid, errors = getattr(listing, "valid", None), getattr(listing, "errors", None)
         if not isinstance(valid, list) or not isinstance(errors, list) or errors:
             raise KafkaStreamsProgressError("Kafka application group inventory is incomplete")
@@ -196,14 +211,91 @@ class KafkaStreamsProgress:
             raise KafkaStreamsProgressError("Kafka topic identity observation failed") from None
 
     def require_fresh_group(self, application_id: str) -> None:
+        """Attest absence on a ready coordinator without joining or writing offsets.
+
+        A broker can accept metadata requests before its group coordinator is
+        ready. Retry only exact transient coordinator errors under one deadline;
+        an ambiguous timeout or any other failure never means group absence.
+        """
         try:
             _identity_text(application_id, "Invalid Kafka application group identity")
-            if application_id in self._group_ids():
+            deadline = time.monotonic() + self.timeout
+            if application_id in self._group_ids(deadline=deadline):
+                raise KafkaStreamsProgressError("Existing application group cannot be claimed implicitly")
+            self._require_absent_coordinated_group(application_id, deadline)
+            self._require_no_group_offsets(application_id, deadline)
+            if application_id in self._group_ids(deadline=deadline):
                 raise KafkaStreamsProgressError("Existing application group cannot be claimed implicitly")
         except KafkaStreamsProgressError:
             raise
         except Exception:
             raise KafkaStreamsProgressError("Kafka application group observation failed") from None
+
+    def _require_absent_coordinated_group(self, application_id: str, deadline: float) -> None:
+        transient = {
+            KafkaError.NOT_COORDINATOR,
+            KafkaError.COORDINATOR_LOAD_IN_PROGRESS,
+            KafkaError.COORDINATOR_NOT_AVAILABLE,
+        }
+        while True:
+            try:
+                futures = self.admin.describe_consumer_groups(
+                    [application_id], request_timeout=self._remaining(deadline),
+                )
+                if not isinstance(futures, dict) or set(futures) != {application_id}:
+                    raise KafkaStreamsProgressError("Kafka application group response identity is invalid")
+                group = futures[application_id].result(timeout=self._remaining(deadline))
+            except KafkaException as error:
+                # Inspect only native numeric codes, never provider messages or
+                # generic retriable flags (which also cover unsafe ambiguity).
+                if len(error.args) != 1 or not isinstance(error.args[0], KafkaError):
+                    raise KafkaStreamsProgressError("Kafka application group observation failed") from None
+                code = error.args[0].code()
+                remaining = self._remaining(deadline)
+                if code == KafkaError.GROUP_ID_NOT_FOUND:
+                    return
+                if code not in transient:
+                    raise KafkaStreamsProgressError("Kafka application group observation failed") from None
+                time.sleep(min(0.2, remaining))
+            else:
+                self._remaining(deadline)
+                # DescribeGroups before v6 represents an absent classic group
+                # as DEAD (KIP-1043). EMPTY is not absence. This narrow native
+                # shape is only one part of the surrounding absence checks.
+                if (
+                    getattr(group, "group_id", None) != application_id
+                    or getattr(group, "state", None) is not ConsumerGroupState.DEAD
+                    or getattr(group, "type", None) is not ConsumerGroupType.CLASSIC
+                    or getattr(group, "is_simple_consumer_group", None) is not True
+                    or type(getattr(group, "members", None)) is not list or group.members
+                    or type(getattr(group, "partition_assignor", None)) is not str
+                    or group.partition_assignor != ""
+                ):
+                    raise KafkaStreamsProgressError("Existing or ambiguous application group cannot be claimed implicitly")
+                return
+
+    def _require_no_group_offsets(self, application_id: str, deadline: float) -> None:
+        try:
+            futures = self.admin.list_consumer_group_offsets(
+                [ConsumerGroupTopicPartitions(application_id)], require_stable=True,
+                request_timeout=self._remaining(deadline),
+            )
+            if not isinstance(futures, dict) or set(futures) != {application_id}:
+                raise KafkaStreamsProgressError("Kafka application offset response identity is invalid")
+            offsets = futures[application_id].result(timeout=self._remaining(deadline))
+        except KafkaException as error:
+            self._remaining(deadline)
+            if (len(error.args) == 1 and isinstance(error.args[0], KafkaError)
+                    and error.args[0].code() == KafkaError.GROUP_ID_NOT_FOUND):
+                return
+            raise KafkaStreamsProgressError("Kafka application offset absence could not be established") from None
+        self._remaining(deadline)
+        if (
+            getattr(offsets, "group_id", None) != application_id
+            or type(getattr(offsets, "topic_partitions", None)) is not list
+            or offsets.topic_partitions
+        ):
+            raise KafkaStreamsProgressError("Existing or ambiguous application offsets cannot be claimed implicitly")
 
     def observe(self, application_id: str, input_topic: str, output_topic: str) -> ApplicationProgress:
         try:

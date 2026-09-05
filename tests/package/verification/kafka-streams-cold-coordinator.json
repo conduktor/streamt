@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-05",
+  "accepted": true,
+  "scope": "Real cold-broker CLI create/no-op acceptance without fixture coordinator warmup; replacement remains blocked",
+  "historical_creation_milestone": "tests/package/verification/kafka-streams-create.json",
+  "package_version": "0.1.0a1",
+  "platform": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "python": "3.12.8",
+    "process_umask": "0077",
+    "docker_endpoint": "local Unix socket",
+    "kafka_security_protocol": "PLAINTEXT",
+    "broker_count_per_run": 1,
+    "topic_partitions": 1,
+    "unique_explicit_cluster_id_per_fixture": true
+  },
+  "distributions": {
+    "wheel": {
+      "filename": "streamt-0.1.0a1-py3-none-any.whl",
+      "sha256": "ea0384df32b4ea30430906a833135bfc07a397143a27230a73b43d1c58fd0d96",
+      "bytes": 684413
+    },
+    "sdist": {
+      "filename": "streamt-0.1.0a1.tar.gz",
+      "sha256": "fb3e57ae9ef71224a75496e3ba1e5689c0ce36f59195295cad775088d7f25d8d",
+      "bytes": 2099874
+    },
+    "wheel_built_from_sdist": true,
+    "kafka_dependency_floor": "2.13.2",
+    "python_source_members": 115,
+    "package_file_members": 157,
+    "python_source_tree_sha256": "93173700b4803af693cb5745a0efd3913ae1a595ab75f0899c3d95cb9e33302e",
+    "python_source_tree_digest_format": "SHA-256 of compact sorted JSON mapping package-relative .py paths to file SHA-256 values",
+    "progress_module_sha256": "9cc469c84fc52a2cd6f77203919d75d708649fdf199741cda6449dbf9b492029",
+    "source_sdist_wheel_installed_python_byte_parity": true,
+    "source_wheel_installed_all_package_file_byte_parity": true,
+    "sdist_harness_byte_parity": true,
+    "sdist_runtime_asset_byte_parity": true,
+    "generated_jars_or_target_directories_shipped": false,
+    "historical_experiment_shipped": false,
+    "note": "These hashes identify the exact tested archives. Later documentation/evidence-only builds need not reproduce the archive hashes."
+  },
+  "runtime": {
+    "runner_version": "0.1.1",
+    "plan_version": 1,
+    "build_context_files": 14,
+    "build_context_sha256": "sha256:46831266d360d989b97ce6502c845a6fca6a5eaf1cbd57688ee6a1bd0655ee18",
+    "image": "sha256:889f6ff67d5435e735eff85508f6f39ba73e192a76b1e2eb24e8c83c8db03df9",
+    "reused_previous_installed_cli_build": true,
+    "runtime_context_unchanged_from_creation_milestone": true,
+    "image_rebuilt_for_this_milestone": false,
+    "image_byte_reproducibility_claimed": false,
+    "implicit_image_pulls": false,
+    "tagged_or_pushed": false
+  },
+  "broker_image": "apache/kafka@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+  "harness": {
+    "path": "tests/package/kafka_streams_journey.py",
+    "sha256": "c3f83cabdd9c4df91804caa180ed2f06fa9860247c718c5e0234dde81a7206fd",
+    "fixture_coordinator_warmup_removed": true,
+    "runs": [
+      {
+        "id": "ac0c4bffa195",
+        "mode": "source",
+        "confluent_kafka": "2.13.2",
+        "accepted": true,
+        "cli_commands": 36,
+        "expected_failures": 12,
+        "coherence_validation_failures": 8,
+        "invalid_runtime_failures": 4,
+        "provider_guarded_commands": 17,
+        "consumer_offsets_topic_absent_before_first_online_plan": true,
+        "first_cold_journey": "existing",
+        "source_hashes_unchanged_during_run": true,
+        "runner_exit_codes_after_term": [143, 143],
+        "cleanup_complete": true
+      },
+      {
+        "id": "c1b443338f61",
+        "mode": "installed",
+        "confluent_kafka": "2.15.0",
+        "accepted": true,
+        "fresh_virtual_environment": true,
+        "system_site_packages": false,
+        "dependencies_installed_from_declared_wheel_metadata": true,
+        "isolated_python_outside_checkout": true,
+        "cli_commands": 36,
+        "expected_failures": 12,
+        "coherence_validation_failures": 8,
+        "invalid_runtime_failures": 4,
+        "provider_guarded_commands": 17,
+        "consumer_offsets_topic_absent_before_first_online_plan": true,
+        "first_cold_journey": "existing",
+        "source_hashes_unchanged_during_run": true,
+        "runner_exit_codes_after_term": [143, 143],
+        "cleanup_complete": true
+      }
+    ]
+  },
+  "cold_coordinator_contract": {
+    "single_monotonic_deadline": true,
+    "sequence": [
+      "Require complete consumer-group inventory and reject the exact application ID if present.",
+      "Describe only the requested application ID; retry only native NOT_COORDINATOR, COORDINATOR_LOAD_IN_PROGRESS and COORDINATOR_NOT_AVAILABLE errors within the remaining deadline.",
+      "Accept native GROUP_ID_NOT_FOUND or the exact legacy DEAD/CLASSIC, simple=true, empty-members, empty-assignor description of the same ID.",
+      "Read stable offsets for the entire exact group; require an exact empty topic-partition list or native GROUP_ID_NOT_FOUND.",
+      "Recheck complete consumer-group inventory under the same deadline and reject an application group that appeared concurrently."
+    ],
+    "timeouts_auth_and_unknown_errors_retried": false,
+    "offset_write_retries": false,
+    "offset_resets": false,
+    "empty_stable_unknown_or_malformed_groups_accepted": false,
+    "legacy_dead_group_with_residual_offsets_accepted": false,
+    "provider_error_text_exposed": false,
+    "internal_offsets_topic_managed_by_streamt": false,
+    "protocol_reference": "https://cwiki.apache.org/confluence/spaces/KAFKA/pages/305171038/KIP-1043+Administration+of+groups",
+    "native_diagnostic_observation": "A separately owned cold broker first returned NOT_COORDINATOR (16), then a native DEAD/CLASSIC simple group with no members, empty assignor, empty stable offsets and absent inventory. That diagnostic broker was cleaned up."
+  },
+  "journey_assertions": [
+    "The first real online plan on each fresh broker succeeds without fixture-side group describe, group join or offset initialization; __consumer_offsets was absent immediately before that plan.",
+    "The internal-topic absence assertion is test-only; product preflight uses bounded Admin reads and never explicitly creates or manages the internal offsets topic.",
+    "Existing-topic import preview, import and repeated preview preserve external ownership and enriched declarations; managed SQL processing and the dependent metadata-only custom application share validated lineage.",
+    "The fresh path uses the installed/source init --executor kafka_streams starter without changing its intended specification.",
+    "Both paths pass strict validation, lineage, dry compilation and offline planning with provider access forbidden.",
+    "Missing consumed column and incompatible known consumed type reject plan/apply before provider access or any local file mutation.",
+    "Invalid internal bootstrap rejects plan/apply without changing provider topics, UUIDs, configuration, partitions, groups, owned containers/volumes, declarations or .streamt state/control/private files.",
+    "Rejected runtime apply may regenerate generated/ local compilation artifacts; this is not classified as provider or state mutation.",
+    "Actual apply starts an owned runner0.1.1 with verified cluster/input/output identities; five inputs yield exactly one read_committed JSON output id=a, amount=120, preserving raw key00ff and reaching committed input offset5.",
+    "A second online plan is unchanged and a second actual apply preserves the same container and committed progress.",
+    "External input topic identity/configuration remain unchanged; genuine removed topic overrides reconcile with DELETE while inherited broker settings stay untouched."
+  ],
+  "cleanup_per_run": {
+    "scope": "Only exact generated identities with verified ownership labels",
+    "runner_containers_stopped_by_term_without_force_and_removed": 2,
+    "run_owned_named_state_volumes_removed_by_test_teardown": 2,
+    "broker_containers_removed": 1,
+    "broker_anonymous_volumes_verified_absent": 3,
+    "run_owned_networks_removed": 1,
+    "broad_prune_or_user_resource_cleanup": false,
+    "all_four_observed_runner_exit_codes": [143, 143, 143, 143],
+    "exit_codes_normalized_to_zero": false,
+    "replacement_clean_close_contract_proven": false
+  },
+  "focused_checks": {
+    "tests_passed": 329,
+    "progress_tests_passed": 199,
+    "test_files": [
+      "tests/unit/test_version_coherence.py",
+      "tests/unit/test_runtime_distribution.py",
+      "tests/unit/test_kafka_streams_progress.py",
+      "tests/unit/test_kafka_streams_lifecycle.py",
+      "tests/unit/test_planner_kafka_streams.py",
+      "tests/unit/test_planner_kafka_streams_topic_receipts.py"
+    ],
+    "pip_check_passed": true,
+    "focused_ruff_passed": true,
+    "diff_check_passed": true
+  },
+  "limits": [
+    "The consumer-group API coverage is CLASSIC/CONSUMER. These checks do not establish universal absence of Share, Connect or other group types sharing the Kafka group-ID namespace.",
+    "Only the first existing-topic path on each broker starts with a cold coordinator; the subsequent fresh-topology path uses that now-ready broker.",
+    "Kafka may internally initialize its coordinator metadata in response to read-only Admin requests. Streamt sends no explicit internal-topic creation or offset mutation during the readiness preflight.",
+    "ExitCode143 is the actual runner0.1.1 JVM response to TERM in all four cases. This is not a failed create/no-op journey, but it does not satisfy a replacement contract requiring ExitCode0. No replacement execution is enabled or accepted here.",
+    "Cleanup records process termination only; it does not prove the fresh closed-status and inactive-group conditions needed for a future replacement contract.",
+    "No restart, replacement, rollback, checkpoint recovery, retention-loss recovery or exactly-once recovery guarantee is established.",
+    "Custom applications remain metadata-only declarations; the test supplies its own consumer rather than product scheduling.",
+    "Real coverage uses one local plaintext broker and one partition per topic on Darwin arm64/Python3.12. It does not establish live SASL/TLS, remote Docker, multi-broker or multi-partition support.",
+    "Raw logs, host endpoints, credentials and temporary paths are not included in this curated record."
+  ]
+}

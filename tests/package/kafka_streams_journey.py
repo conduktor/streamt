@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 import yaml
-from confluent_kafka import Consumer, KafkaError, KafkaException, Producer, TopicPartition
+from confluent_kafka import Consumer, Producer, TopicPartition
 from confluent_kafka import __version__ as kafka_client_version
 from confluent_kafka.admin import AdminClient, ConfigResource, ConfigSource, NewTopic, ResourceType
 
@@ -230,30 +230,6 @@ class Journey:
         }
         self.save()
 
-    def wait_group_coordinator(self, application_id: str) -> None:
-        """A new broker's group coordinator can lag broker socket readiness."""
-        deadline = time.monotonic() + 30
-        observed_codes = []
-        while time.monotonic() < deadline:
-            try:
-                self.admin.describe_consumer_groups([application_id], request_timeout=5)[application_id].result(5)
-            except KafkaException as error:
-                code = error.args[0].code()
-                observed_codes.append(code)
-                if code == KafkaError.GROUP_ID_NOT_FOUND:
-                    break
-                if code not in {KafkaError.NOT_COORDINATOR, KafkaError.COORDINATOR_LOAD_IN_PROGRESS,
-                                KafkaError.COORDINATOR_NOT_AVAILABLE}:
-                    raise
-                time.sleep(0.25)
-            else:
-                break
-        else:
-            raise RuntimeError("Owned broker group coordinator did not become ready")
-        self.progress.require_fresh_group(application_id)
-        self.evidence.setdefault("coordinator_readiness", {})[application_id] = observed_codes
-        self.save()
-
     def verify_contract_rejection(self, directory: Path, config: dict) -> None:
         """A declared custom application's contract gates real plan/apply offline."""
         project_file = directory / "stream_project.yml"
@@ -445,7 +421,16 @@ class Journey:
         app_id = job["application_id"]
         self.applications.append(app_id)
         (directory / "expected-manifest.json").write_text(json.dumps(manifest.to_dict(), indent=2))
-        self.wait_group_coordinator(app_id)
+        if len(self.applications) == 1:
+            # No fixture-side group describe/join/offset write may warm the
+            # broker. The first online CLI plan must prepare its coordinator.
+            assert "__consumer_offsets" not in self.admin.list_topics(timeout=10).topics
+            self.evidence["cold_coordinator"] = {
+                "fixture_group_probe": False,
+                "consumer_offsets_topic_absent_before_first_online_plan": True,
+                "first_journey": kind,
+            }
+            self.save()
         planned = self.command(directory, "plan")
         assert planned["creates"] == expected_creates
         assert not planned["is_apply_blocked"]
@@ -550,8 +535,17 @@ class Journey:
                         time.sleep(0.25)
                     else:
                         raise RuntimeError("Owned runner did not stop; retaining it and its state")
+                stopped = json.loads(self.docker("container", "inspect", "--format", "{{json .}}", ids[0]))
+                assert stopped["Id"] == ids[0]
+                assert stopped["Name"] == "/" + app_id
+                assert stopped["Config"]["Labels"]["io.streamt.application-id"] == app_id
+                assert stopped["Config"]["Labels"]["io.streamt.backend"] == self.backend
+                assert stopped["State"]["Running"] is False
+                exit_code = stopped["State"]["ExitCode"]
+                assert type(exit_code) is int
                 self.docker("container", "rm", ids[0])
-                removed.append({"kind": "runner", "id": ids[0], "application_id": app_id})
+                removed.append({"kind": "runner", "id": ids[0], "application_id": app_id,
+                                "exit_code_after_stop": exit_code})
             name = app_id + "-state"
             names = self.docker("volume", "ls", "--filter", f"name=^{name}$", "--format", "{{.Name}}").split()
             if names:

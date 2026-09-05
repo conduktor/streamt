@@ -8,7 +8,15 @@ from types import SimpleNamespace as Namespace
 from unittest.mock import Mock
 
 import pytest
-from confluent_kafka import ConsumerGroupTopicPartitions, KafkaError, TopicPartition, Uuid
+from confluent_kafka import (
+    ConsumerGroupState,
+    ConsumerGroupTopicPartitions,
+    ConsumerGroupType,
+    KafkaError,
+    KafkaException,
+    TopicPartition,
+    Uuid,
+)
 
 from streamt.deployer import kafka_streams_progress as progress
 
@@ -48,6 +56,7 @@ def admin(monkeypatch: pytest.MonkeyPatch) -> Mock:
         OUTPUT: _future(_topic(OUTPUT, Uuid(3, 4))),
     }
     fake.list_consumer_groups.return_value = _future(Namespace(valid=[], errors=[]))
+    fake.list_consumer_group_offsets.return_value = {APP: _future(Namespace(group_id=APP, topic_partitions=[]))}
     fake.list_offsets.side_effect = [
         {TopicPartition(INPUT, 0): _future(Namespace(offset=2))},
         {TopicPartition(INPUT, 0): _future(Namespace(offset=8))},
@@ -219,6 +228,264 @@ def test_existing_group_cannot_be_claimed_even_without_members(
     admin.describe_consumer_groups.assert_not_called()
 
 
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    current = [100.0]
+    monkeypatch.setattr(progress.time, "monotonic", lambda: current[0])
+    monkeypatch.setattr(progress.time, "sleep", lambda seconds: current.__setitem__(0, current[0] + seconds))
+    return current
+
+
+def _group_error(code: int) -> KafkaException:
+    return KafkaException(KafkaError(code, SECRET))
+
+
+def _dead_group(**changes: object) -> Namespace:
+    fields = {"group_id": APP, "state": ConsumerGroupState.DEAD, "type": ConsumerGroupType.CLASSIC,
+              "is_simple_consumer_group": True, "members": [], "partition_assignor": ""}
+    return Namespace(**{**fields, **changes})
+
+
+def test_legacy_dead_group_is_absent_only_with_exact_empty_stable_offsets_and_inventory(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float],
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(_dead_group())}
+    client.require_fresh_group(APP)
+    assert admin.list_consumer_groups.call_count == 2
+    request = admin.list_consumer_group_offsets.call_args
+    assert request.kwargs == {"require_stable": True, "request_timeout": 3.0}
+    assert len(request.args[0]) == 1
+    assert request.args[0][0].group_id == APP
+    assert request.args[0][0].topic_partitions is None
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("fields", [
+    {"group_id": "foreign"}, {"state": ConsumerGroupState.EMPTY}, {"state": ConsumerGroupState.STABLE},
+    {"state": ConsumerGroupState.UNKNOWN}, {"state": "DEAD"}, {"state": 5},
+    {"type": ConsumerGroupType.CONSUMER}, {"type": ConsumerGroupType.UNKNOWN}, {"type": "CLASSIC"},
+    {"is_simple_consumer_group": False}, {"is_simple_consumer_group": 1},
+    {"members": [Namespace()]}, {"members": None}, {"members": ()},
+    {"partition_assignor": "range"}, {"partition_assignor": None},
+])
+def test_nonempty_or_malformed_legacy_dead_group_is_not_absence(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], fields: dict,
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(_dead_group(**fields))}
+    with pytest.raises(progress.KafkaStreamsProgressError):
+        client.require_fresh_group(APP)
+    admin.list_consumer_group_offsets.assert_not_called()
+    admin.list_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("response", [
+    None, {}, {"foreign": _future()}, {APP: _future(), "foreign": _future()},
+    {APP: _future(Namespace(group_id=APP, topic_partitions=None))},
+    {APP: _future(Namespace(group_id="foreign", topic_partitions=[]))},
+    {APP: _future(Namespace(group_id=APP, topic_partitions=()))},
+    {APP: _future(Namespace(group_id=APP, topic_partitions=[TopicPartition(INPUT, 0, 0)]))},
+    {APP: _future(Namespace(group_id=APP, topic_partitions=[TopicPartition("foreign", 0, -1)]))},
+])
+def test_dead_group_with_residual_or_ambiguous_offsets_is_never_claimed(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], response: object,
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(_dead_group())}
+    admin.list_consumer_group_offsets.return_value = response
+    with pytest.raises(progress.KafkaStreamsProgressError):
+        client.require_fresh_group(APP)
+    admin.list_consumer_group_offsets.assert_called_once()
+    admin.list_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("code", [KafkaError.GROUP_ID_NOT_FOUND, KafkaError.GROUP_AUTHORIZATION_FAILED,
+                                  KafkaError.REQUEST_TIMED_OUT, KafkaError.NOT_COORDINATOR])
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_offset_absence_accepts_only_not_found_and_never_retries_other_errors(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], code: int, synchronous: bool,
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(_dead_group())}
+    if synchronous:
+        admin.list_consumer_group_offsets.side_effect = _group_error(code)
+    else:
+        admin.list_consumer_group_offsets.return_value = {APP: _future(error=_group_error(code))}
+    if code == KafkaError.GROUP_ID_NOT_FOUND:
+        client.require_fresh_group(APP)
+        assert admin.list_consumer_groups.call_count == 2
+    else:
+        with pytest.raises(progress.KafkaStreamsProgressError) as caught:
+            client.require_fresh_group(APP)
+        assert SECRET not in str(caught.value)
+        admin.list_consumer_groups.assert_called_once()
+    admin.list_consumer_group_offsets.assert_called_once()
+    admin.describe_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+def test_fresh_group_requires_exact_coordinator_absence_and_rechecks_inventory(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float],
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(error=_group_error(KafkaError.GROUP_ID_NOT_FOUND))}
+    client.require_fresh_group(APP)
+    assert [call[0] for call in admin.mock_calls] == [
+        "list_consumer_groups", "describe_consumer_groups", "list_consumer_group_offsets", "list_consumer_groups",
+    ]
+    admin.describe_consumer_groups.assert_called_once_with([APP], request_timeout=3.0)
+    admin.alter_consumer_group_offsets.assert_not_called()
+    admin.list_consumer_group_offsets.assert_called_once()
+    assert admin.list_consumer_group_offsets.call_args.kwargs["require_stable"] is True
+
+
+@pytest.mark.parametrize("code", [KafkaError.NOT_COORDINATOR, KafkaError.COORDINATOR_LOAD_IN_PROGRESS,
+                                  KafkaError.COORDINATOR_NOT_AVAILABLE])
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_only_exact_transient_coordinator_errors_are_retried_read_only(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], code: int, synchronous: bool,
+) -> None:
+    absent = {APP: _future(error=_group_error(KafkaError.GROUP_ID_NOT_FOUND))}
+    failed = _group_error(code)
+    admin.describe_consumer_groups.side_effect = [failed if synchronous else {APP: _future(error=failed)}, absent]
+    client.require_fresh_group(APP)
+    requests = admin.describe_consumer_groups.call_args_list
+    assert len(requests) == 2
+    assert all(call.args == ([APP],) for call in requests)
+    assert requests[0].kwargs["request_timeout"] == 3.0
+    assert requests[1].kwargs["request_timeout"] == pytest.approx(2.8)
+    assert admin.list_consumer_groups.call_count == 2
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [
+    _group_error(KafkaError.GROUP_AUTHORIZATION_FAILED),
+    _group_error(KafkaError.CLUSTER_AUTHORIZATION_FAILED),
+    _group_error(KafkaError.REQUEST_TIMED_OUT),
+    _group_error(KafkaError._TIMED_OUT),
+    _group_error(KafkaError._TRANSPORT),
+    _group_error(KafkaError.UNKNOWN_MEMBER_ID),
+    TimeoutError(SECRET), ValueError(SECRET), KafkaException(SECRET),
+])
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_uncertain_or_unauthorized_group_observation_never_retries_or_leaks(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float],
+    failure: Exception, synchronous: bool,
+) -> None:
+    if synchronous:
+        admin.describe_consumer_groups.side_effect = failure
+    else:
+        admin.describe_consumer_groups.return_value = {APP: _future(error=failure)}
+    with pytest.raises(progress.KafkaStreamsProgressError) as caught:
+        client.require_fresh_group(APP)
+    assert SECRET not in str(caught.value)
+    admin.describe_consumer_groups.assert_called_once()
+    admin.list_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+    assert clock == [100.0]
+
+
+@pytest.mark.parametrize("response", [
+    None, {}, {"foreign": _future()}, {APP: _future(), "foreign": _future()},
+    {APP: _future(Namespace(group_id=APP, members=[]))},
+    {APP: _future(Namespace(group_id="foreign", members=[]))}, {APP: _future(None)},
+])
+def test_successful_or_wrongly_identified_description_is_not_fresh_group_evidence(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], response: object,
+) -> None:
+    admin.describe_consumer_groups.return_value = response
+    with pytest.raises(progress.KafkaStreamsProgressError):
+        client.require_fresh_group(APP)
+    admin.describe_consumer_groups.assert_called_once()
+    admin.list_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("listing", [
+    Namespace(valid=[Namespace(group_id=APP)], errors=[]),
+    Namespace(valid=[], errors=[ValueError(SECRET)]),
+    Namespace(valid=None, errors=[]), Namespace(valid=[], errors=None),
+    Namespace(valid=[Namespace(group_id="other"), Namespace(group_id="other")], errors=[]),
+])
+def test_group_appearing_during_probe_or_incomplete_recheck_blocks_fresh_claim(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], listing: Namespace,
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(error=_group_error(KafkaError.GROUP_ID_NOT_FOUND))}
+    admin.list_consumer_groups.side_effect = [_future(Namespace(valid=[], errors=[])), _future(listing)]
+    with pytest.raises(progress.KafkaStreamsProgressError) as caught:
+        client.require_fresh_group(APP)
+    assert SECRET not in str(caught.value)
+    assert admin.list_consumer_groups.call_count == 2
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+def test_coordinator_retries_share_one_deadline_and_stop_without_writes(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float],
+) -> None:
+    admin.describe_consumer_groups.return_value = {APP: _future(error=_group_error(KafkaError.NOT_COORDINATOR))}
+    with pytest.raises(progress.KafkaStreamsProgressError, match="readiness timed out"):
+        client.require_fresh_group(APP)
+    assert clock[0] == pytest.approx(103.0)
+    timeouts = [call.kwargs["request_timeout"] for call in admin.describe_consumer_groups.call_args_list]
+    assert 1 < len(timeouts) <= 16
+    assert all(0 < timeout <= 3 for timeout in timeouts)
+    assert timeouts == sorted(timeouts, reverse=True)
+    admin.list_consumer_groups.assert_called_once()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["inventory", "describe", "offsets", "recheck"])
+def test_each_synchronous_call_and_future_use_remaining_global_budget(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], phase: str,
+) -> None:
+    observations: list[tuple[str, float, float]] = []
+
+    def request(label: str, request_timeout: float) -> Mock:
+        clock[0] += 0.2
+        future = Mock()
+
+        def result(*, timeout: float) -> object:
+            observations.append((label, request_timeout, timeout))
+            clock[0] += 3 if label == phase else 0.2
+            if label == "describe":
+                raise _group_error(KafkaError.GROUP_ID_NOT_FOUND)
+            if label == "offsets":
+                return Namespace(group_id=APP, topic_partitions=[])
+            return Namespace(valid=[], errors=[])
+
+        future.result.side_effect = result
+        return future
+
+    inventories = iter(["inventory", "recheck"])
+    admin.list_consumer_groups.side_effect = lambda *, request_timeout: request(next(inventories), request_timeout)
+    admin.describe_consumer_groups.side_effect = lambda groups, *, request_timeout: {
+        APP: request("describe", request_timeout),
+    }
+    admin.list_consumer_group_offsets.side_effect = lambda groups, *, request_timeout, require_stable: {
+        APP: request("offsets", request_timeout),
+    }
+    with pytest.raises(progress.KafkaStreamsProgressError, match="readiness timed out"):
+        client.require_fresh_group(APP)
+    assert observations[-1][0] == phase
+    assert all(timeout == pytest.approx(request_timeout - 0.2)
+               for _, request_timeout, timeout in observations)
+    assert len(observations) == ["inventory", "describe", "offsets", "recheck"].index(phase) + 1
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_group_inventory_failures_are_secret_neutral_without_coordinator_probe(
+    client: progress.KafkaStreamsProgress, admin: Mock, clock: list[float], synchronous: bool,
+) -> None:
+    if synchronous:
+        admin.list_consumer_groups.side_effect = ValueError(SECRET)
+    else:
+        admin.list_consumer_groups.return_value = _future(error=ValueError(SECRET))
+    with pytest.raises(progress.KafkaStreamsProgressError) as caught:
+        client.require_fresh_group(APP)
+    assert SECRET not in str(caught.value)
+    admin.describe_consumer_groups.assert_not_called()
+    admin.alter_consumer_group_offsets.assert_not_called()
+
+
 @pytest.mark.parametrize("offsets", [
     [TopicPartition(INPUT, 0, 3), TopicPartition(INPUT, 0, 4)],
     [TopicPartition("foreign", 0, 3)], [TopicPartition(INPUT, 1, 3)],
@@ -291,6 +558,26 @@ def test_successful_native_kafka_error_zero_acknowledgement_is_accepted(
         group_id=APP, topic_partitions=[Namespace(topic=INPUT, partition=0, error=KafkaError(0))],
     ))}
     client.initialize(APP, INPUT, OUTPUT, _positions(), {0: 2})
+
+
+@pytest.mark.parametrize("code", [KafkaError.NOT_COORDINATOR, KafkaError.COORDINATOR_LOAD_IN_PROGRESS,
+                                  KafkaError.COORDINATOR_NOT_AVAILABLE, KafkaError.REQUEST_TIMED_OUT])
+@pytest.mark.parametrize("synchronous", [True, False])
+def test_offset_initialization_never_retries_even_coordinator_errors(
+    client: progress.KafkaStreamsProgress, admin: Mock, monkeypatch: pytest.MonkeyPatch,
+    code: int, synchronous: bool,
+) -> None:
+    observed = _initialization(client, admin, monkeypatch)
+    if synchronous:
+        admin.alter_consumer_group_offsets.side_effect = _group_error(code)
+    else:
+        admin.alter_consumer_group_offsets.return_value = {APP: _future(error=_group_error(code))}
+    with pytest.raises(progress.KafkaStreamsProgressError) as caught:
+        client.initialize(APP, INPUT, OUTPUT, _positions(), {0: 2})
+    assert SECRET not in str(caught.value)
+    admin.alter_consumer_group_offsets.assert_called_once()
+    assert observed.call_count == 1
+    admin.describe_consumer_groups.assert_not_called()
 
 
 @pytest.mark.parametrize("expected", [_positions(exists=True), _positions(committed=2),
