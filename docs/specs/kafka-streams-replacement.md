@@ -56,6 +56,13 @@ Generic plan redaction must continue protecting credentials. Typed lifecycle
 evidence must nevertheless retain its full integrity, including the non-secret
 volume UUID; a redacted placeholder cannot identify a volume instance.
 
+Reviewed format 6 implements this binding for a sole typed replacement in an
+online, full-project plan. It hashes the complete typed action separately from
+generic display redaction, including schema fields named `token` or `password`.
+Fresh offsets may advance without invalidating that action, but apply persists
+the exact reviewed tuple. Other plans retain format 5 and its existing checksum.
+The format cannot bypass the current planner's replacement blocker.
+
 The existing operation journal owns the lifecycle. Its version-4 envelope holds
 the typed action and checkpoints; unrelated operations keep their existing
 format. The candidate's labels bind the operation UUID, action index and

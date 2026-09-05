@@ -388,7 +388,7 @@ def test_apply_removal_preflight_fails_before_any_deployer_construction(
         factory.assert_not_called()
 
 
-def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
+def test_apply_validates_fresh_actions_but_persists_exact_reviewed_authority(
     tmp_path: Path,
 ) -> None:
     _write_project(tmp_path)
@@ -396,8 +396,10 @@ def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
     frozen_actions = operation_actions_from_planned([planned_action])
     plan_path = _reviewed_plan(tmp_path, deployment_plan, frozen_actions)
     verify_actions: list[tuple[OperationAction, ...]] = []
+    bound_actions: list[tuple[OperationAction, ...]] = []
     intent_actions: list[tuple[OperationAction, ...]] = []
     original_verify = ReviewedPlanFile.verify_current_plan
+    original_bind = ReviewedPlanFile.bind_current_actions
     original_intent = OperationIntent
 
     def verify(
@@ -414,6 +416,12 @@ def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
             actions=actions,
             state_observation=state_observation,  # type: ignore[arg-type]
         )
+
+    def bind(reviewed: ReviewedPlanFile, *args: object, **kwargs: object) -> tuple[OperationAction, ...]:
+        authority = original_bind(reviewed, *args, **kwargs)  # type: ignore[arg-type]
+        assert authority is reviewed.actions
+        bound_actions.append(authority)
+        return authority
 
     def make_intent(**kwargs: object) -> OperationIntent:
         actions = kwargs["actions"]
@@ -462,6 +470,7 @@ def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
             )
         )
         stack.enter_context(patch.object(ReviewedPlanFile, "verify_current_plan", new=verify))
+        stack.enter_context(patch.object(ReviewedPlanFile, "bind_current_actions", new=bind))
         stack.enter_context(
             patch("streamt.cli.commands.apply.OperationIntent", side_effect=make_intent)
         )
@@ -482,7 +491,9 @@ def test_apply_reuses_one_exact_action_tuple_for_review_and_intent(
     assert len(verify_actions) == 2
     assert all(actions is frozen_actions for actions in verify_actions)
     assert intent_actions == [frozen_actions]
-    assert intent_actions[0] is frozen_actions
+    assert len(bound_actions) == 1
+    assert intent_actions[0] is bound_actions[0]
+    assert intent_actions[0] is not frozen_actions
 
 
 def test_apply_rejects_reviewed_action_drift_before_mutation(tmp_path: Path) -> None:

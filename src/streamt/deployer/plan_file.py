@@ -10,16 +10,20 @@ import os
 import re
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 import streamt.core.manifest_identity as _manifest_identity
 from streamt import __version__
 from streamt.compiler.manifest import Manifest
 from streamt.deployer.connect import secret_neutral_connector_changes
 from streamt.deployer.gateway import secret_neutral_gateway_changes
+from streamt.deployer.kafka_streams_evidence import (
+    KAFKA_STREAMS_CONTROL_VERSION,
+    KafkaStreamsActionEvidence,
+)
 from streamt.deployer.planner import DeploymentPlan
 from streamt.deployer.state import ResourceIdentity, StateError
 from streamt.deployer.state_backend import (
@@ -32,6 +36,7 @@ from streamt.deployer.state_backend import (
 
 PLAN_FILE_KIND = "streamt.reviewed-plan"
 PLAN_FILE_VERSION = 5
+KAFKA_STREAMS_PLAN_FILE_VERSION = 6
 _MAX_PLAN_FILE_BYTES = 10 * 1024 * 1024
 _SENSITIVE_KEY = re.compile(
     r"(^|[._-])(?:password|passwd|secret|token|api[_-]?key|authorization|credentials?"
@@ -121,6 +126,119 @@ def canonical_json(value: object) -> str:
 def _checksum(value: object) -> str:
     digest = hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+def _replacement_action(actions: tuple[OperationAction, ...]) -> OperationAction:
+    """A v6 plan cannot authorize unrelated or additional state/runtime actions."""
+    if (
+        type(actions) is not tuple or len(actions) != 1
+        or type(actions[0]) is not OperationAction or actions[0].index != 0
+        or actions[0].action != "update"
+        or type(actions[0].kafka_streams_evidence) is not KafkaStreamsActionEvidence
+    ):
+        raise PlanFileError("Reviewed plan format 6 requires one evidenced Kafka Streams update")
+    return actions[0]
+
+
+def _reviewed_checksum(
+    unsigned: dict[str, object], *, format_version: int,
+    actions: tuple[OperationAction, ...],
+) -> str:
+    if format_version == PLAN_FILE_VERSION:
+        return _checksum(unsigned)
+    if format_version != KAFKA_STREAMS_PLAN_FILE_VERSION:
+        raise PlanFileError("Unsupported reviewed plan checksum version")
+    action = _replacement_action(actions)
+    # This narrow raw digest accepts ONLY the strict typed action. In addition
+    # to the non-secret volume UUID, valid data schemas can contain keys such
+    # as "token"; passing their preimages through generic credential redaction
+    # would erase integrity. Keep all generic redaction/checksum paths intact.
+    # The full action, including reviewed offsets, is bound here; its immutable
+    # runtime fingerprint deliberately excludes those moving lower bounds.
+    encoded = json.dumps(
+        action.to_dict(control_version=KAFKA_STREAMS_CONTROL_VERSION), ensure_ascii=False, allow_nan=False,
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return _checksum({
+        "domain": "streamt.reviewed-plan.v6",
+        "envelope": unsigned,
+        "typed_action_sha256": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    })
+
+
+def _validate_replacement_payload(
+    plan: dict[str, object], actions: tuple[OperationAction, ...],
+) -> None:
+    """Validate the displayed v6 mutation set against its sole typed authority."""
+    action = _replacement_action(actions)
+    evidence = action.kafka_streams_evidence
+    assert evidence is not None
+    if type(plan) is not dict:
+        raise PlanFileError("Reviewed replacement requires a complete plan payload")
+    if evidence.progress.active_members != 1:
+        raise PlanFileError("Reviewed replacement requires a running single-member group")
+    resources, summary = plan.get("resources"), plan.get("summary")
+    if type(resources) is not list or type(summary) is not dict:
+        raise PlanFileError("Reviewed replacement requires complete resource and summary evidence")
+    for field_name in ("safety_blockers", "connector_removal_assessments", "gateway_removal_assessments"):
+        if plan.get(field_name) != [] or type(summary.get(field_name)) is not int or summary[field_name] != 0:
+            raise PlanFileError("Reviewed replacement cannot contain blockers or removal assessments")
+    requirements = plan.get("ownership_requirements")
+    if type(requirements) is not list or any(
+        type(item) is not dict or item.get("reason") != "external"
+        or item.get("observed_action") != "none" or item.get("ownership_mode") != "external"
+        for item in requirements
+    ):
+        raise PlanFileError("Reviewed replacement cannot require another ownership transition")
+    if (
+        type(summary.get("ownership_requirements")) is not int
+        or summary["ownership_requirements"] != len(requirements)
+        or summary.get("has_changes") is not True or summary.get("is_apply_blocked") is not False
+        or any(type(summary.get(key)) is not int or summary[key] != expected
+               for key, expected in (("creates", 0), ("updates", 1), ("deletes", 0)))
+    ):
+        raise PlanFileError("Reviewed replacement summary does not match its sole update")
+    mutations: list[dict[str, object]] = []
+    for resource in resources:
+        if (
+            type(resource) is not dict or set(resource) != {"kind", "name", "action", "changes"}
+            or resource.get("kind") not in ("schema", "topic", "flink_job", "kafka_streams_job", "connector", "gateway_rule")
+            or type(resource.get("name")) is not str or not resource["name"]
+            or resource.get("action") not in ("none", "update")
+            or type(resource.get("changes")) is not dict
+        ):
+            raise PlanFileError("Reviewed replacement contains another or malformed resource action")
+        if resource["action"] != "none":
+            mutations.append(resource)
+    if len(mutations) != 1 or (mutations[0]["kind"], mutations[0]["name"]) != (
+        "kafka_streams_job", evidence.desired_artifact.artifact.name,
+    ):
+        raise PlanFileError("Reviewed replacement resource does not match its typed action")
+    changes = cast(dict[str, object], mutations[0]["changes"])
+    current = {
+        "exists": True, "container_id": evidence.prior_container_id, "status": "running",
+        "artifact_hash": evidence.prior_artifact.checksum,
+        "plan_hash": evidence.prior_artifact.plan_hash, "image_id": evidence.image_id,
+        "input_topic_id": evidence.progress.input_topic_id,
+        "output_topic_id": evidence.progress.output_topic_id, "network_id": evidence.network_id,
+    }
+    artifact = evidence.desired_artifact.artifact
+    expected = {
+        "application_id": evidence.application_id, "image_id": evidence.image_id,
+        "topic_bindings": {
+            str(artifact.plan["input_topic"]): evidence.progress.input_topic_id,
+            str(artifact.plan["output_topic"]): evidence.progress.output_topic_id,
+        },
+        "initial_offset": artifact.initial_offset, "network_id": evidence.network_id,
+        "desired_artifact_hash": evidence.desired_artifact.checksum,
+        "backend_identity": evidence.backend_identity, "blocker": None, "current": current,
+    }
+    if (
+        type(changes.get("current")) is not dict
+        or cast(dict[str, object], changes["current"]).get("exists") is not True
+        or any(key not in changes or changes[key] != value for key, value in expected.items())
+    ):
+        raise PlanFileError("Reviewed replacement displayed runtime differs from its typed evidence")
 
 
 def manifest_checksum(manifest: Manifest) -> str:
@@ -423,8 +541,13 @@ class ReviewedPlanFile:
     selection: Optional[dict[str, str]] = None
     streamt_version: str = __version__
     checksum: str = ""
+    format_version: int = field(default=PLAN_FILE_VERSION, kw_only=True)
 
     def __post_init__(self) -> None:
+        if type(self.format_version) is not int or self.format_version not in (
+            PLAN_FILE_VERSION, KAFKA_STREAMS_PLAN_FILE_VERSION,
+        ):
+            raise PlanFileError("Unsupported reviewed plan format version")
         if type(self.actions) is not tuple or any(
             type(action) is not OperationAction for action in self.actions
         ):
@@ -473,6 +596,12 @@ class ReviewedPlanFile:
                 raise PlanFileError(
                     "Plan state address does not match the plan project and environment"
                 )
+        if self.format_version == KAFKA_STREAMS_PLAN_FILE_VERSION:
+            if self.offline is not False or self.selection is not None:
+                raise PlanFileError("Reviewed replacement requires an online full unselected plan")
+            _validate_replacement_payload(self.plan, self.actions)
+        elif any(action.kafka_streams_evidence is not None for action in self.actions):
+            raise PlanFileError("Kafka Streams replacement requires reviewed plan format 6")
 
     @property
     def state_serial(self) -> Optional[int]:
@@ -504,13 +633,23 @@ class ReviewedPlanFile:
             actions=actions,
             offline=offline,
             selection=selection,
+            format_version=(
+                KAFKA_STREAMS_PLAN_FILE_VERSION
+                if type(actions) is tuple and any(
+                    type(action) is OperationAction and action.kafka_streams_evidence is not None
+                    for action in actions
+                ) else PLAN_FILE_VERSION
+            ),
         )
-        return replace(plan_file, checksum=_checksum(plan_file._unsigned_dict()))
+        return replace(plan_file, checksum=_reviewed_checksum(
+            plan_file._unsigned_dict(), format_version=plan_file.format_version,
+            actions=plan_file.actions,
+        ))
 
     def _unsigned_dict(self) -> dict[str, object]:
         return {
             "kind": PLAN_FILE_KIND,
-            "format_version": PLAN_FILE_VERSION,
+            "format_version": self.format_version,
             "streamt_version": self.streamt_version,
             "project": self.project,
             "environment": self.environment,
@@ -521,7 +660,10 @@ class ReviewedPlanFile:
             "offline": self.offline,
             "plan": self.plan,
             "actions": [
-                action.to_dict(control_version=CURRENT_CONTROL_VERSION) for action in self.actions
+                action.to_dict(control_version=(
+                    KAFKA_STREAMS_CONTROL_VERSION if self.format_version == KAFKA_STREAMS_PLAN_FILE_VERSION
+                    else CURRENT_CONTROL_VERSION
+                )) for action in self.actions
             ],
         }
 
@@ -594,9 +736,11 @@ class ReviewedPlanFile:
                 "action binding and cannot authorize apply; regenerate it with the current "
                 "'streamt plan --out <path>' command"
             )
-        if format_version != PLAN_FILE_VERSION:
+        is_replacement = type(format_version) is int and format_version == KAFKA_STREAMS_PLAN_FILE_VERSION
+        if format_version != PLAN_FILE_VERSION and not is_replacement:
             raise PlanFileError(
-                f"Unsupported plan format version {format_version!r}; expected {PLAN_FILE_VERSION}"
+                f"Unsupported plan format version {format_version!r}; expected {PLAN_FILE_VERSION} "
+                f"or {KAFKA_STREAMS_PLAN_FILE_VERSION}"
             )
 
         expected_fields = {
@@ -628,7 +772,23 @@ class ReviewedPlanFile:
             raise PlanFileError("Plan file checksum must be a string")
 
         unsigned = {key: value for key, value in data.items() if key != "checksum"}
-        actual_checksum = _checksum(unsigned)
+        replacement_actions: tuple[OperationAction, ...] | None = None
+        if is_replacement:
+            # Raw digest exceptions are available only after closed-schema
+            # parsing. Arbitrary JSON never bypasses generic secret redaction.
+            try:
+                replacement_actions = tuple(
+                    OperationAction.from_dict(action, control_version=KAFKA_STREAMS_CONTROL_VERSION)
+                    for action in data["actions"]
+                )
+            except StateError as error:
+                raise PlanFileError(f"Plan file action is invalid: {error}") from error
+            actual_checksum = _reviewed_checksum(
+                unsigned, format_version=KAFKA_STREAMS_PLAN_FILE_VERSION,
+                actions=replacement_actions,
+            )
+        else:
+            actual_checksum = _checksum(unsigned)
         if not hmac.compare_digest(data["checksum"], actual_checksum):
             raise PlanFileError(
                 "Plan file checksum mismatch; the file was modified or is incomplete"
@@ -649,7 +809,7 @@ class ReviewedPlanFile:
             raise PlanFileError("Plan file 'selection' field must be an object or null")
         state = None if data["state"] is None else StateReference.from_dict(data["state"])
         try:
-            actions = tuple(
+            actions = replacement_actions if replacement_actions is not None else tuple(
                 OperationAction.from_dict(
                     action,
                     control_version=CURRENT_CONTROL_VERSION,
@@ -671,6 +831,7 @@ class ReviewedPlanFile:
             selection=data["selection"],
             streamt_version=data["streamt_version"],
             checksum=data["checksum"],
+            format_version=KAFKA_STREAMS_PLAN_FILE_VERSION if is_replacement else PLAN_FILE_VERSION,
         )
 
     def verify_context(
@@ -758,11 +919,39 @@ class ReviewedPlanFile:
             type(action) is not OperationAction for action in actions
         ):
             raise StalePlanError("Current planned actions are not an exact immutable action tuple")
-        if self.actions != actions:
+        if self.format_version == KAFKA_STREAMS_PLAN_FILE_VERSION:
+            try:
+                reviewed_evidence = _replacement_action(self.actions).kafka_streams_evidence
+                current_action = _replacement_action(actions)
+                current_evidence = current_action.kafka_streams_evidence
+                assert reviewed_evidence is not None
+                assert current_evidence is not None
+                current_evidence.progress.require_at_least(reviewed_evidence.progress)
+                if current_evidence.progress.active_members != 1:
+                    raise PlanFileError("Current replacement group is not a single-member group")
+                # Exact equality outside moving progress retains every old/new
+                # preimage and identity. require_at_least separately protects
+                # cluster/topic/partition identities inside progress.
+                comparable = replace(current_action, kafka_streams_evidence=replace(
+                    current_evidence, progress=reviewed_evidence.progress,
+                ))
+                if (comparable,) != self.actions:
+                    raise PlanFileError("Replacement immutable action evidence changed")
+            except (StateError, PlanFileError) as error:
+                raise StalePlanError(
+                    "Reviewed replacement is stale; exact action identity or progress changed"
+                ) from error
+        elif self.actions != actions:
             raise StalePlanError(
                 "Reviewed plan is stale; ordered action identity or evidence changed after planning"
             )
         current_payload = deployment_plan_payload(current_plan)
+        if self.format_version == KAFKA_STREAMS_PLAN_FILE_VERSION:
+            try:
+                _validate_replacement_payload(self.plan, self.actions)
+                _validate_replacement_payload(current_payload, actions)
+            except PlanFileError as error:
+                raise StalePlanError("Reviewed replacement no longer has its sole safe update") from error
         reviewed_live_state = {
             "resources": self.plan.get("resources"),
             "impact": _impact_drift_payload(self.plan.get("impact")),
@@ -789,3 +978,20 @@ class ReviewedPlanFile:
                 "risk classification, ownership requirements, safety blockers, or "
                 "Connector or Gateway removal assessments changed after planning"
             )
+
+    def bind_current_actions(
+        self,
+        current_plan: DeploymentPlan,
+        *,
+        actions: tuple[OperationAction, ...],
+        state_observation: Optional[StateObservation],
+    ) -> tuple[OperationAction, ...]:
+        """Verify freshness and return reviewed, never rebased, journal authority.
+
+        The caller must use this tuple in its durable OperationIntent. A newer
+        progress observation validates the approved lower bounds; it must not
+        overwrite them or detach the journal from its reviewed-plan checksum.
+        This method does not observe providers or activate a runtime action.
+        """
+        self.verify_current_plan(current_plan, actions=actions, state_observation=state_observation)
+        return self.actions

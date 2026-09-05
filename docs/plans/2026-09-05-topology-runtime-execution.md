@@ -171,4 +171,13 @@ Follow-up implementation checkpoint:
 - The compatibility fix's isolated staged tree passed 6,166 unit/scenario tests
   on Python 3.10 with 31 skips. With the newer foundation and cold-coordinator
   changes, both Python 3.10 and 3.12 passed 6,525 tests with 32 skips. Ruff, mypy
-  and strict documentation also passed. Remote CI for this follow-up is pending.
+  and strict documentation also passed. Remote CI for `8a3114d` passed all
+  26 jobs, including both installed Kafka Streams SDK lanes, Python 3.10–3.14,
+  real DataHub and real Strimzi acceptance (run `33976686727`).
+- Reviewed format 6 now binds the full typed replacement action, without changing
+  generic credential redaction or legacy format-5 checksums. Apply uses the
+  reviewed tuple returned by freshness validation when writing its intent.
+  Moving progress never replaces the reviewed lower bound. The planner still
+  blocks replacement; no executable update can be introduced by editing a plan
+  envelope. The focused plan/action and existing removal CLI checks passed
+  205 tests before this checkpoint.

@@ -1006,7 +1006,7 @@ def apply(
             intent_snapshot = state_operation.observe()
             state_operation.ensure_ready(intent_snapshot)
             if reviewed_plan is not None:
-                reviewed_plan.verify_current_plan(
+                operation_actions = reviewed_plan.bind_current_actions(
                     deployment_plan,
                     actions=operation_actions,
                     state_observation=intent_snapshot.state,
