@@ -28,6 +28,7 @@ from streamt.deployer.kafka_streams_docker import (
     LocalDockerRunner,
 )
 from streamt.deployer.kafka_streams_progress import ApplicationProgress, KafkaStreamsProgress
+from streamt.deployer.kafka_streams_time import parse_utc_timestamp
 from streamt.deployer.state import artifact_checksum
 
 
@@ -43,13 +44,9 @@ def runner_plan_hash(plan: dict[str, object]) -> str:
     return "sha256:" + hashlib.sha256(runner_plan_bytes(plan)).hexdigest()
 
 
-def _status_time(value: object) -> datetime:
-    if not isinstance(value, str) or not re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z", value,
-    ):
-        raise KafkaStreamsLifecycleError("Runner status has no exact UTC timestamp")
+def _status_time(value: object) -> tuple[datetime, int]:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parse_utc_timestamp(value)
     except ValueError:
         raise KafkaStreamsLifecycleError("Runner status has no valid UTC timestamp") from None
 

@@ -203,6 +203,16 @@ def test_malformed_container_state_is_not_healthy(tmp_path, field):
         deployer.get_job_state(artifact)
 
 
+def test_status_one_nanosecond_before_start_is_not_current(tmp_path):
+    deployer, artifact = _fixture(tmp_path)
+    _running(deployer, artifact)
+    deployer.docker.inspect.return_value["State"]["StartedAt"] = "2026-09-05T10:00:01.123456789Z"
+    deployer.docker.status_document.return_value["updated_at"] = "2026-09-05T10:00:01.123456788Z"
+    with pytest.raises(lifecycle.KafkaStreamsLifecycleError, match="previous process start"):
+        deployer.get_job_state(artifact)
+    _no_mutations(deployer)
+
+
 def test_current_runtime_is_noop_and_offsets_are_rechecked_without_initialization(tmp_path):
     deployer, artifact = _fixture(tmp_path)
     _running(deployer, artifact)

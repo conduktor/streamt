@@ -12,13 +12,13 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Literal, cast
 
 from streamt.compiler.manifest import (
     KafkaStreamsJobArtifact,
     parse_compiled_kafka_streams_job_artifact,
 )
+from streamt.deployer.kafka_streams_time import parse_utc_timestamp
 from streamt.deployer.state import StateFormatError, artifact_checksum
 
 KAFKA_STREAMS_CONTROL_VERSION = 4
@@ -230,7 +230,7 @@ class KafkaStreamsVolumeEvidence:
             raise StateFormatError("Kafka Streams volume requires an exact local owned identity")
         _match(self.created_at, _UTC, "volume created_at")
         try:
-            datetime.fromisoformat(self.created_at.removesuffix("Z") + "+00:00")
+            parse_utc_timestamp(self.created_at)
         except ValueError:
             raise StateFormatError("Kafka Streams volume created_at is invalid") from None
 

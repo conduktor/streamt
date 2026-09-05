@@ -57,7 +57,7 @@ _EXPECTED_JSON_SHA256 = "7ec6fa6ea5c1af68f180607b50001a83f321d71ff31777fb80ccbf1
 _EXPECTED_METADATA = frozenset(
     {
         "Requires-Dist: click>=8.0",
-        "Requires-Dist: confluent-kafka>=2.0",
+        "Requires-Dist: confluent-kafka>=2.13.2",
         "Requires-Dist: jinja2>=3.0",
         "Requires-Dist: jsonschema<5,>=4.18",
         "Requires-Dist: pydantic>=2.0",
@@ -86,7 +86,7 @@ _EXPECTED_METADATA = frozenset(
 )
 _RUNTIME_REQUIREMENTS = (
     "click>=8.0",
-    "confluent-kafka>=2.0",
+    "confluent-kafka>=2.13.2",
     "jinja2>=3.0",
     "jsonschema<5,>=4.18",
     "pydantic>=2.0",
@@ -103,7 +103,7 @@ _DYNAMIC_IMPORT_BOUNDARY = {
 }
 _DYNAMIC_IMPORT_FILE_SHA256 = {
     "streamt/cli/__init__.py": (
-        "907ba90e56e479a138daaa36353c87a8f005b9c4851c4beb92eac09c5585d989"
+        "84134ae00525fd61c88fa7d78b4169033f937beb2b7e16e719acbcd41708d59f"
     ),
     "streamt/compiler/__init__.py": (
         "65ca0c7b7cf44612db1cc6c3dcd6d34679d961ad2ce315df32c92925fbe761f2"
