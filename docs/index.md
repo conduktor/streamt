@@ -31,10 +31,12 @@ does not transfer its ownership to streamt.
 
 The [product direction](specs/product-direction.md) prioritizes creating and
 updating applications, including an execution path for users without Flink.
-That path is planned: Kafka Streams execution and managed custom-application
-deployment are not supported today. Existing Flink updates remain blocked.
-The planned external observation policy is also not implemented: current
-commands can still perform live reads for external declarations. See the
+The [Kafka Streams starting path](getting-started/kafka-streams.md) creates a
+bounded projection/filter topology through a fixed local Docker runner.
+Kafka Streams replacement, existing Flink updates, and managed custom-application
+deployment remain blocked or unimplemented. External declarations are not
+live-diffed by ordinary planning; `status --include-external` explicitly observes
+them. Managed deployment safety checks still access their providers. See the
 [support matrix](reference/support-matrix.md) for current boundaries.
 
 ```yaml

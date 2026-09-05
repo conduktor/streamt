@@ -2,18 +2,19 @@
 
 ## Status and authority
 
-Revised on 2026-09-04 following the product owner's clarification: streamt's
+Revised on 2026-09-05 following the product owner's clarification: streamt's
 purpose is to simplify the creation, deployment, and evolution of streaming
 applications. This replaces the earlier review-first positioning. Deployment
 is part of the product's value, even when an external backend executes it.
 
 The product promise, SQL-first authoring, inclusion of custom applications, and
 external/managed distinction are agreed. A Kafka-only starting point must be
-addressed; Kafka Streams is a candidate, not an implemented backend. Strimzi
-is not a product priority. The owner authorized declaration-only external
+addressed; the owner approved a bounded Kafka Streams backend on 2026-09-05.
+Strimzi is not a product priority. The earlier authorization covered declaration-only external
 resources, custom-application metadata, and a bounded Kafka Streams proof in the
 [developer experience execution plan](../plans/2026-09-04-developer-experience-execution.md).
-That plan governs the next work; the [support matrix](../reference/support-matrix.md)
+The [topology/runtime plan](../plans/2026-09-05-topology-runtime-execution.md)
+now governs implementation; the [support matrix](../reference/support-matrix.md)
 governs claims about what works today.
 
 ## Product promise
@@ -107,15 +108,16 @@ that describes two topics in a shared cluster must not claim or change the rest.
 ## Deployment and safety
 
 Existing Flink SQL installations remain supported within their current limits.
-A user with only Kafka must have a planned execution path that does not require
-adopting Flink. Evaluate a bounded Kafka Streams executor and an existing SQL
-runtime before committing to a new maintained engine. Separate SQL compilation
-from execution backends and reject unsupported operations explicitly; no silent
-fallback to Flink or claim of SQL equivalence between engines.
+A user with only Kafka can create managed projection/filter jobs through the
+fixed Kafka Streams runner. SQL compilation is separate from execution; an
+unsupported operation fails explicitly, without falling back to Flink or
+claiming SQL equivalence between engines.
 
-Docker supplies disposable development infrastructure; it is not currently a
-streamt deployment backend. A local runner would be a new, explicitly scoped
-capability, not a claim about the existing CLI.
+Docker is the first execution backend for this bounded runner: one container
+per managed model on an explicit local daemon and network. Creation and no-op
+repeat apply are implemented. Replacement, deletion and pending-operation
+recovery remain blocked. Docker support does not extend to arbitrary images,
+remote scheduling or deployment of custom application code.
 
 Git-authored definitions and CI delivery do not imply a continuously reconciling
 GitOps controller. An export is not an executed deployment. The current Strimzi
@@ -150,8 +152,8 @@ local onboarding work on an immutable repository revision.
 
 ## Out of scope for the next cycle
 
-- An unbounded SQL engine or arbitrary custom-language build system. The bounded
-  Kafka Streams proof is authorized; a maintained runtime requires another decision.
+- An unbounded SQL engine or arbitrary custom-language build system. The approved
+  fixed Kafka Streams runner keeps its typed projection/filter contract.
 - Requiring Kubernetes, a catalog, or a commercial account to try the local path.
 - A hosted service, visual pipeline editor, or new telemetry database.
 - Mandatory monorepo migration or a cross-project package resolver.
@@ -160,8 +162,8 @@ local onboarding work on an immutable repository revision.
 - Exactly-once, zero-downtime, or state-migration claims without target evidence.
 
 The [Kafka Streams architecture decision](kafka-streams-execution-proof.md)
-records the proof and the remaining productization gate. Material expansions
-require another product decision.
+records the historical proof. The active topology/runtime plan authorizes its
+bounded productization; material expansions require another product decision.
 
 ## Measures of success
 

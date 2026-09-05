@@ -26,36 +26,30 @@ deploy managed processing, and prove coherent changes on stable identities.
 The earlier prototype gate below is satisfied as an investment decision, not
 as evidence that production lifecycle guarantees have already been implemented.
 
-The [product direction](docs/specs/product-direction.md),
-[developer workflow specification](docs/specs/developer-workflow.md), and
-[execution plan](docs/plans/2026-09-04-developer-experience-execution.md) govern
-the current cycle. The owner authorized M1, a bounded M2 proof, and independent
-scaffold repairs. Custom artifact deployment and stateful upgrades are deferred.
-The new runtime's implementation is now approved under the bounded plan above.
+The [product direction](docs/specs/product-direction.md) and
+[developer workflow specification](docs/specs/developer-workflow.md) define the
+product scope. The previous M0-M2 authorization is retained in the
+[prior execution plan](docs/plans/2026-09-04-developer-experience-execution.md),
+not as a second active queue. Custom artifact deployment and stateful upgrades
+remain deferred.
 
-1. Record confirmed decisions and autonomy limits (M0, complete).
-2. Make external and managed applications coexist in a usable project, with
-   selected import, explicit dependencies, and no implicit adoption (M1).
-3. Evaluate and prove a Kafka-without-Flink execution path, including a bounded
-   Kafka Streams candidate. Decide whether to productize it before adding a
-   supported runtime (M2).
-4. Ship a strict-valid scaffold and a minimal, seeded creation walkthrough that
-   shows actual transformed records from an installed package (M3).
-5. Complete a real change/redeploy cycle on the selected backend, with explicit
-   source-progress, state, delivery, and failure/recovery behavior (M4).
-6. Reuse the workflow in Git and CI, add declared-version comparison, and extend
-   the source-to-destination example only where useful (M5).
+1. Preserve external/managed coexistence and enforce custom-consumer contracts.
+2. Ship the explicit Kafka Streams compiler and fixed, locally built runner.
+3. Prove import or fresh init through validation, managed creation, actual output,
+   and no-op repeat using an installed package; run the same journey in CI.
+4. Add predicate-only replacement with stable application identity, explicit
+   progress evidence, durable checkpoints and interrupted-operation recovery.
+5. Complete declared Git base/head comparison and dependency impact reporting.
 
-M1 and M2 research can proceed independently after M0. Runtime activation and
-lifecycle changes depend on reviewed contracts; see the execution plan for
-acceptance gates and bounded agent assignments.
-
-Implemented in this cycle: strict-valid scaffold with runtime guidance, complete
-custom-application reference edges, import provenance/completeness, and external
-declaration-only planning with explicit status inspection. The Kafka Streams
-prototype passed real-broker filter/restart tests; see its
-[architecture decision](docs/specs/kafka-streams-execution-proof.md). It does not
-complete the installed-product journey or authorize a production update backend.
+Implemented: import provenance and declaration-only external planning, complete
+custom-application edges, declared/inferred contract compatibility, strict Kafka
+Streams compilation, maintained Java build assets, and managed create/no-op
+integration. Disposable real-Kafka acceptance passes from source and an installed
+wheel, including import, the managed starter, exact output/offset checks, and
+negative cases that preserve provider resources and ownership state. The same
+installed journey now has a two-SDK CI gate; its remote result is pending.
+Typed replacement evidence is implemented, but execution and recovery remain
+blocked. A standalone runner update is not a safe product update workflow.
 
 The immutable `0.1.0a1` [release procedure](docs/plans/2026-09-03-first-alpha-release.md)
 remains open and unchanged. External publication is not the next implementation
@@ -312,8 +306,8 @@ Target: close the loop between declared intent and runtime evidence.
 
 ## Outside the active cycle
 
-- Kafka Streams has a real-broker prototype under M2, not a supported
-  runtime. A general SQL engine requires an explicit product decision.
+- Kafka Streams processing beyond the fixed typed projection/filter contract.
+  A general SQL engine requires an explicit product decision.
 - Additional runtimes such as RisingWave and Materialize are not scheduled.
 - Additional transports such as Pulsar and Kinesis.
 - A VS Code extension, hosted SaaS, and high-level intent generation.

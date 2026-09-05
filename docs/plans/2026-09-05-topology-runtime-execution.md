@@ -52,18 +52,19 @@ a changed transformation.
 ## Ordered work
 
 - [x] Record the approval and topology-centered acceptance contract.
-- [ ] Enforce declared custom-application column/type compatibility locally.
-- [ ] Add the explicit executor, typed compiled artifact and strict SQL compiler;
+- [x] Enforce declared custom-application column/type compatibility locally.
+- [x] Add the explicit executor, typed compiled artifact and strict SQL compiler;
       reject unsupported topology edges and ambiguous resource identities.
-- [ ] Build the maintained runner, deterministic image context, validation and
+- [x] Build the maintained runner, deterministic image context, validation and
       safe lifecycle signals. Inventory dependencies and distribution limits.
-- [ ] Integrate planning, selection, status, reviewed-plan identity, ownership,
+- [x] Integrate planning, selection, status, reviewed-plan identity, ownership,
       durable operation state and whole-plan preflight. Start with create/no-op;
       block replacement until its evidence and recovery contract are complete.
 - [ ] Implement the supported same-identity replacement and recovery protocol;
       test process failure and interruption without weakening existing blockers.
-- [ ] Package the minimal two-path example and runner build assets, prove the
-      installed creation/change loop, and reuse it in CI.
+- [x] Package the minimal two-path example and runner build assets, prove the
+      installed creation/no-op loop, and add the same journey to CI.
+- [ ] Extend installed acceptance and CI to the supported change/recovery loop.
 - [ ] Complete declared Git base/head comparison and dependency impact reporting
       through the existing workflow. A declared comparison does not authorize apply.
 - [ ] Review all changes, run unit/scenario/type/docs/package and real-target
@@ -98,3 +99,42 @@ Baseline: `f3f7b89`, all 24 CI jobs passed, including real DataHub and Strimzi.
 The prior Kafka Streams proof remains evidence for its narrow contract, not for
 the productized backend. Record new commands and observed results here as each
 milestone is verified.
+
+Creation checkpoint, 2026-09-05:
+
+- The maintained runner 0.1.1 passed 115 JVM tests and real plaintext Kafka acceptance:
+  initial position, clean predicate change on the same group, poison record,
+  missing/out-of-range offsets, container-side cluster/topic identity refusal
+  without consuming pending records, and local-only validation. Its source/build
+  evidence is in `runtimes/kafka-streams/verification.json`; a standalone change
+  does not enable product replacement.
+- Source CLI acceptance `afc614ee6542` (SDK 2.13.2) and installed-wheel acceptance
+  `af2322b164ee` (SDK 2.15.0) each ran both entry paths, including the real managed
+  `init` starter, 36 command invocations and 12 expected failures under umask 0077.
+  Both proved exact keyed output, committed offsets and unchanged repeat plans
+  and applies. Each fixture used a distinct Kafka cluster ID; only its owned
+  Docker resources were removed. The curated package evidence records artifact
+  hashes, build context parity and cleanup in
+  `tests/package/verification/kafka-streams-create.json`.
+- Invalid consumer contracts fail offline before provider construction. Invalid
+  internal bootstrap configurations leave providers, declarations and `.streamt`
+  unchanged; rejected apply may still regenerate compiled files in `generated/`.
+- The complete unit/scenario suite passed 6,133 tests with 31 skips. The isolated
+  staged creation commit passed 6,044 tests with 31 skips before commit. Ruff,
+  mypy (113 files), strict documentation and workflow validation passed locally.
+  Remote CI for the new commits is pending.
+- The real journey exposed and fixed inherited broker settings being treated as
+  topic overrides, incorrect override removal, and native SDK UUID/config-source
+  representation mismatches. It did not hide these with fixture configuration.
+- Direct runtime boundary tests verify status freshness, identity revalidation,
+  no-op progress checks, private credentials and refusal of invalid local TLS
+  material before provider construction. Authenticated broker acceptance is open.
+- A freshly started broker can return NOT_COORDINATOR before its group coordinator
+  is ready. The fixture uses a bounded read-only readiness probe. Product creation
+  does not retry uncertain offset writes; it retains a pending operation.
+- Predicate-only replacement has typed immutable action evidence and ordered
+  durable checkpoints. Its version-4 envelope is used only by evidenced runner
+  updates; existing operations retain their version-3 format. Local and PostgreSQL
+  state validators reject missing checkpoints and inconsistent prior/result
+  ownership records. This foundation does not enable replacement or recovery;
+  both stay blocked until the execution and resume protocol is verified.

@@ -108,6 +108,7 @@ nav:
   - Getting Started:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
+    - Kafka without Flink: getting-started/kafka-streams.md
     - Your First Pipeline: getting-started/first-pipeline.md
   - Concepts:
     - Overview: concepts/overview.md

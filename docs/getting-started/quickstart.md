@@ -5,8 +5,12 @@ description: Walk through a local Kafka and Flink project
 
 # Quick Start
 
-This manual walkthrough uses Kafka and Flink SQL. Kafka alone cannot execute
-the transformation. It does not yet include automatic event seeding or a
+For Kafka without Flink, use the [Kafka Streams starter](kafka-streams.md).
+It creates a projection/filter topology and documents a downstream custom
+application. Its deployment support is create/no-op only; updates are blocked.
+
+This manual walkthrough uses Kafka and Flink SQL. It does not yet include
+automatic event seeding or a
 supported update walkthrough; those are acceptance requirements for the planned
 [developer workflow](../specs/developer-workflow.md).
 
@@ -251,7 +255,7 @@ streamt supports both layouts:
 | **Single-file** (`stream_project.yml` with everything) | Small projects, quick prototyping, < 5 models |
 | **Multi-file** (separate `sources/`, `models/`, `tests/` dirs) | Team projects, > 5 models, better git diffs |
 
-Both are equivalent — streamt auto-discovers YAML files in subdirectories. You can also mix: keep sources inline in `stream_project.yml` and split models into `models/`. Subdirectory nesting works too (`models/payments/orders.yml`).
+Both are equivalent. streamt auto-discovers YAML files in subdirectories. You can also mix: keep sources inline in `stream_project.yml` and split models into `models/`. Subdirectory nesting works too (`models/payments/orders.yml`).
 
 ## Bonus: Inspect Your Pipeline
 

@@ -51,10 +51,12 @@ models:
 `streamt plan` previews resource changes and blockers. `streamt apply` executes
 supported changes; protected/shared environments require a reviewed plan.
 
-This is an alpha. Existing Flink job updates remain blocked until a safe
-lifecycle is implemented. A Kafka Streams prototype has passed a real-broker
-filter/update test, but is not a supported backend. Managed custom-application
-deployment and the complete first-use/update journey remain planned.
+This is an alpha. An explicit `executor: kafka_streams` runs a bounded SQL
+projection/filter on Kafka through a locally built, fixed Docker runner.
+Creation and unchanged repeat applies are implemented; existing Kafka Streams
+and Flink job updates remain blocked until safe lifecycle recovery is verified.
+Managed custom-application deployment remains planned. Start with the
+[Kafka-without-Flink walkthrough](docs/getting-started/kafka-streams.md).
 External resources are declaration-only in plans; use `status --include-external`
 to inspect them explicitly. Managed safety checks remain enabled. See the
 [support matrix](https://conduktor.github.io/streamt/reference/support-matrix/)
@@ -77,14 +79,16 @@ and [product direction](https://conduktor.github.io/streamt/specs/product-direct
 streamt compiles your YAML definitions into deployable artifacts:
 
 1. **Sources** → Metadata only (external topics you consume)
-2. **Models with SQL** → Flink SQL jobs that read from sources/models and write to output topics
+2. **Models with SQL** → Processing jobs that read from sources/models and write to output topics
 3. **Sinks** → Kafka Connect connector configurations
 
 For the Flink path, streamt generates `CREATE TABLE` statements, the
 transformation query, and `INSERT INTO` for the output topic. A configured
-Gateway can handle a limited virtual-topic path described below. Kafka Streams
-is not currently an execution backend; Kafka alone cannot run the generated
-Flink SQL.
+Gateway can handle a limited virtual-topic path described below. Explicit Kafka
+Streams models compile to a versioned plan consumed by the fixed runner; they
+do not require Flink. They support only one typed raw-JSON input, direct column
+projection, AND-only filters, and one output. Joins, aggregation, windows, and
+arbitrary application images are outside this backend.
 
 ## Materializations
 
@@ -97,6 +101,7 @@ Materializations are **automatically inferred** from your SQL:
 | Stateful (`GROUP BY`, `JOIN`, windows) | `flink` | Flink job + Kafka topic |
 | `from:` only (no SQL) | `sink` | Kafka Connect connector |
 | Explicit `materialized: virtual_topic` | `virtual_topic` | Conduktor Gateway rule* |
+| Explicit `executor: kafka_streams` | `topic` | Kafka topic + fixed local Docker runner |
 
 > *`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/).
 > Confluent Cloud Flink Statements and its ML functions are not supported

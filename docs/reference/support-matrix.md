@@ -12,6 +12,7 @@ are not enabled.
 | Apache Kafka / compatible brokers | Yes | Topics, consumer groups, lag, no-clobber source import | Topics | Topic changes include canonical downstream graph and consumer evidence. Local ownership state and single-topic adoption are supported; deletion by absence and shared-CI locking are disabled. |
 | Confluent Schema Registry / compatible API | Yes | Subjects, versions, references, compatibility, single-subject adoption | Register source schemas | Registry-incompatible updates are classified schema-breaking and blocked. Compatible updates remain risky until downstream column/contract impact exists. Adoption is state-only and fail-closed; subject deletion is disabled. |
 | Apache Flink REST + SQL Gateway | Yes | Job status and metrics | Submit new jobs; plan existing updates | Existing updates and resubmissions are classified state-migration-requiring and blocked until a savepoint-safe or explicitly stateless workflow exists. Adoption is not supported: current status cannot prove SQL or managed execution settings. |
+| Kafka Streams fixed Docker runner | Closed typed projection/filter SQL subset | Exact owned container, image, topic identity, status and progress checks | Create managed jobs; no-op repeat apply | Explicit `executor: kafka_streams`, immutable locally built image, local Unix-socket Docker daemon and bridge network only. One raw-JSON input/output; no joins, aggregation, windows or arbitrary JAR/image scheduling. Existing job replacement, deletion and pending-operation recovery remain blocked. No implicit image pull, offset reset or external resource adoption. |
 | Kafka Connect REST | Yes | Strict connector managed content and single-connector adoption | Sink connectors and explicit reviewed removal of one exact managed Connector | Adoption is state-only: an omitted or explicitly matching default cluster is accepted; a non-default cluster fails closed. Removal instead requires an exact `lifecycle.connector_removals` tombstone naming the default alias, PostgreSQL-v2 managed ownership, and a fresh online plan-format-5 reviewed apply. Direct, dry-run, offline, targeted, selected, local-state, adopted, legacy, ambiguous, or checksum-mismatched removal fails closed. Model/manifest absence is inert. Mutation uses one exact non-retrying DELETE plus bounded absence proof; uncertainty enters reviewed control-v3 recovery without retrying DELETE. The PostgreSQL lock excludes streamt writers only, not external Connect writers. No topic, records, offsets, schema, external-system, credential, or plugin deletion is claimed. Connector profiles remain deliberately generic. |
 | Conduktor Gateway | Yes | Strict backend/vCluster-scoped AliasTopic and Interceptor aggregate; single-rule alias-only adoption | Virtual-topic interceptor rules and explicit reviewed rule removal | Alias-only adoption is state-only and requires one exact adopted artifact, a present canonical `main` AliasTopic, and zero desired or selected owned Interceptors. Two complete observations bracket confirmation; an identical claim uses one. Full interceptor adoption remains unsupported. Removal requires an exact lifecycle tombstone, matching managed ownership, reviewed-plan version 5 action evidence, and destructive authorization. Removing a model or omitting a rule never requests deletion; broad discovery and deletion by absence are unsupported. The two list reads are sequential rather than provider-atomic, so an external writer remains a TOCTOU boundary and ambiguous or third-state evidence fails closed. Console catalog publication is separate. |
 | Local deployment state | No | Status and explicit reviewed recovery | Ordinary local plan/apply/adopt | Single-host file locking, durable intent/progress, and crash-safe recovery history are supported. It provides no cross-host exclusion, shared-runner fencing, or HA durability. |
@@ -25,21 +26,21 @@ are not enabled.
 
 ## Not supported as deployment backends
 
-Docker is supported for local development infrastructure, not as a streamt
-deployment backend. Kubernetes and Strimzi direct operations, the Flink
+Docker is supported only for the fixed local Kafka Streams runner described
+above, not as a general application scheduler. Kubernetes and Strimzi direct operations, the Flink
 Kubernetes Operator, Terraform/OpenTofu, and Confluent Cloud Flink Statements
 are not accepted as working deployment targets today. The supported Strimzi
 boundary is the offline `KafkaTopic` artifact described above, not deployment.
 
 ## Integration priorities
 
-The next cycle focuses on application development and updates. The
-[developer experience execution plan](../plans/2026-09-04-developer-experience-execution.md)
-replaces the previous release/Terraform-first order:
+The current cycle focuses on coherent topology development and updates. The
+[topology/runtime plan](../plans/2026-09-05-topology-runtime-execution.md)
+sets the order:
 
 1. Improve selected import and the external/managed application model.
-2. Decide and prove execution for users with Kafka but no Flink. Kafka Streams
-   and an existing SQL runtime are design candidates, not supported backends.
+2. Prove installed creation for users with Kafka but no Flink through the bounded
+   Kafka Streams runner, with the same ownership and validation workflow.
 3. Verify a minimal source-to-output example and a supported update lifecycle.
 4. Reuse that workflow in Git/CI, then add a sink if the example needs it.
 
@@ -51,10 +52,14 @@ not live-diffed by planning. `status --include-external` opts into their observa
 managed safety reads and deployment-state access remain enabled. See the
 [ownership contract](../specs/deployment-safety-and-ownership.md#external-declaration-behavior).
 
-An isolated [Kafka Streams proof](../specs/kafka-streams-execution-proof.md) runs
-a closed projection/filter subset against real Kafka and checks a clean sequential
-update. It is outside the installed CLI and does not add an executor, deployment
-backend, or supported production lifecycle.
+The historical [Kafka Streams proof](../specs/kafka-streams-execution-proof.md)
+remains separate from the maintained runner. Standalone Java clean-restart tests
+do not establish that product replacement or interrupted-operation recovery is
+safe. Those transitions remain blocked until their own acceptance gates pass.
+The maintained runner has real local plaintext Kafka acceptance; authenticated
+TLS/SASL brokers, transactional crash recovery and multipartition lifecycle
+acceptance are not yet verified. Local credential/TLS validation is not proof of
+an authenticated deployment. See the [starting guide](../getting-started/kafka-streams.md).
 
 See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the
 repository root for sequencing and release gates.

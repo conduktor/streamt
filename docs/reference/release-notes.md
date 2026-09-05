@@ -30,11 +30,33 @@ no-ops. Status defaults to managed observations; use `--include-external` to che
 external dependencies explicitly. Missing managed runtime configuration is an
 error, and ownership, collision, removal, and recovery checks remain required.
 
-The repository also contains a Kafka Streams projection/filter experiment tested
-against real Kafka, including clean restart on the same application identity.
-It is not an installed CLI capability or supported production runtime. See the
-[architecture decision](../specs/kafka-streams-execution-proof.md) for evidence,
-limits, and the separate productization gate.
+### Bounded Kafka Streams creation
+
+`executor: kafka_streams` now compiles the supported raw-JSON projection/filter
+subset into a versioned runner plan. `streamt runtime build` builds the packaged
+Java sources on the selected local Docker daemon and returns an immutable image
+ID. `init --executor kafka_streams --runner-image ...` creates a managed input,
+a transformation, and a metadata-only custom consumer declaration. See the
+[starting guide](../getting-started/kafka-streams.md).
+
+Managed creation, status, reviewed plans, selection, ownership state, and no-op
+repeat apply share the existing workflow. Application identity remains stable
+across SQL changes. Existing jobs cannot yet be replaced or recovered through
+this backend; unsupported transitions remain blocked. A failed creation retains
+its durable pending operation and does not reset offsets or delete its topics.
+This is a local development backend, not a production lifecycle guarantee.
+
+Declared custom-consumer columns and known type families now fail local
+validation when incompatible. Kafka Streams inferred output types participate
+in those checks, and physical topic cycles cannot hide behind source aliases.
+Backstage, DataHub, and OpenLineage static exports retain the new process kind
+and its dependencies without exposing runtime configuration.
+
+Topic planning now distinguishes explicit topic overrides from inherited broker
+settings. Removing an explicit override sends Kafka's DELETE operation instead
+of setting the literal text `None`. Repeated unchanged plans converge. The
+minimum `confluent-kafka` dependency is now 2.13.2, matching the exercised
+topic-identity and consumer-offset Admin APIs.
 
 ### Offline Strimzi 1.2.0 KafkaTopic export
 

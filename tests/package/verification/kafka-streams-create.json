@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-05",
+  "accepted": true,
+  "scope": "Real CLI create/no-op acceptance; not replacement or recovery acceptance",
+  "package_version": "0.1.0a1",
+  "platform": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "python": "3.12.8",
+    "process_umask": "0077",
+    "docker_endpoint": "local Unix socket",
+    "kafka_security_protocol": "PLAINTEXT",
+    "broker_count": 1,
+    "topic_partitions": 1,
+    "unique_explicit_cluster_id_per_fixture": true
+  },
+  "distributions": {
+    "wheel": {
+      "filename": "streamt-0.1.0a1-py3-none-any.whl",
+      "sha256": "4663124b3efd2fe0b9284b913ecc7b55cadb9982fd246b6ea406d7cbed817dd4",
+      "bytes": 674944
+    },
+    "sdist": {
+      "filename": "streamt-0.1.0a1.tar.gz",
+      "sha256": "751031fa1dd334df3a8eb243f487d624fed6a5395310c4a5952918a7ed92972c",
+      "bytes": 2076942
+    },
+    "kafka_dependency_floor": "2.13.2",
+    "python_source_members": 113,
+    "python_source_tree_sha256": "4f2a4f3f6e2a29e8260d9bfdac4d3bb22bf27e41c261327b164da42865172c8d",
+    "python_source_tree_digest_format": "SHA-256 of compact sorted JSON mapping package-relative .py paths to file SHA-256 values",
+    "source_wheel_installed_python_byte_parity": true,
+    "starter_resource_byte_parity": true,
+    "runtime_resource_byte_parity": true,
+    "generated_jars_or_target_directories_shipped": false,
+    "historical_experiment_shipped": false,
+    "note": "Hashes identify the exact tested archives, not a claim that later documentation-only builds reproduce those archives byte-for-byte."
+  },
+  "runtime_build": {
+    "entrypoint": "Installed CLI: streamt -o json runtime build --timeout 600",
+    "succeeded": true,
+    "runner_version": "0.1.1",
+    "plan_version": 1,
+    "build_context_files": 14,
+    "build_context_sha256": "sha256:46831266d360d989b97ce6502c845a6fca6a5eaf1cbd57688ee6a1bd0655ee18",
+    "builder_image": "maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237",
+    "base_runtime_image": "eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037",
+    "result_image": "sha256:889f6ff67d5435e735eff85508f6f39ba73e192a76b1e2eb24e8c83c8db03df9",
+    "previous_same_context_image": "sha256:52b296a0da1b28d5f0eb0f11b3254cfbeb4114069fbb331ffd7208871920c6c5",
+    "image_byte_reproducibility_claimed": false,
+    "tagged": false,
+    "pushed": false,
+    "built_image_retained_locally": true,
+    "note": "Installed build used local Docker cache. Source-context parity is verified; identical final image/JAR bytes across independent builds are not promised."
+  },
+  "broker_image": "apache/kafka@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+  "harness": {
+    "path": "tests/package/kafka_streams_journey.py",
+    "sha256": "156b6ea1935bafaafc2667a7bf84c95693cef9d94b084010f142110a36766735",
+    "runs": [
+      {
+        "id": "afc614ee6542",
+        "mode": "source",
+        "confluent_kafka": "2.13.2",
+        "accepted": true,
+        "cli_commands": 36,
+        "expected_failures": 12,
+        "coherence_validation_failures": 8,
+        "invalid_runtime_failures": 4,
+        "provider_guarded_commands": 17,
+        "source_hashes_unchanged_during_run": true,
+        "cleanup_complete": true
+      },
+      {
+        "id": "af2322b164ee",
+        "mode": "installed",
+        "confluent_kafka": "2.15.0",
+        "accepted": true,
+        "fresh_virtual_environment": true,
+        "system_site_packages": false,
+        "dependencies_installed_from_declared_wheel_metadata": true,
+        "isolated_python_outside_checkout": true,
+        "cli_commands": 36,
+        "expected_failures": 12,
+        "coherence_validation_failures": 8,
+        "invalid_runtime_failures": 4,
+        "provider_guarded_commands": 17,
+        "source_hashes_unchanged_during_run": true,
+        "cleanup_complete": true
+      }
+    ]
+  },
+  "assertions": {
+    "existing_journey": [
+      "Import preview, import and repeated preview use the real CLI.",
+      "Imported input remains external; missing discovered schema is reported, then columns are explicitly declared locally.",
+      "Repeated preview does not overwrite enriched source declarations.",
+      "External input topic ID and configuration remain unchanged after apply.",
+      "Lineage connects declared producer application, imported source, managed SQL model and declared consumer application.",
+      "Default health status does not observe the external source.",
+      "Two managed state records exist: output topic and SQL runner."
+    ],
+    "fresh_journey": [
+      "The real init --executor kafka_streams creates the starter without provider access.",
+      "The generated project is used without editing its intended specification.",
+      "Lineage connects managed raw_orders, managed eligible_orders and metadata-only fraud_app.",
+      "Three managed state records exist: input topic, output topic and SQL runner."
+    ],
+    "both_journeys": [
+      "Strict validation, lineage, dry compilation and offline plan succeed with provider construction, sockets and subprocesses forbidden.",
+      "Missing consumed column and incompatible known consumed type each reject real online plan and apply before provider access or file mutation.",
+      "Invalid internal bootstrap URL rejects online plan and apply with no changes to Kafka topics/UUIDs/configuration/partitions/groups, owned Docker containers/volumes, declarations or .streamt state/control/private files.",
+      "Rejected apply may regenerate local generated/ compilation artifacts; that established behavior is not treated as provider or state mutation.",
+      "Docker container snapshots preserve all fields and canonicalize only the unordered Mounts array by destination.",
+      "Compiled artifacts contain topics and one Kafka Streams job, no Flink jobs or schemas.",
+      "Actual online plan and apply create the topology and report a running owned container.",
+      "Runner 0.1.1 running status passes exact verified cluster/input/output identity checks.",
+      "Five input records exercise threshold filtering, boolean filtering, a nullable amount and a tombstone.",
+      "A read_committed consumer receives exactly one JSON output: id=a, amount=120, with original raw key bytes 00ff.",
+      "The SQL application's committed input offset reaches 5.",
+      "Second online plan reports no changes; second actual apply keeps the same container and committed progress."
+    ],
+    "topic_config_reconciliation": [
+      "Real native SDK reports explicit retention.ms source as integer 1 and inherited min.insync.replicas source as integer 3 with is_default=false.",
+      "Inherited broker configuration is not proposed for removal.",
+      "A disposable topic's genuine retention.ms override is removed using Kafka DELETE and then plans as unchanged."
+    ]
+  },
+  "cleanup_per_run": {
+    "scope": "Only exact generated application/container/volume/network identities with verified ownership labels",
+    "runner_containers_stopped_without_force_and_removed": 2,
+    "run_owned_named_state_volumes_removed_by_test_teardown": 2,
+    "broker_containers_removed": 1,
+    "broker_anonymous_volumes_verified_absent": 3,
+    "run_owned_networks_removed": 1,
+    "broad_prune_or_user_resource_cleanup": false,
+    "offset_reset_or_retry_of_offset_initialization": false
+  },
+  "focused_checks": {
+    "tests_passed": 236,
+    "test_files": [
+      "tests/unit/test_version_coherence.py",
+      "tests/unit/test_runtime_distribution.py",
+      "tests/unit/test_kafka_topic_config_provenance.py",
+      "tests/unit/test_kafka_streams_progress.py",
+      "tests/unit/test_application_contract_coherence.py"
+    ],
+    "pip_check_passed": true,
+    "focused_ruff_passed": true,
+    "diff_check_passed": true
+  },
+  "limits": [
+    "No Kafka Streams replacement, restart, rollback, checkpoint recovery, retention-loss recovery or exactly-once recovery guarantee is accepted by these create/no-op journeys.",
+    "Custom application declarations describe dependencies and contracts; streamt does not schedule the custom application. The test runs its own consumer.",
+    "Acceptance uses one local Docker broker, one partition per topic and plaintext networking; it does not prove live SASL/TLS, remote Docker, multi-broker or multi-partition operation.",
+    "Fresh broker group-coordinator readiness is awaited with read-only describe calls before apply. NOT_COORDINATOR was observed; offset writes were not retried or reset.",
+    "The zero-file-write guarantee applies to coherence-validation failures. Runtime-initialization refusal preserves declarations and .streamt state/control/private files, but apply may already have regenerated generated/ artifacts.",
+    "Fixtures explicitly assign unique cluster IDs; Apache Kafka image defaults otherwise reuse a fixed ID across independent disposable brokers.",
+    "Image building is an explicit operation allowed to access dependency/base-image networks. Init, offline commands and ordinary apply do not implicitly build or pull images.",
+    "Raw logs, local endpoints and temporary host paths are retained only in local run evidence, not in this curated record."
+  ]
+}

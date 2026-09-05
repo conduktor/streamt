@@ -109,6 +109,11 @@ streamt init [OPTIONS]
 |--------|-------------|
 | `--project-dir PATH` | Directory to initialize (default: current) |
 | `--project-name NAME` | Project name (default: directory name) |
+| `--executor flink\|kafka_streams` | Starter executor; Flink remains the default |
+| `--runner-image ID` | Required immutable image ID or digest for the Kafka Streams starter |
+| `--docker-network NAME` | Local Docker bridge network for the runner |
+| `--kafka-internal SERVERS` | Broker addresses reachable from the runner container |
+| `--initial-offset earliest\|latest` | Explicit initial position for a fresh Kafka Streams application only |
 | `--force` | Overwrite existing project files |
 | `--discover` | Discover sources from existing Kafka infrastructure |
 | `--kafka SERVERS` | Kafka bootstrap servers (required with `--discover`) |
@@ -127,6 +132,13 @@ streamt init
 streamt init --project-dir ./my-pipeline --project-name payments
 ```
 
+The Kafka Streams starter creates a managed input topic, a SQL transformation,
+and a metadata-only downstream application. Its files include sample events and
+the creation/no-op walkthrough. Initialization does not build an image, connect
+to Kafka or Docker, deploy jobs, or schedule the declared custom application.
+Kafka Streams options cannot be combined with `--discover`; use the documented
+[external import path](../getting-started/kafka-streams.md) for an existing topic.
+
 **Discover mode** (from existing Kafka):
 
 ```bash
@@ -142,6 +154,32 @@ streamt init --discover --kafka localhost:9092 --include "orders.*"
 # Preview without writing
 streamt init --discover --kafka localhost:9092 --dry-run
 ```
+
+---
+
+### runtime build
+
+Build the packaged Kafka Streams runner on the selected local Docker daemon.
+No project is required. The output image has an immutable SHA-256 identity and
+no tag is created or published.
+
+```bash
+streamt -o json runtime build --dry-run
+streamt -o json runtime build --timeout 900
+```
+
+`--dry-run` reads packaged build inputs and reports their hash without processes,
+network access, Docker calls or file writes. An actual build requires Docker
+Engine and Buildx, downloads pinned base images and Maven dependencies, and
+returns `data.image` plus a `runtime.kafka_streams.image` configuration fragment.
+`--timeout` bounds the build itself (30–1800 seconds, default 600); local daemon
+checks have separate short bounds. Build logs and credentials are not returned
+in the public result. This command never pushes or tags an image.
+
+The runner supports managed creation and unchanged repeat apply. A changed or
+failed existing runner, lost offsets, replaced topics, or a pending operation
+cannot be bypassed by building another image or using `--force`. Replacement and
+recovery are not yet enabled. See the [starting guide](../getting-started/kafka-streams.md).
 
 ---
 
