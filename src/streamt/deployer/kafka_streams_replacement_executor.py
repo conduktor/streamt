@@ -58,7 +58,7 @@ def _validate_snapshot(snapshot: OperationSnapshot, operation_id: str) -> Operat
         raise StateBackendRecoveryRequiredError("Replacement requires separately authorized in_progress state")
     intent = control.intent
     if (
-        control.control_version != 4 or intent is None or intent.kind != "apply"
+        control.control_version not in (4, 5) or intent is None or intent.kind != "apply"
         or type(operation_id) is not str or intent.operation_id != operation_id
         or len(intent.actions) != 1
     ):
@@ -75,6 +75,8 @@ def _validate_snapshot(snapshot: OperationSnapshot, operation_id: str) -> Operat
     ):
         raise StateBackendConflictError("Replacement snapshot no longer matches the original protected state")
     intent.validate_kafka_streams_prior_state(snapshot.state.state)
+    if any(record.store != snapshot.state.store for record in control.resume_history):
+        raise StateBackendConflictError("Replacement resume history belongs to another state store")
     return action
 
 
@@ -127,6 +129,8 @@ class KafkaStreamsReplacementExecutor:
         _validate_snapshot(acknowledged, operation_id)
         if (
             acknowledged.state != before.state
+            or acknowledged.control.control.control_version != before.control.control.control_version
+            or acknowledged.control.control.resume_history != before.control.control.resume_history
             or acknowledged.control.control.intent != before.control.control.intent
             or acknowledged.control.control.progress != (*before.control.control.progress, progress)
         ):

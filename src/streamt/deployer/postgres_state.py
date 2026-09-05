@@ -30,15 +30,16 @@ from streamt.core.deployment_state import (
     DeploymentStateConfig,
     PostgresDeploymentStateConfig,
 )
+from streamt.deployer.kafka_streams_evidence import KAFKA_STREAMS_CONTROL_VERSION
 from streamt.deployer.recovery import (
     RecoveryResolutionRecord,
     RecoverySnapshotEvidence,
 )
 from streamt.deployer.state import LocalState, StateError, StateFormatError
 from streamt.deployer.state_backend import (
+    RESUMABLE_CONTROL_VERSION,
     OperationControlState,
     OperationIntent,
-    OperationProgress,
     StateAddress,
     StateBackendInvalidStateError,
     StateBackendLockTimeoutError,
@@ -796,6 +797,7 @@ _V1_OPERATION_EVENT_KINDS = {
     # Operation-control version 4 is independent of the SQL schema version.
     # The strict control parser rejects checkpoints in older control payloads.
     "progress_checkpoint",
+    "operation_resumed",
     "recovery_required",
     "cleared_before_mutation",
     "succeeded",
@@ -818,6 +820,144 @@ _V2_RECOVERY_RESOLUTION_EVENTS = {
     "rolled_back": "recovered_rolled_back",
     "abandoned_before_mutation": "recovered_abandoned_before_mutation",
 }
+
+
+def _operation_history_states(
+    control: OperationControlState,
+) -> list[tuple[str, OperationControlState]]:
+    """Reconstruct every durable boundary without rebasing resumed intent.
+
+    Resume records preserve the exact incident at a progress-prefix boundary.
+    History indexes therefore count events, not execution-progress entries.
+    SQL catalog versions are independent of operation-control wire versions.
+    """
+    intent = control.intent
+    if intent is None:
+        return []
+    resumes = control.resume_history
+    initial_version = (
+        KAFKA_STREAMS_CONTROL_VERSION if resumes else control.control_version
+    )
+    states = [
+        (
+            "intent",
+            OperationControlState(
+                address=control.address,
+                status="in_progress",
+                intent=intent,
+                control_version=initial_version,
+            ),
+        )
+    ]
+    resume_index = 0
+    for progress_count in range(len(control.progress) + 1):
+        if progress_count:
+            states.append(
+                (
+                    f"progress_{control.progress[progress_count - 1].status}",
+                    OperationControlState(
+                        address=control.address,
+                        status="in_progress",
+                        intent=intent,
+                        progress=control.progress[:progress_count],
+                        control_version=(
+                            RESUMABLE_CONTROL_VERSION if resume_index else initial_version
+                        ),
+                        resume_history=resumes[:resume_index],
+                    ),
+                )
+            )
+        while (
+            resume_index < len(resumes)
+            and resumes[resume_index].progress_count == progress_count
+        ):
+            record = resumes[resume_index]
+            states.append(
+                (
+                    "recovery_required",
+                    OperationControlState(
+                        address=control.address,
+                        status="recovery_required",
+                        intent=intent,
+                        progress=control.progress[:progress_count],
+                        recovery=record.recovery,
+                        control_version=(
+                            RESUMABLE_CONTROL_VERSION if resume_index else initial_version
+                        ),
+                        resume_history=resumes[:resume_index],
+                    ),
+                )
+            )
+            resume_index += 1
+            states.append(
+                (
+                    "operation_resumed",
+                    OperationControlState(
+                        address=control.address,
+                        status="in_progress",
+                        intent=intent,
+                        progress=control.progress[:progress_count],
+                        control_version=RESUMABLE_CONTROL_VERSION,
+                        resume_history=resumes[:resume_index],
+                    ),
+                )
+            )
+    if control.status == "recovery_required":
+        states.append(("recovery_required", control))
+    if resume_index != len(resumes) or states[-1][1] != control:
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment operation history is invalid"
+        )
+    return states
+
+
+def _validate_operation_history_states(
+    events: list[tuple[int, str, OperationControlState]],
+    *,
+    address: StateAddress,
+    operation_id: str,
+) -> OperationControlState:
+    """Validate a complete operation timeline and retain its last active image."""
+    if not events or [event[0] for event in events] != list(range(len(events))):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment operation history is invalid"
+        )
+    terminal_kind = events[-1][1]
+    terminal = terminal_kind in {"succeeded", "cleared_before_mutation"}
+    active_events = events[:-1] if terminal else events
+    if not active_events:
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment operation history is invalid"
+        )
+    latest = active_events[-1][2]
+    if (
+        latest.address != address
+        or latest.intent is None
+        or latest.intent.operation_id != operation_id
+        or [(kind, state) for _index, kind, state in active_events]
+        != _operation_history_states(latest)
+    ):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment operation history is invalid"
+        )
+    if terminal:
+        if (
+            events[-1][2].status != "clear"
+            or events[-1][2].address != address
+            or latest.status != "in_progress"
+            or (
+                terminal_kind == "cleared_before_mutation"
+                and (len(events) != 2 or latest.progress or latest.resume_history)
+            )
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment operation history is invalid"
+            )
+        if terminal_kind == "succeeded" and not latest.actions_completed:
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment operation history is incomplete"
+            )
+    return latest
 
 # Each template's first placeholder is the table being created.  Templates
 # with a second placeholder reference the qualified state-address table.  The
@@ -3673,73 +3813,27 @@ class PrivatePostgresStateV2Migrator:
             tuple[OperationIntent, OperationControlState],
         ] = {}
         for (operation_address, operation_id), events in operations.items():
-            if [event[0] for event in events] != list(range(len(events))):
+            latest_control = _validate_operation_history_states(
+                events,
+                address=operation_address,
+                operation_id=operation_id,
+            )
+            base_intent = latest_control.intent
+            assert base_intent is not None  # Validated by the timeline validator.
+            if any(
+                record.store.backend != "postgres"
+                or record.store.store_id != expected_store_id
+                for record in latest_control.resume_history
+            ):
                 raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment operation history is invalid"
+                    "PostgreSQL deployment resume history belongs to another store"
                 )
-            first_control = events[0][2]
-            base_intent = first_control.intent
-            if base_intent is None:
-                raise StateBackendInvalidStateError(
-                    "PostgreSQL deployment operation history is invalid"
-                )
-            prior_progress: tuple[OperationProgress, ...] = ()
-            for index, (event_index, kind, control) in enumerate(events):
-                if event_index != index:
-                    raise StateBackendInvalidStateError(
-                        "PostgreSQL deployment operation history is invalid"
-                    )
-                if kind == "intent":
-                    valid = (
-                        index == 0
-                        and control.status == "in_progress"
-                        and control.intent is not None
-                        and control.intent == base_intent
-                        and not control.progress
-                    )
-                elif kind in {"progress_started", "progress_checkpoint", "progress_completed"}:
-                    valid = (
-                        control.status == "in_progress"
-                        and control.intent == base_intent
-                        and len(control.progress) == index
-                        and bool(control.progress)
-                        and control.progress[:-1] == prior_progress
-                        and f"progress_{control.progress[-1].status}" == kind
-                    )
-                elif kind == "recovery_required":
-                    valid = (
-                        control.status == "recovery_required"
-                        and control.intent == base_intent
-                        and control.progress == prior_progress
-                        and index == len(control.progress) + 1
-                    )
-                else:
-                    valid = (
-                        control.status == "clear"
-                        and index == len(events) - 1
-                        and kind in {"succeeded", "cleared_before_mutation"}
-                        and (kind != "cleared_before_mutation" or index == 1)
-                    )
-                if not valid:
-                    raise StateBackendInvalidStateError(
-                        "PostgreSQL deployment operation history is invalid"
-                    )
-                if kind in {"progress_started", "progress_checkpoint", "progress_completed"}:
-                    prior_progress = control.progress
             if events[-1][1] not in {"succeeded", "cleared_before_mutation"}:
                 unfinished_operations[(operation_address, operation_id)] = (
                     base_intent,
                     events[-1][2],
                 )
             if events[-1][1] == "succeeded":
-                completed_control = OperationControlState(
-                    address=operation_address, status="in_progress",
-                    intent=base_intent, progress=prior_progress,
-                )
-                if not completed_control.actions_completed:
-                    raise StateBackendInvalidStateError(
-                        "PostgreSQL deployment operation history is incomplete"
-                    )
                 successful_operations[(operation_address, operation_id)] = base_intent
 
         recovered_operations: set[tuple[StateAddress, str]] = set()

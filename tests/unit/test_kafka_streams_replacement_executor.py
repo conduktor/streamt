@@ -196,6 +196,84 @@ def fixture(prefix=0):
     return operation, state, world, executor, events
 
 
+def resumed_fixture(prefix=0):
+    from streamt.deployer.state_backend import RecoveryRecord, _validate_resume_transition_inputs
+    from tests.unit.test_kafka_streams_resume_schema import REVIEWED, authority
+
+    operation, state, world, executor, events = fixture(prefix)
+    interrupted = replace(
+        state.snapshot.control.control, status="recovery_required",
+        intent=replace(state.snapshot.control.control.intent, reviewed_plan_checksum=REVIEWED),
+        recovery=RecoveryRecord(OPERATION, "lost_ack", "2026-09-05T12:00:00Z", None),
+    )
+    observed = replace(state.snapshot, control=ControlObservation(interrupted, _control_revision(interrupted)))
+    resumed = _validate_resume_transition_inputs(observed, authority(observed))
+    operation.snapshot = replace(observed, control=ControlObservation(resumed, _control_revision(resumed)))
+    state.snapshot = operation.snapshot
+    return operation, state, world, executor, events
+
+
+@pytest.mark.parametrize("prefix", range(5))
+def test_v5_authorized_resume_preserves_incident_through_every_remaining_boundary(prefix, clock):
+    operation, state, world, executor, _events = resumed_fixture(prefix)
+    original = state.snapshot.control.control
+    result = run(operation, state, executor, mode="resume")
+    assert result.control.control.actions_completed
+    assert result.control.control.control_version == 5
+    assert result.control.control.resume_history == original.resume_history
+    assert result.control.control.intent is original.intent
+    assert result.state.state == _state()
+    assert result.control.control.progress[1].kafka_streams_checkpoint.exit_code == 143
+    world.runtime.progress.initialize.assert_not_called()
+    world.runtime.docker.ensure_state_volume.assert_not_called()
+
+
+def test_executor_rejects_checkpoint_ack_that_drops_durable_resume_history(clock):
+    operation, state, world, executor, _events = resumed_fixture(4)
+    original = state.snapshot
+    record = operation.record_progress
+
+    def drop_history(observed, progress):
+        acknowledged = record(observed, progress)
+        control = replace(acknowledged.control.control, control_version=4, resume_history=())
+        return replace(acknowledged, control=ControlObservation(control, _control_revision(control)))
+
+    operation.record_progress = drop_history
+    with pytest.raises(StateBackendUnknownCommitError, match="changed its boundary"):
+        run(operation, state, executor, mode="resume")
+    assert state.snapshot is original
+    assert len(world.creates) == 0
+
+
+@pytest.mark.parametrize("prefix", [1, 2, 4])
+@pytest.mark.parametrize("damage", ["missing_audit", "downgraded_control"])
+def test_real_local_authority_reads_reject_lost_resume_audit_before_any_provider_write(tmp_path, prefix, damage, clock):
+    from streamt.deployer.state_backend import _LocalRecoveryHistory
+    from tests.unit.test_kafka_streams_resume_local import _backend, _blocked, _record
+
+    backend = _backend(tmp_path)
+    events = []
+    world = World(events, prefix=prefix)
+    with backend.operation(ADDRESS) as operation:
+        blocked = _blocked(operation, prefix)
+        active = operation.resume_operation(blocked, _record(blocked))
+        if damage == "missing_audit":
+            backend._write_recovery_history(
+                backend._recovery_history_path(ADDRESS), _LocalRecoveryHistory(ADDRESS), operation_id=OPERATION,
+            )
+        else:
+            downgraded = replace(active.control.control, control_version=4, resume_history=())
+            backend._write_control(backend._control_path(ADDRESS), downgraded, operation_id=OPERATION)
+        # Individual reads are not authority to mutate. The driver's fresh,
+        # locked full observation must reject even a freshly read bad journal.
+        state = ReplacementExecutionState(OperationSnapshot(operation.read(), operation.read_control()))
+        with pytest.raises(StateBackendConflictError, match="resume audit"):
+            run(operation, state, KafkaStreamsReplacementExecutor(world.observer), mode="resume")
+        assert world.commands == []
+        assert world.creates == []
+        world.observer.observe.assert_not_called()
+
+
 def run(operation, state, executor, *, mode="execute", **kwargs):
     return executor.run(operation, state, operation_id=OPERATION, mode=mode, timeout_seconds=1, poll_seconds=0.1, **kwargs)
 

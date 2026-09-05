@@ -27,6 +27,7 @@ from streamt.deployer.postgres_state import (
     _dsn_tls_options,
     _load_psycopg,
     _one_or_none,
+    _operation_history_states,
     _prove_private_postgres_v2_writer,
     _PsycopgBundle,
     _query,
@@ -34,6 +35,7 @@ from streamt.deployer.postgres_state import (
     _rows,
     _SqlModule,
     _strict_json,
+    _validate_operation_history_states,
 )
 from streamt.deployer.recovery import (
     RecoveryResolutionRecord,
@@ -45,6 +47,7 @@ from streamt.deployer.state_backend import (
     OperationControlState,
     OperationIntent,
     OperationProgress,
+    OperationResumeRecord,
     OperationSnapshot,
     RecoveryRecord,
     StateAddress,
@@ -61,6 +64,7 @@ from streamt.deployer.state_backend import (
     StateStoreIdentity,
     _same_recovery_resolution_identity,
     _validate_recovery_transition_inputs,
+    _validate_resume_transition_inputs,
     state_checksum,
 )
 
@@ -83,6 +87,7 @@ _OPERATION_EVENTS = {
     "progress_completed",
     "progress_checkpoint",
     "recovery_required",
+    "operation_resumed",
     "cleared_before_mutation",
     "succeeded",
     "recovery_intent",
@@ -116,6 +121,16 @@ def _canonical_json(value: dict[str, object], *, label: str) -> str:
             f"PostgreSQL deployment state {label} exceeds the size limit"
         )
     return encoded
+
+
+def _expected_operation_history_rows(
+    control: OperationControlState,
+) -> list[tuple[object, ...]]:
+    result: list[tuple[object, ...]] = []
+    for index, (kind, state) in enumerate(_operation_history_states(control)):
+        payload = _canonical_json(state.to_dict(), label="operation history")
+        result.append((index, kind, payload, len(payload.encode("utf-8"))))
+    return result
 
 
 def _revision_number(revision: StateRevision, *, allow_absent: bool) -> int | None:
@@ -304,6 +319,37 @@ def _read_snapshot_transaction(
         label="operation control",
     )
     control = _parse_control_row(control_row, address)
+    if any(record.store != store for record in control.control.resume_history):
+        raise StateBackendInvalidStateError(
+            "PostgreSQL deployment resume history belongs to another store"
+        )
+    intent = control.control.intent
+    if control.control.status == "in_progress" and intent is not None and any(
+        action.kafka_streams_evidence is not None for action in intent.actions
+    ):
+        # Runtime writes may occur between journal boundaries. A held snapshot
+        # must therefore prove the complete active runner journal on every read,
+        # not only when the next progress/control mutation is attempted. Reuse
+        # this transaction so ownership, control and audit share one snapshot.
+        history = _rows(
+            cursor,
+            _query(
+                bundle.sql,
+                (
+                    "SELECT event_index, event_kind, control_json, "
+                    "octet_length(control_json) FROM {} WHERE namespace = %s "
+                    "AND project = %s AND environment = %s AND operation_id = %s "
+                    "ORDER BY event_index"
+                ),
+                schema,
+                "operation_history",
+            ),
+            (*params, intent.operation_id),
+        )
+        if history != _expected_operation_history_rows(control.control):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment active runner history is invalid"
+            )
     state_row = _one_or_none(
         _rows(
             cursor,
@@ -676,38 +722,7 @@ class _PostgresStateReadOperation:
         self,
         control: OperationControlState,
     ) -> list[tuple[object, ...]]:
-        intent = control.intent
-        if intent is None:
-            return []
-        states: list[tuple[str, OperationControlState]] = [
-            (
-                "intent",
-                OperationControlState(
-                    address=self._address,
-                    status="in_progress",
-                    intent=intent,
-                ),
-            )
-        ]
-        for index, progress in enumerate(control.progress, start=1):
-            states.append(
-                (
-                    f"progress_{progress.status}",
-                    OperationControlState(
-                        address=self._address,
-                        status="in_progress",
-                        intent=intent,
-                        progress=control.progress[:index],
-                    ),
-                )
-            )
-        if control.status == "recovery_required":
-            states.append(("recovery_required", control))
-        result: list[tuple[object, ...]] = []
-        for index, (kind, state) in enumerate(states):
-            payload = _canonical_json(state.to_dict(), label="operation history")
-            result.append((index, kind, payload, len(payload.encode("utf-8"))))
-        return result
+        return _expected_operation_history_rows(control)
 
     def _read_operation_history(
         self,
@@ -1358,8 +1373,7 @@ class _PostgresStateReadOperation:
                     raise StateBackendInvalidStateError(
                         "PostgreSQL deployment operation history is invalid"
                     )
-                terminal_control: OperationControlState | None = None
-                prior_control: OperationControlState | None = None
+                parsed_history: list[tuple[int, str, OperationControlState]] = []
                 for index, row in enumerate(history_rows):
                     if (
                         len(row) != 4
@@ -1379,45 +1393,15 @@ class _PostgresStateReadOperation:
                         raw_control,
                         expected_address=self._address,
                     )
-                    kind = row[1]
-                    if index == 0:
-                        if (
-                            kind != "intent"
-                            or terminal_control.status != "in_progress"
-                            or terminal_control.intent is None
-                            or terminal_control.intent.operation_id != operation_id
-                            or terminal_control.progress
-                        ):
-                            raise StateBackendInvalidStateError(
-                                "PostgreSQL deployment operation history is invalid"
-                            )
-                    elif kind.startswith("progress_"):
-                        expected_progress_kind = (
-                            f"progress_{terminal_control.progress[-1].status}"
-                            if terminal_control.progress
-                            else ""
-                        )
-                        if (
-                            terminal_control.status != "in_progress"
-                            or terminal_control.intent is None
-                            or terminal_control.intent.operation_id != operation_id
-                            or len(terminal_control.progress) != index
-                            or kind != expected_progress_kind
-                            or prior_control is None
-                            or terminal_control.intent != prior_control.intent
-                            or terminal_control.progress[:-1] != prior_control.progress
-                        ):
-                            raise StateBackendInvalidStateError(
-                                "PostgreSQL deployment operation history is invalid"
-                            )
-                    elif index != event_index:
-                        raise StateBackendInvalidStateError(
-                            "PostgreSQL deployment operation history is invalid"
-                        )
-                    prior_control = terminal_control
+                    parsed_history.append((index, row[1], terminal_control))
+                _validate_operation_history_states(
+                    parsed_history,
+                    address=self._address,
+                    operation_id=operation_id,
+                )
                 if (
                     history_rows[-1][1] != event_kind
-                    or terminal_control != expected.control.control
+                    or parsed_history[-1][2] != expected.control.control
                 ):
                     raise StateBackendInvalidStateError(
                         "PostgreSQL deployment operation history is invalid"
@@ -1739,12 +1723,14 @@ class _PostgresStateReadOperation:
             status="in_progress",
             intent=intent,
             progress=(*observation.control.control.progress, progress),
+            control_version=observation.control.control.control_version,
+            resume_history=observation.control.control.resume_history,
         )
         return self._transition(
             expected=observation,
             replacement=replacement,
             operation_id=intent.operation_id,
-            event_index=len(replacement.progress),
+            event_index=len(self._expected_history_rows(observation.control.control)),
             event_kind=f"progress_{progress.status}",
         )
 
@@ -1763,14 +1749,38 @@ class _PostgresStateReadOperation:
             intent=intent,
             progress=observation.control.control.progress,
             recovery=recovery,
+            control_version=observation.control.control.control_version,
+            resume_history=observation.control.control.resume_history,
         )
         return self._transition(
             expected=observation,
             replacement=replacement,
             operation_id=intent.operation_id,
-            event_index=len(replacement.progress) + 1,
+            event_index=len(self._expected_history_rows(observation.control.control)),
             event_kind="recovery_required",
         )
+
+    def resume_operation(
+        self,
+        observation: OperationSnapshot,
+        record: OperationResumeRecord,
+    ) -> OperationSnapshot:
+        """Atomically retain an incident and authorize the exact original intent.
+
+        This is a control/history-only transition. It does not observe or mutate
+        a runner, rebase progress, update ownership, or finalize recovery.
+        """
+        replacement = _validate_resume_transition_inputs(observation, record)
+        self._last_attempted_operation_id = record.operation_id
+        active = self._transition(
+            expected=observation,
+            replacement=replacement,
+            operation_id=record.operation_id,
+            event_index=len(self._expected_history_rows(observation.control.control)),
+            event_kind="operation_resumed",
+        )
+        self._active_operation_id = record.operation_id
+        return active
 
     def clear_before_mutation(
         self,
@@ -1778,7 +1788,7 @@ class _PostgresStateReadOperation:
     ) -> OperationSnapshot:
         intent = self._require_active(observation)
         self._last_attempted_operation_id = intent.operation_id
-        if observation.control.control.progress:
+        if observation.control.control.progress or observation.control.control.resume_history:
             raise StateBackendRecoveryRequiredError(
                 "deployment operation may have started mutation; explicit recovery is required"
             )
@@ -1999,7 +2009,7 @@ class _PostgresStateReadOperation:
             expected=observation,
             replacement=OperationControlState.clear(self._address),
             operation_id=intent.operation_id,
-            event_index=len(observation.control.control.progress) + 1,
+            event_index=len(self._expected_history_rows(observation.control.control)),
             event_kind="succeeded",
             replacement_state=replacement,
             mutate_state=replacement is not None,

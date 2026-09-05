@@ -241,3 +241,45 @@ Internal journaled driver checkpoint:
   reviewed-action commit `5f9566d` passed all 26 jobs (run `33978991330`).
 - Public update activation remains open. Follow the remaining integration order
   in the replacement contract before removing its existing planner/CLI blockers.
+
+Durable resume checkpoint:
+
+- Local and PostgreSQL state now authorize the same interrupted runner operation
+  with an explicit resume record. Version-5 control retains the original
+  version-4 intent, reviewed checksum and checkpoint bytes. Each authorization
+  preserves the full incident, actor, store identity and interrupted-control
+  checksum. Completed outcomes cannot be reopened.
+- PostgreSQL commits resume history and control together. Local state archives
+  the authorization before its control update, in the existing recovery-history
+  file. A partial local write permits only the exact archived authorization's
+  retry. Incidents remain available after final ownership commit and clear.
+- Independent review reproduced two pre-mutation gaps: a missing local archive
+  or truncated PostgreSQL history could permit a candidate start before the next
+  journal write detected the inconsistency. Active runner snapshot reads now
+  validate their full audit first. Tests require zero provider calls. A local
+  legacy control-only delegate also now rejects a downgraded control with a
+  surviving resume archive; clearing a resumed zero-progress intent is blocked.
+- Full Python 3.10 and 3.12 suites each pass 7,122 tests with 32 skips. The
+  PostgreSQL 14.23 and 18.4 cohorts each pass 40 real tests, including 16 new
+  resume cases. Those tests cover separate connections, repeated interruptions,
+  lost COMMIT acknowledgements, retained raw 143, strict history validation and
+  final ownership commit. Ruff and mypy (117 modules) pass.
+- Source fixture `faf26e664869` (client 2.13.2) and installed fixture
+  `768d54fba5cf` (2.15.0) pass the new two-process Docker/Kafka resume probe.
+  Worker one loses the create acknowledgement, records the interruption and
+  exits; worker two reloads it under a new lock, resumes the existing candidate
+  and commits desired ownership. The original incident survives clear. Exact
+  outputs prove the threshold change and offsets 5 to 8. This uses a controlled
+  worker exit and a synthetic reviewed checksum, not SIGKILL or public plan-file
+  validation. The evidence is in
+  `tests/package/verification/kafka-streams-durable-resume.json`; all historical
+  proofs remain unchanged. Both runs use the same 117-module cohort, with exact
+  source/sdist/wheel/install parity, 159 package files and 14 unchanged runtime
+  assets. CI now repeats this probe in both installed SDK lanes and runs the new
+  PostgreSQL resume cases against the installed wheel. Fixture-owned containers,
+  volumes and networks were removed without force; evidence files remain.
+- Public update, resume and recovery remain unadvertised and blocked. Their
+  caller must verify the original reviewed plan and current desired project,
+  retrieve a prewritten local authorization when needed, and use the locked
+  executor through completion. The state backend alone does not verify SQL
+  against a reviewed plan file.

@@ -1,0 +1,1078 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-05",
+  "accepted": true,
+  "scope": "Test-internal durable local resume in a fresh OS worker after a lost Docker-create acknowledgement. Public CLI update, resume and reviewed-plan verification remain unproven by this probe.",
+  "predecessor_executor_evidence": "tests/package/verification/kafka-streams-replacement-executor.json",
+  "predecessor_observer_evidence": "tests/package/verification/kafka-streams-replacement-observer.json",
+  "platform": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "python": "3.12.8",
+    "docker_endpoint": "local Unix socket",
+    "kafka_security_protocol": "PLAINTEXT",
+    "broker_count_per_run": 1,
+    "topic_partitions": 1,
+    "process_umask": "0077",
+    "state_backend": "local"
+  },
+  "runtime": {
+    "runner_version": "0.1.1",
+    "plan_version": 1,
+    "image": "sha256:889f6ff67d5435e735eff85508f6f39ba73e192a76b1e2eb24e8c83c8db03df9",
+    "broker_image": "apache/kafka@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+    "build_context_sha256": "sha256:46831266d360d989b97ce6502c845a6fca6a5eaf1cbd57688ee6a1bd0655ee18",
+    "build_context_files": 14,
+    "image_rebuilt_for_this_probe": false,
+    "image_pulls": false,
+    "image_published_or_tagged": false
+  },
+  "harness": {
+    "path": "tests/package/kafka_streams_resume_probe.py",
+    "sha256": "62ff3a5ee4ce2064d15a80a6ecb6b371e2b91df89a106591d565fcfa9a76a0d4",
+    "helpers": [
+      {
+        "path": "tests/package/kafka_streams_replacement_executor_probe.py",
+        "sha256": "69f91c1445e5cb7bd58112d3f47a3524af33bfd1708baec7a6e68ab9b5e4f345"
+      },
+      {
+        "path": "tests/package/kafka_streams_journey.py",
+        "sha256": "c3f83cabdd9c4df91804caa180ed2f06fa9860247c718c5e0234dde81a7206fd"
+      }
+    ],
+    "source_and_installed_harness_byte_parity": true
+  },
+  "distributions": {
+    "wheel": {
+      "filename": "streamt-0.1.0a1-py3-none-any.whl",
+      "bytes": 700436,
+      "sha256": "d73a3b0f9fce060f7adfc25f0a9645d97cfd106f0e47fc62c6c8aefee876ad3a"
+    },
+    "sdist": {
+      "filename": "streamt-0.1.0a1.tar.gz",
+      "bytes": 2170443,
+      "sha256": "c163d57f98d3a07cea00fce7f203ea4aee2375ed031e5e2b383692a31e74a094"
+    },
+    "wheel_built_from_sdist": true,
+    "fresh_empty_venv": true,
+    "isolated_python_outside_checkout": true,
+    "package_files": 159,
+    "python_source_members": 117,
+    "source_sdist_wheel_installed_python_byte_parity": true,
+    "all_packaged_file_byte_parity": true,
+    "python_source_tree_sha256": "defcc2ba5020695d6883d1d01d6c453824ef87e6eb30b6f18b9e4aa107eacd7c",
+    "python_source_tree_digest_format": "SHA-256 of compact sorted JSON mapping package-relative .py paths to file SHA-256 values, without a trailing newline.",
+    "generated_jars_targets_or_historical_experiment_shipped": false,
+    "tested_archives_note": "These identify the tested archives; later documentation and evidence changes can change archive hashes."
+  },
+  "source_module_hashes": {
+    "__init__.py": "ec00e0f48ad423d1659fba1027f2d16c7ae40147ae87398b17fef448d1c1ae22",
+    "__main__.py": "1619ed3d3a93546b39dec35ec62a071bb4c0dee2a020caecca8b5369f2358cfb",
+    "cli/__init__.py": "84134ae00525fd61c88fa7d78b4169033f937beb2b7e16e719acbcd41708d59f",
+    "cli/commands/__init__.py": "810ead9d4d11be6d3e11258550153e28397976934ea544c6e74f615ce4108f06",
+    "cli/commands/adopt.py": "8969f0c10fae026eacc62535f93b3ed919bd43c6b3dcfcace34009574609908e",
+    "cli/commands/apply.py": "583abe365f8b0fc2401b5621377d9ee750001868e09c040fb0a8d57b12c10e06",
+    "cli/commands/build.py": "86cb935c64d2375f29ddc6e091b17e45b0d7b8f7e5e7c9bbd439cfd9432a76cf",
+    "cli/commands/compile.py": "4185006ee51f0b815f5cce4b2161bc1789556faa45b59fba6578e5b513da0df7",
+    "cli/commands/diff.py": "3e8a0dccd059f8eb8102b7a630b59c67f34a239a9ec49cd86452ce15eeafb6ed",
+    "cli/commands/docs.py": "15f1851c0887499d8c62066d86a8aa2a4e789d1bc23436104e16169078fe0dec",
+    "cli/commands/envs.py": "8963d33b090772d09e625bc35fa63c895822c8bd4b35073dc30c00f52c28f015",
+    "cli/commands/export.py": "7671e73fc9d02dd8c661f377f7e7ceb84f5ea5abd4e12f776c455c27fabd2626",
+    "cli/commands/import_cmd.py": "fedb5e8f52591538b7d69eaae8ddec881ab777f8ad0e1abf6e1cb676844a16f7",
+    "cli/commands/init.py": "9a36d072da2db4bdc6388c926d460d51bddcc2193fde2db66e1e524a31ed88e5",
+    "cli/commands/lineage.py": "02fce87ceda336d251651d475593eef4e54f3d09a0182a667f45162c32854510",
+    "cli/commands/list_cmd.py": "5cb9beac93bc7b1f7618871d559fe89cb2ee8faab5b68191e21f6a4bb815bd2b",
+    "cli/commands/observe.py": "d230e50153092182da935e3793a37995bb15a7f84c19a1575a7fe1a3b7c4818b",
+    "cli/commands/plan.py": "393cce9dbb1ab38d470e220aedf13259bd36bd2d2c08527933bfb9cd6fa21894",
+    "cli/commands/runtime.py": "d41d571093f1553a816d2b7791ea75580a599ce86dd31d99648a598977479e2b",
+    "cli/commands/show.py": "209748aaf0b06eff15b4be360e238524ab09132a8a5f44fada65c5676ceede95",
+    "cli/commands/state_cmd.py": "104d5dc34ae119cb8657e10f47da7ce8fa557a714cae04e9ba946c283ae9086b",
+    "cli/commands/status.py": "fa98444c9313b9029cef4d2e19d1c2721ddbfc1799ab2ec441bae50eddf75f69",
+    "cli/commands/test.py": "0a4b1dce955f79b8c5016c783a4cbb48e5fafcd9d856d504d4c38b76f33e5cf8",
+    "cli/commands/validate.py": "fd1a5dcc35b11e2daeb9228839a452029c7806a9655f4b42bf8795b430648afc",
+    "cli/connector_removal_guard.py": "cfa045f50c31049e22b89e7d4d405cbdd4d532019cd3880fa0cf9566e1510f6d",
+    "cli/helpers.py": "5099646206f0728b4e57a5edf6c509ca580f2da9b58a085bdeee7a32401fcb8f",
+    "compiler/__init__.py": "65ca0c7b7cf44612db1cc6c3dcd6d34679d961ad2ce315df32c92925fbe761f2",
+    "compiler/compiled_models.py": "4158244e57081ff416dd2fbfa78e7334ac77e78222a9175cd9d5d2e582e75462",
+    "compiler/compiler.py": "ccb14c107386454a8bc9aebcf89d4cea5564af04303ce82ac92eec534b334015",
+    "compiler/connector_artifact.py": "8c830a76d5da931b245017f7893e3db8ad3dc2bfcaaf93947dabf32b4761971d",
+    "compiler/flink_ddl.py": "4f54e137868e3dd5333d8a1fafb005ac24688b8c4a0e33de2c6afc10e3103364",
+    "compiler/flink_dialect.py": "7fe902d0fed39524236bd2c7ef7f332638578c77f94a4ebaba3f9a19e4c963f3",
+    "compiler/gateway_artifact.py": "d0e611a3cc71424a709e85798c32889571dc5f6f961efa3ee7d4473171a63877",
+    "compiler/kafka_streams.py": "83febb44f8d790eb23303f50fa6afa8d91d1ca459e0d143519382ddf7a68454d",
+    "compiler/manifest.py": "69ee84a5442713e680c17782fcd5d3b25359eb5ef9a8dade9941350f1b704d45",
+    "compiler/masking.py": "5d68f7965a6316718616ee169458d5dcf22537f7df715ac5fbb6b1d10a2c3e1a",
+    "compiler/model_resolution.py": "5a84a8e1912e02e1132669707d8d70bc4d96df25dfa153d2da4a539af2957a00",
+    "compiler/scope.py": "1f7fb208d63449d172f3a8cb73ce217cc4bcda658e53d171d4d1c0e9c703fdda",
+    "compiler/sql_generator.py": "b7f64da3f198d4ff76d69a9ad6d3d64dd19353d13d0de022ce82e39982437875",
+    "compiler/test_compiler.py": "2b10e24307f59d1a816a459f7d91bcfa6da2bdd3e704707c9728e576f468693d",
+    "compiler/topic_artifact.py": "8970de747e27e517fa7ec5b855c3766c9ebc1eb36146202f7bd10e6991f9baad",
+    "compiler/type_inference.py": "3be37fba6d8c5f70282d1ddc183f771958c23f7093a42dffa2fed64b03f8c0da",
+    "core/__init__.py": "2d3010ec3724d7c4856f18d3abbe92bc81b36b84cb1bb09fdef7c108afdf60c9",
+    "core/base.py": "a9b53f85597b4a75457d55f7dc69623dda09ba7ec870f8f0da2b30f9f0b3a38f",
+    "core/dag.py": "ed193c2dbcffee6cff8f4a4e30921f09bd2fdd384ed96cdd408b4e7ab9b95dac",
+    "core/deployment_state.py": "c3d3e5ff84a8733b7069c0c752b8b9ab67876df46385224b73d6deda6a805434",
+    "core/environment.py": "6926c2c83b51c0ce1a42dbac9a63f653ccdf1b9d63d660a8dd41b9b1a31765b7",
+    "core/errors.py": "1e4d20e945cad25c13e80241aa7eaf5d63947e23fe2bc587c0ced6f75070647d",
+    "core/manifest_identity.py": "832215e5a7d20ed89b9aeb5be66e00308c4a01dde389b574edd587d4839cdd2c",
+    "core/models.py": "7a68be6ea0a4a8bffb1feb7416feb326455b1b87f556c51304fbdd1f4125a7f6",
+    "core/parser.py": "902cf2d20b4910060396f946fce38a1b3508f12cbb0c95f9da10d421f17cb0c5",
+    "core/redaction.py": "9798430764c234ced41624f82ecf43322c27529ff3bc5f52d74c5289b4865bf7",
+    "core/ref_validators.py": "834e541e1c3c31cdc1578774acdf2b4e61cb7cda0ba9f53681a451d250002140",
+    "core/rule_validators.py": "b07eb576eec4b1992dfc7b4ad61e61c5c9a07e18d8b9e1c11d21a15113ea68e8",
+    "core/runtime.py": "342936bc06002f2dad6b86f47597e1576399fb292476c59d2b7775a8460d87e8",
+    "core/sql_checks.py": "21c963af11ecb56651943822935d7ab07461e6cba8fc68cf1dc9edd9f5c8ccd8",
+    "core/type_checker.py": "2b4182e9d22947fd43c35c9f3aca460b702f950baaeb53823d61c597c17dd628",
+    "core/validator.py": "7958033bbaaa4fb223f3d6fd37bddb4a8b404a165374bba605eb0cfd6ff106bb",
+    "core/validators.py": "6c8f4b2687e0a2f3b8dc0ba5017812b7fa870277f6993fcd15cd6e0e598a53c5",
+    "deployer/__init__.py": "084f6026bdf5ffd66987646562a435bfffe3c69750cd63041fd96c18b7b27976",
+    "deployer/connect.py": "7b7a855f6a2ee7e8c1b60360e2f20d8fb8f49ec92a73b74ae7e1f331ab030ab5",
+    "deployer/flink.py": "2b78dbd6a03a14639d7b3d20fcbd26eed83baf428c5e75a983cc4e1408ead1f4",
+    "deployer/gateway.py": "38a6c1037d9f947b202ac836d8e52823ec6eb49b8a2d5ffb9a7113177b227e3a",
+    "deployer/gateway_adoption.py": "5aac7f141e192e28321532cb1115dd1c13155dfe398b67b711dbde559b215f01",
+    "deployer/kafka.py": "9382321689015a3fc6024c3c75173f64e5ab542262627da8ad6fdb5c00b6da4e",
+    "deployer/kafka_streams.py": "19c582e95f49f66979e0e1d1cb54868f9caa3ac3465ae55034102bff0ed59316",
+    "deployer/kafka_streams_docker.py": "fe8c0a810ec3c8954d13761870be994d1fc89c49548d1017c032855cc16b5fd8",
+    "deployer/kafka_streams_evidence.py": "9de1bd5927c88a782f127ee6a0c54805ab639480eeaa1bc7fad8a802cea21f07",
+    "deployer/kafka_streams_progress.py": "9cc469c84fc52a2cd6f77203919d75d708649fdf199741cda6449dbf9b492029",
+    "deployer/kafka_streams_replacement.py": "23afeada6e534d84ae77d6b8df5af46baebffde449f18e773e999c50d96b8d35",
+    "deployer/kafka_streams_replacement_executor.py": "6718f505fd552a4414873f9d231fcc35868df21697fe8700b2d4f509c52cdd25",
+    "deployer/kafka_streams_replacement_observer.py": "75613875b217932258d3123f908f70c451a0c896eba934ba03e0ba860274cb99",
+    "deployer/kafka_streams_time.py": "2f2cc998ec94deaf2cfeb0c45afe1fcbf4ad0edc2597583c3ad839cace9babb6",
+    "deployer/observer.py": "7fab9f727b1887ce29b256d3cf91e74e587a344c0059e2a51c491edcf0693c9e",
+    "deployer/operation_actions.py": "99d892c11eadee1a10f866dc7c51f465e2d0de9badbdca506693499cad81333c",
+    "deployer/plan_file.py": "a394703824b3ed6b78bbf46974d88f9af623487fe4baa6ec111064c8dc8f610a",
+    "deployer/planner.py": "7ed6390773375bd5b7f5acecf61b876723ab4686f1467b3641a5ecd1e71d895c",
+    "deployer/postgres_state.py": "757af4c420be0878ee806a5d82bfa0f932f2f9586e6fff1fa18fd10d47d5ca14",
+    "deployer/postgres_state_backend.py": "2065dd4c0bbfbbe09014be401c2044e385a6976f738c12bd63855f8d9c726915",
+    "deployer/recovery.py": "fda0fccbe0af6804ab1807fa15644c1765278093c48ec7d192145a9a868e9583",
+    "deployer/recovery_observer.py": "b2fc9103aaa5d79c9f0ab654f80e5793124ee2557dd87b320eb881d88ca06f6e",
+    "deployer/recovery_plan.py": "ebd262199c38bcf1ca7e43a952d4254a0a4a910f43eab1c38ddb8d462b8700d7",
+    "deployer/recovery_service.py": "1fae4b4c7f7ea1b2b7e555486ed17473c223197e07fa92c81a017a78784678bf",
+    "deployer/schema_registry.py": "d0fec3f6e656140a1a26ebb8526a555b6d3edce53d80642bb718727c9379e427",
+    "deployer/ssl_utils.py": "22fc3829209ff3ab94e46f18c9beec60b35113e230c42955c5894f6561aadb53",
+    "deployer/state.py": "24d47006ebb703f5c7a674870e634fe116441aa3e75a54fd946d05f294aafa3f",
+    "deployer/state_backend.py": "fcd1cb5ac4088f1c047f856a6d6c65651f1d342e568c85815e9aaf69ac5ca00a",
+    "discovery.py": "3395376495d1631316854b126e8ad1c3f0c07ad123a031df638c76eb14deab96",
+    "docs/__init__.py": "6280e2d7a29f42ba91ed1401905215e18d85e45627792cb9e273bbb8512c91bb",
+    "docs/asyncapi.py": "8631a509bea459e73e5668fc4b9268503eb0c1bb30ae020b8296c727241e4d40",
+    "docs/generator.py": "2f799f66543b2c1aa16688d069bb10664652fe525c67334dd4f78e81b3eface6",
+    "docs/odcs.py": "346bab0c7d9c9ebc14219980b5ff5ec57cc85ff78c2dbcc2072806434ab330a4",
+    "docs/schemas/__init__.py": "98fc670e0d2a7adbf9f86537d8f115ad527222465ab4d9e7cb46ef29900fff7b",
+    "integrations/__init__.py": "3fde0d4960bf862b127a47d2fcee2396cb5ab2838b5fe78f90e04a3ae42de272",
+    "integrations/catalog/__init__.py": "bc60fa48b4fb467fc227978df1084e737eb5d6318a974c2b7be8a904afa060d5",
+    "integrations/catalog/backstage.py": "44cc5b973e069f9cdf0621055df6193e9091310c7118162fe32455d06afe896b",
+    "integrations/catalog/backstage_validation.py": "26daaa9a738fc92e9a42f2ad956b18b95b75bbec59e464300ac7285f2d842adb",
+    "integrations/catalog/datahub.py": "326d508ddac7ffb48f057d3f5d46351d2fc474994276613f94a0be091ab5bf4b",
+    "integrations/catalog/datahub_export.py": "380546f6ce8e386f73257f807f09253876d5846b334d99c2b9beeaa9af9bd01b",
+    "integrations/catalog/inputs.py": "4eeb3a89fbdc924378be994f1014193cdd0fa04d5a68913211464814713738d5",
+    "integrations/catalog/model.py": "433ad95af758641c4dd2367a905cc04d7e9bf7097cc892937456c6b2e562eec9",
+    "integrations/github_action.py": "2a7bb619edcfc5ec7903aea557592dbcaf0f14b4e2d7ee010d46a844438f51d6",
+    "integrations/gitops/__init__.py": "ab38cb5a77df07230c8b0d569174efa55973a2a8a54391f71d8c5e3f4fcd70e1",
+    "integrations/gitops/schemas/__init__.py": "14a9c9a4fc868cfd8a2a0c28948b0a97d6ecdd899ceff7be1825a57a9523b046",
+    "integrations/gitops/strimzi.py": "207d4edf895098a7bb28d2a64ec6dab10058f054c5b8f4594fee4d047846a1cc",
+    "integrations/gitops/strimzi_validation.py": "56fc6d8b0abc90184ff54a4f986ecefe128b94e9a64fd8e92d7fb66dd852aa87",
+    "integrations/openlineage/__init__.py": "0c3ebf9bdb0d5d8da03a076e04084040c0bda399d1eb994f44d5199c011103b8",
+    "integrations/openlineage/events.py": "5dfbdd0361e9f8380ca0b2f75bb8f0a374a88f488984fe403b7745df6f1c9157",
+    "integrations/openlineage/namespaces.py": "138d26de4db97e78591a2d347ae1954ad21f958fbbe20d400ef8d1b5a4b38520",
+    "integrations/openlineage/static.py": "cbce8c6caa8297fd6fd9020fff31ca58890893c75b8754a633924c8668394316",
+    "integrations/openlineage/transport.py": "0a30dc767fcad7db3aee7eeefb610361b7e536bc706c0f9ff7925b524e3d23e3",
+    "integrations/openlineage/validation.py": "41bf4553cd119f2fe3b1ae7b0a206f17ddb57a4c784d27f1b0ecbbe9b0113caa",
+    "output.py": "ec9acc97db03cb8ffb7098b86e86f87c6a995a05dfcffde5cbce216f63fbbf17",
+    "runtime_assets.py": "d9f5138f6d6c9c21992299db856b524b3492780889e1fe89123845d31c8f4d6e",
+    "templates/__init__.py": "40f6029d4661423baa996683e029ae5a77f6073dbff343fa584accc726b3e32c",
+    "testing/__init__.py": "6530a39966cbe12e793362b50301552f402bcddfc4126c04873ae7115dd861fb",
+    "testing/runner.py": "3b1882e22f564b7effd3b95abb02ce18dde85a16b26e1f39a252b22a63b7b113"
+  },
+  "contract": {
+    "public_fresh_starter_and_create_noop_first": true,
+    "predicate_before": "amount >= 100 AND paid = TRUE",
+    "predicate_after": "amount >= 200 AND paid = TRUE",
+    "reviewed_plan_checksum": "Synthetic per-run test marker, not a genuine public reviewed-plan checksum.",
+    "reviewed_public_plan_verified": false,
+    "public_cli_update_or_resume_activated": false,
+    "initial_intent_wire_version": 4,
+    "interrupted_control_version": 4,
+    "resumed_control_version": 5,
+    "resume_audit_history_version": 2,
+    "deliberately_lost_successful_docker_create_acknowledgement": true,
+    "interruption_durable_boundary": "old_removed",
+    "interrupted_progress_entries": 3,
+    "worker_one_records_recovery_required_under_real_local_lock": true,
+    "worker_one_exit": "Controlled process exit after durable interruption record and normal lock release; not SIGKILL.",
+    "worker_two": "Fresh OS process, independently loads protected state/control and reacquires the real local lock.",
+    "durable_explicit_resume_authority_archived_before_in_progress_transition": true,
+    "original_intent_actions_evidence_offsets_and_ownership_retained_until_commit": true,
+    "exact_created_candidate_reused_without_recreation": true,
+    "worker_two_provider_mutations": "One exact candidate start; no create, TERM, remove, volume mutation or offset reset.",
+    "full_close_checked_by_real_observer_before_checkpoint": true,
+    "old_raw_exit_code_preserved": 143,
+    "raw_close_surface_embedded_in_this_probe": false,
+    "checkpoint_sequence": [
+      "started",
+      "old_closed",
+      "old_removed",
+      "replacement_created",
+      "completed"
+    ],
+    "final_action_succeeded": true,
+    "final_control_status": "clear",
+    "desired_ownership_state_committed": true,
+    "original_incident_and_resume_record_survive_final_clear": true,
+    "new_record_150_filtered_and_250_300_accepted": true,
+    "prior_record_120_not_replayed": true,
+    "raw_binary_and_null_keys_preserved": true,
+    "input_committed_before": 5,
+    "input_committed_after": 8,
+    "forbidden_provider_write_attempts": [],
+    "forced_stop_or_cleanup": false
+  },
+  "runs": [
+    {
+      "mode": "source",
+      "run_id": "faf26e664869",
+      "accepted": true,
+      "kafka_client_version": "2.13.2",
+      "librdkafka_version": "2.13.2",
+      "sdk_binary": {
+        "name": "cimpl.cpython-312-darwin.so",
+        "sha256": "90d93d1c67cc6b7eaf64c2ce490bc206c262cb60b56fead3ab7eae8be341e0d4"
+      },
+      "raw_evidence": {
+        "path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/evidence.json",
+        "sha256": "4ad907742a03163ee13f391b136b8f2824324943239b67cf9d7d2dbf4372b9b6"
+      },
+      "raw_worker_records": [
+        {
+          "phase": "interrupt",
+          "path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-interrupt.json",
+          "sha256": "9033f487909f669c703580cdba6e7c6e38a4f54580956bdcd860ee72f45ce9d3",
+          "stdout_path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-interrupt.stdout",
+          "stderr_path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-interrupt.stderr"
+        },
+        {
+          "phase": "resume",
+          "path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-resume.json",
+          "sha256": "261d647af6e6493d057149c592ecff1737bafa740201c5a5d394479b92d382f9",
+          "stdout_path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-resume.stdout",
+          "stderr_path": "/private/tmp/streamt-kstreams-durable-resume.IVEeGg/streamt-journey-source-faf26e664869-fzn50cdq/worker-resume.stderr"
+        }
+      ],
+      "source_unchanged_during_run": true,
+      "infrastructure": {
+        "bootstrap": "127.0.0.1:51382",
+        "broker": "streamt-journey-faf26e664869-broker",
+        "broker_id": "cc0df0888ad3beb6837bcbc12fad81ce4dd39395e57840d332ddf86b0557b141",
+        "cluster_id": "3LsbphSDTCOW8TGNjTW9-A",
+        "network": "streamt-journey-faf26e664869",
+        "network_id": "ed79baa49d7973120f737c54bdd0ad1e2bd491f372ea97cded82bbea973418cf"
+      },
+      "result": {
+        "accepted": true,
+        "audit_history_version": 2,
+        "candidate_id": "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+        "committed_after": 8,
+        "committed_before": 5,
+        "desired_ownership_committed": true,
+        "final_control_status": "clear",
+        "forbidden_provider_write_attempts": [],
+        "old_close_raw_exit_code": 143,
+        "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+        "original_incident_survives_clear": true,
+        "parent_pid": 22721,
+        "public_cli_update_resume_or_reviewed_plan_verification": false,
+        "read_committed_outputs": [
+          {
+            "key_hex": "00ff",
+            "offset": 0,
+            "value": {
+              "amount": 120,
+              "id": "a"
+            }
+          },
+          {
+            "key_hex": "01fe",
+            "offset": 2,
+            "value": {
+              "amount": 250,
+              "id": "after-high"
+            }
+          },
+          {
+            "key_hex": null,
+            "offset": 3,
+            "value": {
+              "amount": 300,
+              "id": "after-null-key"
+            }
+          }
+        ],
+        "resume_id": "7b94d6e7-bc88-4560-a410-fec050fb26b1",
+        "resumed_control_version": 5,
+        "same_topic_and_cluster_ids": true,
+        "same_volume": {
+          "application_id": "streamt-28b900ddd4f5003cf8ccf826a8b5afd3",
+          "backend_identity": "kafka-streams-docker:v1:dd68877e8438f71e181199e9f4bbd524fc251c796f20887a181a1083fa803869",
+          "created_at": "2026-09-05T22:56:48Z",
+          "driver": "local",
+          "name": "streamt-28b900ddd4f5003cf8ccf826a8b5afd3-state",
+          "token": "439478a9-1e68-45b9-a555-2a27ce49f9b6"
+        },
+        "source_control_version": 4,
+        "synthetic_test_internal_reviewed_checksum": "sha256:abf2a081ef70d78966491f740fd79c958a9e87ae41d0c8aff2e0ef057a12798b",
+        "worker_one_exit_was_controlled_not_sigkill": true,
+        "worker_one_provider_mutations": [
+          [
+            "container",
+            "kill",
+            "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065"
+          ],
+          [
+            "container",
+            "rm",
+            "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065"
+          ],
+          [
+            "container",
+            "create"
+          ]
+        ],
+        "worker_pids": [
+          23132,
+          24687
+        ],
+        "worker_two_provider_mutations": [
+          [
+            "container",
+            "start",
+            "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e"
+          ]
+        ]
+      },
+      "workers": [
+        {
+          "phase": "interrupt",
+          "worker_pid": 23132,
+          "real_local_lock_held_for_interruption_record": true,
+          "lock_context_exited_before_worker_exit": true,
+          "injected_create_ack_loss": true,
+          "candidate_id": "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+          "candidate_never_started": true,
+          "prior_container_absent": true,
+          "created_container_ids": [
+            "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e"
+          ],
+          "docker_commands": [
+            [
+              "container",
+              "kill",
+              "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065"
+            ],
+            [
+              "container",
+              "rm",
+              "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065"
+            ],
+            [
+              "container",
+              "create"
+            ]
+          ],
+          "forbidden_provider_write_attempts": [],
+          "state_store": {
+            "backend": "local",
+            "store_id": "995050fd-b6c3-59f8-ba61-e73fa5ef0394"
+          },
+          "interrupted_control": {
+            "address": "streamt-state://local/journey-fresh-faf26e664869/default",
+            "control_version": 4,
+            "status": "recovery_required",
+            "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+            "prior_state_serial": 1,
+            "prior_state_checksum": "sha256:aa66ae70ebd4678f6e497bc0232dd970a4d573f0d0e278281a184592916a7ec3",
+            "reviewed_plan_checksum": "sha256:abf2a081ef70d78966491f740fd79c958a9e87ae41d0c8aff2e0ef057a12798b",
+            "progress_count": 3,
+            "recovery": {
+              "failed_at": "2026-09-05T22:57:02.165134Z",
+              "failure_code": "runner_create_ack_lost",
+              "last_completed_action_index": null,
+              "mutation_may_have_succeeded": true,
+              "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983"
+            }
+          }
+        },
+        {
+          "phase": "resume",
+          "worker_pid": 24687,
+          "fresh_process_and_reacquired_lock": true,
+          "lock_context_exited_before_worker_exit": true,
+          "candidate_id": "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+          "docker_mutations": [
+            [
+              "container",
+              "start",
+              "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e"
+            ]
+          ],
+          "forbidden_write_attempts": [],
+          "original_intent_and_offsets_retained": true,
+          "completed_control_before_commit": {
+            "control_version": 5,
+            "status": "in_progress",
+            "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+            "progress_count": 5,
+            "resume_history": [
+              {
+                "actor": "resume-probe-worker-two",
+                "address": "streamt-state://local/journey-fresh-faf26e664869/default",
+                "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+                "prior_state_checksum": "sha256:aa66ae70ebd4678f6e497bc0232dd970a4d573f0d0e278281a184592916a7ec3",
+                "prior_state_serial": 1,
+                "progress_count": 3,
+                "recovery": {
+                  "failed_at": "2026-09-05T22:57:02.165134Z",
+                  "failure_code": "runner_create_ack_lost",
+                  "last_completed_action_index": null,
+                  "mutation_may_have_succeeded": true,
+                  "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983"
+                },
+                "resume_id": "7b94d6e7-bc88-4560-a410-fec050fb26b1",
+                "resumed_at": "2026-09-05T22:57:04.779256Z",
+                "source_control_checksum": "sha256:fe33182ebda9b185b9309a769f6d0b28672c082d8f8e983592ce808a29e92824",
+                "store": {
+                  "backend": "local",
+                  "store_id": "995050fd-b6c3-59f8-ba61-e73fa5ef0394"
+                }
+              }
+            ]
+          },
+          "final_control": {
+            "address": "streamt-state://local/journey-fresh-faf26e664869/default",
+            "control_version": 3,
+            "intent": null,
+            "progress": [],
+            "recovery": null,
+            "status": "clear"
+          },
+          "final_state": {
+            "serial": 2,
+            "project": "journey-fresh-faf26e664869",
+            "environment": "default",
+            "updated_resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+            "updated_resource": {
+              "artifact_checksum": "sha256:750036d4a6c29d49fa7bd3fe319f1177b91134aed5a925734e23a4e45c0f5f48",
+              "backend": "kafka-streams-docker:v1:dd68877e8438f71e181199e9f4bbd524fc251c796f20887a181a1083fa803869",
+              "ownership": "managed",
+              "physical_name": "streamt-28b900ddd4f5003cf8ccf826a8b5afd3"
+            }
+          },
+          "resume_history_after_clear": {
+            "address": "streamt-state://local/journey-fresh-faf26e664869/default",
+            "events": [
+              {
+                "checksum": "sha256:8985e0a3aeb2402c49184e716b2a2aab8bb172bd41421c3de2f99ddb7115373c",
+                "event_version": 2,
+                "kind": "operation_resumed",
+                "previous_checksum": null,
+                "record": {
+                  "actor": "resume-probe-worker-two",
+                  "address": "streamt-state://local/journey-fresh-faf26e664869/default",
+                  "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+                  "prior_state_checksum": "sha256:aa66ae70ebd4678f6e497bc0232dd970a4d573f0d0e278281a184592916a7ec3",
+                  "prior_state_serial": 1,
+                  "progress_count": 3,
+                  "recovery": {
+                    "failed_at": "2026-09-05T22:57:02.165134Z",
+                    "failure_code": "runner_create_ack_lost",
+                    "last_completed_action_index": null,
+                    "mutation_may_have_succeeded": true,
+                    "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983"
+                  },
+                  "resume_id": "7b94d6e7-bc88-4560-a410-fec050fb26b1",
+                  "resumed_at": "2026-09-05T22:57:04.779256Z",
+                  "source_control_checksum": "sha256:fe33182ebda9b185b9309a769f6d0b28672c082d8f8e983592ce808a29e92824",
+                  "store": {
+                    "backend": "local",
+                    "store_id": "995050fd-b6c3-59f8-ba61-e73fa5ef0394"
+                  }
+                },
+                "sequence": 0
+              }
+            ],
+            "history_version": 2
+          }
+        }
+      ],
+      "cleanup": {
+        "complete": true,
+        "removed": [
+          {
+            "application_id": "streamt-28b900ddd4f5003cf8ccf826a8b5afd3",
+            "exit_code_after_stop": 143,
+            "id": "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+            "kind": "runner"
+          },
+          {
+            "kind": "runner-state-volume",
+            "name": "streamt-28b900ddd4f5003cf8ccf826a8b5afd3-state"
+          },
+          {
+            "anonymous_volumes_removed": [
+              "e547ba5fab9f49f25d0126c7ea1056011f6b81d12057a46ccbe5c5105ecff289",
+              "7555b351a86196e03894bda4ec87e6b0abb8a10649c2c3a0957edb2d4cbd61ce",
+              "b27840e142c236ac1e95b99050612b7b145d9683bda163ea991a390518af05e0"
+            ],
+            "id": "cc0df0888ad3beb6837bcbc12fad81ce4dd39395e57840d332ddf86b0557b141",
+            "kind": "broker"
+          },
+          {
+            "id": "ed79baa49d7973120f737c54bdd0ad1e2bd491f372ea97cded82bbea973418cf",
+            "kind": "network"
+          }
+        ],
+        "term_only_no_force_or_stop_escalation": true
+      },
+      "independent_post_run_absence_check": {
+        "mode": "source",
+        "run_id": "faf26e664869",
+        "containers_absent": [
+          "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065",
+          "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+          "cc0df0888ad3beb6837bcbc12fad81ce4dd39395e57840d332ddf86b0557b141"
+        ],
+        "volumes_absent": [
+          "streamt-28b900ddd4f5003cf8ccf826a8b5afd3-state",
+          "e547ba5fab9f49f25d0126c7ea1056011f6b81d12057a46ccbe5c5105ecff289",
+          "7555b351a86196e03894bda4ec87e6b0abb8a10649c2c3a0957edb2d4cbd61ce",
+          "b27840e142c236ac1e95b99050612b7b145d9683bda163ea991a390518af05e0"
+        ],
+        "networks_absent": [
+          "ed79baa49d7973120f737c54bdd0ad1e2bd491f372ea97cded82bbea973418cf"
+        ],
+        "successful_docker_inventory_reads": true
+      },
+      "checkpoint_progress": [
+        {
+          "action": "update",
+          "action_index": 0,
+          "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+          "recorded_at": "2026-09-05T22:56:55.723908Z",
+          "resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+          "status": "started",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": "sha256:a83ede373a4497046bb8cfa20a4f260c2bdf89b02bab76f0370e9ee5dae01e8b",
+            "exit_code": 143,
+            "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+            "phase": "old_closed",
+            "prior_container_id": "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065",
+            "progress": {
+              "active_members": 0,
+              "cluster_id": "3LsbphSDTCOW8TGNjTW9-A",
+              "group_exists": true,
+              "input_topic_id": "M8i_thtXS6SaYuW0E-CZIQ",
+              "output_topic_id": "2ldXwWOhSzWUvLrkhi0_eQ",
+              "partitions": [
+                {
+                  "committed": 5,
+                  "high": 5,
+                  "low": 0,
+                  "partition": 0
+                }
+              ]
+            },
+            "replacement_container_id": null,
+            "version": 1
+          },
+          "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+          "recorded_at": "2026-09-05T22:56:58.102882Z",
+          "resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": null,
+            "exit_code": null,
+            "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+            "phase": "old_removed",
+            "prior_container_id": "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065",
+            "progress": null,
+            "replacement_container_id": null,
+            "version": 1
+          },
+          "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+          "recorded_at": "2026-09-05T22:57:00.473892Z",
+          "resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": null,
+            "exit_code": null,
+            "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+            "phase": "replacement_created",
+            "prior_container_id": "a45c3fda5c6363eefb970804bbb615cef602ba77230002a36b7f03f72eedf065",
+            "progress": null,
+            "replacement_container_id": "850a6473a311bff470844fe8cacf479fd6df99688bc96fb8743d3a62a334c21e",
+            "version": 1
+          },
+          "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+          "recorded_at": "2026-09-05T22:57:05.930428Z",
+          "resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "operation_id": "db17166a-b8e5-4cce-9c6c-25e180f46983",
+          "recorded_at": "2026-09-05T22:57:08.891056Z",
+          "resource_id": "streamt://journey-fresh-faf26e664869/default/kafka_streams_job/eligible_orders",
+          "status": "completed",
+          "succeeded": true
+        }
+      ]
+    },
+    {
+      "mode": "installed",
+      "run_id": "768d54fba5cf",
+      "accepted": true,
+      "kafka_client_version": "2.15.0",
+      "librdkafka_version": "2.15.0",
+      "sdk_binary": {
+        "name": "cimpl.cpython-312-darwin.so",
+        "sha256": "2376ae486a39ff36c230288044ccdac5d4f0dd6b03e40ca7562ac5bb694e73a9"
+      },
+      "raw_evidence": {
+        "path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/evidence.json",
+        "sha256": "710356c19396649f84ed49b740099a846f8d43f5e350060398ad2ea0bf86eb7b"
+      },
+      "raw_worker_records": [
+        {
+          "phase": "interrupt",
+          "path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-interrupt.json",
+          "sha256": "ac37e96ef78883f4750a16f682d47bd87d39a30e66cf18012692775c41953056",
+          "stdout_path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-interrupt.stdout",
+          "stderr_path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-interrupt.stderr"
+        },
+        {
+          "phase": "resume",
+          "path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-resume.json",
+          "sha256": "fb327807928814be2278c19d7cb296f6346a34310b1aeaad0e4c701ea74fecbe",
+          "stdout_path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-resume.stdout",
+          "stderr_path": "/tmp/streamt-resume-final.TJF9YQ/evidence/streamt-journey-installed-768d54fba5cf-6f86ns6c/worker-resume.stderr"
+        }
+      ],
+      "source_unchanged_during_run": true,
+      "infrastructure": {
+        "bootstrap": "127.0.0.1:51565",
+        "broker": "streamt-journey-768d54fba5cf-broker",
+        "broker_id": "fb24b58f0b36a5f8d883618b4a4fcb13963c86558106271a76bdd6a6bc08d7d7",
+        "cluster_id": "pPxa94AZTcKUFSWrFgQDbQ",
+        "network": "streamt-journey-768d54fba5cf",
+        "network_id": "ab973e6d931089f1dfb1450f5572a5c65aa5a842f7c4e8dea1d12268909572eb"
+      },
+      "result": {
+        "accepted": true,
+        "audit_history_version": 2,
+        "candidate_id": "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+        "committed_after": 8,
+        "committed_before": 5,
+        "desired_ownership_committed": true,
+        "final_control_status": "clear",
+        "forbidden_provider_write_attempts": [],
+        "old_close_raw_exit_code": 143,
+        "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+        "original_incident_survives_clear": true,
+        "parent_pid": 26413,
+        "public_cli_update_resume_or_reviewed_plan_verification": false,
+        "read_committed_outputs": [
+          {
+            "key_hex": "00ff",
+            "offset": 0,
+            "value": {
+              "amount": 120,
+              "id": "a"
+            }
+          },
+          {
+            "key_hex": "01fe",
+            "offset": 2,
+            "value": {
+              "amount": 250,
+              "id": "after-high"
+            }
+          },
+          {
+            "key_hex": null,
+            "offset": 3,
+            "value": {
+              "amount": 300,
+              "id": "after-null-key"
+            }
+          }
+        ],
+        "resume_id": "e4e1d49a-8954-4543-b052-a425dfc6eebd",
+        "resumed_control_version": 5,
+        "same_topic_and_cluster_ids": true,
+        "same_volume": {
+          "application_id": "streamt-62d4b61aa7abc2a9201d4f2db971e91f",
+          "backend_identity": "kafka-streams-docker:v1:bd015afb3e53834f1c47e58ceb97746aaf4e52b84fc543555f6d1289efbd59cc",
+          "created_at": "2026-09-05T22:58:31Z",
+          "driver": "local",
+          "name": "streamt-62d4b61aa7abc2a9201d4f2db971e91f-state",
+          "token": "2bbfc352-b692-442b-ac40-e43cae4320fa"
+        },
+        "source_control_version": 4,
+        "synthetic_test_internal_reviewed_checksum": "sha256:8e11c01a78b49baf587e8af9c322e6c1b8b30eb6f0ba799996ca916d5b870631",
+        "worker_one_exit_was_controlled_not_sigkill": true,
+        "worker_one_provider_mutations": [
+          [
+            "container",
+            "kill",
+            "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c"
+          ],
+          [
+            "container",
+            "rm",
+            "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c"
+          ],
+          [
+            "container",
+            "create"
+          ]
+        ],
+        "worker_pids": [
+          26890,
+          28402
+        ],
+        "worker_two_provider_mutations": [
+          [
+            "container",
+            "start",
+            "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f"
+          ]
+        ]
+      },
+      "workers": [
+        {
+          "phase": "interrupt",
+          "worker_pid": 26890,
+          "real_local_lock_held_for_interruption_record": true,
+          "lock_context_exited_before_worker_exit": true,
+          "injected_create_ack_loss": true,
+          "candidate_id": "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+          "candidate_never_started": true,
+          "prior_container_absent": true,
+          "created_container_ids": [
+            "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f"
+          ],
+          "docker_commands": [
+            [
+              "container",
+              "kill",
+              "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c"
+            ],
+            [
+              "container",
+              "rm",
+              "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c"
+            ],
+            [
+              "container",
+              "create"
+            ]
+          ],
+          "forbidden_provider_write_attempts": [],
+          "state_store": {
+            "backend": "local",
+            "store_id": "eaf78c04-74b8-5ae4-ad27-aac3de608a83"
+          },
+          "interrupted_control": {
+            "address": "streamt-state://local/journey-fresh-768d54fba5cf/default",
+            "control_version": 4,
+            "status": "recovery_required",
+            "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+            "prior_state_serial": 1,
+            "prior_state_checksum": "sha256:cacd0c4b8fcdd5cef708bdaf8f435a9c041d55702b794640b145ceb9a4ca385f",
+            "reviewed_plan_checksum": "sha256:8e11c01a78b49baf587e8af9c322e6c1b8b30eb6f0ba799996ca916d5b870631",
+            "progress_count": 3,
+            "recovery": {
+              "failed_at": "2026-09-05T22:58:43.865368Z",
+              "failure_code": "runner_create_ack_lost",
+              "last_completed_action_index": null,
+              "mutation_may_have_succeeded": true,
+              "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163"
+            }
+          }
+        },
+        {
+          "phase": "resume",
+          "worker_pid": 28402,
+          "fresh_process_and_reacquired_lock": true,
+          "lock_context_exited_before_worker_exit": true,
+          "candidate_id": "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+          "docker_mutations": [
+            [
+              "container",
+              "start",
+              "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f"
+            ]
+          ],
+          "forbidden_write_attempts": [],
+          "original_intent_and_offsets_retained": true,
+          "completed_control_before_commit": {
+            "control_version": 5,
+            "status": "in_progress",
+            "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+            "progress_count": 5,
+            "resume_history": [
+              {
+                "actor": "resume-probe-worker-two",
+                "address": "streamt-state://local/journey-fresh-768d54fba5cf/default",
+                "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+                "prior_state_checksum": "sha256:cacd0c4b8fcdd5cef708bdaf8f435a9c041d55702b794640b145ceb9a4ca385f",
+                "prior_state_serial": 1,
+                "progress_count": 3,
+                "recovery": {
+                  "failed_at": "2026-09-05T22:58:43.865368Z",
+                  "failure_code": "runner_create_ack_lost",
+                  "last_completed_action_index": null,
+                  "mutation_may_have_succeeded": true,
+                  "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163"
+                },
+                "resume_id": "e4e1d49a-8954-4543-b052-a425dfc6eebd",
+                "resumed_at": "2026-09-05T22:58:45.979905Z",
+                "source_control_checksum": "sha256:39f547895096bdcac66b959511107fe201688c582d8410b285d4dceaf0606901",
+                "store": {
+                  "backend": "local",
+                  "store_id": "eaf78c04-74b8-5ae4-ad27-aac3de608a83"
+                }
+              }
+            ]
+          },
+          "final_control": {
+            "address": "streamt-state://local/journey-fresh-768d54fba5cf/default",
+            "control_version": 3,
+            "intent": null,
+            "progress": [],
+            "recovery": null,
+            "status": "clear"
+          },
+          "final_state": {
+            "serial": 2,
+            "project": "journey-fresh-768d54fba5cf",
+            "environment": "default",
+            "updated_resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+            "updated_resource": {
+              "artifact_checksum": "sha256:2e00e0cd0d1aec6a5601b5afb12341944ab79f7f2e9ca61f1e3772a28a1741e5",
+              "backend": "kafka-streams-docker:v1:bd015afb3e53834f1c47e58ceb97746aaf4e52b84fc543555f6d1289efbd59cc",
+              "ownership": "managed",
+              "physical_name": "streamt-62d4b61aa7abc2a9201d4f2db971e91f"
+            }
+          },
+          "resume_history_after_clear": {
+            "address": "streamt-state://local/journey-fresh-768d54fba5cf/default",
+            "events": [
+              {
+                "checksum": "sha256:a4c54411e6f5362903a1c93244db90e588a34622994eabd64f72dc267859ff7c",
+                "event_version": 2,
+                "kind": "operation_resumed",
+                "previous_checksum": null,
+                "record": {
+                  "actor": "resume-probe-worker-two",
+                  "address": "streamt-state://local/journey-fresh-768d54fba5cf/default",
+                  "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+                  "prior_state_checksum": "sha256:cacd0c4b8fcdd5cef708bdaf8f435a9c041d55702b794640b145ceb9a4ca385f",
+                  "prior_state_serial": 1,
+                  "progress_count": 3,
+                  "recovery": {
+                    "failed_at": "2026-09-05T22:58:43.865368Z",
+                    "failure_code": "runner_create_ack_lost",
+                    "last_completed_action_index": null,
+                    "mutation_may_have_succeeded": true,
+                    "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163"
+                  },
+                  "resume_id": "e4e1d49a-8954-4543-b052-a425dfc6eebd",
+                  "resumed_at": "2026-09-05T22:58:45.979905Z",
+                  "source_control_checksum": "sha256:39f547895096bdcac66b959511107fe201688c582d8410b285d4dceaf0606901",
+                  "store": {
+                    "backend": "local",
+                    "store_id": "eaf78c04-74b8-5ae4-ad27-aac3de608a83"
+                  }
+                },
+                "sequence": 0
+              }
+            ],
+            "history_version": 2
+          }
+        }
+      ],
+      "cleanup": {
+        "complete": true,
+        "removed": [
+          {
+            "application_id": "streamt-62d4b61aa7abc2a9201d4f2db971e91f",
+            "exit_code_after_stop": 143,
+            "id": "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+            "kind": "runner"
+          },
+          {
+            "kind": "runner-state-volume",
+            "name": "streamt-62d4b61aa7abc2a9201d4f2db971e91f-state"
+          },
+          {
+            "anonymous_volumes_removed": [
+              "1e025a9be1ee168740158892eadcc99623c321862d271bb15315365a80072faa",
+              "aba181d177beef46f5ac85260efdfae56e98a7ab9de3d5941d697b647312b737",
+              "c26c81cf5c0cdbc662a8d5ffa3103c9098f1481b9a0d9ed77ce349bcd0a1cf93"
+            ],
+            "id": "fb24b58f0b36a5f8d883618b4a4fcb13963c86558106271a76bdd6a6bc08d7d7",
+            "kind": "broker"
+          },
+          {
+            "id": "ab973e6d931089f1dfb1450f5572a5c65aa5a842f7c4e8dea1d12268909572eb",
+            "kind": "network"
+          }
+        ],
+        "term_only_no_force_or_stop_escalation": true
+      },
+      "independent_post_run_absence_check": {
+        "mode": "installed",
+        "run_id": "768d54fba5cf",
+        "containers_absent": [
+          "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c",
+          "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+          "fb24b58f0b36a5f8d883618b4a4fcb13963c86558106271a76bdd6a6bc08d7d7"
+        ],
+        "volumes_absent": [
+          "streamt-62d4b61aa7abc2a9201d4f2db971e91f-state",
+          "1e025a9be1ee168740158892eadcc99623c321862d271bb15315365a80072faa",
+          "aba181d177beef46f5ac85260efdfae56e98a7ab9de3d5941d697b647312b737",
+          "c26c81cf5c0cdbc662a8d5ffa3103c9098f1481b9a0d9ed77ce349bcd0a1cf93"
+        ],
+        "networks_absent": [
+          "ab973e6d931089f1dfb1450f5572a5c65aa5a842f7c4e8dea1d12268909572eb"
+        ],
+        "successful_docker_inventory_reads": true
+      },
+      "checkpoint_progress": [
+        {
+          "action": "update",
+          "action_index": 0,
+          "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+          "recorded_at": "2026-09-05T22:58:38.694047Z",
+          "resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+          "status": "started",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": "sha256:b5ae8f779a09fa6b439658fe3fc917042d166ee60cabab3c042ae14fc92df751",
+            "exit_code": 143,
+            "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+            "phase": "old_closed",
+            "prior_container_id": "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c",
+            "progress": {
+              "active_members": 0,
+              "cluster_id": "pPxa94AZTcKUFSWrFgQDbQ",
+              "group_exists": true,
+              "input_topic_id": "rB8RhXgGQ0uDDiKnQqoKNg",
+              "output_topic_id": "CnjIeVxVQPyF4JvnX6DCFQ",
+              "partitions": [
+                {
+                  "committed": 5,
+                  "high": 5,
+                  "low": 0,
+                  "partition": 0
+                }
+              ]
+            },
+            "replacement_container_id": null,
+            "version": 1
+          },
+          "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+          "recorded_at": "2026-09-05T22:58:40.671915Z",
+          "resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": null,
+            "exit_code": null,
+            "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+            "phase": "old_removed",
+            "prior_container_id": "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c",
+            "progress": null,
+            "replacement_container_id": null,
+            "version": 1
+          },
+          "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+          "recorded_at": "2026-09-05T22:58:42.381570Z",
+          "resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "kafka_streams_checkpoint": {
+            "action_index": 0,
+            "closed_plan_hash": null,
+            "exit_code": null,
+            "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+            "phase": "replacement_created",
+            "prior_container_id": "5d2db115537fb5bb0752a9c2bfdf99a3fa2896f46c3b66cbde17ad3c6d560e1c",
+            "progress": null,
+            "replacement_container_id": "ab9140bd23f3747b98de1c93a14e55134d43793b64f5e63323a31973a60e816f",
+            "version": 1
+          },
+          "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+          "recorded_at": "2026-09-05T22:58:46.844916Z",
+          "resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+          "status": "checkpoint",
+          "succeeded": null
+        },
+        {
+          "action": "update",
+          "action_index": 0,
+          "operation_id": "dfbb73f6-79fd-4fb3-95e6-b654dd181163",
+          "recorded_at": "2026-09-05T22:58:49.559753Z",
+          "resource_id": "streamt://journey-fresh-768d54fba5cf/default/kafka_streams_job/eligible_orders",
+          "status": "completed",
+          "succeeded": true
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "This invokes internal backend, observer and executor APIs; it does not expose or verify public CLI update/resume, a genuine reviewed plan, or a modified on-disk SQL project.",
+    "Worker one deliberately records recovery_required and exits cleanly. The fresh-worker restart and lock reacquisition are real, but abrupt death, SIGKILL and lock loss during a write are not injected here.",
+    "The failed response is injected after one successful real Docker create. Other crash prefixes and archive/control write failures are covered separately by unit tests, not by this real-provider fixture.",
+    "Only the local filesystem state backend is exercised by this Docker/Kafka probe; PostgreSQL resume has separate verification.",
+    "One local Docker broker, one partition and PLAINTEXT do not establish authenticated deployments, distributed fencing, throughput, retention-loss recovery or comprehensive lifecycle exactly-once guarantees.",
+    "The reused runner selects exactly_once_v2; the observed record and offset results are bounded evidence, not a general production-safety claim.",
+    "The full close contract is evaluated by the real observer before journaling. This probe records the raw exit code and checkpoint offset vector, but does not duplicate the standalone observer probe's raw close status and Docker timestamp surface.",
+    "Fixture containers, data volumes and networks were removed after exact ownership checks. Their demo data is not recoverable; raw evidence and worker records remain in the recorded temporary directories."
+  ]
+}

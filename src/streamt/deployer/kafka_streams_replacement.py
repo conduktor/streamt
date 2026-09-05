@@ -234,7 +234,7 @@ def decide_replacement(
         return ReplacementDecision("blocked", reason, requires_resume_authority=resume_authority)
 
     intent = control.intent
-    if control.control_version != 4 or intent is None or action_index >= len(intent.actions):
+    if control.control_version not in (4, 5) or intent is None or action_index >= len(intent.actions):
         return blocked("exact_v4_replacement_intent_required")
     if control.status not in {"in_progress", "recovery_required"}:
         return blocked("active_operation_required")

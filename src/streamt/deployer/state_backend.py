@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 LOCAL_STATE_NAMESPACE = "local"
 ABSENT_STATE_REVISION = "ABSENT"
 CURRENT_CONTROL_VERSION = 3
+RESUMABLE_CONTROL_VERSION = 5
+MAX_OPERATION_RESUMES = 32
 CURRENT_RECOVERY_HISTORY_VERSION = 1
 CURRENT_RECOVERY_HISTORY_EVENT_VERSION = 1
 MAX_LOCAL_RECOVERY_HISTORY_BYTES = 1024 * 1024
@@ -73,6 +75,7 @@ _INLINE_SECRET = re.compile(
 # Unrelated operations deliberately keep their existing v3 wire format. Only
 # evidenced runner replacements opt into v4; old readers then fail closed.
 _CONTROL_VERSIONS = (1, 2, 3, KAFKA_STREAMS_CONTROL_VERSION)
+_CONTROL_ENVELOPE_VERSIONS = (*_CONTROL_VERSIONS, RESUMABLE_CONTROL_VERSION)
 
 
 class StateBackendError(StateError):
@@ -1069,6 +1072,107 @@ class RecoveryRecord:
         )
 
 
+@dataclass(frozen=True)
+class OperationResumeRecord:
+    """Explicit same-operation authority that retains the interrupted incident."""
+
+    resume_id: str
+    operation_id: str
+    address: StateAddress
+    store: StateStoreIdentity
+    prior_state_serial: int
+    prior_state_checksum: str
+    source_control_checksum: str
+    progress_count: int
+    actor: str
+    resumed_at: str
+    recovery: RecoveryRecord
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.resume_id, "resume resume_id")
+        _require_uuid(self.operation_id, "resume operation_id")
+        if self.resume_id == self.operation_id:
+            raise StateFormatError("resume identity must differ from the original operation")
+        if type(self.address) is not StateAddress or type(self.store) is not StateStoreIdentity:
+            raise StateFormatError("resume requires exact state address and store identities")
+        if type(self.prior_state_serial) is not int or self.prior_state_serial < 0:
+            raise StateFormatError("resume prior_state_serial must be non-negative")
+        _require_checksum(self.prior_state_checksum, "resume prior_state_checksum")
+        _require_checksum(self.source_control_checksum, "resume source_control_checksum")
+        if type(self.progress_count) is not int or not 0 <= self.progress_count <= 4:
+            raise StateFormatError("resume progress_count must name an unfinished runner boundary")
+        _require_safe_text(self.actor, "resume actor", maximum=128)
+        if (
+            _INLINE_SECRET.search(self.actor) or _CREDENTIAL_URL.search(self.actor)
+            or _POSTGRES_URL.search(self.actor)
+            or any(unicodedata.category(character) in {"Cc", "Cs"} for character in self.actor)
+        ):
+            raise StateFormatError("resume actor must not contain credentials or control characters")
+        _require_timestamp(self.resumed_at, "resume resumed_at")
+        if type(self.recovery) is not RecoveryRecord or self.recovery.operation_id != self.operation_id:
+            raise StateFormatError("resume must retain the same operation's exact recovery record")
+        if self.recovery.last_completed_action_index is not None:
+            raise StateFormatError("a completed runner operation cannot be resumed")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "resume_id": self.resume_id,
+            "operation_id": self.operation_id,
+            "address": self.address.uri,
+            "store": {"backend": self.store.backend, "store_id": self.store.store_id},
+            "prior_state_serial": self.prior_state_serial,
+            "prior_state_checksum": self.prior_state_checksum,
+            "source_control_checksum": self.source_control_checksum,
+            "progress_count": self.progress_count,
+            "actor": self.actor,
+            "resumed_at": self.resumed_at,
+            "recovery": self.recovery.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> OperationResumeRecord:
+        data = _strict_object(value, label="operation resume record", expected={
+            "resume_id", "operation_id", "address", "store", "prior_state_serial",
+            "prior_state_checksum", "source_control_checksum", "progress_count", "actor",
+            "resumed_at", "recovery",
+        })
+        store = _strict_object(data["store"], label="resume store", expected={"backend", "store_id"})
+        return cls(
+            resume_id=cast(str, data["resume_id"]),
+            operation_id=cast(str, data["operation_id"]),
+            address=StateAddress.parse(data["address"]),
+            store=StateStoreIdentity(cast(str, store["backend"]), cast(str, store["store_id"])),
+            prior_state_serial=cast(int, data["prior_state_serial"]),
+            prior_state_checksum=cast(str, data["prior_state_checksum"]),
+            source_control_checksum=cast(str, data["source_control_checksum"]),
+            progress_count=cast(int, data["progress_count"]),
+            actor=cast(str, data["actor"]),
+            resumed_at=cast(str, data["resumed_at"]),
+            recovery=RecoveryRecord.from_dict(data["recovery"]),
+        )
+
+    @classmethod
+    def create(
+        cls, snapshot: OperationSnapshot, *, resume_id: str, actor: str, resumed_at: str,
+    ) -> OperationResumeRecord:
+        if type(snapshot) is not OperationSnapshot:
+            raise StateFormatError("resume requires a full operation snapshot")
+        control = snapshot.control.control
+        if control.status != "recovery_required" or control.intent is None or control.recovery is None:
+            raise StateBackendRecoveryRequiredError("resume requires a recorded interruption")
+        result = cls(
+            resume_id=resume_id, operation_id=control.intent.operation_id,
+            address=snapshot.address, store=snapshot.state.store,
+            prior_state_serial=snapshot.state.state_serial,
+            prior_state_checksum=state_checksum(snapshot.state.state),
+            source_control_checksum=_control_revision(control).value,
+            progress_count=len(control.progress), actor=actor, resumed_at=resumed_at,
+            recovery=control.recovery,
+        )
+        _validate_resume_transition_inputs(snapshot, result)
+        return result
+
+
 ControlStatus = Literal["clear", "in_progress", "recovery_required"]
 
 
@@ -1082,25 +1186,32 @@ class OperationControlState:
     progress: tuple[OperationProgress, ...] = ()
     recovery: RecoveryRecord | None = None
     control_version: int = CURRENT_CONTROL_VERSION
+    resume_history: tuple[OperationResumeRecord, ...] = ()
 
     def __post_init__(self) -> None:
         # Provider implementations reconstruct controls around the immutable
         # intent. Preserve a loaded legacy intent's version and canonical checksum.
+        if self.resume_history and self.control_version == CURRENT_CONTROL_VERSION:
+            object.__setattr__(self, "control_version", RESUMABLE_CONTROL_VERSION)
         if (
             self.control_version == CURRENT_CONTROL_VERSION
             and self.intent is not None
             and self.intent._wire_version in (1, 2, KAFKA_STREAMS_CONTROL_VERSION)
         ):
             object.__setattr__(self, "control_version", self.intent._wire_version)
-        if type(self.control_version) is not int or self.control_version not in _CONTROL_VERSIONS:
+        if type(self.control_version) is not int or self.control_version not in _CONTROL_ENVELOPE_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {self.control_version!r}; "
-                "expected 1, 2, 3, or 4"
+                "expected 1, 2, 3, 4, or 5"
             )
         if self.status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
+        if type(self.resume_history) is not tuple or len(self.resume_history) > MAX_OPERATION_RESUMES:
+            raise StateFormatError("resume history must be a bounded immutable tuple")
+        if bool(self.resume_history) != (self.control_version == RESUMABLE_CONTROL_VERSION):
+            raise StateFormatError("control version 5 requires resume history; older versions cannot contain it")
         if self.status == "clear":
-            if self.intent is not None or self.progress or self.recovery is not None:
+            if self.intent is not None or self.progress or self.recovery is not None or self.resume_history:
                 raise StateFormatError("clear control state cannot contain operation data")
             return
         if self.intent is None:
@@ -1115,7 +1226,7 @@ class OperationControlState:
         ):
             raise StateFormatError("control version 2 cannot contain Connector action evidence")
         for action in self.intent.actions:
-            action.to_dict(control_version=self.control_version)
+            action.to_dict(control_version=self.action_wire_version)
         if self.control_version >= 2:
             for action in self.intent.actions:
                 try:
@@ -1167,6 +1278,7 @@ class OperationControlState:
             if self.recovery.operation_id != self.intent.operation_id:
                 raise StateFormatError("recovery record operation_id does not match intent")
         self._validate_progress()
+        self._validate_resume_history()
         if self.recovery is not None:
             safely_completed = [
                 item.action_index
@@ -1191,7 +1303,7 @@ class OperationControlState:
         for item in self.progress:
             if type(item) is not OperationProgress:
                 raise StateFormatError("operation progress requires exact typed boundaries")
-            item.to_dict(control_version=self.control_version)
+            item.to_dict(control_version=self.action_wire_version)
             if item.operation_id != self.intent.operation_id:
                 raise StateFormatError("progress operation_id does not match intent")
             if item.action_index >= len(self.intent.actions):
@@ -1242,6 +1354,56 @@ class OperationControlState:
             previous_index = item.action_index
 
     @property
+    def action_wire_version(self) -> int:
+        """Resumed controls retain the original reviewed v4 action bytes."""
+        return min(self.control_version, KAFKA_STREAMS_CONTROL_VERSION)
+
+    def _validate_resume_history(self) -> None:
+        if not self.resume_history:
+            return
+        intent = self.intent
+        if (
+            intent is None or intent._wire_version != KAFKA_STREAMS_CONTROL_VERSION
+            or intent.kind != "apply" or intent.reviewed_plan_checksum is None
+            or len(intent.actions) != 1 or intent.actions[0].action != "update"
+            or type(intent.actions[0].kafka_streams_evidence) is not KafkaStreamsActionEvidence
+        ):
+            raise StateFormatError("resume history requires one reviewed v4 runner replacement")
+        seen: set[str] = set()
+        previous_count = 0
+        store = self.resume_history[0].store if type(self.resume_history[0]) is OperationResumeRecord else None
+        for index, record in enumerate(self.resume_history):
+            if type(record) is not OperationResumeRecord:
+                raise StateFormatError("resume history requires exact resume records")
+            if record.resume_id in seen:
+                raise StateFormatError("resume history contains a duplicate authorization")
+            if record.address != self.address or record.operation_id != intent.operation_id or record.store != store:
+                raise StateIdentityError("resume history belongs to another operation or state store")
+            if record.prior_state_serial != intent.prior_state_serial or record.prior_state_checksum != intent.prior_state_checksum:
+                raise StateFormatError("resume history must preserve the original protected state")
+            if not previous_count <= record.progress_count <= len(self.progress):
+                raise StateFormatError("resume history does not follow durable progress")
+            prefix = self.progress[:record.progress_count]
+            if any(item.status == "completed" for item in prefix):
+                raise StateFormatError("a terminal boundary cannot be resumed")
+            # Reconstruct bytes directly: constructing a nested control here
+            # would recursively revalidate all earlier attempts.
+            source: dict[str, object] = {
+                "control_version": RESUMABLE_CONTROL_VERSION if index else KAFKA_STREAMS_CONTROL_VERSION,
+                "address": self.address.uri, "status": "recovery_required",
+                "intent": intent.to_dict(control_version=KAFKA_STREAMS_CONTROL_VERSION),
+                "progress": [item.to_dict(control_version=KAFKA_STREAMS_CONTROL_VERSION) for item in prefix],
+                "recovery": record.recovery.to_dict(),
+            }
+            if index:
+                source["resume_history"] = [item.to_dict() for item in self.resume_history[:index]]
+            payload = json.dumps(source, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            if record.source_control_checksum != f"sha256:{hashlib.sha256(payload).hexdigest()}":
+                raise StateFormatError("resume history does not match the interrupted control checksum")
+            seen.add(record.resume_id)
+            previous_count = record.progress_count
+
+    @property
     def actions_completed(self) -> bool:
         """Phase validation above makes successful boundaries authoritative."""
         return self.intent is not None and {
@@ -1254,18 +1416,21 @@ class OperationControlState:
         return cls(address=address)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "control_version": self.control_version,
             "address": self.address.uri,
             "status": self.status,
             "intent": (
-                self.intent.to_dict(control_version=self.control_version)
+                self.intent.to_dict(control_version=self.action_wire_version)
                 if self.intent is not None
                 else None
             ),
-            "progress": [item.to_dict(control_version=self.control_version) for item in self.progress],
+            "progress": [item.to_dict(control_version=self.action_wire_version) for item in self.progress],
             "recovery": self.recovery.to_dict() if self.recovery is not None else None,
         }
+        if self.control_version == RESUMABLE_CONTROL_VERSION:
+            result["resume_history"] = [item.to_dict() for item in self.resume_history]
+        return result
 
     @classmethod
     def from_dict(
@@ -1274,17 +1439,13 @@ class OperationControlState:
         *,
         expected_address: StateAddress,
     ) -> OperationControlState:
+        expected = {"control_version", "address", "status", "intent", "progress", "recovery"}
+        if isinstance(value, dict) and value.get("control_version") == RESUMABLE_CONTROL_VERSION:
+            expected.add("resume_history")
         data = _strict_object(
             value,
             label="operation control state",
-            expected={
-                "control_version",
-                "address",
-                "status",
-                "intent",
-                "progress",
-                "recovery",
-            },
+            expected=expected,
         )
         address = StateAddress.parse(data["address"])
         if address != expected_address:
@@ -1296,11 +1457,15 @@ class OperationControlState:
         if status not in ("clear", "in_progress", "recovery_required"):
             raise StateFormatError("control status is invalid")
         control_version = data["control_version"]
-        if type(control_version) is not int or control_version not in _CONTROL_VERSIONS:
+        if type(control_version) is not int or control_version not in _CONTROL_ENVELOPE_VERSIONS:
             raise StateFormatError(
                 f"unsupported control version {control_version!r}; "
-                "expected 1, 2, 3, or 4"
+                "expected 1, 2, 3, 4, or 5"
             )
+        raw_resumes = data.get("resume_history", [])
+        if type(raw_resumes) is not list or len(raw_resumes) > MAX_OPERATION_RESUMES:
+            raise StateFormatError("resume history must be a bounded array")
+        action_wire_version = min(control_version, KAFKA_STREAMS_CONTROL_VERSION)
         return cls(
             control_version=control_version,
             address=address,
@@ -1310,15 +1475,16 @@ class OperationControlState:
                 if data["intent"] is None
                 else OperationIntent.from_dict(
                     data["intent"],
-                    control_version=control_version,
+                    control_version=action_wire_version,
                 )
             ),
-            progress=tuple(OperationProgress.from_dict(item, control_version=control_version) for item in raw_progress),
+            progress=tuple(OperationProgress.from_dict(item, control_version=action_wire_version) for item in raw_progress),
             recovery=(
                 None
                 if data["recovery"] is None
                 else RecoveryRecord.from_dict(data["recovery"])
             ),
+            resume_history=tuple(OperationResumeRecord.from_dict(item) for item in raw_resumes),
         )
 
 
@@ -1369,6 +1535,42 @@ class OperationSnapshot:
         return self.state.address
 
 
+def _validate_resume_transition_inputs(
+    observation: OperationSnapshot, record: OperationResumeRecord,
+) -> OperationControlState:
+    """Validate authority without IO; providers still own lock and full CAS."""
+    if (
+        type(observation) is not OperationSnapshot or type(record) is not OperationResumeRecord
+        or type(observation.state) is not StateObservation
+        or type(observation.control) is not ControlObservation
+    ):
+        raise StateFormatError("resume requires exact snapshot and authorization records")
+    control = observation.control.control
+    intent = control.intent
+    if control.status != "recovery_required" or intent is None or control.recovery is None:
+        raise StateBackendRecoveryRequiredError("resume requires a recorded interruption")
+    if any(item.status == "completed" for item in control.progress):
+        raise StateBackendRecoveryRequiredError("a terminal operation requires recovery, not resume")
+    if record.address != observation.address or record.store != observation.state.store or record.operation_id != intent.operation_id:
+        raise StateIdentityError("resume authority belongs to another operation or state store")
+    if (
+        intent.prior_state_serial != observation.state.state_serial
+        or intent.prior_state_checksum != state_checksum(observation.state.state)
+        or record.prior_state_serial != intent.prior_state_serial
+        or record.prior_state_checksum != intent.prior_state_checksum
+        or record.source_control_checksum != _control_revision(control).value
+        or record.progress_count != len(control.progress)
+        or record.recovery != control.recovery
+    ):
+        raise StateBackendConflictError("resume authority no longer matches the interrupted operation")
+    intent.validate_kafka_streams_prior_state(observation.state.state)
+    return OperationControlState(
+        address=control.address, status="in_progress", intent=intent, progress=control.progress,
+        control_version=RESUMABLE_CONTROL_VERSION,
+        resume_history=(*control.resume_history, record),
+    )
+
+
 def _strict_object(
     value: object,
     *,
@@ -1406,6 +1608,10 @@ class DeploymentStateOperation(Protocol):
     ) -> None: ...
 
     def check_lock(self) -> None: ...
+
+    def resume_operation(
+        self, observation: OperationSnapshot, record: OperationResumeRecord,
+    ) -> OperationSnapshot: ...
 
     @overload
     def begin_operation(
@@ -1547,7 +1753,7 @@ def operation_timestamp() -> str:
     )
 
 
-RecoveryHistoryEventKind = Literal["recovery_intent", "recovery_resolution"]
+RecoveryHistoryEventKind = Literal["recovery_intent", "recovery_resolution", "operation_resumed"]
 
 
 def _same_recovery_resolution_identity(
@@ -1662,11 +1868,12 @@ def _recovery_history_event_checksum(
     sequence: int,
     kind: RecoveryHistoryEventKind,
     previous_checksum: str | None,
-    record: RecoveryResolutionRecord,
+    record: RecoveryResolutionRecord | OperationResumeRecord,
+    event_version: int = CURRENT_RECOVERY_HISTORY_EVENT_VERSION,
 ) -> str:
     payload = json.dumps(
         {
-            "event_version": CURRENT_RECOVERY_HISTORY_EVENT_VERSION,
+            "event_version": event_version,
             "sequence": sequence,
             "kind": kind,
             "previous_checksum": previous_checksum,
@@ -1682,27 +1889,35 @@ def _recovery_history_event_checksum(
 
 @dataclass(frozen=True)
 class _LocalRecoveryHistoryEvent:
-    """One checksum-chained local recovery intent or resolution event."""
+    """One checksum-chained resolution event or durable resume authorization."""
 
     sequence: int
     kind: RecoveryHistoryEventKind
     previous_checksum: str | None
-    record: RecoveryResolutionRecord
+    record: RecoveryResolutionRecord | OperationResumeRecord
     checksum: str
     event_version: int = CURRENT_RECOVERY_HISTORY_EVENT_VERSION
 
     def __post_init__(self) -> None:
+        from streamt.deployer.recovery import RecoveryResolutionRecord
+
+        required_version = 2 if self.kind == "operation_resumed" else 1
         if type(self.event_version) is not int or (
-            self.event_version != CURRENT_RECOVERY_HISTORY_EVENT_VERSION
+            self.event_version != required_version
         ):
             raise StateFormatError(
                 f"unsupported recovery history event version {self.event_version!r}; "
-                f"expected {CURRENT_RECOVERY_HISTORY_EVENT_VERSION}"
+                f"expected {required_version}"
             )
         if type(self.sequence) is not int or self.sequence < 0:
             raise StateFormatError("recovery history sequence must be a non-negative integer")
-        if self.kind not in ("recovery_intent", "recovery_resolution"):
+        if self.kind not in ("recovery_intent", "recovery_resolution", "operation_resumed"):
             raise StateFormatError("recovery history event kind is invalid")
+        if self.kind == "operation_resumed":
+            if type(self.record) is not OperationResumeRecord:
+                raise StateFormatError("resume history requires an exact authorization record")
+        elif type(self.record) is not RecoveryResolutionRecord:
+            raise StateFormatError("recovery history requires an exact resolution record")
         if self.previous_checksum is not None:
             _require_checksum(
                 self.previous_checksum,
@@ -1714,6 +1929,7 @@ class _LocalRecoveryHistoryEvent:
             kind=self.kind,
             previous_checksum=self.previous_checksum,
             record=self.record,
+            event_version=self.event_version,
         )
         if self.checksum != expected:
             raise StateFormatError("recovery history event checksum does not match")
@@ -1725,18 +1941,21 @@ class _LocalRecoveryHistoryEvent:
         sequence: int,
         kind: RecoveryHistoryEventKind,
         previous_checksum: str | None,
-        record: RecoveryResolutionRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord,
     ) -> _LocalRecoveryHistoryEvent:
+        event_version = 2 if kind == "operation_resumed" else 1
         return cls(
             sequence=sequence,
             kind=kind,
             previous_checksum=previous_checksum,
             record=record,
+            event_version=event_version,
             checksum=_recovery_history_event_checksum(
                 sequence=sequence,
                 kind=kind,
                 previous_checksum=previous_checksum,
                 record=record,
+                event_version=event_version,
             ),
         )
 
@@ -1767,14 +1986,15 @@ class _LocalRecoveryHistoryEvent:
             },
         )
         kind = data["kind"]
-        if kind not in ("recovery_intent", "recovery_resolution"):
+        if kind not in ("recovery_intent", "recovery_resolution", "operation_resumed"):
             raise StateFormatError("recovery history event kind is invalid")
         return cls(
             event_version=cast(int, data["event_version"]),
             sequence=cast(int, data["sequence"]),
             kind=cast(RecoveryHistoryEventKind, kind),
             previous_checksum=cast(str | None, data["previous_checksum"]),
-            record=RecoveryResolutionRecord.from_dict(data["record"]),
+            record=OperationResumeRecord.from_dict(data["record"]) if kind == "operation_resumed"
+            else RecoveryResolutionRecord.from_dict(data["record"]),
             checksum=cast(str, data["checksum"]),
         )
 
@@ -1789,21 +2009,28 @@ class _LocalRecoveryHistory:
 
     def __post_init__(self) -> None:
         if type(self.history_version) is not int or (
-            self.history_version != CURRENT_RECOVERY_HISTORY_VERSION
+            self.history_version not in (1, 2)
         ):
             raise StateFormatError(
                 f"unsupported recovery history version {self.history_version!r}; "
-                f"expected {CURRENT_RECOVERY_HISTORY_VERSION}"
+                "expected 1 or 2"
             )
         if not isinstance(self.events, tuple):
             raise StateFormatError("recovery history events must be an ordered tuple")
         if len(self.events) > MAX_LOCAL_RECOVERY_HISTORY_EVENTS:
             raise StateFormatError("local recovery history contains too many events")
+        if any(type(event) is not _LocalRecoveryHistoryEvent for event in self.events):
+            raise StateFormatError("local recovery history requires exact typed events")
+        if (self.history_version == 2) != any(event.kind == "operation_resumed" for event in self.events):
+            raise StateFormatError("resume events require local recovery history version 2")
 
         expected_previous: str | None = None
         pending: RecoveryResolutionRecord | None = None
         completed_operation_ids: set[str] = set()
         recovered_blocked_operation_ids: set[str] = set()
+        resumed_ids: set[str] = set()
+        resumed_incidents: set[str] = set()
+        resume_progress: dict[str, int] = {}
         for sequence, event in enumerate(self.events):
             if event.sequence != sequence:
                 raise StateFormatError(
@@ -1813,26 +2040,44 @@ class _LocalRecoveryHistory:
                 raise StateFormatError("recovery history checksum chain is broken")
             if event.record.address != self.address:
                 raise StateIdentityError("recovery history event belongs to another address")
-            operation_id = event.record.recovery_operation_id
+            if event.kind == "operation_resumed":
+                resume = cast(OperationResumeRecord, event.record)
+                if pending is not None:
+                    raise StateFormatError("resume cannot supersede an unresolved recovery intent")
+                if resume.resume_id in resumed_ids or resume.resume_id in completed_operation_ids:
+                    raise StateFormatError("resume history contains a duplicate authorization identity")
+                if resume.source_control_checksum in resumed_incidents:
+                    raise StateFormatError("resume history authorizes one incident more than once")
+                if resume.operation_id in recovered_blocked_operation_ids:
+                    raise StateFormatError("resume cannot reopen a resolved operation")
+                if resume.progress_count < resume_progress.get(resume.operation_id, 0):
+                    raise StateFormatError("resume history progress cannot regress")
+                resumed_ids.add(resume.resume_id)
+                resumed_incidents.add(resume.source_control_checksum)
+                resume_progress[resume.operation_id] = resume.progress_count
+                expected_previous = event.checksum
+                continue
+            record = cast("RecoveryResolutionRecord", event.record)
+            operation_id = record.recovery_operation_id
             if event.kind == "recovery_intent":
                 if pending is not None:
                     raise StateFormatError("recovery history contains an unresolved prior intent")
-                if operation_id in completed_operation_ids:
+                if operation_id in completed_operation_ids or operation_id in resumed_ids:
                     raise StateFormatError(
                         "recovery history contains a duplicate recovery operation"
                     )
-                if event.record.blocked_operation_id in recovered_blocked_operation_ids:
+                if record.blocked_operation_id in recovered_blocked_operation_ids:
                     raise StateFormatError(
                         "recovery history resolves one blocked operation more than once"
                     )
-                pending = event.record
+                pending = record
             else:
-                if pending is None or event.record != pending:
+                if pending is None or record != pending:
                     raise StateFormatError(
                         "recovery resolution does not match its preceding intent"
                     )
                 completed_operation_ids.add(operation_id)
-                recovered_blocked_operation_ids.add(event.record.blocked_operation_id)
+                recovered_blocked_operation_ids.add(record.blocked_operation_id)
                 pending = None
             expected_previous = event.checksum
 
@@ -1843,13 +2088,22 @@ class _LocalRecoveryHistory:
         return tuple(
             event
             for event in self.events
-            if event.record.recovery_operation_id == recovery_operation_id
+            if event.kind != "operation_resumed"
+            and cast("RecoveryResolutionRecord", event.record).recovery_operation_id == recovery_operation_id
+        )
+
+    def resumes_for(self, operation_id: str) -> tuple[OperationResumeRecord, ...]:
+        return tuple(
+            cast(OperationResumeRecord, event.record)
+            for event in self.events
+            if event.kind == "operation_resumed"
+            and cast(OperationResumeRecord, event.record).operation_id == operation_id
         )
 
     def append(
         self,
         kind: RecoveryHistoryEventKind,
-        record: RecoveryResolutionRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord,
     ) -> _LocalRecoveryHistory:
         previous_checksum = self.events[-1].checksum if self.events else None
         event = _LocalRecoveryHistoryEvent.create(
@@ -1861,6 +2115,7 @@ class _LocalRecoveryHistory:
         return _LocalRecoveryHistory(
             address=self.address,
             events=(*self.events, event),
+            history_version=2 if self.history_version == 2 or kind == "operation_resumed" else 1,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -1918,10 +2173,20 @@ class _LocalDeploymentStateOperation:
     def observe(self) -> OperationSnapshot:
         """Bind state and control reads while retaining the local file lock."""
         self.check_lock()
-        return OperationSnapshot(
+        snapshot = OperationSnapshot(
             state=self.read(),
             control=self.read_control(),
         )
+        control = snapshot.control.control
+        # The executor observes before Docker writes, not just before journal
+        # writes. Missing audit must therefore invalidate active authority here.
+        # A recovery_required control remains readable so its exact prewritten
+        # authorization can be retrieved and retried after a process restart.
+        if control.status == "in_progress" and control.intent is not None and any(
+            action.kafka_streams_evidence is not None for action in control.intent.actions
+        ):
+            self._backend._require_resume_archive(control)
+        return snapshot
 
     def check_lock(self) -> None:
         if not self._lock.is_held:
@@ -1930,7 +2195,9 @@ class _LocalDeploymentStateOperation:
                 operation_id=self._active_operation_id,
             )
 
-    def _validate_snapshot(self, snapshot: OperationSnapshot) -> None:
+    def _validate_snapshot(
+        self, snapshot: OperationSnapshot, *, resume_record: OperationResumeRecord | None = None,
+    ) -> None:
         self._backend._validate_observation(self._address, snapshot.state)
         self._backend._validate_control_observation(
             self._address,
@@ -1942,6 +2209,11 @@ class _LocalDeploymentStateOperation:
             raise StateBackendConflictError(
                 "state revision changed after the operation snapshot was observed"
             )
+        control = snapshot.control.control
+        if control.resume_history or (control.intent is not None and any(
+            action.kafka_streams_evidence is not None for action in control.intent.actions
+        )):
+            self._backend._require_resume_archive(control, pending=resume_record)
 
     def _snapshot_for_control(
         self,
@@ -1952,7 +2224,12 @@ class _LocalDeploymentStateOperation:
             return observation, True
         self._backend._validate_control_observation(self._address, observation)
         self.check_lock()
-        return OperationSnapshot(state=self.read(), control=observation), False
+        snapshot = OperationSnapshot(state=self.read(), control=observation)
+        if observation.control.resume_history or (observation.control.intent is not None and any(
+            action.kafka_streams_evidence is not None for action in observation.control.intent.actions
+        )):
+            self._validate_snapshot(snapshot)
+        return snapshot, False
 
     @staticmethod
     def _validate_intent_state(
@@ -2063,6 +2340,7 @@ class _LocalDeploymentStateOperation:
             status="in_progress",
             intent=intent,
             progress=(*snapshot.control.control.progress, progress),
+            resume_history=snapshot.control.control.resume_history,
         )
         active = self._backend._save_control_locked(
             self._address,
@@ -2106,6 +2384,7 @@ class _LocalDeploymentStateOperation:
             intent=intent,
             progress=snapshot.control.control.progress,
             recovery=recovery,
+            resume_history=snapshot.control.control.resume_history,
         )
         recovery_observation = self._backend._save_control_locked(
             self._address,
@@ -2120,6 +2399,48 @@ class _LocalDeploymentStateOperation:
                 control=recovery_observation,
             )
         return recovery_observation
+
+    def resume_operation(
+        self, snapshot: OperationSnapshot, record: OperationResumeRecord,
+    ) -> OperationSnapshot:
+        """Archive one exact authorization before reopening its original intent.
+
+        A lost audit acknowledgement permits only the same record retry while
+        control remains unchanged. A lost control acknowledgement requires a
+        fresh read; this method never manufactures success or repeats authority
+        after the operation has become active.
+        """
+        replacement = _validate_resume_transition_inputs(snapshot, record)
+        self._active_operation_id = record.operation_id
+        self._validate_snapshot(snapshot, resume_record=record)
+        current = self._backend._read_control(self._address)
+        if current != snapshot.control:
+            raise StateBackendConflictError("operation control changed before resume authorization")
+        history = self._backend._require_resume_archive(snapshot.control.control, pending=record)
+        if history.events and history.events[-1].kind == "recovery_intent":
+            raise StateBackendConflictError("a recovery resolution attempt is already in progress")
+        if any(
+            event.kind == "recovery_resolution"
+            and cast("RecoveryResolutionRecord", event.record).blocked_operation_id == record.operation_id
+            for event in history.events
+        ):
+            raise StateBackendConflictError("a completed recovery resolution cannot be resumed")
+        archived = history.resumes_for(record.operation_id)
+        if archived == snapshot.control.control.resume_history:
+            self._backend._append_recovery_history_locked(
+                self._address, history, "operation_resumed", record, self._lock,
+            )
+        # Archive and control are separate files. Revalidate state and the exact
+        # archived authorization after the first write, before the control CAS.
+        self._validate_snapshot(snapshot, resume_record=record)
+        active = self._backend._save_control_locked(
+            self._address, snapshot.control, replacement, self._lock,
+        )
+        if active.control != replacement:
+            raise StateBackendUnknownCommitError(
+                "local resume control commit could not be confirmed", operation_id=record.operation_id,
+            )
+        return OperationSnapshot(state=snapshot.state, control=active)
 
     @overload
     def clear_operation(
@@ -2212,7 +2533,7 @@ class _LocalDeploymentStateOperation:
             self._address,
             observation.control,
         )
-        if observation.control.control.progress:
+        if observation.control.control.progress or observation.control.control.resume_history:
             raise StateBackendRecoveryRequiredError(
                 "deployment operation may have started mutation; explicit recovery "
                 "is required"
@@ -2245,6 +2566,10 @@ class _LocalDeploymentStateOperation:
             raise StateBackendConflictError(
                 "operation control changed after the recovery snapshot was observed"
             )
+        # A resume audit written before its control CAS is not permission for
+        # a competing resolution. Even a terminal retry retains its original
+        # reviewed control as the authoritative resume-history prefix.
+        self._backend._require_resume_archive(evidence.control)
 
         if observation.control.control.status == "clear":
             history = self._backend._read_recovery_history(self._address)
@@ -2254,7 +2579,7 @@ class _LocalDeploymentStateOperation:
                     "clear deployment state control is not recoverable"
                 )
             if len(matching_events) != 2 or any(
-                not _same_recovery_resolution_identity(event.record, resolution)
+                not _same_recovery_resolution_identity(cast("RecoveryResolutionRecord", event.record), resolution)
                 for event in matching_events
             ):
                 raise StateBackendConflictError("a conflicting recovery attempt already exists")
@@ -2292,7 +2617,7 @@ class _LocalDeploymentStateOperation:
         history = self._backend._read_recovery_history(self._address)
         matching_events = history.events_for(resolution.recovery_operation_id)
         if len(matching_events) > 2 or any(
-            not _same_recovery_resolution_identity(event.record, resolution)
+            not _same_recovery_resolution_identity(cast("RecoveryResolutionRecord", event.record), resolution)
             for event in matching_events
         ):
             raise StateBackendConflictError("a conflicting recovery attempt already exists")
@@ -2324,7 +2649,7 @@ class _LocalDeploymentStateOperation:
 
         committed_state = observation.state
         has_resolution = len(matching_events) == 2
-        effective_resolution = matching_events[0].record
+        effective_resolution = cast("RecoveryResolutionRecord", matching_events[0].record)
         if has_resolution and not (result_matches or (replacement is None and prior_matches)):
             raise StateBackendInvalidStateError(
                 "local recovery resolution precedes its declared state result"
@@ -2522,14 +2847,35 @@ class LocalDeploymentStateBackend:
         except StateFormatError as error:
             raise StateBackendInvalidStateError("local recovery history is invalid") from error
         try:
-            return _LocalRecoveryHistory.from_dict(
+            history = _LocalRecoveryHistory.from_dict(
                 payload,
                 expected_address=address,
             )
+            if any(
+                event.kind == "operation_resumed"
+                and cast(OperationResumeRecord, event.record).store != self.describe()
+                for event in history.events
+            ):
+                raise StateIdentityError("local resume history belongs to another state store")
+            return history
         except StateIdentityError:
             raise
         except StateFormatError as error:
             raise StateBackendInvalidStateError("local recovery history is invalid") from error
+
+    def _require_resume_archive(
+        self, control: OperationControlState, *, pending: OperationResumeRecord | None = None,
+    ) -> _LocalRecoveryHistory:
+        if any(record.store != self.describe() for record in control.resume_history):
+            raise StateIdentityError("resumed control belongs to another local state store")
+        history = self._read_recovery_history(control.address)
+        if control.intent is None:
+            return history
+        archived = history.resumes_for(control.intent.operation_id)
+        expected = control.resume_history
+        if archived != expected and (pending is None or archived != (*expected, pending)):
+            raise StateBackendConflictError("local resume audit and operation control do not match")
+        return history
 
     @staticmethod
     def _write_recovery_history(
@@ -2587,10 +2933,10 @@ class LocalDeploymentStateBackend:
         address: StateAddress,
         observed: _LocalRecoveryHistory,
         kind: RecoveryHistoryEventKind,
-        record: RecoveryResolutionRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord,
         lock: LocalStateOperationLock,
     ) -> _LocalRecoveryHistory:
-        operation_id = record.recovery_operation_id
+        operation_id = record.operation_id if type(record) is OperationResumeRecord else cast("RecoveryResolutionRecord", record).recovery_operation_id
         if not lock.is_held:
             raise StateBackendLockLostError(
                 "deployment state operation lock was lost",
@@ -2654,6 +3000,8 @@ class LocalDeploymentStateBackend:
                 self._load_control_payload(path),
                 expected_address=address,
             )
+            if any(record.store != self.describe() for record in control.resume_history):
+                raise StateIdentityError("resumed control belongs to another local state store")
         except StateIdentityError:
             raise
         except StateFormatError as error:

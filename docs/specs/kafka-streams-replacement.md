@@ -144,13 +144,58 @@ created by the same operation, without creating another candidate or resetting
 offsets. Read-only startup polling is bounded, including when status is briefly
 unavailable at the start of a resumed invocation.
 
-A real source and installed probe covers a lost create response, the same
+The source and installed Docker/Kafka probe covers a lost create response, the same
 operation's continuation, changed filter output and offsets advancing from 5 to
 8. It uses separate driver invocations in one Python process under the same
 held local lock. It leaves the original ownership state and completed pending
 journal intact. This is not a public CLI resume, an operating-system crash
 test or a remote-state acceptance. See
 `tests/package/verification/kafka-streams-replacement-executor.json`.
+
+### Durable resume authorization
+
+Both state backends now implement an internal `resume_operation(snapshot, record)`
+transition. It accepts only a recorded interruption of one typed runner update,
+with a non-null original reviewed-plan checksum and unchanged protected state.
+Completed success and failure boundaries both require finalization or recovery;
+neither can be resumed. An interrupted `in_progress` operation must first record
+its interruption under a newly acquired lock. The transition itself makes no
+Docker or Kafka calls.
+
+The first resume opts that control into version 5. Its intent, actions and
+checkpoints retain their exact version-4 bytes. A bounded `resume_history`
+retains each authorization UUID, actor, time, state-store identity, original
+state checksum, progress position, interrupted-control checksum and full recovery
+record. Subsequent progress and interruptions retain that history. The limit
+is 32 authorizations per operation; exceeding it blocks further resume.
+
+PostgreSQL commits control and history together. History indexes count every
+incident and resume, not only action checkpoints. Local state appends the
+authorization to its existing recovery-history file before changing control.
+This preserves the incident if the control response is lost or the operation
+later completes. The local history envelope becomes version 2 only when it
+contains a resume; previous events keep their bytes and checksums.
+
+The local files are not one atomic transaction. An archive entry without the
+matching control transition is a pending authorization, not proof that execution
+resumed. It permits only an exact retry of that archived record while the
+interrupted control still matches. A different authorization or a conflicting
+recovery resolution blocks. An unacknowledged transition never authorizes the
+runtime driver to continue on a lost lock.
+
+These backend checks bind stored evidence. They do not verify the user's current
+SQL against an original plan file. That check and retrieval of a prewritten local
+authorization after a process restart belong to the pending CLI integration.
+
+The separate `kafka_streams_resume_probe.py` acceptance now passes from source
+(client 2.13.2) and an installed package (2.15.0). Its first worker loses a real
+Docker-create acknowledgement, records the interruption and exits. A second OS
+process reacquires the lock, loads the journal, authorizes resume and starts only
+the existing candidate. It commits desired ownership and clears control; the
+original incident remains in the local audit. Output checks prove the filter
+change and offsets 5 to 8. This is a controlled worker exit, not a SIGKILL test;
+its reviewed checksum is a test fixture, not public plan-file validation. The
+evidence is in `tests/package/verification/kafka-streams-durable-resume.json`.
 
 ## Acceptance before activation
 
@@ -166,25 +211,19 @@ test or a remote-state acceptance. See
 
 ## Remaining integration order
 
-1. Add a durable, same-operation resume transition to both state providers.
-   It must retain the exact intent and checkpoint sequence, compare the full
-   locked state/control snapshot, and record the transition in history. It must
-   not turn a terminal failed action into an unfinished action. The internal
-   driver currently accepts only `in_progress`; it cannot authorize a transition
-   out of `recovery_required` by changing a local object.
-2. Attach observed replacement evidence to planner actions only after the full
+1. Attach observed replacement evidence to planner actions only after the full
    predicate/identity/ownership checks pass. Enforce the sole-mutation and
    unselected-project bounds before removing any existing blocker. External
    declarations remain outside runtime observation and mutation.
-3. Wire apply to the original reviewed tuple and locked driver, including durable
+2. Wire apply to the original reviewed tuple and locked driver, including durable
    completion and desired ownership commit. No generic create/update handler may
    bypass those checkpoints. An uncertain runtime response retains the last
    actual boundary rather than recording a terminal failed completion.
-4. Add explicit same-operation CLI resume and read-only recovery reporting.
+3. Add explicit same-operation CLI resume and read-only recovery reporting.
    Resume must verify the original plan and desired project, not create a fresh
    plan against the partially replaced topology. Unknown outcomes cannot clear
    pending work; a missing candidate after removal is still incomplete.
-5. Run the installed public change/resume journey with failures on both sides
+4. Run the installed public change/resume journey with failures on both sides
    of journal and runtime boundaries. Only then advertise the update workflow
    and proceed to declared Git base/head comparison and downstream impact.
 
