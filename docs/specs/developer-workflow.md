@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned requirements, revised on 2026-09-04. The
+Requirements and implementation boundaries, revised on 2026-09-04. The
 [product direction](product-direction.md) defines the purpose; the
 [execution plan](../plans/2026-09-04-developer-experience-execution.md) records
 confirmed choices, open questions, work order, and autonomy limits.
@@ -19,9 +19,9 @@ The project explains how the external and managed parts connect. SQL is the
 first authoring interface; custom applications remain part of the model.
 
 Use a deterministic orders example. Start with Kafka input and output so the
-first result does not depend on a sink connector or external account. The exact
-execution route is pending: existing Flink SQL remains a baseline, while a
-Kafka-without-Flink route is a required design decision. A PostgreSQL sink via
+first result does not depend on a sink connector or external account. Existing
+Flink SQL remains the supported route; the isolated Kafka Streams proof does
+not yet add a supported backend. A PostgreSQL sink via
 Connect is an optional extension, not a prerequisite.
 
 ## Existing systems and ownership
@@ -36,14 +36,14 @@ does not reveal an application's SQL. Flink job status does not prove its source
 definition. Missing behavior remains an external boundary with a useful message
 about what the user would need to supply before management is possible.
 
-The desired external-resource policy is:
+The external-resource policy is:
 
 - Include external nodes in the project graph and documentation.
 - Validate local names, references, and the structure of declared contracts.
 - Do not automatically refresh, enforce drift, mutate, or recover external
   resources as part of ordinary project work.
-- Run live inspection only when explicitly requested, subject to the pending
-  observation decision. Report it as an observation, not a new desired state.
+- Run live inspection only when explicitly requested. Report it as an observation,
+  not a new desired state; `status --include-external` is the status entry point.
 - Keep declared information labelled as such; an old imported schema is not
   proof of the live schema's compatibility.
 
@@ -54,20 +54,23 @@ definition, identity, observation, and recovery contracts are complete.
 
 Managed resources retain live planning and stale-plan checks. Opting out of
 external drift detection must not opt out of checks on managed operations.
-If an operation needs external evidence for safety, report that requirement and
-request explicit inspection rather than fabricate evidence or access it silently.
+Managed consumer-impact checks and complete shared-provider identity snapshots
+remain required; they can include external consumers or entries without making
+those entries drift targets. Never fabricate missing evidence. A declaration-only
+status is not a health assertion about the external system.
 
 ## Custom applications
 
 Represent a custom application by its declared inputs, outputs, owner, repository,
 and optional consumer-group identity. Reuse existing exposure fields where they
-fit; investigate producer and mixed-role graph behavior before adding a parallel
-application schema. Do not claim to infer dependencies from arbitrary code.
+fit. All three relationships (`consumes`, `produces`, `depends_on`) now accept
+exactly one `source` or `ref` per entry. Names must be distinct and cycles are
+rejected. Do not claim to infer dependencies from arbitrary code.
 
 A later managed application may reference an immutable image or JAR. That needs
 a chosen execution target and an explicit lifecycle contract. Compiling Java or
 Python source, building images, scheduling processes, and managing rolling
-upgrades are separate work, pending the application-scope decision.
+upgrades are deferred; only application declarations are in the current scope.
 
 ## Kafka without Flink
 
@@ -85,8 +88,8 @@ SQL dialect, or an empty topic for actual execution evidence.
 Keep the compiler/backend distinction small. A runtime prototype must not
 introduce an HTTP control plane, arbitrary code execution, hot reload, joins,
 windows, or distributed deployment until those are separately selected.
-Whether the first experiment generates an application or runs a versioned plan
-in a fixed runner is a recorded architecture decision.
+The [architecture decision](kafka-streams-execution-proof.md) selects a fixed
+runner and versioned plan for the isolated experiment, not for production use.
 
 ## Scaffold and local environment
 
@@ -142,8 +145,8 @@ does not satisfy the update criterion.
 
 Flink updates remain blocked until a separate lifecycle contract proves the
 supported transition. Apply the same standard to a Kafka Streams runner. The
-choice between an initial projection/filter update and a stateful aggregation
-upgrade remains open. Do not promise zero downtime or exactly-once upgrades.
+first selected update is a projection/filter change. Stateful aggregation upgrades
+remain gated. Do not promise zero downtime or exactly-once upgrades.
 
 ## Acceptance evidence
 

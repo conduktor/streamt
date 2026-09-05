@@ -2,7 +2,7 @@
 
 ## Status and objective
 
-Planning on 2026-09-04. This is the active implementation plan after the
+Execution authorized on 2026-09-04. This is the active implementation plan after the
 stabilization program. It supersedes the release-first and review-first work
 order, while retaining their safety contracts and completed work.
 
@@ -11,9 +11,10 @@ existing streaming system, add managed processing, inspect results, and deploy
 a supported change. The [product direction](../specs/product-direction.md)
 includes custom applications as well as SQL models.
 
-This planning turn changes documentation only. The multi-hour implementation
-run has not started. Confirm the material decisions below before launching
-runtime or lifecycle implementation. Unanswered questions are not approvals.
+The product owner answered "go" to the proposed scope. Execute M1 and the
+bounded M2 proof, plus independent scaffold repairs. Productizing a new runtime
+still requires a separate decision after that proof. Do not bypass that gate
+to reach M3-M5 on an unapproved backend.
 
 ## Confirmed product decisions
 
@@ -26,21 +27,21 @@ runtime or lifecycle implementation. Unanswered questions are not approvals.
 - External declarations do not authorize mutation or drift correction. The
   requested default also excludes automatic external drift checks; clarify the
   boundary with local validation and explicit live inspection below.
-- Address users who have Kafka but no Flink. Kafka Streams is a candidate for
-  execution; neither that backend nor a custom SQL engine exists today.
+- Address users who have Kafka but no Flink. A bounded Kafka Streams experiment
+  now exists; neither it nor a custom SQL engine is a supported backend.
 - Strimzi is not a priority. Preserve its tested export without expansion.
 - Existing permission allows logical commits on `main`; do not include unrelated
   user changes, rewrite history, or turn a normal push into a release operation.
 
-## Decisions still required
+## Confirmed execution scope
 
-| ID | Decision | Proposed starting scope | Status |
+| ID | Decision | Selected starting scope | Status |
 | --- | --- | --- | --- |
-| D1 | Investment in execution without Flink | A bounded Kafka Streams proof, compared with an existing SQL runtime; no commitment to maintain a general SQL engine | Awaiting user choice |
-| D2 | Custom application depth | Describe inputs/outputs and ownership now; defer deployment of images/JARs and source builds | Awaiting user choice |
-| D3 | External observation | Local references validated; no automatic drift checks; live inspection only on explicit request | Awaiting confirmation of this distinction |
-| D4 | First update boundary | A real filter/projection change with offset and recovery semantics; stateful aggregation upgrades remain separately gated | Awaiting user choice |
-| D5 | Reference application | Orders, Kafka input/output first; optional Connect sink after the core loop | Proposed default, no external-service dependency |
+| D1 | Investment in execution without Flink | A bounded Kafka Streams proof, compared with an existing SQL runtime; no commitment to maintain a general SQL engine | Confirmed by go |
+| D2 | Custom application depth | Describe inputs/outputs and ownership now; defer deployment of images/JARs and source builds | Confirmed by go |
+| D3 | External observation | Local references validated; no automatic drift checks; live inspection only on explicit request | Confirmed by go |
+| D4 | First update boundary | A real filter/projection change with offset and recovery semantics; stateful aggregation upgrades remain separately gated | Confirmed; production implementation follows the M2 productization gate |
+| D5 | Reference application | Orders, Kafka input/output first; optional Connect sink after the core loop | Selected default, no external-service dependency |
 
 The earlier Flink-to-PostgreSQL default and Kubernetes-vs-direct question are
 superseded by the Kafka-without-Flink requirement and the exclusion of Strimzi
@@ -71,10 +72,10 @@ plan. Do not rename the project or package.
 
 ### M0: freeze the working contract
 
-- [ ] Record D1-D4 answers and any change to D5 in this file.
-- [ ] Confirm the first execution target and update guarantee without expanding
+- [x] Record D1-D4 answers and any change to D5 in this file.
+- [x] Confirm the first execution target and update guarantee without expanding
       the support matrix ahead of tests.
-- [ ] Read repository instructions and inspect git/Docker state before execution.
+- [x] Read repository instructions and inspect git/Docker state before execution.
 
 Exit: a future agent can identify its authorized deliverable and stop conditions
 without inferring answers from earlier proposals.
@@ -83,15 +84,15 @@ without inferring answers from earlier proposals.
 
 Depends on M0, especially D2-D3.
 
-- [ ] Audit discovery/import, exposure graph behavior, validation, planning,
+- [x] Audit discovery/import, exposure graph behavior, validation, planning,
       status, and adoption for hidden provider calls and incomplete identities.
-- [ ] Specify the declaration-only external path and explicit observation entry
+- [x] Specify the declaration-only external path and explicit observation entry
       points; retain every safety check needed for managed operations.
-- [ ] Represent a custom producer/processor/consumer with its declared graph
+- [x] Represent a custom producer/processor/consumer with its declared graph
       relationships; reuse the existing source/exposure model where it fits.
-- [ ] Add import provenance and completeness reporting for the chosen resource
+- [x] Add import provenance and completeness reporting for the chosen resource
       kinds. Do not infer unavailable SQL or code from runtime names.
-- [ ] Prove no-clobber repeat import, local validation without provider access,
+- [x] Prove no-clobber repeat import, local validation without provider access,
       zero external mutations, and explicit adoption boundaries.
 
 Exit: an imported external application and a managed model coexist in one tested
@@ -103,16 +104,16 @@ evidence produces an actionable message instead of implicit ownership.
 Depends on M0/D1. Architecture research can run alongside M1; public schema
 changes wait for the primary agent to review both contracts together.
 
-- [ ] Record an architecture decision comparing a generated Kafka Streams app,
+- [x] Record an architecture decision comparing a generated Kafka Streams app,
       a fixed runner that interprets a versioned plan, and an existing SQL runtime.
       Include deployment, distribution, maintenance, and license prerequisites.
-- [ ] Name the chosen SQL subset and rejected constructs. Start with one source,
+- [x] Name the chosen SQL subset and rejected constructs. Start with one source,
       projection, filter, and one output if D1 selects the bounded proof.
-- [ ] Define types, nulls, record keys, serialization, error handling, application
+- [x] Define types, nulls, record keys, serialization, error handling, application
       identity, offsets, processing guarantees, and runner startup/shutdown.
-- [ ] Keep Flink compilation intact. Choose the executor explicitly and fail
+- [x] Keep Flink compilation intact. Choose the executor explicitly and fail
       before mutation when its capabilities or configuration are insufficient.
-- [ ] Execute deterministic records against real Kafka and the selected runner;
+- [x] Execute deterministic records against real Kafka and the selected runner;
       test restart and unsupported SQL. Record actual output, not only compilation.
 
 Exit for the bounded-proof option: a reproducible result and a recommendation
@@ -124,7 +125,7 @@ prototype into an unbounded engine or publish it as supported.
 Depends on M1 and a productized execution route approved after M2. Scaffold
 repairs and tests independent of that choice can be prepared after M0.
 
-- [ ] Fix strict scaffold validation and missing-runtime guidance.
+- [x] Fix strict scaffold validation and missing-runtime guidance.
 - [ ] Ship a complete, versioned example with installed-package access to assets.
 - [ ] Start only the selected runtime's necessary services with bounded readiness
       checks; make extra UIs, catalogs, and connector services optional.
@@ -228,6 +229,60 @@ Before handoff, inspect the full diff and worktree. Report the exact commands an
 results, which milestones passed, what remains unsupported, and whether changes
 were committed or pushed. A successful mock, parsed YAML, HTTP response, or
 created topic cannot substitute for the required data and lifecycle evidence.
+
+## Execution checkpoint: 2026-09-04 local / 2026-09-05 UTC
+
+M1 and the bounded M2 proof are complete. M3's independent scaffold repair is
+complete; the installed-product processing journey and M4-M5 remain open.
+The next task is the productization decision in the
+[Kafka Streams architecture decision](../specs/kafka-streams-execution-proof.md),
+not backend activation or SQL expansion without approval.
+
+Implemented and reviewed:
+
+- Strict-valid scaffold, explicit ownership, and honest offline/runtime guidance.
+- Exposure inputs and outputs for sources/models, local reference validation,
+  distinct node names, and feedback-cycle rejection.
+- Stable import provenance/completeness without extra provider reads, source
+  clobbering, ownership transfer, or invented application code.
+- External declaration-only plans and opt-in `status --include-external`.
+  Selected apply retains external identity claims; compiled external/managed
+  topic and schema overlaps fail closed. Managed observations, Connect/Gateway
+  exact identity checks, removal, recovery, and state safety remain enabled.
+- External Gateway apply/repeat preserves unknown live state and creates no
+  ownership record. A mixed project still manages its selected topic normally.
+- Fixed-runner Kafka Streams proof, independently reviewed and rerun after
+  fixing mandatory clean-stop assertions and exact anonymous-volume cleanup.
+
+Final local verification on the frozen product source:
+
+| Check | Result |
+| --- | --- |
+| `.venv/bin/pytest -q -o addopts='' --tb=short tests/unit tests/scenarios` | 5,409 passed, 28 skipped |
+| `.venv/bin/ruff check src tests` | Passed |
+| `.venv/bin/mypy src/streamt` | Zero errors, 105 source files |
+| `.venv/bin/mkdocs build --strict` | Passed; parser-backed documentation checks also passed |
+| Fresh isolated wheel installation outside the checkout | 27 dependencies resolved/installed; 13 CLI subprocesses passed, zero guarded provider/network attempts |
+| Installed external-only schema/topic/Flink/Connect/Gateway fixture | Default status health, online plan, dry-run apply and two actual no-op applies passed; state serial 0, no managed records |
+| Kafka Streams reviewed proof | 60 Python tests, 35 JVM unit tests, 1 real Kafka 4.3.1 acceptance test passed |
+
+Installed-wheel raw results are local at
+`/tmp/streamt-final-wheel.5Pn7K4/results.json`. The versioned runtime evidence is
+`experiments/kafka-streams/verification/2026-09-05-reviewed.json`; its local
+process logs remain under `target/real-proof/479233760018/`. The reviewed test's
+broker and three exact volumes were removed. Earlier anonymous volumes were
+not retrospectively pruned because their exact provenance was not saved.
+
+These tests do not claim crash-safe production updates, stateful migration,
+throughput, Java 17 runtime coverage, or first-output time for a new user.
+The prototype is not installed by the Python wheel. External Connect/Gateway
+declarations still need local runtime identity configuration; offline parsing
+still resolves configured environment variables. Compiled identity protection
+does not reserve uncompiled source names or reconcile unselected managed work.
+
+Unrelated user files remain outside the commits. Ordinary pushes do not imply
+release publication; no release tag, package upload, or production change is part
+of this checkpoint.
 
 ## Runtime research references
 

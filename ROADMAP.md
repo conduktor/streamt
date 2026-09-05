@@ -22,10 +22,11 @@ integrate with them.
 The [product direction](docs/specs/product-direction.md),
 [developer workflow specification](docs/specs/developer-workflow.md), and
 [execution plan](docs/plans/2026-09-04-developer-experience-execution.md) govern
-the next cycle. Its material runtime, custom-application, observation, and
-update decisions are pending user confirmation; implementation has not started.
+the current cycle. The owner authorized M1, a bounded M2 proof, and independent
+scaffold repairs. Custom artifact deployment and stateful upgrades are deferred.
+Productizing the new runtime still requires a separate decision.
 
-1. Confirm those decisions and the autonomy limits (M0).
+1. Record confirmed decisions and autonomy limits (M0, complete).
 2. Make external and managed applications coexist in a usable project, with
    selected import, explicit dependencies, and no implicit adoption (M1).
 3. Evaluate and prove a Kafka-without-Flink execution path, including a bounded
@@ -41,6 +42,13 @@ update decisions are pending user confirmation; implementation has not started.
 M1 and M2 research can proceed independently after M0. Runtime activation and
 lifecycle changes depend on reviewed contracts; see the execution plan for
 acceptance gates and bounded agent assignments.
+
+Implemented in this cycle: strict-valid scaffold with runtime guidance, complete
+custom-application reference edges, import provenance/completeness, and external
+declaration-only planning with explicit status inspection. The Kafka Streams
+prototype passed real-broker filter/restart tests; see its
+[architecture decision](docs/specs/kafka-streams-execution-proof.md). It does not
+complete the installed-product journey or authorize a production update backend.
 
 The immutable `0.1.0a1` [release procedure](docs/plans/2026-09-03-first-alpha-release.md)
 remains open and unchanged. External publication is not the next implementation
@@ -297,7 +305,7 @@ Target: close the loop between declared intent and runtime evidence.
 
 ## Outside the active cycle
 
-- Kafka Streams is now an active design candidate under M2, not a supported
+- Kafka Streams has a real-broker prototype under M2, not a supported
   runtime. A general SQL engine requires an explicit product decision.
 - Additional runtimes such as RisingWave and Materialize are not scheduled.
 - Additional transports such as Pulsar and Kinesis.

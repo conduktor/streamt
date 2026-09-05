@@ -45,9 +45,16 @@ replaces the previous release/Terraform-first order:
 
 Strimzi expansion, new cloud backends, and additional catalog publication are
 not scheduled. Existing tested integrations remain supported within the table's
-limits. Custom applications can already be documented using exposures; broader
-managed application deployment is not implied. The desired declaration-only
-external path is planned work, not a claim that current commands avoid live reads.
+limits. Custom applications can be documented using exposure inputs and outputs;
+broader managed application deployment is not implied. External declarations are
+not live-diffed by planning. `status --include-external` opts into their observation;
+managed safety reads and deployment-state access remain enabled. See the
+[ownership contract](../specs/deployment-safety-and-ownership.md#external-declaration-behavior).
+
+An isolated [Kafka Streams proof](../specs/kafka-streams-execution-proof.md) runs
+a closed projection/filter subset against real Kafka and checks a clean sequential
+update. It is outside the installed CLI and does not add an executor, deployment
+backend, or supported production lifecycle.
 
 See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the
 repository root for sequencing and release gates.

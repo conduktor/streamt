@@ -12,6 +12,30 @@ candidate currently being prepared and remain subject to the exact-SHA release
 gate in the
 [first public alpha release plan](../plans/2026-09-03-first-alpha-release.md).
 
+### Developer workflow and external declarations
+
+The scaffold now passes `validate --strict`, uses explicit column projections,
+and explains its Flink runtime prerequisite and the external input topic. Its
+offline commands do not prove that a processor is running.
+
+Custom application exposures now connect declared source/model inputs and
+outputs in every relationship direction. Invalid references, graph name
+collisions, and feedback cycles fail local validation. This does not add code
+builds or application scheduling.
+
+Import JSON now reports provenance, schema lookup outcomes, inferred-column
+limits, and unavailable application SQL/code. Repeat import and no-clobber
+behavior are unchanged. Ordinary planning keeps external artifacts as unobserved
+no-ops. Status defaults to managed observations; use `--include-external` to check
+external dependencies explicitly. Missing managed runtime configuration is an
+error, and ownership, collision, removal, and recovery checks remain required.
+
+The repository also contains a Kafka Streams projection/filter experiment tested
+against real Kafka, including clean restart on the same application identity.
+It is not an installed CLI capability or supported production runtime. See the
+[architecture decision](../specs/kafka-streams-execution-proof.md) for evidence,
+limits, and the separate productization gate.
+
 ### Offline Strimzi 1.2.0 KafkaTopic export
 
 `streamt export strimzi` now emits deterministic, offline-validated

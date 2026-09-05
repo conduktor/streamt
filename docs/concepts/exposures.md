@@ -39,7 +39,7 @@ sources, models, and exposures, and feedback cycles are currently rejected.
 
 An **exposure** represents:
 
-- An application that consumes your data
+- A custom producer, processor, or consumer
 - A dashboard that displays your metrics
 - An ML model that trains on your streams
 - Any downstream dependency
@@ -57,7 +57,7 @@ exposures:
 
 1. **Lineage** — See the full picture of where data goes
 2. **Impact Analysis** — Know what breaks when you change a model
-3. **SLA Tracking** — Document and monitor service agreements
+3. **SLA Metadata** — Document service expectations; streamt does not enforce them
 4. **Ownership** — Know who to contact when things break
 
 ## Basic Exposure

@@ -215,7 +215,11 @@ sources:
 ```
 
 With global `--output json`, resources, declarations, counts, warnings, and created
-files are emitted in stable topic order for automation.
+files are emitted in stable topic order for automation. `data.discovery` reports
+read-only access, enrichment availability, and discovery limits. Each resource has
+`provenance` and `completeness`: schema lookup distinguishes not requested, not
+found, resolved, failed, and skipped after an outage. Inferred columns are not
+runtime-verified. Import does not sample records or reconstruct application SQL/code.
 
 ---
 
@@ -470,6 +474,12 @@ Flink Jobs:
 ### plan
 
 Show planned changes without applying them (like `terraform plan`).
+
+External artifacts remain declaration-only no-ops without live drift reads. Online
+planning creates only the clients required by managed resources or explicit
+lifecycle work; required missing runtimes are errors. Managed evidence and exact
+identity checks remain mandatory. Offline planning assumes managed resources are
+absent, not that external resources are missing; it cannot authorize apply.
 
 ```bash
 streamt plan [OPTIONS]
@@ -1535,7 +1545,8 @@ failure handling, and PostgreSQL topology requirements.
 
 ### status
 
-Check deployment status of resources.
+Check deployment status of selected managed resources. External resources are
+declared but not inspected unless `--include-external` is supplied.
 
 ```bash
 streamt status [OPTIONS]
@@ -1549,15 +1560,19 @@ streamt status [OPTIONS]
 | `--env ENV` | Target environment (multi-env mode) |
 | `--lag` | Show consumer lag and message counts for topics |
 | `--consumer-groups` | Show per-consumer-group lag |
-| `--health` | Exit 1 if any resource is MISSING or DRIFT (for CI/monitoring) |
+| `--include-external` | Explicitly inspect external sources and compiled artifacts |
+| `--health` | Exit 1 for missing, drifted, unhealthy, or unavailable observations in the selected scope |
 | `--format FORMAT` | Output format: `text` (default) or `json` |
 | `--filter PATTERN` | Filter resources by name pattern (glob-style) |
 
 **Examples:**
 
 ```bash
-# Full status
+# Managed status; external declarations are not inspected
 streamt status
+
+# Explicit live inspection of external dependencies too
+streamt status --include-external
 
 # Status for specific environment
 streamt status --env prod
@@ -1577,6 +1592,12 @@ streamt status --lag --filter "orders*"
 # Health check (exit 1 if anything unhealthy)
 streamt status --health
 ```
+
+Filtering happens before provider connections. JSON `data.observation_scope` is
+`managed` or `managed_and_external`. Unobserved external sources have `exists: null`
+and `observation: not_requested`; compiled external artifacts are listed under
+`external_resources` rather than assigned a runtime status. A successful
+managed-only `--health` does not certify that external dependencies are available.
 
 **Output (text):**
 

@@ -10,8 +10,8 @@ is part of the product's value, even when an external backend executes it.
 The product promise, SQL-first authoring, inclusion of custom applications, and
 external/managed distinction are agreed. A Kafka-only starting point must be
 addressed; Kafka Streams is a candidate, not an implemented backend. Strimzi
-is not a product priority. Runtime investment and update scope still require
-the decisions recorded in the
+is not a product priority. The owner authorized declaration-only external
+resources, custom-application metadata, and a bounded Kafka Streams proof in the
 [developer experience execution plan](../plans/2026-09-04-developer-experience-execution.md).
 That plan governs the next work; the [support matrix](../reference/support-matrix.md)
 governs claims about what works today.
@@ -30,7 +30,7 @@ streaming applications and their inputs, outputs, and owners. Users include
 data engineers and application developers. Platform teams provide environments,
 deployment permissions, and shared rules. Representation, deployment of an
 existing artifact, and compilation of application code are separate capabilities.
-The initial managed custom-application scope remains a product decision.
+Deployment of custom images/JARs and source builds is deferred.
 
 ## Problem
 
@@ -80,10 +80,12 @@ or settings remain unknown; metadata discovery cannot reconstruct arbitrary
 business logic. Import does not silently adopt a resource. Explicit adoption
 requires a complete supported definition and the existing ownership checks.
 
-The requested external-resource behavior is declaration-only by default: no
-automatic drift enforcement or mutation. The pending observation decision
-separates local reference validation from optional live inspection. Implementing
-that distinction must not disable safety checks on resources streamt manages.
+External resources are declaration-only by default: local references remain
+validated, but ordinary planning does not query their live state or drift.
+`status --include-external` explicitly requests live observations. Managed
+operations retain their own evidence and safety checks. See the
+[ownership contract](deployment-safety-and-ownership.md#external-declaration-behavior)
+for the command boundaries and shared-provider limitations.
 
 An application or domain owns a coherent project. A monorepo is allowed, but
 streamt must not require every team to move into one repository. Each managed
@@ -142,8 +144,8 @@ local onboarding work on an immutable repository revision.
 
 ## Out of scope for the next cycle
 
-- An unbounded SQL engine or arbitrary custom-language build system. A bounded
-  Kafka Streams experiment requires the execution-plan decision first.
+- An unbounded SQL engine or arbitrary custom-language build system. The bounded
+  Kafka Streams proof is authorized; a maintained runtime requires another decision.
 - Requiring Kubernetes, a catalog, or a commercial account to try the local path.
 - A hosted service, visual pipeline editor, or new telemetry database.
 - Mandatory monorepo migration or a cross-project package resolver.
@@ -151,8 +153,9 @@ local onboarding work on an immutable repository revision.
   catalog publishers.
 - Exactly-once, zero-downtime, or state-migration claims without target evidence.
 
-The pending decisions can change the initial scope before execution begins.
-During execution, material expansions require another product decision.
+The [Kafka Streams architecture decision](kafka-streams-execution-proof.md)
+records the proof and the remaining productization gate. Material expansions
+require another product decision.
 
 ## Measures of success
 

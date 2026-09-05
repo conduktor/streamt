@@ -33,17 +33,32 @@ the project successfully creates them. Existing output resources require
 explicit adoption before mutation unless the user selects a backend-specific
 create-if-absent policy.
 
-### Planned external declaration behavior
+### External declaration behavior
 
-The 2026-09-04 [developer workflow](developer-workflow.md) adds an explicit
-requirement for external declarations without automatic drift checks. The
-table's observation permission does not imply continuous monitoring or ownership.
-The exact split between local reference validation and opt-in live inspection
-is pending confirmation in the
-[execution plan](../plans/2026-09-04-developer-experience-execution.md).
-Current commands may still perform live reads; documentation changes do not
-implement a no-network mode. Any implementation must preserve the evidence
-required for managed mutations and keep import separate from adoption.
+`validate` and `compile` remain provider-free by default. Online and offline
+planning retain external artifacts as declaration-only no-ops: `current` is
+unknown, not a fabricated absent resource, and `observed_action` is `none`.
+External artifacts do not request provider connections or ownership-state claims.
+Local identity, reference, collision, and removal/recovery checks still apply.
+Connect and Gateway declarations still require locally resolvable runtime bindings.
+
+`status` inspects selected managed resources by default. External sources are
+reported as declared with `exists: null` and `observation: not_requested`;
+external compiled artifacts appear in `external_resources`. Pass
+`--include-external` for live inspection. `--health` does not treat unobserved
+external resources as healthy or missing; it evaluates the selected observed scope.
+Missing evidence for a requested managed observation remains a health failure.
+
+`import` and `validate --check-schemas` are explicit live-read commands. Adoption
+is still separate and requires its existing authority and evidence. Managed
+planning retains consumer-impact reads and exact provider snapshots: a shared
+Gateway snapshot may contain external entries, but those entries are not diffed.
+External declarations cannot neutralize a collision, removal, or recovery blocker.
+
+This is not a global no-network switch. Online plan/apply can access configured
+deployment state, and opt-in transports retain their own behavior. Parsing still
+resolves configured environment variables even for offline commands; missing
+secrets fail locally rather than being replaced with defaults.
 
 ## Stable resource identity
 

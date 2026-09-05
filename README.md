@@ -52,10 +52,11 @@ models:
 supported changes; protected/shared environments require a reviewed plan.
 
 This is an alpha. Existing Flink job updates remain blocked until a safe
-lifecycle is implemented. Kafka Streams execution, managed custom-application
-deployment, and the new first-use/update journey are planned work, not current
-capabilities. External declarations can still trigger live reads in current
-commands; the planned opt-in observation policy is not implemented yet. See the
+lifecycle is implemented. A Kafka Streams prototype has passed a real-broker
+filter/update test, but is not a supported backend. Managed custom-application
+deployment and the complete first-use/update journey remain planned.
+External resources are declaration-only in plans; use `status --include-external`
+to inspect them explicitly. Managed safety checks remain enabled. See the
 [support matrix](https://conduktor.github.io/streamt/reference/support-matrix/)
 and [product direction](https://conduktor.github.io/streamt/specs/product-direction/).
 
