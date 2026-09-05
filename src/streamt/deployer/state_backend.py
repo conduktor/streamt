@@ -1609,6 +1609,10 @@ class DeploymentStateOperation(Protocol):
 
     def check_lock(self) -> None: ...
 
+    def pending_resume_authorization(
+        self, snapshot: OperationSnapshot,
+    ) -> OperationResumeRecord | None: ...
+
     def resume_operation(
         self, observation: OperationSnapshot, record: OperationResumeRecord,
     ) -> OperationSnapshot: ...
@@ -2399,6 +2403,68 @@ class _LocalDeploymentStateOperation:
                 control=recovery_observation,
             )
         return recovery_observation
+
+    def pending_resume_authorization(
+        self, snapshot: OperationSnapshot,
+    ) -> OperationResumeRecord | None:
+        """Read an exact prewritten authorization without granting new authority.
+
+        ``None`` means this snapshot has no unmatched resume archive entry. It
+        does not establish eligibility to resume or authorize any runtime work.
+        A recovery-required snapshot remains readable across the local archive
+        write/control-CAS gap, but its sole extra entry must prove that exact
+        interrupted preimage before it can be returned.
+        """
+        if (
+            type(snapshot) is not OperationSnapshot
+            or type(snapshot.state) is not StateObservation
+            or type(snapshot.control) is not ControlObservation
+            or type(snapshot.control.control) is not OperationControlState
+            or type(snapshot.state.state) is not LocalState
+        ):
+            raise StateFormatError("pending resume lookup requires an exact full operation snapshot")
+        self._backend._validate_observation(self._address, snapshot.state)
+        self._backend._validate_control_observation(self._address, snapshot.control)
+
+        def require_current_snapshot() -> None:
+            self.check_lock()
+            current = OperationSnapshot(state=self.read(), control=self.read_control())
+            if current != snapshot:
+                raise StateBackendConflictError(
+                    "state or operation control changed before pending resume lookup"
+                )
+            self.check_lock()
+
+        require_current_snapshot()
+        history = self._backend._read_recovery_history(self._address)
+        if history.events and history.events[-1].kind == "recovery_intent":
+            raise StateBackendConflictError("a recovery resolution attempt is already in progress")
+        control = snapshot.control.control
+        intent = control.intent
+        pending: OperationResumeRecord | None = None
+        if intent is not None:
+            if any(
+                event.kind == "recovery_resolution"
+                and cast("RecoveryResolutionRecord", event.record).blocked_operation_id == intent.operation_id
+                for event in history.events
+            ):
+                raise StateBackendConflictError("a completed recovery resolution cannot be resumed")
+            archived = history.resumes_for(intent.operation_id)
+            expected = control.resume_history
+            if archived != expected:
+                if (
+                    control.status != "recovery_required"
+                    or len(archived) != len(expected) + 1
+                    or archived[:-1] != expected
+                ):
+                    raise StateBackendConflictError("local resume audit and operation control do not match")
+                pending = archived[-1]
+                _validate_resume_transition_inputs(snapshot, pending)
+        require_current_snapshot()
+        if self._backend._read_recovery_history(self._address) != history:
+            raise StateBackendConflictError("local resume audit changed during pending resume lookup")
+        require_current_snapshot()
+        return pending
 
     def resume_operation(
         self, snapshot: OperationSnapshot, record: OperationResumeRecord,

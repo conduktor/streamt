@@ -183,9 +183,24 @@ interrupted control still matches. A different authorization or a conflicting
 recovery resolution blocks. An unacknowledged transition never authorizes the
 runtime driver to continue on a lost lock.
 
-These backend checks bind stored evidence. They do not verify the user's current
-SQL against an original plan file. That check and retrieval of a prewritten local
-authorization after a process restart belong to the pending CLI integration.
+Both backends also expose `pending_resume_authorization(snapshot)` under the
+operation lock. The local implementation returns the sole exact archived record
+left before a control update, after validating its interrupted snapshot and
+re-reading state, control and audit. Matching audit without a pending record
+returns `None`; a mismatch or competing recovery is an error. PostgreSQL returns
+`None` only after a fresh read-only transaction verifies the supplied snapshot
+and the current runner journal, including a recorded interruption. Its atomic
+resume transition cannot leave a separate prewritten record.
+
+This lookup writes nothing. Absence is not eligibility or permission to resume.
+These backend checks also do not verify the user's current SQL against an
+original plan file. That check and the command calling this API still belong to
+the pending CLI integration.
+
+`PlannedAction` and its durable-action converter now retain the typed runner
+evidence without changing its version-4 bytes. Reviewed format-6 round trips
+preserve that evidence. Actual replacement planning and apply remain blocked;
+this conversion does not collect observations or authorize execution.
 
 The separate `kafka_streams_resume_probe.py` acceptance now passes from source
 (client 2.13.2) and an installed package (2.15.0). Its first worker loses a real
@@ -211,19 +226,36 @@ evidence is in `tests/package/verification/kafka-streams-durable-resume.json`.
 
 ## Remaining integration order
 
-1. Attach observed replacement evidence to planner actions only after the full
+1. Wire restart handling to the locked, read-only authorization lookup. Use an
+   existing prewritten record without changing its UUID, actor or timestamp.
+   A stale snapshot, conflicting recovery or inconsistent audit is an error,
+   not absence. Only an exact verified absence permits creation of a new record,
+   and only after the original plan and current desired project are verified.
+   The lookup alone neither grants runtime authority nor verifies that plan.
+2. Attach observed replacement evidence to planner actions only after the full
    predicate/identity/ownership checks pass. Enforce the sole-mutation and
    unselected-project bounds before removing any existing blocker. External
    declarations remain outside runtime observation and mutation.
-2. Wire apply to the original reviewed tuple and locked driver, including durable
+3. Wire apply to the original reviewed tuple and locked driver, including durable
    completion and desired ownership commit. No generic create/update handler may
    bypass those checkpoints. An uncertain runtime response retains the last
    actual boundary rather than recording a terminal failed completion.
-3. Add explicit same-operation CLI resume and read-only recovery reporting.
+4. Handle a completed local ownership write whose control clear was interrupted.
+   With a new lock, verify the original operation and reviewed plan, the exact
+   completed checkpoint sequence and the desired ownership state. Reconstruct
+   the prior state by undoing only the sole runner checksum change and serial
+   increment; it must match the original intent's full prior-state checksum.
+   Any unrelated ownership change rejects finalization. Re-observe the exact
+   ready candidate before clearing, without runtime writes or another serial
+   increment. The existing generic recovery snapshot requires prior ownership
+   and does not cover this already-written result. This path is not implemented.
+5. Add explicit same-operation CLI resume and read-only recovery reporting.
    Resume must verify the original plan and desired project, not create a fresh
    plan against the partially replaced topology. Unknown outcomes cannot clear
-   pending work; a missing candidate after removal is still incomplete.
-4. Run the installed public change/resume journey with failures on both sides
+   pending work; a missing candidate after removal is still incomplete. Read-only
+   recovery must compare advancing offsets against the reviewed lower bounds,
+   not require live observations to remain byte-identical.
+6. Run the installed public change/resume journey with failures on both sides
    of journal and runtime boundaries. Only then advertise the update workflow
    and proceed to declared Git base/head comparison and downstream impact.
 

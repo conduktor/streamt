@@ -292,6 +292,7 @@ def test_real_postgres_repeated_resume_preserves_incidents_and_commits_once(
         with _backend(postgres_case, postgres_writer).operation(ADDRESS) as operation:
             observed = operation.observe()
             assert observed == blocked
+            assert operation.pending_resume_authorization(observed) is None
             with pytest.raises(StateBackendRecoveryRequiredError):
                 operation.ensure_ready(observed)
             record = _resume_record(observed)
@@ -308,6 +309,7 @@ def test_real_postgres_repeated_resume_preserves_incidents_and_commits_once(
         assert record.store.store_id == store_id
         with _backend(postgres_case, postgres_writer).operation(ADDRESS) as operation:
             assert operation.observe() == resumed
+            assert operation.pending_resume_authorization(resumed) is None
         after_rows = _durable_rows(postgres_case)
         assert after_rows["current_state"] == initial_rows["current_state"]
         assert after_rows["state_history"] == initial_rows["state_history"]
@@ -342,7 +344,10 @@ def test_real_postgres_repeated_resume_preserves_incidents_and_commits_once(
     _revalidate(postgres_case, postgres_writer, store_id)
     assert _durable_rows(postgres_case) == final_rows
     with backend.operation(ADDRESS) as operation:
-        operation.ensure_ready(operation.observe())
+        observed = operation.observe()
+        operation.ensure_ready(observed)
+        assert operation.pending_resume_authorization(observed) is None
+    assert _durable_rows(postgres_case) == final_rows
 
 
 @pytest.mark.parametrize("count", [0, 2])
@@ -356,6 +361,9 @@ def test_real_postgres_stale_resume_does_not_append_or_change_ownership(
     with backend.operation(ADDRESS) as operation:
         operation.resume_operation(operation.observe(), first)
     before = _durable_rows(postgres_case)
+    with backend.operation(ADDRESS) as operation, pytest.raises(StateBackendConflictError):
+        operation.pending_resume_authorization(blocked)
+    assert _durable_rows(postgres_case) == before
     with backend.operation(ADDRESS) as operation, pytest.raises(StateBackendConflictError):
         operation.resume_operation(blocked, stale)
     assert _durable_rows(postgres_case) == before
@@ -435,6 +443,8 @@ def test_real_postgres_resume_commit_ack_loss_never_replays_or_partially_commits
     assert after["state_history"] == before["state_history"]
     with backend.operation(ADDRESS) as operation:
         observed = operation.observe()
+        assert operation.pending_resume_authorization(observed) is None
+        assert _durable_rows(postgres_case) == after
         if commit_on_server:
             assert observed.control.control.status == "in_progress"
             assert observed.control.control.resume_history == (authorization,)
@@ -528,3 +538,60 @@ def test_real_postgres_v4_runner_snapshot_refuses_truncated_history_before_resum
     with backend.operation(ADDRESS) as operation, pytest.raises(StateBackendInvalidStateError):
         operation.observe()
     assert _durable_rows(postgres_case) == corrupted
+
+
+@pytest.mark.parametrize("damage", ["missing", "truncated", "changed"])
+def test_real_postgres_pending_authorization_rejects_corrupt_blocked_history_read_only(
+    postgres_case: PostgresCase, postgres_writer: WriterIdentity, damage: str,
+) -> None:
+    backend, _store_id = _initialize(postgres_case, postgres_writer)
+    blocked = _blocked_at(backend, 4)
+    intent = blocked.control.control.intent
+    assert intent is not None
+    with postgres_case.psycopg.connect(postgres_case.owner_dsn) as connection:
+        table = postgres_case.sql.SQL("{}.{}").format(
+            postgres_case.sql.Identifier(postgres_case.schema),
+            postgres_case.sql.Identifier("operation_history"),
+        )
+        if damage == "missing":
+            connection.execute(postgres_case.sql.SQL(
+                "DELETE FROM {} WHERE operation_id = %s",
+            ).format(table), (intent.operation_id,))
+        elif damage == "truncated":
+            connection.execute(postgres_case.sql.SQL(
+                "DELETE FROM {} WHERE operation_id = %s AND event_kind = 'recovery_required'",
+            ).format(table), (intent.operation_id,))
+        else:
+            payload = blocked.control.control.to_dict()
+            payload["recovery"]["failure_code"] = "changed_incident"
+            connection.execute(postgres_case.sql.SQL(
+                "UPDATE {} SET control_json = %s WHERE operation_id = %s AND event_kind = 'recovery_required'",
+            ).format(table), (json.dumps(payload, sort_keys=True, separators=(",", ":")), intent.operation_id))
+    corrupted = _durable_rows(postgres_case)
+    with backend.operation(ADDRESS) as operation:
+        observed = operation.observe()
+        assert observed == blocked
+        with pytest.raises(StateBackendInvalidStateError, match="deployment state is invalid"):
+            operation.pending_resume_authorization(observed)
+    assert _durable_rows(postgres_case) == corrupted
+
+
+def test_real_postgres_pending_authorization_refuses_a_lost_locked_connection(
+    postgres_case: PostgresCase, postgres_writer: WriterIdentity,
+) -> None:
+    backend, _store_id = _initialize(postgres_case, postgres_writer)
+    blocked = _blocked_at(backend, 2)
+    before = _durable_rows(postgres_case)
+    def read_after_loss() -> None:
+        with backend.operation(ADDRESS) as operation:
+            observed = operation.observe()
+            assert observed == blocked
+            with postgres_case.psycopg.connect(postgres_case.admin_dsn, autocommit=True) as connection:
+                assert connection.execute(
+                    "SELECT pg_catalog.pg_terminate_backend(%s)", (operation.backend_pid,),
+                ).fetchone() == (True,)
+            operation.pending_resume_authorization(observed)
+
+    with pytest.raises(StateBackendLockLostError):
+        read_after_loss()
+    assert _durable_rows(postgres_case) == before

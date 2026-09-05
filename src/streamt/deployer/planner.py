@@ -77,6 +77,7 @@ from streamt.deployer.kafka_streams import (
     KafkaStreamsJobChange,
     KafkaStreamsJobState,
 )
+from streamt.deployer.kafka_streams_evidence import KafkaStreamsActionEvidence
 from streamt.deployer.schema_registry import SchemaChange, SchemaRegistryDeployer
 from streamt.deployer.state import (
     LocalState,
@@ -635,6 +636,7 @@ class PlannedAction:
     action: str
     gateway_evidence: GatewayActionEvidence | None = None
     connector_evidence: ConnectorActionEvidence | None = None
+    kafka_streams_evidence: KafkaStreamsActionEvidence | None = None
 
     def __post_init__(self) -> None:
         ResourceIdentity.parse(self.resource_id)
@@ -655,6 +657,11 @@ class PlannedAction:
             and type(self.connector_evidence) is not ConnectorActionEvidence
         ):
             raise StateIdentityError("planned action Connector evidence is invalid")
+        if (
+            self.kafka_streams_evidence is not None
+            and type(self.kafka_streams_evidence) is not KafkaStreamsActionEvidence
+        ):
+            raise StateIdentityError("planned action Kafka Streams evidence is invalid")
         try:
             OperationAction(
                 index=0,
@@ -662,6 +669,7 @@ class PlannedAction:
                 action=self.action,
                 gateway_evidence=self.gateway_evidence,
                 connector_evidence=self.connector_evidence,
+                kafka_streams_evidence=self.kafka_streams_evidence,
             )
         except StateError as error:
             raise StateIdentityError(str(error)) from None

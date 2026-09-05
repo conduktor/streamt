@@ -279,6 +279,7 @@ def _read_snapshot_transaction(
     lock_timeout_seconds: int,
     address: StateAddress,
     for_update: bool = False,
+    require_blocked_runner_history: bool = False,
 ) -> OperationSnapshot:
     """Read an exactly validated address from the caller's open transaction."""
     status = PostgresStateAdministration(
@@ -324,7 +325,10 @@ def _read_snapshot_transaction(
             "PostgreSQL deployment resume history belongs to another store"
         )
     intent = control.control.intent
-    if control.control.status == "in_progress" and intent is not None and any(
+    validate_runner_history = control.control.status == "in_progress" or (
+        require_blocked_runner_history and control.control.status == "recovery_required"
+    )
+    if validate_runner_history and intent is not None and any(
         action.kafka_streams_evidence is not None for action in intent.actions
     ):
         # Runtime writes may occur between journal boundaries. A held snapshot
@@ -600,6 +604,10 @@ class _PostgresStateReadOperation:
 
     def observe(self) -> OperationSnapshot:
         """Return state and control from one bounded repeatable-read snapshot."""
+        return self._observe()
+
+    def _observe(self, *, require_blocked_runner_history: bool = False) -> OperationSnapshot:
+        """Share the ordinary snapshot/lock checks with read-only resume lookup."""
         self.check_lock()
         transaction_started = False
         invalid = False
@@ -622,6 +630,7 @@ class _PostgresStateReadOperation:
                 schema=self._schema,
                 lock_timeout_seconds=self._lock_timeout_seconds,
                 address=self._address,
+                require_blocked_runner_history=require_blocked_runner_history,
             )
         except StateBackendInvalidStateError:
             invalid = True
@@ -656,6 +665,32 @@ class _PostgresStateReadOperation:
             ) from None
         self.check_lock()
         return snapshot
+
+    def pending_resume_authorization(
+        self, snapshot: OperationSnapshot,
+    ) -> OperationResumeRecord | None:
+        """Read absence of a prewritten authorization without granting resume.
+
+        PostgreSQL commits resume/recovery control and history atomically, so
+        it has no separate pending authorization file. Validate the exact
+        current runner journal, including its interruption, under the held
+        lock. This does not scan historical operations under other UUIDs and
+        does not establish eligibility or authority to execute a resume.
+        """
+        if (
+            type(snapshot) is not OperationSnapshot
+            or type(snapshot.state) is not StateObservation
+            or type(snapshot.state.state) is not LocalState
+            or type(snapshot.control) is not ControlObservation
+            or type(snapshot.control.control) is not OperationControlState
+        ):
+            raise StateBackendInvalidStateError(
+                "PostgreSQL deployment resume lookup requires an exact snapshot"
+            )
+        current = self._observe(require_blocked_runner_history=True)
+        self._validate_expected_snapshot(snapshot, current)
+        self.check_lock()
+        return None
 
     def read(self) -> StateObservation:
         return self.observe().state

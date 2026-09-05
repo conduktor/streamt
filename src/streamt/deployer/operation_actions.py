@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
+from streamt.deployer.kafka_streams_evidence import KafkaStreamsActionEvidence
 from streamt.deployer.state_backend import (
     ConnectorActionEvidence,
     GatewayActionEvidence,
@@ -27,6 +28,9 @@ class PlannedOperationAction(Protocol):
     @property
     def connector_evidence(self) -> ConnectorActionEvidence | None: ...
 
+    @property
+    def kafka_streams_evidence(self) -> KafkaStreamsActionEvidence | None: ...
+
 
 def operation_actions_from_planned(
     planned_actions: Sequence[PlannedOperationAction],
@@ -39,6 +43,7 @@ def operation_actions_from_planned(
             action=planned_action.action,
             gateway_evidence=planned_action.gateway_evidence,
             connector_evidence=planned_action.connector_evidence,
+            kafka_streams_evidence=planned_action.kafka_streams_evidence,
         )
         for index, planned_action in enumerate(planned_actions)
     )

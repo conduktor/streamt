@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -444,3 +445,171 @@ def test_missing_reviewed_plan_is_not_resumable_even_with_valid_runner_evidence(
         _authorization(blocked)
     assert owner.dml_attempts == writes
     assert database.control.status == "recovery_required"
+
+
+@pytest.mark.parametrize("phase", ["clear", "active", "blocked", "resumed", "reblocked", "completed"])
+def test_pending_authorization_absence_is_fresh_read_only_and_not_resume_eligibility(monkeypatch, phase):
+    operation, database, owner, _driver, current = _start(monkeypatch, prefix=2, exit_code=143)
+    if phase in {"blocked", "resumed", "reblocked", "completed", "clear"}:
+        current = _interrupt(operation, current)
+    if phase in {"resumed", "reblocked", "completed", "clear"}:
+        current = operation.resume_operation(current, _authorization(current))
+    if phase == "reblocked":
+        current = _interrupt(operation, current, failure_code="second_incident")
+    if phase in {"completed", "clear"}:
+        for boundary in _boundaries(exit_code=143)[2:]:
+            current = operation.record_progress(current, boundary)
+    if phase == "clear":
+        current = operation.commit_operation(current, _desired_state())
+    before = copy.deepcopy(database.__dict__)
+    writes = list(owner.dml_attempts)
+    calls = len(owner.cursor_value.calls)
+    rollbacks = owner.rollbacks
+
+    assert operation.pending_resume_authorization(current) is None
+
+    assert database.__dict__ == before
+    assert owner.dml_attempts == writes
+    assert owner.rollbacks == rollbacks + 1
+    queries = [query for query, _params in owner.cursor_value.calls[calls:]]
+    assert queries.count("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY") == 1
+    assert not any(query.startswith(("INSERT", "UPDATE", "DELETE", "COMMIT")) for query in queries)
+    assert sum(query.startswith("SELECT event_index") for query in queries) == (phase != "clear")
+    assert "pg_locks" in queries[0]
+    assert "pg_locks" in queries[-1]
+    if phase == "completed":
+        # None is an absence observation, not permission to resume a terminal.
+        blocked = operation.mark_recovery_required(current, RecoveryRecord(OPERATION, "failed", STAMP, 0))
+        assert operation.pending_resume_authorization(blocked) is None
+        with pytest.raises(StateError):
+            _authorization(blocked, resume_id=OTHER_RESUME)
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_pending_authorization_read_preserves_legacy_clear_control_bytes(monkeypatch, version):
+    operation, database, owner, _driver = _postgres(monkeypatch)
+    database.control = OperationControlState(database.address, control_version=version)
+    observed = operation.observe()
+    before = copy.deepcopy(database.__dict__)
+    writes = list(owner.dml_attempts)
+    assert operation.pending_resume_authorization(observed) is None
+    assert database.__dict__ == before
+    assert owner.dml_attempts == writes
+
+
+@pytest.mark.parametrize("failure", ["state", "state_revision", "store", "control_revision", "control"])
+def test_pending_authorization_rejects_stale_full_snapshot_without_writes(monkeypatch, failure):
+    operation, database, owner, _driver, active = _start(monkeypatch)
+    blocked = _interrupt(operation, active)
+    if failure == "state":
+        database.state.resources[RESOURCE] = replace(database.state.resources[RESOURCE], artifact_checksum="sha256:" + "9" * 64)
+    elif failure == "state_revision":
+        database.state_revision += 1
+    elif failure == "store":
+        database.store_id = OTHER_RESUME
+    elif failure == "control_revision":
+        database.control_revision += 1
+    else:
+        operation.resume_operation(blocked, _authorization(blocked))
+    before = copy.deepcopy(database.__dict__)
+    writes = list(owner.dml_attempts)
+    with pytest.raises(StateBackendConflictError):
+        operation.pending_resume_authorization(blocked)
+    assert database.__dict__ == before
+    assert owner.dml_attempts == writes
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize("damage", ["missing", "truncated", "changed", "wrong_kind", "noncanonical"])
+def test_pending_authorization_validates_exact_blocked_runner_history(monkeypatch, resumed, damage):
+    operation, database, owner, _driver, current = _start(monkeypatch, prefix=4, exit_code=143)
+    current = _interrupt(operation, current)
+    if resumed:
+        current = operation.resume_operation(current, _authorization(current))
+        current = _interrupt(operation, current, failure_code="second_incident")
+    if damage == "missing":
+        database.operation_history.clear()
+    elif damage == "truncated":
+        database.operation_history.pop()
+    else:
+        index, kind, raw = database.operation_history[-1]
+        if damage == "changed":
+            payload = json.loads(raw)
+            payload["recovery"]["failure_code"] = "another_incident"
+            raw = _json(payload)
+        elif damage == "wrong_kind":
+            kind = "operation_resumed"
+        else:
+            raw = json.dumps(json.loads(raw), indent=2)
+        database.operation_history[-1] = (index, kind, raw)
+    # Ordinary blocked observation remains available to report the incident.
+    assert operation.observe() == current
+    before = copy.deepcopy(database.__dict__)
+    writes = list(owner.dml_attempts)
+    with pytest.raises(StateBackendInvalidStateError, match="deployment state is invalid"):
+        operation.pending_resume_authorization(current)
+    assert database.__dict__ == before
+    assert owner.dml_attempts == writes
+
+
+@pytest.mark.parametrize("failure", ["lock_before", "history_read", "rollback", "lock_after"])
+def test_pending_authorization_fails_closed_on_read_or_lock_loss(monkeypatch, failure):
+    operation, database, owner, _driver, active = _start(monkeypatch)
+    current = _interrupt(operation, active)
+    if failure == "lock_before":
+        owner.cursor_value.lock_owned = False
+    elif failure == "history_read":
+        owner.fail_dml_pattern = "SELECT event_index"
+    elif failure == "rollback":
+        monkeypatch.setattr(owner, "rollback", lambda: (_ for _ in ()).throw(RuntimeError("postgresql://user:secret@private")))
+    else:
+        rollback = owner.rollback
+
+        def lose_lock_after_read():
+            rollback()
+            owner.cursor_value.lock_owned = False
+
+        monkeypatch.setattr(owner, "rollback", lose_lock_after_read)
+    before = copy.deepcopy(database.__dict__)
+    writes = list(owner.dml_attempts)
+    with pytest.raises(StateBackendLockLostError) as raised:
+        operation.pending_resume_authorization(current)
+    assert "secret" not in str(raised.value)
+    assert "private" not in str(raised.value)
+    assert database.__dict__ == before
+    assert owner.dml_attempts == writes
+
+
+@pytest.mark.parametrize("invalid", [None, {}, object()])
+def test_pending_authorization_requires_exact_snapshot_type_before_database_access(monkeypatch, invalid):
+    operation, _database, owner, _driver = _postgres(monkeypatch)
+    calls = list(owner.cursor_value.calls)
+    with pytest.raises(StateBackendInvalidStateError, match="exact snapshot"):
+        operation.pending_resume_authorization(invalid)
+    assert owner.cursor_value.calls == calls
+
+
+def test_pending_authorization_requires_exact_nested_ownership_before_database_access(monkeypatch):
+    operation, _database, owner, _driver = _postgres(monkeypatch)
+    observed = operation.observe()
+    malformed_state = SimpleNamespace(project=observed.address.project, environment=observed.address.environment)
+    malformed = replace(observed, state=replace(observed.state, state=malformed_state))
+    calls = list(owner.cursor_value.calls)
+    with pytest.raises(StateBackendInvalidStateError, match="exact snapshot"):
+        operation.pending_resume_authorization(malformed)
+    assert owner.cursor_value.calls == calls
+
+
+def test_pending_authorization_reproves_production_writer_in_read_transaction(monkeypatch):
+    operation, _database, owner, _driver, active = _start(monkeypatch)
+    current = _interrupt(operation, active)
+    operation._require_v2_writer = True
+    checks = []
+
+    def prove_writer(*_args, **kwargs):
+        assert owner.transaction is not None
+        checks.append(kwargs["address"])
+
+    monkeypatch.setattr(postgres_backend, "_prove_private_postgres_v2_writer", prove_writer)
+    assert operation.pending_resume_authorization(current) is None
+    assert checks == [current.address]

@@ -142,6 +142,7 @@ def test_lost_audit_or_control_ack_keeps_durable_prefix_and_requires_exact_retry
     with backend.operation(ADDRESS) as operation:
         current = operation.observe()
         if phase == "control_after":
+            assert operation.pending_resume_authorization(current) is None
             with pytest.raises(StateBackendRecoveryRequiredError):
                 operation.resume_operation(current, record)
             with pytest.raises(StateBackendConflictError):
@@ -151,8 +152,8 @@ def test_lost_audit_or_control_ack_keeps_durable_prefix_and_requires_exact_retry
             retry_record = record
             if phase != "audit_before":
                 # The caller can recover the first authorization itself from
-                # the durable sidecar after losing all process-local state.
-                retry_record = _history(backend).resumes_for(OPERATION)[-1]
+                # the public read-only API after losing process-local state.
+                retry_record = operation.pending_resume_authorization(current)
                 assert retry_record == record
                 assert retry_record is not record
                 for changed in (
@@ -163,6 +164,9 @@ def test_lost_audit_or_control_ack_keeps_durable_prefix_and_requires_exact_retry
                     with pytest.raises(StateBackendConflictError):
                         operation.resume_operation(current, changed)
                     assert _history(backend).resumes_for(OPERATION) == (record,)
+            else:
+                assert operation.pending_resume_authorization(current) is None
+            assert retry_record is not None
             resumed = operation.resume_operation(current, retry_record)
             assert resumed.control.control.resume_history == (record,)
             assert _history(backend).resumes_for(OPERATION) == (record,)

@@ -283,3 +283,45 @@ Durable resume checkpoint:
   retrieve a prewritten local authorization when needed, and use the locked
   executor through completion. The state backend alone does not verify SQL
   against a reviewed plan file.
+
+CI polling follow-up:
+
+- Commit `9aa159a` passed 25 CI jobs; the installed client-2.15.0 lane failed
+  during final data verification after both resume workers completed. The log
+  reports an unavailable offset observation, not its native Kafka error code.
+- Commit `843d826` bounds retries of those acceptance reads. Producer writes
+  still occur once; invalid returned progress, identity mismatches, duplicates
+  and deadline overruns still fail. The final output drain is also bounded.
+  Twelve targeted tests pass on Python 3.10 and 3.12; the full 3.12 unit/scenario
+  suite passes 7,134 tests with 32 skips. Historical evidence files were not
+  rewritten to claim that they tested the changed helper.
+- CI run `33998457006` for `843d826` passes all 26 jobs, including both installed
+  Kafka Streams client lanes, real DataHub GMS and real Strimzi acceptance.
+
+Integration prerequisites checkpoint:
+
+- `pending_resume_authorization(snapshot)` provides a read-only, locked lookup.
+  Local state returns only the exact unmatched archived record, after validating
+  its original interrupted state and re-reading state, control and audit.
+  PostgreSQL verifies the current snapshot and runner history in a read-only
+  transaction before reporting no partial authorization. Neither result grants
+  runtime authority. The local ACK-loss retry now uses this API instead of a
+  private history-file reader.
+- Planner-action conversion retains exact typed runner evidence and its raw
+  version-4 representation through reviewed format 6. Legacy defaults and action
+  bytes stay unchanged. Actual replacement planning and generic apply remain
+  blocked; no provider observation or mutation path was activated.
+- The full Python 3.12 unit/scenario suite passes 7,235 tests with 32 skips;
+  225 targeted tests also pass on Python 3.10. This adds 39 local lookup tests,
+  33 PostgreSQL lookup tests and 29 planner-binding tests. Independent review
+  reports no remaining findings. Ruff, mypy and strict documentation build pass.
+- PostgreSQL 14.23 and 18.4 each pass 44 real tests without skips. Fresh locked
+  connections verify absence after interrupted and completed resume writes,
+  without changing the stored rows. Corrupt blocked history and a terminated
+  PostgreSQL session fail closed. The two disposable database containers were
+  removed; shared services and volumes were not touched.
+- Before public activation, cover a local ownership commit that succeeded while
+  its control clear did not. A fresh process must verify the exact result and
+  reconstruct the original protected state before clearing; it must not rerun
+  the deployment or increment state again. Generic recovery currently assumes
+  the prior ownership state and cannot be assumed to cover this case.
