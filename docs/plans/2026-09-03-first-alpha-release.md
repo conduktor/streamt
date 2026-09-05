@@ -1,5 +1,14 @@
 # First public alpha release plan
 
+## Scheduling: 2026-09-04
+
+This release procedure remains valid but is not the active implementation
+priority. Follow the
+[developer experience execution plan](2026-09-04-developer-experience-execution.md)
+for local product work. Its execution does not authorize release tags, public
+uploads, or protected-environment changes. Recheck all dated external facts and
+exact-candidate CI evidence when an operator resumes this procedure.
+
 ## Objective
 
 Publish `streamt==0.1.0a1` as the first installable public alpha without

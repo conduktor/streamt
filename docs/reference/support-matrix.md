@@ -33,23 +33,21 @@ boundary is the offline `KafkaTopic` artifact described above, not deployment.
 
 ## Integration priorities
 
-The next integrations are ordered by how much safety or interoperability they
-unlock:
+The next cycle focuses on application development and updates. The
+[developer experience execution plan](../plans/2026-09-04-developer-experience-execution.md)
+replaces the previous release/Terraform-first order:
 
-1. Complete the exact-SHA `0.1.0a1` external trusted-publisher rehearsal and
-   publication gate in the
-   [first alpha release plan](../plans/2026-09-03-first-alpha-release.md).
-2. Add a Terraform/OpenTofu backend under its own ownership, review, state, and
-   deletion contract. Flink Kubernetes Operator output remains gated because
-   the current artifact is SQL rather than an application image or JAR with a
-   safe upgrade contract.
-3. Add Confluent Cloud Flink Statements as an explicit backend rather than a
-   REST-shaped configuration claim.
-4. Additional catalog boundaries: separately specified publication and
-   synchronization workflows for the supported offline Backstage and DataHub
-   artifacts, plus evidence-backed Conduktor Console metadata publication.
-5. Prometheus/OpenTelemetry evidence plus Alertmanager or generic webhook
-   actions for runtime policy evaluation.
+1. Improve selected import and the external/managed application model.
+2. Decide and prove execution for users with Kafka but no Flink. Kafka Streams
+   and an existing SQL runtime are design candidates, not supported backends.
+3. Verify a minimal source-to-output example and a supported update lifecycle.
+4. Reuse that workflow in Git/CI, then add a sink if the example needs it.
+
+Strimzi expansion, new cloud backends, and additional catalog publication are
+not scheduled. Existing tested integrations remain supported within the table's
+limits. Custom applications can already be documented using exposures; broader
+managed application deployment is not implied. The desired declaration-only
+external path is planned work, not a claim that current commands avoid live reads.
 
 See [product direction](../specs/product-direction.md) and `ROADMAP.md` in the
 repository root for sequencing and release gates.

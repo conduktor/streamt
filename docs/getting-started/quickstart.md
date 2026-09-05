@@ -1,16 +1,21 @@
 ---
 title: Quick Start
-description: Get up and running with streamt in 5 minutes
+description: Walk through a local Kafka and Flink project
 ---
 
 # Quick Start
 
-Get up and running with streamt in 5 minutes. By the end of this guide, you'll have a working streaming pipeline.
+This manual walkthrough uses Kafka and Flink SQL. Kafka alone cannot execute
+the transformation. It does not yet include automatic event seeding or a
+supported update walkthrough; those are acceptance requirements for the planned
+[developer workflow](../specs/developer-workflow.md).
 
 ## Prerequisites
 
 - [streamt installed](installation.md)
 - Docker running (for local Kafka)
+- A checkout of the [streamt repository](https://github.com/conduktor/streamt)
+  for the Compose file used below; run the infrastructure commands from its root
 
 ## 1. Start Local Infrastructure
 

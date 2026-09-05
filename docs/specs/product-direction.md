@@ -1,110 +1,172 @@
 # Product direction
 
-## Status
+## Status and authority
 
-Accepted product direction for the stabilization program beginning September
-2026.
+Revised on 2026-09-04 following the product owner's clarification: streamt's
+purpose is to simplify the creation, deployment, and evolution of streaming
+applications. This replaces the earlier review-first positioning. Deployment
+is part of the product's value, even when an external backend executes it.
+
+The product promise, SQL-first authoring, inclusion of custom applications, and
+external/managed distinction are agreed. A Kafka-only starting point must be
+addressed; Kafka Streams is a candidate, not an implemented backend. Strimzi
+is not a product priority. Runtime investment and update scope still require
+the decisions recorded in the
+[developer experience execution plan](../plans/2026-09-04-developer-experience-execution.md).
+That plan governs the next work; the [support matrix](../reference/support-matrix.md)
+governs claims about what works today.
+
+## Product promise
+
+streamt is a framework for developing, testing, deploying, and evolving
+streaming data applications as versioned projects.
+
+A project brings together transformation logic, resource configuration,
+contracts, tests, and dependencies. Engineers can change the application through
+one workflow instead of maintaining deployment scripts for each component.
+
+The first authoring path is SQL, but the project must also represent custom
+streaming applications and their inputs, outputs, and owners. Users include
+data engineers and application developers. Platform teams provide environments,
+deployment permissions, and shared rules. Representation, deployment of an
+existing artifact, and compilation of application code are separate capabilities.
+The initial managed custom-application scope remains a product decision.
 
 ## Problem
 
-Streaming changes cross several independent systems: topic configuration,
-schemas, processing jobs, connectors, consumer applications, policy, and
-runtime state. Existing tools are authoritative for their own layer, but none
-can answer the complete review question:
+A pipeline that filters orders and sends the result to a destination needs more
+than its business SQL. Someone must connect topics, schemas, processing jobs,
+connectors, credentials, environments, tests, and deployment procedures. Later,
+another engineer needs to discover those relationships before changing it.
 
-> If this SQL, schema, or topic changes, what breaks, who is affected, and how
-> can it be deployed without losing state or touching unrelated resources?
+streamt should reduce this assembly work and preserve the application definition
+as it changes. The intended benefits are:
 
-Teams therefore review streaming changes using a mixture of Terraform plans,
-Flink consoles, Schema Registry, catalog metadata, consumer-group inspection,
-and institutional knowledge.
+- Less configuration and deployment code to write for a new pipeline.
+- A repeatable way to test, review, deploy, and update an existing pipeline.
+- Dependencies and ownership that remain discoverable alongside the code.
 
-## Product thesis
+Git supplies version history and review. streamt supplies the application model,
+compilation, validation, and supported deployment lifecycle. A useful diff alone
+does not establish that the full development workflow works.
 
-streamt should be the Git-authored contract and change-impact layer across
-those systems. Its primary value is delivered during authoring and pull-request
-review. Deployment is an optional, pluggable consequence of a reviewed plan.
+## Canonical workflow
 
-The canonical workflow is:
+1. Start a complete example, or describe a small part of existing infrastructure.
+2. Write transformations and declare their inputs, outputs, and tests.
+3. Validate the project and test the relevant behavior on controlled data.
+4. Review the resource changes, dependencies, and runtime requirements.
+5. Deploy through a supported backend and inspect actual output records.
+6. Change the application, repeat the checks, and deploy the supported update.
+7. Commit the definitions and reuse the workflow in another environment or CI.
 
-1. Import or describe existing resources without claiming ownership.
-2. Define transformations, contracts, tests, policy, owners, and exposures.
-3. Validate the project offline and, when available, enrich it with live
-   schemas and runtime evidence.
-4. Produce a deterministic impact plan.
-5. Review and approve that plan in CI.
-6. Apply the exact plan through a suitable backend.
-7. Export lineage and contract metadata to the surrounding ecosystem.
+Lineage, documentation, policy checks, and change-impact reports derive from
+this same project. Catalog exports let other tools consume it. They support
+the development workflow rather than define its first success criterion.
 
-## Primary users
+The [developer workflow specification](developer-workflow.md) defines the
+first complete journey and its acceptance evidence. It describes planned work,
+not additional supported commands or runtime guarantees.
 
-- Data engineers adopting a dbt-like workflow for Kafka and Flink.
-- Platform teams governing existing shared Kafka estates.
-- Application teams publishing or consuming data contracts.
-- Reviewers who need to understand downstream and stateful impact without
-  being experts in every runtime API.
+## Project boundaries
 
-## Product principles
+There are two entry paths. A user can discover and import an existing system as
+external declarations, or add definitions whose resources streamt will manage.
+Both belong in the same dependency graph.
 
-### Existing estates first
+External means streamt does not own the implementation or resource lifecycle.
+Import captures what a provider can actually report. Unknown SQL, source code,
+or settings remain unknown; metadata discovery cannot reconstruct arbitrary
+business logic. Import does not silently adopt a resource. Explicit adoption
+requires a complete supported definition and the existing ownership checks.
 
-A user must be able to describe two resources in a cluster containing hundreds
-without implicitly claiming the rest. Import, observation, adoption, and
-management are distinct actions.
+The requested external-resource behavior is declaration-only by default: no
+automatic drift enforcement or mutation. The pending observation decision
+separates local reference validation from optional live inspection. Implementing
+that distinction must not disable safety checks on resources streamt manages.
 
-### Safe by construction
+An application or domain owns a coherent project. A monorepo is allowed, but
+streamt must not require every team to move into one repository. Each managed
+resource has one authoritative definition. External resources remain explicit.
 
-Unknown configuration, unknown ownership, stale plans, unreviewed destructive
-changes, and unsafe stateful upgrades fail closed.
+Versioned dependencies between projects are a later capability. Until then,
+external source and exposure declarations document the boundary; streamt must
+not imply cross-repository discovery or deployment coordination.
 
-### One semantic model, multiple backends
+Import, observation, adoption, and management remain distinct actions. A project
+that describes two topics in a shared cluster must not claim or change the rest.
 
-Sources, models, tests, exposures, contracts, and policies are portable.
-Backend-specific deployment fields are isolated and validated by the selected
-backend.
+## Deployment and safety
 
-### Truthful surface area
+Existing Flink SQL installations remain supported within their current limits.
+A user with only Kafka must have a planned execution path that does not require
+adopting Flink. Evaluate a bounded Kafka Streams executor and an existing SQL
+runtime before committing to a new maintained engine. Separate SQL compilation
+from execution backends and reject unsupported operations explicitly; no silent
+fallback to Flink or claim of SQL equivalence between engines.
 
-Features are documented as supported only when they work end to end against a
-real target and have a smoke or integration test. Parse-only compatibility is
-labelled separately from deployment support.
+Docker supplies disposable development infrastructure; it is not currently a
+streamt deployment backend. A local runner would be a new, explicitly scoped
+capability, not a claim about the existing CLI.
 
-### Interoperate rather than duplicate
+Git-authored definitions and CI delivery do not imply a continuously reconciling
+GitOps controller. An export is not an executed deployment. The current Strimzi
+integration only exports managed `KafkaTopic` artifacts. Preserve that tested
+support, but schedule no further Strimzi or Kubernetes work in this cycle.
 
-streamt emits standards and backend artifacts. It does not replace mature
-state engines, Kubernetes reconcilers, catalogs, or telemetry stores.
+Safety requirements survive this change in priority:
 
-## Primary product capability
+- Reject unknown configuration, uncertain ownership, and stale reviewed plans.
+- Keep unrelated resources untouched and require explicit removal workflows.
+- Preserve deployment-state locking, durable recovery, and secret redaction.
+- Keep protected/shared-environment changes bound to their reviewed plan.
+- Distinguish static facts, live observations, and missing evidence.
+- Block unsupported Flink updates before mutation. A Git revert does not by
+  itself restore streaming state, source offsets, or previously emitted data.
 
-The central output is a change-impact plan containing:
+Even a projection-only SQL job has source progress and delivery behavior to
+consider during replacement. Update support requires a backend-specific
+contract and real execution tests; deleting state or recreating a cluster is
+not an implementation of application updates.
 
-- Desired, previous, and live state for each owned resource.
-- Schema compatibility and contract changes.
-- Topic, connector, and processing-job changes.
-- Stateful upgrade requirements.
-- Downstream models, exposures, owners, and live consumers.
-- Policy decisions and explicit blockers.
-- A stable plan identifier and content checksum.
+## Integration choices
 
-Text output is optimized for humans. JSON output is a stable public interface
-for CI, agents, and integrations.
+Prioritize an integration when it supplies an input, delivers an output, supports
+the chosen deployment environment, or removes repeated setup from the reference
+journey. First make one source-to-destination route work end to end.
 
-## Non-goals for the stabilization program
+Retain tested exports and existing integrations. Additional catalogs, transports,
+clouds, and infrastructure backends wait until a concrete user workflow needs
+them. Publication of an alpha has its own release gate and does not prevent
+local onboarding work on an immutable repository revision.
 
-- Building a universal replacement for Terraform or Kubernetes operators.
-- Supporting every streaming runtime or transport.
-- Providing a hosted catalog or metrics database.
-- Generating infrastructure from unconstrained natural-language intent.
-- Claiming exactly-once or zero-downtime upgrades without target-specific
-  lifecycle support.
+## Out of scope for the next cycle
+
+- An unbounded SQL engine or arbitrary custom-language build system. A bounded
+  Kafka Streams experiment requires the execution-plan decision first.
+- Requiring Kubernetes, a catalog, or a commercial account to try the local path.
+- A hosted service, visual pipeline editor, or new telemetry database.
+- Mandatory monorepo migration or a cross-project package resolver.
+- New cloud backends, Strimzi expansion, arbitrary connector coverage, or extra
+  catalog publishers.
+- Exactly-once, zero-downtime, or state-migration claims without target evidence.
+
+The pending decisions can change the initial scope before execution begins.
+During execution, material expansions require another product decision.
 
 ## Measures of success
 
-- Time from installation to a useful offline plan is under ten minutes.
-- A partial project never changes an unowned resource.
-- Unknown YAML fields are always rejected with a useful location.
-- Every applied change corresponds to a reviewed plan checksum.
-- Breaking changes name all known affected consumers and owners.
-- A new target is added through a backend interface without changing the core
-  semantic model.
+Record time to first output and to the first verified update, manual steps,
+prerequisite failures, and any intervention needed to finish the guide. Separate
+cold installation/image downloads from runtime readiness and application work.
+These are measurements to collect, not performance claims already achieved.
 
+The first acceptance run must prove that an engineer can create a pipeline,
+inspect its data, change its logic, and deploy the supported update without
+editing generated artifacts or using provider consoles to finish missing steps.
+The same project must explain its declared dependencies and pass the documented
+checks from an installed distribution.
+
+A handful of independent walkthroughs should then test whether this saves users
+work on their own pipelines. The number of integrations or passing tests is not
+a substitute for that product evidence.

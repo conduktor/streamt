@@ -1,13 +1,13 @@
 ---
 title: streamt - dbt for Streaming
-description: Build declarative streaming pipelines with Kafka, Flink, and Connect
+description: Develop, test, and deploy streaming applications as versioned projects
 ---
 
 <div class="hero" markdown>
 
 # streamt
 
-**dbt for streaming** — Build declarative streaming pipelines with Kafka, Flink, and Connect
+dbt for streaming: develop, test, and deploy streaming applications as code
 
 <span class="badge preview">Preview</span>
 
@@ -20,7 +20,22 @@ description: Build declarative streaming pipelines with Kafka, Flink, and Connec
 
 ## What is streamt?
 
-**streamt** brings the beloved dbt workflow to real-time streaming. Define your streaming pipelines declaratively using YAML and SQL, then let streamt handle compilation, validation, and deployment to Kafka, Flink, and Kafka Connect.
+streamt puts transformation logic, resource configuration, tests, and
+dependencies in a versioned project. Write SQL models and use the same workflow
+to validate, review, and deploy supported changes to Kafka, Flink, and Connect.
+
+Import existing resources as external declarations, or add resources whose
+lifecycle streamt manages. Describe custom applications and their inputs and
+outputs alongside the SQL models. Importing or documenting an existing system
+does not transfer its ownership to streamt.
+
+The [product direction](specs/product-direction.md) prioritizes creating and
+updating applications, including an execution path for users without Flink.
+That path is planned: Kafka Streams execution and managed custom-application
+deployment are not supported today. Existing Flink updates remain blocked.
+The planned external observation policy is also not implemented: current
+commands can still perform live reads for external declarations. See the
+[support matrix](reference/support-matrix.md) for current boundaries.
 
 ```yaml
 # streamt:skip
@@ -64,7 +79,8 @@ Define **what** you want, not **how** to build it. Write YAML and SQL, let strea
 
 ### :material-source-branch: Built-in Lineage
 
-Automatic dependency tracking from your SQL. See exactly how data flows from sources through transformations to downstream consumers.
+Track dependencies from SQL references and declared application inputs and
+outputs. Undeclared application internals remain unknown.
 
 </div>
 
@@ -80,7 +96,8 @@ Enforce naming conventions, partition requirements, and data classification. Run
 
 ### :material-terraform: Plan Before Apply
 
-Review changes before deployment. See what topics will be created, which Flink jobs will be updated, and what connectors will be modified.
+Review resource changes before deployment. See new topics and jobs, supported
+connector changes, and blockers for unsafe or unsupported updates.
 
 </div>
 
@@ -225,8 +242,11 @@ Materializations are **automatically inferred** from your SQL:
 |------|-------------------|----------------|
 | `virtual_topic` | Stateless SQL + Gateway configured | Conduktor Gateway |
 | `flink` | Stateful SQL (GROUP BY, JOIN, windows) | Flink SQL job |
-| `flink` | ML_PREDICT/ML_EVALUATE | Confluent Flink |
 | `sink` | `from:` without SQL | Kafka Connect |
+
+Confluent Cloud Flink Statements and its ML functions are not supported
+deployment paths. Check the [support matrix](reference/support-matrix.md)
+before choosing a runtime.
 
 [Learn more about materializations →](reference/materializations.md)
 

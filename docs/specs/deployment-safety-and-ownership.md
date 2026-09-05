@@ -33,6 +33,18 @@ the project successfully creates them. Existing output resources require
 explicit adoption before mutation unless the user selects a backend-specific
 create-if-absent policy.
 
+### Planned external declaration behavior
+
+The 2026-09-04 [developer workflow](developer-workflow.md) adds an explicit
+requirement for external declarations without automatic drift checks. The
+table's observation permission does not imply continuous monitoring or ownership.
+The exact split between local reference validation and opt-in live inspection
+is pending confirmation in the
+[execution plan](../plans/2026-09-04-developer-experience-execution.md).
+Current commands may still perform live reads; documentation changes do not
+implement a no-network mode. Any implementation must preserve the evidence
+required for managed mutations and keep import separate from adoption.
+
 ## Stable resource identity
 
 Compiled artifacts carry a stable identity independent of display names:

@@ -1,5 +1,12 @@
 # Stabilization execution plan
 
+## Superseded work order
+
+This file records the stabilization program and its dated evidence. The
+[developer experience execution plan](2026-09-04-developer-experience-execution.md)
+now governs work sequencing. Completed safety contracts remain required; the
+historical milestones below do not authorize additional work or publication.
+
 ## Objective
 
 Reach a trustworthy alpha in which configuration is strict, partial adoption is
@@ -105,12 +112,9 @@ Verification:
 
 ## Following milestone
 
-Continue the minimum viable change-impact plan in
-`docs/specs/change-impact-plan.md`. Schema Registry resolution and reviewed
-plan artifacts, Kafka source import, topic/schema adoption, canonical topic
-impact evidence, and conservative resource-risk classification are implemented;
-column-level contract impact, operator-state compatibility, and broader backend
-adoption are next.
+Follow the current developer experience plan linked above. Review and deployment
+evidence remain required, but a complete create/change/redeploy journey now
+determines priority over broader adoption and additional export backends.
 
 ## Commit strategy
 

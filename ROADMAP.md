@@ -6,28 +6,54 @@ requirements live in `docs/specs/`, and implementation checklists live in
 
 ## Product direction
 
-streamt is a streaming change-safety and contract compiler for existing Kafka
-and Flink estates. It lets teams import a subset of their estate, define SQL,
-contracts, ownership, tests, and policy, review the complete impact of a change,
-and hand deterministic artifacts to an appropriate deployment backend.
+streamt is a framework for developing, testing, deploying, and evolving
+streaming applications as versioned projects. SQL is the first authoring path;
+custom applications and their dependencies belong in the same project model.
+Users can import existing resources as external declarations or add resources
+whose lifecycle streamt manages. Review, contracts, lineage, and exports support
+that development workflow.
 
 The project does not aim to replace Terraform, Kubernetes operators, managed
 cloud control planes, observability systems, or data catalogs. It should
 integrate with them.
 
-## Current execution order — 2026-09-04
+## Current execution order: 2026-09-04
 
-1. Finish the immutable `0.1.0a1` release gate and external publication under
-   the [first public alpha release plan](docs/plans/2026-09-03-first-alpha-release.md).
-   The source and exact-SHA workflow are prepared; TestPyPI and PyPI publication
-   remain blocked on their external protected environments and trusted-
-   publisher registrations.
+The [product direction](docs/specs/product-direction.md),
+[developer workflow specification](docs/specs/developer-workflow.md), and
+[execution plan](docs/plans/2026-09-04-developer-experience-execution.md) govern
+the next cycle. Its material runtime, custom-application, observation, and
+update decisions are pending user confirmation; implementation has not started.
+
+1. Confirm those decisions and the autonomy limits (M0).
+2. Make external and managed applications coexist in a usable project, with
+   selected import, explicit dependencies, and no implicit adoption (M1).
+3. Evaluate and prove a Kafka-without-Flink execution path, including a bounded
+   Kafka Streams candidate. Decide whether to productize it before adding a
+   supported runtime (M2).
+4. Ship a strict-valid scaffold and a minimal, seeded creation walkthrough that
+   shows actual transformed records from an installed package (M3).
+5. Complete a real change/redeploy cycle on the selected backend, with explicit
+   source-progress, state, delivery, and failure/recovery behavior (M4).
+6. Reuse the workflow in Git and CI, add declared-version comparison, and extend
+   the source-to-destination example only where useful (M5).
+
+M1 and M2 research can proceed independently after M0. Runtime activation and
+lifecycle changes depend on reviewed contracts; see the execution plan for
+acceptance gates and bounded agent assignments.
+
+The immutable `0.1.0a1` [release procedure](docs/plans/2026-09-03-first-alpha-release.md)
+remains open and unchanged. External publication is not the next implementation
+task or a prerequisite for local development. Do not create tags, releases, or
+package uploads as part of this cycle without separate release authority.
+
+### Existing integration boundaries
 
 The deterministic managed-topic-only Strimzi 1.2.0 `KafkaTopic` GitOps export
 is complete under the
 [Strimzi export specification](docs/specs/strimzi-kafkatopic-export.md). Its
 support stops at the offline artifact; direct Kubernetes and Strimzi deployment
-remain outside the product boundary.
+remain unsupported. No Strimzi expansion is scheduled in this cycle.
 
 PostgreSQL-v2-only explicit Kafka Connect removal is complete under its
 [Connector removal specification](docs/specs/connector-explicit-removal.md).
@@ -35,8 +61,9 @@ Its narrow full-online-reviewed boundary does not enable topic or schema
 deletion, Flink cancellation, local-state deletion, or non-default Connect
 cluster routing.
 
-Topic and schema deletion, Flink cancellation, production catalog publication,
-and direct Kubernetes apply remain separate later contracts.
+Topic and schema deletion, production catalog publication, and direct Kubernetes
+apply remain outside this cycle. Any processor stop/replacement needed for M4
+requires its own exact lifecycle contract; generic cancellation is not enabled.
 
 ## Release gates
 
@@ -51,7 +78,13 @@ No release may be called production-ready until all of the following hold:
   check pass in CI.
 - Installation instructions point to a distribution that actually exists.
 
-## Phase 0: restore trust
+## Capability record and backlog
+
+The phases below retain completed work and outstanding technical contracts from
+the stabilization program. They are not a second execution queue. An unchecked
+item enters the active cycle only through M0-M5 above; safety gates still apply.
+
+### Phase 0: restore trust
 
 Target: the CLI is truthful and safe enough to evaluate against a shared
 development cluster.
@@ -95,10 +128,10 @@ Exit criterion: on a cluster with 40 unrelated topics, a project managing two
 topics can plan and apply without proposing or performing changes to the other
 38.
 
-## Phase 1: the change-impact workflow
+### Phase 1: the change-impact workflow
 
-Target: streamt provides immediate value in pull requests before it is allowed
-to deploy anything.
+Target: review makes application changes understandable before deployment.
+Read-only evaluation remains possible within the full development workflow.
 
 - [x] Add no-clobber `streamt import` for external Kafka source declarations.
 - [x] Add explicit, fail-closed adoption for one existing Kafka topic at a time.
@@ -160,7 +193,7 @@ to deploy anything.
 Exit criterion: a breaking schema or stateful SQL change produces a reviewable
 report naming every known downstream consumer and blocks apply by policy.
 
-## Phase 2: standards and deployment backends
+### Phase 2: standards and deployment backends
 
 Target: streamt becomes a portable authoring layer instead of a closed control
 plane.
@@ -208,7 +241,7 @@ Exit criterion: the same reviewed streamt plan can produce portable metadata
 and deploy through at least one stateful external backend without changing the
 project model.
 
-## Phase 3: production operations
+### Phase 3: production operations
 
 Target: close the loop between declared intent and runtime evidence.
 
@@ -262,9 +295,14 @@ Target: close the loop between declared intent and runtime evidence.
 - [ ] Add curated, validated connector profiles after the connector contract is
       stable.
 
-## Deferred until the gates above are met
+## Outside the active cycle
 
-- Additional execution runtimes such as KStreams, RisingWave, and Materialize.
+- Kafka Streams is now an active design candidate under M2, not a supported
+  runtime. A general SQL engine requires an explicit product decision.
+- Additional runtimes such as RisingWave and Materialize are not scheduled.
 - Additional transports such as Pulsar and Kinesis.
 - A VS Code extension, hosted SaaS, and high-level intent generation.
 - New ML syntax that is not backed by an executable target integration.
+- Further Strimzi work, Kubernetes operators, Terraform/OpenTofu backends, and
+  new catalog publishers. Keep existing tested exports working.
+- Custom-application builds or deployment until D2 selects their exact scope.

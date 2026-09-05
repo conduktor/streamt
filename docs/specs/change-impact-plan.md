@@ -2,9 +2,13 @@
 
 ## Status
 
-Product specification for the primary streamt output. Canonical topic-impact
-evidence and conservative change-risk classification are implemented;
-contract-column, test, and operator-state compatibility remain roadmap work.
+Specification for review and deployment evidence within the
+[application development workflow](developer-workflow.md). The revised
+[product direction](product-direction.md) makes application creation and
+evolution the primary value; this plan supports that workflow. Canonical
+topic-impact evidence and conservative change-risk classification are
+implemented; contract-column, test, and operator-state compatibility remain
+roadmap work.
 
 ## Purpose
 

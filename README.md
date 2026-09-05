@@ -2,7 +2,7 @@
 
 # streamt
 
-**dbt for streaming** — Declarative streaming pipelines with Kafka, Flink, and Connect
+dbt for streaming: develop, test, and deploy streaming applications as code
 
 [![Python 3.10–3.14](https://img.shields.io/badge/python-3.10--3.14-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/conduktor/streamt/blob/main/LICENSE)
@@ -17,9 +17,19 @@
 
 ## What is streamt?
 
-**streamt** is declarative infrastructure for streaming data products. Not just ETL tooling — a policy-as-code layer that treats Kafka topics, Flink jobs, and data governance rules with the same rigor that Terraform brought to compute and dbt Mesh brought to the warehouse.
+streamt brings transformation logic, resource configuration, tests, and
+dependencies into a versioned project. Write SQL models, reference their inputs,
+review the generated changes, and deploy through a supported backend.
 
-The dbt workflow (sources, models, tests, lineage, plan/apply) is the surface. The deeper ambition: a single YAML project that encodes *what your data means* — who owns it, how it's classified, which fields must be masked, what retention limits apply, which teams consume it downstream. Today most platform teams track this across Conduktor Console, DataHub, and spreadsheets. streamt makes it a first-class artifact next to the SQL.
+Start by importing existing resources as external declarations, or define new
+resources for streamt to manage. Custom producers and consumers can be described
+alongside SQL models using exposures. Import does not transfer ownership, and
+documenting an application does not deploy its code.
+
+The product aims to reduce the setup and deployment work needed to create and
+change a streaming application. Contracts, lineage, and policy checks use the
+same project definition. Teams can keep separate repositories without losing
+the declared relationships between their applications and streams.
 
 ```yaml
 sources:
@@ -33,19 +43,21 @@ models:
       SELECT payment_id, customer_id, amount
       FROM {{ source("payments_raw") }}
       WHERE amount > 0 AND status IS NOT NULL
-    security:
-      classification:
-        customer_id: confidential
-      policies:
-        - mask:
-            column: customer_id
-            method: hash
     topic:
       config:
         retention.ms: 2592000000  # 30 days
 ```
 
-`streamt apply` doesn't just create a Kafka topic and a Flink job — it enforces the policy, validates the schema, and records the lineage. `streamt plan` shows the diff before anything touches production.
+`streamt plan` previews resource changes and blockers. `streamt apply` executes
+supported changes; protected/shared environments require a reviewed plan.
+
+This is an alpha. Existing Flink job updates remain blocked until a safe
+lifecycle is implemented. Kafka Streams execution, managed custom-application
+deployment, and the new first-use/update journey are planned work, not current
+capabilities. External declarations can still trigger live reads in current
+commands; the planned opt-in observation policy is not implemented yet. See the
+[support matrix](https://conduktor.github.io/streamt/reference/support-matrix/)
+and [product direction](https://conduktor.github.io/streamt/specs/product-direction/).
 
 ## Features
 
@@ -55,7 +67,7 @@ models:
 | **Lineage** | Automatic dependency tracking from SQL |
 | **Policy-as-code** | Classification, masking, retention, and owner rules enforced at compile time |
 | **Testing** | Schema, sample, and continuous tests |
-| **Plan/Apply** | Review changes before deployment — like Terraform for streaming |
+| **Plan/Apply** | Review supported resource changes and blockers before deployment |
 | **Agent-Friendly** | Structured JSON output for LLM/CI integration |
 | **Documentation** | Auto-generated docs with lineage diagrams |
 
@@ -67,7 +79,11 @@ streamt compiles your YAML definitions into deployable artifacts:
 2. **Models with SQL** → Flink SQL jobs that read from sources/models and write to output topics
 3. **Sinks** → Kafka Connect connector configurations
 
-**All SQL transformations run on Flink.** streamt generates Flink SQL with CREATE TABLE statements for your sources, your transformation query, and INSERT INTO for the output topic.
+For the Flink path, streamt generates `CREATE TABLE` statements, the
+transformation query, and `INSERT INTO` for the output topic. A configured
+Gateway can handle a limited virtual-topic path described below. Kafka Streams
+is not currently an execution backend; Kafka alone cannot run the generated
+Flink SQL.
 
 ## Materializations
 
@@ -78,12 +94,12 @@ Materializations are **automatically inferred** from your SQL:
 | Stateless (`WHERE`, projections) | `virtual_topic` | Gateway rule (if available) |
 | Stateless (no Gateway) | `flink` | Flink job (fallback) |
 | Stateful (`GROUP BY`, `JOIN`, windows) | `flink` | Flink job + Kafka topic |
-| `ML_PREDICT`, `ML_EVALUATE` | `flink` | Confluent Flink job* |
 | `from:` only (no SQL) | `sink` | Kafka Connect connector |
-| Explicit `materialized: virtual_topic` | `virtual_topic` | Conduktor Gateway rule** |
+| Explicit `materialized: virtual_topic` | `virtual_topic` | Conduktor Gateway rule* |
 
-> *ML functions require Confluent Cloud Flink.
-> **`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/).
+> *`virtual_topic` requires [Conduktor Gateway](https://www.conduktor.io/gateway/).
+> Confluent Cloud Flink Statements and its ML functions are not supported
+> deployment paths. The support matrix defines the exact Gateway boundary.
 
 ### Simple Surface, Full Control
 

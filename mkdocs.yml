@@ -1,5 +1,5 @@
 site_name: streamt
-site_description: dbt for streaming - Declarative streaming pipelines with Kafka, Flink, and Connect
+site_description: Develop, test, and deploy streaming applications as versioned projects
 site_url: https://conduktor.github.io/streamt
 repo_url: https://github.com/conduktor/streamt
 repo_name: conduktor/streamt
@@ -147,6 +147,8 @@ nav:
     - IoT Sensors: examples/iot.md
   - Project:
     - Product Direction: specs/product-direction.md
+    - Developer Workflow: specs/developer-workflow.md
+    - Execution Plan: plans/2026-09-04-developer-experience-execution.md
     - Deployment Safety: specs/deployment-safety-and-ownership.md
     - Remote Deployment State: specs/remote-deployment-state.md
     - Configuration Contract: specs/configuration-contract.md
