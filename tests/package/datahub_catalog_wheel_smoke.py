@@ -212,7 +212,7 @@ def _write_project(project_dir: Path) -> None:
                 "consumes": [{"ref": "public_orders"}],
             },
             {
-                "name": "orders_dashboard",
+                "name": "orders_application",
                 "type": "application",
                 "description": "exposure-private-description",
                 "url": "https://dashboard-private-token.invalid/app",

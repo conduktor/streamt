@@ -216,7 +216,7 @@ def _write_project(project_dir: Path) -> None:
                 "consumes": [{"ref": "public_orders"}],
             },
             {
-                "name": "orders_dashboard",
+                "name": "orders_application",
                 "type": "application",
                 "description": "exposure-private-description",
                 "url": "https://dashboard-private-token.invalid/app",
@@ -510,7 +510,7 @@ def _assert_warnings(payload: dict[str, object], text_stderr: str) -> None:
         {
             "code": "W114_BACKSTAGE_EXPOSURE_OMITTED",
             "message": "Exposure metadata is omitted from Backstage export",
-            "location": "exposures/orders_dashboard",
+            "location": "exposures/orders_application",
         },
         {
             "code": "W114_BACKSTAGE_EXPOSURE_OMITTED",
