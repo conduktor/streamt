@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from pathlib import Path
 from typing import Optional
 
 import click
 import yaml
+from rich.markup import escape
 
 from streamt.cli.helpers import close_deployers, make_formatter, redact_sensitive_text
 from streamt.core.errors import ErrorCode
@@ -156,6 +158,7 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
                 "name": "raw_events",
                 "topic": f"{name}.raw.events.v1",
                 "description": "Raw event stream — replace with your actual source topic",
+                "ownership": {"mode": "external"},
                 "columns": [
                     {"name": "id", "type": "STRING"},
                     {"name": "event_type", "type": "STRING"},
@@ -168,7 +171,11 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
             {
                 "name": "events_clean",
                 "description": "Events forwarded to a clean topic — add WHERE or transforms as needed",
-                "sql": 'SELECT * FROM {{ source("raw_events") }}',
+                "ownership": {"mode": "managed"},
+                "materialized": "topic",
+                "sql": (
+                    'SELECT id, event_type, payload, created_at FROM {{ source("raw_events") }}'
+                ),
             }
         ],
         "tests": [
@@ -199,10 +206,18 @@ def _init_scaffold(fmt: OutputFormatter, project_path: Path, name: str, dry_run:
         fmt.print("  1 source (raw_events), 1 model (events_clean), 1 test")
         for d in SCAFFOLD_DIRS:
             fmt.print(f"  {d}/")
-        fmt.print("\nNext steps:")
-        fmt.print("  streamt validate        # Check project is valid")
-        fmt.print("  streamt compile         # Generate deployment artifacts")
-        fmt.print("  streamt plan            # Preview infrastructure changes")
+        fmt.print("\nExplore offline (no running infrastructure required):")
+        fmt.print(f"  cd {escape(shlex.quote(str(project_path)))}")
+        fmt.print("  streamt validate --strict  # Check syntax and references")
+        fmt.print("  streamt lineage            # Inspect declared dependencies")
+        fmt.print("  streamt compile --dry-run  # Preview artifacts without writing")
+        fmt.print("  streamt plan --offline     # Assume managed resources absent; not a live diff")
+        fmt.print("\nBefore running this model:")
+        fmt.print("  Configure Kafka and runtime.flink; this SQL model currently targets Flink.")
+        fmt.print("  No Flink runtime is configured by this scaffold; Kafka alone cannot run it.")
+        fmt.print("  raw_events is external: streamt will not create or seed its source topic.")
+        fmt.print("  Point it at an existing topic and provide matching events separately.")
+        fmt.print("  Offline validation and compilation do not execute SQL or verify deployment.")
     else:
         fmt.print(f"Would create project '{name}' in {project_path}")
         created_files = ["stream_project.yml"] + [f"{d}/" for d in SCAFFOLD_DIRS]
