@@ -223,6 +223,24 @@ def test_import_writes_only_new_external_sources_in_stable_order(tmp_path: Path)
         "orders",
         "z.events",
     ]
+    assert data["discovery"]["read_only"] is True
+    assert data["discovery"]["schema_enrichment"] == {
+        "status": "not_configured",
+        "subject_strategy": "topic_name_value",
+    }
+    for resource in data["resources"]:
+        assert resource["provenance"] == {
+            "topic_metadata": "kafka_metadata",
+            "schema_lookup": None,
+            "columns": None,
+        }
+        assert resource["completeness"] == {
+            "topic_metadata": "observed",
+            "schema": "not_requested",
+            "columns": {"status": "not_inferred", "count": 0, "runtime_verified": False},
+            "application_sql": "not_discoverable",
+            "application_code": "not_discoverable",
+        }
     assert kafka.calls == [
         ("list_topic_names", None),
         ("get_topic_metadata_state", "a.events"),
@@ -287,6 +305,23 @@ def test_import_emits_pinned_avro_and_protobuf_value_schema_refs(tmp_path: Path)
         "format": "avro",
         "id": 41,
     }
+    assert data["discovery"]["schema_enrichment"]["status"] == "enabled"
+    assert data["resources"][0]["provenance"] == {
+        "topic_metadata": "kafka_metadata",
+        "schema_lookup": "schema_registry",
+        "columns": "schema_registry_type_mapping",
+    }
+    assert data["resources"][0]["completeness"]["schema"] == "resolved"
+    assert data["resources"][0]["completeness"]["columns"] == {
+        "status": "inferred", "count": 1, "runtime_verified": False,
+    }
+    assert data["resources"][1]["completeness"]["schema"] == "resolved"
+    assert data["resources"][1]["completeness"]["columns"] == {
+        "status": "unsupported_format", "count": 0, "runtime_verified": False,
+    }
+    assert data["resources"][1]["provenance"]["columns"] is None
+    for private_value in ("broker:9092", "schema-registry:8081", "secret"):
+        assert private_value not in result.output
     assert registry.calls == [
         ("get_schema_state", "orders-value", False),
         ("get_schema_state", "proto-value", False),
@@ -564,7 +599,11 @@ def test_exclusive_writer_removes_stage_on_close_and_interrupt_failures(
 
 def test_import_schema_registry_failure_warns_and_keeps_kafka_import(tmp_path: Path) -> None:
     _write_project(tmp_path, schema_registry=True)
-    registry = FakeSchemaReader({"orders-value": requests.ConnectionError("registry unavailable")})
+    registry = FakeSchemaReader({
+        "orders-value": requests.ConnectionError(
+            "registry unavailable https://reader:TOPSECRET@private-registry.invalid"
+        ),
+    })
 
     result, _make_kafka, _make_sr = _invoke(
         tmp_path,
@@ -577,6 +616,12 @@ def test_import_schema_registry_failure_warns_and_keeps_kafka_import(tmp_path: P
     assert payload["status"] == "ok"
     assert payload["warnings"][0]["code"] == ErrorCode.SCHEMA_ENRICHMENT_SKIPPED
     assert payload["data"]["sources"][0].get("schema") is None
+    resource = payload["data"]["resources"][0]
+    assert resource["completeness"]["schema"] == "failed"
+    assert resource["completeness"]["columns"]["status"] == "not_inferred"
+    assert resource["provenance"]["schema_lookup"] == "schema_registry"
+    assert "TOPSECRET" not in result.output
+    assert "private-registry.invalid" not in result.output
     assert registry.calls == [("get_schema_state", "orders-value", False)]
     assert registry.close_count == 1
 
@@ -651,6 +696,12 @@ def test_import_bounds_schema_requests_after_service_outage(tmp_path: Path) -> N
     payload = _payload(result)
     assert len(payload["warnings"]) == 1
     assert all(source.get("schema") is None for source in payload["data"]["sources"])
+    assert [resource["completeness"]["schema"] for resource in payload["data"]["resources"]] == [
+        "failed", "skipped_after_outage", "skipped_after_outage",
+    ]
+    assert [resource["provenance"]["schema_lookup"] for resource in payload["data"]["resources"]] == [
+        "schema_registry", None, None,
+    ]
 
 
 def test_import_no_schemas_never_opens_configured_registry(tmp_path: Path) -> None:
@@ -680,6 +731,127 @@ def test_import_no_schemas_never_opens_configured_registry(tmp_path: Path) -> No
     assert registry.calls == []
     assert registry.close_count == 0
     assert _payload(result)["data"]["sources"][0].get("schema") is None
+    data = _payload(result)["data"]
+    assert data["discovery"]["schema_enrichment"]["status"] == "disabled"
+    assert data["resources"][0]["completeness"]["schema"] == "not_requested"
+
+
+def test_import_reports_registry_factory_unavailable_without_claiming_schema_absence(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path, schema_registry=True)
+
+    result, _make_kafka, make_sr = _invoke(tmp_path, FakeKafkaReader(["orders"]))
+
+    assert result.exit_code == 0, result.output
+    make_sr.assert_called_once()
+    data = _payload(result)["data"]
+    assert data["discovery"]["schema_enrichment"]["status"] == "unavailable"
+    assert data["resources"][0]["completeness"]["schema"] == "not_requested"
+    assert data["resources"][0]["provenance"]["schema_lookup"] is None
+
+
+def test_import_reports_schema_not_found_only_after_subject_read(tmp_path: Path) -> None:
+    _write_project(tmp_path, schema_registry=True)
+    registry = FakeSchemaReader({})
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path, FakeKafkaReader(["orders"]), schema_registry=registry,
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _payload(result)["data"]
+    assert registry.calls == [("get_schema_state", "orders-value", False)]
+    assert data["resources"][0]["completeness"]["schema"] == "not_found"
+    assert data["resources"][0]["provenance"]["schema_lookup"] == "schema_registry"
+    assert data["resources"][0]["schema"] is None
+
+
+def test_import_distinguishes_subject_failure_absence_resolution_and_outage_skip(
+    tmp_path: Path,
+) -> None:
+    _write_project(tmp_path, schema_registry=True)
+    registry = FakeSchemaReader({
+        "a_denied-value": PermissionError("subject read denied"),
+        "b_resolved-value": SchemaState(
+            subject="b_resolved-value", exists=True, version=1, schema_id=1,
+            schema_type="AVRO", schema={"fields": []},
+        ),
+        "d_outage-value": requests.Timeout("registry unavailable"),
+    })
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path,
+        FakeKafkaReader(["e_skipped", "d_outage", "c_absent", "b_resolved", "a_denied"]),
+        "--dry-run",
+        schema_registry=registry,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _payload(result)
+    resources = payload["data"]["resources"]
+    assert [resource["completeness"]["schema"] for resource in resources] == [
+        "failed", "resolved", "not_found", "failed", "skipped_after_outage",
+    ]
+    assert resources[1]["completeness"]["columns"]["status"] == "not_inferred"
+    assert registry.calls == [
+        ("get_schema_state", f"{name}-value", False)
+        for name in ("a_denied", "b_resolved", "c_absent", "d_outage")
+    ]
+    assert len(payload["warnings"]) == 2
+    assert not (tmp_path / "sources").exists()
+
+
+@pytest.mark.parametrize("version", [None, 0, 3])
+def test_import_reports_fallback_columns_as_inferred_even_when_pin_is_unavailable(
+    tmp_path: Path, version: int | None,
+) -> None:
+    _write_project(tmp_path, schema_registry=True)
+    registry = FakeSchemaReader({
+        "orders-value": SchemaState(
+            subject="orders-value", exists=True, version=version, schema_id=42, schema_type="AVRO",
+            schema={
+                "fields": [{"name": "items", "type": {"type": "array", "items": "string"}}],
+                "doc": "RAW_SCHEMA_SENTINEL",
+            },
+        ),
+    })
+
+    result, _make_kafka, _make_sr = _invoke(
+        tmp_path, FakeKafkaReader(["orders"]), schema_registry=registry,
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _payload(result)["data"]
+    resource = data["resources"][0]
+    assert data["sources"][0]["columns"] == [{"name": "items", "type": "STRING"}]
+    assert resource["completeness"]["schema"] == ("resolved" if version == 3 else "failed")
+    assert resource["completeness"]["columns"] == {
+        "status": "inferred", "count": 1, "runtime_verified": False,
+    }
+    assert resource["provenance"]["columns"] == "schema_registry_type_mapping"
+    assert "not an exact runtime schema" in " ".join(data["discovery"]["limitations"])
+    assert "RAW_SCHEMA_SENTINEL" not in result.output
+    raw = yaml.safe_load((tmp_path / "sources" / "imported.kafka.yml").read_text())
+    assert set(raw) == {"sources"}
+    assert "provenance" not in raw["sources"][0]
+    assert "completeness" not in raw["sources"][0]
+
+
+def test_import_reports_limits_without_warning_in_text_mode(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    with patch(
+        "streamt.cli.commands.import_cmd.make_kafka_deployer",
+        return_value=FakeKafkaReader(["orders"]),
+    ):
+        result = CliRunner().invoke(main, ["import", "-p", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "New source declarations are external" in output
+    assert "application SQL/code is not discovered" in output
+    assert "inferred columns need review against actual event data" in output
+    assert "WARNING" not in output
 
 
 def test_import_discovery_failure_closes_reader_and_writes_nothing(tmp_path: Path) -> None:
@@ -790,18 +962,29 @@ def test_import_strictly_rejects_invalid_generated_source(tmp_path: Path) -> Non
     assert kafka.close_count == 1
 
 
-def test_import_json_is_byte_stable_for_identical_dry_runs(tmp_path: Path) -> None:
-    _write_project(tmp_path)
+@pytest.mark.parametrize("with_registry", [False, True])
+def test_import_json_is_byte_stable_for_identical_dry_runs(
+    tmp_path: Path, with_registry: bool,
+) -> None:
+    _write_project(tmp_path, schema_registry=with_registry)
+    registry = FakeSchemaReader({
+        "a-value": SchemaState(
+            subject="a-value", exists=True, version=2, schema_id=10, schema_type="AVRO",
+            schema={"fields": [{"name": "id", "type": "string"}]},
+        ),
+    }) if with_registry else None
 
     first, _make_kafka, _make_sr = _invoke(
         tmp_path,
         FakeKafkaReader(["z", "a"]),
         "--dry-run",
+        schema_registry=registry,
     )
     second, _make_kafka, _make_sr = _invoke(
         tmp_path,
         FakeKafkaReader(["a", "z"]),
         "--dry-run",
+        schema_registry=registry,
     )
 
     assert first.exit_code == second.exit_code == 0

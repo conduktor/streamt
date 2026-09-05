@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import click
 import yaml
@@ -32,6 +32,7 @@ from streamt.discovery import DiscoveredTopic, discover_topics
 from streamt.output import StructuredError
 
 DEFAULT_IMPORT_FILE = Path("sources/imported.kafka.yml")
+SchemaEnrichmentStatus = Literal["enabled", "disabled", "not_configured", "unavailable"]
 _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_DIRECTORY", 0)
@@ -232,6 +233,12 @@ def _resource_data(
     disposition: str,
 ) -> dict[str, object]:
     """Return one stable machine-readable observation."""
+    schema_requested = resource.schema_status in {"resolved", "not_found", "failed"}
+    columns_status = (
+        "inferred" if resource.column_count
+        else "unsupported_format" if resource.schema and resource.schema.format == "protobuf"
+        else "not_inferred"
+    )
     return {
         "topic": resource.topic,
         "source_name": source_name,
@@ -239,6 +246,22 @@ def _resource_data(
         "replication_factor": resource.replication_factor,
         "schema": resource.schema.to_dict() if resource.schema is not None else None,
         "disposition": disposition,
+        "provenance": {
+            "topic_metadata": "kafka_metadata",
+            "schema_lookup": "schema_registry" if schema_requested else None,
+            "columns": "schema_registry_type_mapping" if resource.column_count else None,
+        },
+        "completeness": {
+            "topic_metadata": "observed",
+            "schema": resource.schema_status,
+            "columns": {
+                "status": columns_status,
+                "count": resource.column_count,
+                "runtime_verified": False,
+            },
+            "application_sql": "not_discoverable",
+            "application_code": "not_discoverable",
+        },
     }
 
 
@@ -251,6 +274,7 @@ def _result_data(
     written: bool,
     definitions: list[dict[str, object]],
     resources: list[dict[str, object]],
+    schema_enrichment: SchemaEnrichmentStatus,
 ) -> dict[str, object]:
     imported_count = sum(item["disposition"] == "imported" for item in resources)
     skipped_count = len(resources) - imported_count
@@ -267,6 +291,22 @@ def _result_data(
         "sources": definitions,
         "resources": resources,
         "created_files": [output_file] if written else [],
+        "discovery": {
+            "read_only": True,
+            "schema_enrichment": {
+                "status": schema_enrichment,
+                "subject_strategy": "topic_name_value",
+            },
+            "limitations": [
+                "Only visible, selected Kafka topics are imported as source declarations.",
+                "Schema lookup uses <topic>-value; key schemas and other subject strategies "
+                "are not discovered.",
+                "Column types are inferred using mappings with fallbacks, not an exact "
+                "runtime schema; event records are not sampled or verified.",
+                "Application SQL and code cannot be reconstructed from topic metadata.",
+                "Import does not transfer ownership or authorize runtime changes.",
+            ],
+        },
     }
 
 
@@ -583,8 +623,14 @@ def import_resources(
                 "Check runtime.kafka for the selected environment.",
             )
 
-        if schemas and project.runtime.schema_registry is not None:
+        schema_enrichment: SchemaEnrichmentStatus
+        if not schemas:
+            schema_enrichment = "disabled"
+        elif project.runtime.schema_registry is None:
+            schema_enrichment = "not_configured"
+        else:
             schema_registry = make_sr_deployer(project, fmt, required=False)
+            schema_enrichment = "enabled" if schema_registry is not None else "unavailable"
 
         try:
             discovered = discover_topics(
@@ -656,8 +702,13 @@ def import_resources(
             written=False,
             definitions=definitions,
             resources=observations,
+            schema_enrichment=schema_enrichment,
         )
         fmt.set_data(data)
+        fmt.print(
+            "New source declarations are external; application SQL/code is not discovered. "
+            "Any inferred columns need review against actual event data."
+        )
 
         if not definitions:
             fmt.print("[green]No new Kafka topics to import.[/green]")

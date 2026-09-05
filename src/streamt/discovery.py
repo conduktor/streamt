@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 INTERNAL_TOPIC_PREFIXES = ("__", "_schemas", "_confluent", "_streamt-connect-")
 
+SchemaDiscoveryStatus = Literal[
+    "not_requested", "not_found", "resolved", "failed", "skipped_after_outage"
+]
+
 
 class KafkaDiscoveryReader(Protocol):
     """The Kafka metadata reads required by discovery."""
@@ -75,6 +79,7 @@ class DiscoveredTopic:
     replication_factor: Optional[int]
     schema: Optional[DiscoveredSchema] = None
     schema_error: Optional[str] = None
+    schema_status: SchemaDiscoveryStatus = "not_requested"
 
     @property
     def column_count(self) -> int:
@@ -329,6 +334,9 @@ def discover_topics(
         )
         discovered_schema: Optional[DiscoveredSchema] = None
         schema_error: Optional[str] = None
+        schema_status: SchemaDiscoveryStatus = (
+            "skipped_after_outage" if schema_enrichment_stopped else "not_requested"
+        )
         source: dict[str, object] = {
             "name": sanitize_source_name(topic),
             "topic": topic,
@@ -349,6 +357,11 @@ def discover_topics(
                 if columns:
                     source["columns"] = columns
                 discovered_schema, schema_error = _schema_metadata(schema_state)
+                schema_status = (
+                    "resolved" if discovered_schema is not None
+                    else "failed" if schema_error is not None
+                    else "not_found"
+                )
             except Exception as exc:  # The topic remains useful without schema enrichment.
                 logger.debug(
                     "Schema discovery failed for topic '%s' (%s)",
@@ -356,6 +369,7 @@ def discover_topics(
                     type(exc).__name__,
                 )
                 schema_error = f"{type(exc).__name__} while reading {topic}-value"
+                schema_status = "failed"
                 if stop_schema_enrichment_on_outage and _is_schema_service_outage(exc):
                     schema_error += "; remaining Schema Registry enrichment was skipped"
                     schema_enrichment_stopped = True
@@ -368,6 +382,7 @@ def discover_topics(
                 replication_factor=state.replication_factor,
                 schema=discovered_schema,
                 schema_error=schema_error,
+                schema_status=schema_status,
             )
         )
 
