@@ -58,6 +58,13 @@ of setting the literal text `None`. Repeated unchanged plans converge. The
 minimum `confluent-kafka` dependency is now 2.13.2, matching the exercised
 topic-identity and consumer-offset Admin APIs.
 
+Fresh application preflight now waits for the Kafka group coordinator using
+bounded read-only checks. The create journey no longer needs a fixture warmup;
+offset initialization is still never retried after an uncertain write. Runtime
+timestamps preserve nanoseconds on Python 3.10 through 3.14. The installed
+OpenLineage smoke also installs its own declared dependencies instead of relying
+on packages from the host interpreter.
+
 ### Offline Strimzi 1.2.0 KafkaTopic export
 
 `streamt export strimzi` now emits deterministic, offline-validated

@@ -133,6 +133,10 @@ operation intent before initializing source partitions at the explicit starting
 position. The runner uses `auto.offset.reset=none`; missing or out-of-range offsets fail
 instead of silently replaying or skipping data.
 
+Preflight waits for a fresh broker's group coordinator with read-only requests
+under one deadline. If readiness or group absence cannot be established, creation
+fails before runtime mutation. Streamt does not retry an uncertain offset write.
+
 The generated README contains producer/consumer commands for the four records
 in `sample_events.jsonl`. Only `{"id":"large-paid","amount":150}` should reach
 `orders.eligible.orders.v1` from that fresh sample. Read the output with

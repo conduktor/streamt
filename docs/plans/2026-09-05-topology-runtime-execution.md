@@ -61,7 +61,8 @@ a changed transformation.
       durable operation state and whole-plan preflight. Start with create/no-op;
       block replacement until its evidence and recovery contract are complete.
 - [ ] Implement the supported same-identity replacement and recovery protocol;
-      test process failure and interruption without weakening existing blockers.
+      follow the [predicate replacement contract](../specs/kafka-streams-replacement.md)
+      and test interruption without weakening existing blockers.
 - [x] Package the minimal two-path example and runner build assets, prove the
       installed creation/no-op loop, and add the same journey to CI.
 - [ ] Extend installed acceptance and CI to the supported change/recovery loop.
@@ -138,3 +139,36 @@ Creation checkpoint, 2026-09-05:
   state validators reject missing checkpoints and inconsistent prior/result
   ownership records. This foundation does not enable replacement or recovery;
   both stay blocked until the execution and resume protocol is verified.
+
+Follow-up implementation checkpoint:
+
+- A pure transition validator now covers execution, explicit same-operation
+  resume and read-only recovery. It rejects signal-in-flight recovery, foreign
+  generations, changed ownership/volume/provider identities, retention loss
+  and offset movement while no candidate has started. It performs no provider
+  calls and does not enable an update command.
+- Docker evidence readers inspect exact IDs, hash actual mounted plan bytes,
+  verify fixed mounts and the retained volume instance, and bind a candidate to
+  its operation/action/fingerprint. A disposable never-started Docker fixture
+  verified these readers and was removed with its owned volume afterward.
+- The real runner's TERM exits were 143, not the journal foundation's required
+  zero. Cleanup alone did not establish the full clean-close conditions. This
+  remains an explicit activation blocker in the replacement
+  contract. No provider exit code is normalized or treated as successful by fiat.
+- CI for `a7ab3e2` passed both installed Kafka SDK lanes and real DataHub, but
+  failed Python 3.10 timestamp parsing and all five Strimzi package lanes. The
+  timestamp fix preserves nanoseconds across Python versions. The Strimzi guard
+  now checks the reviewed dependency floor and CLI registration; it retains its
+  provider-denial tests and passed source/wheel/direct-sdist parity locally.
+- Cold coordinator acceptance now passes from source `ac0c4bffa195` (SDK 2.13.2)
+  and a fresh installed wheel `c1b443338f61` (SDK 2.15.0), each with 36 commands
+  and 12 expected failures. The first online plan ran before Kafka's internal
+  offsets topic existed, without a fixture group warmup. All 115 Python modules
+  matched source, sdist, wheel and installed bytes. The distinct evidence is in
+  `tests/package/verification/kafka-streams-cold-coordinator.json`; the earlier
+  creation record remains historical. This attests the exercised classic/consumer
+  group APIs, not universal absence of other Kafka group types.
+- The compatibility fix's isolated staged tree passed 6,166 unit/scenario tests
+  on Python 3.10 with 31 skips. With the newer foundation and cold-coordinator
+  changes, both Python 3.10 and 3.12 passed 6,525 tests with 32 skips. Ruff, mypy
+  and strict documentation also passed. Remote CI for this follow-up is pending.
