@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional, cast
 
 import click
 
+from streamt.cli.commands.runner_state import register_runner_state_commands
 from streamt.cli.helpers import (
     get_project_path,
     handle_parse_error,
@@ -1098,3 +1099,6 @@ def state_recover(
         raise click.exceptions.Exit(1) from None
     except (RecoveryPlanError, RecoveryServiceError, StateError) as error:
         _handle_recovery_failure(fmt, error)
+
+
+register_runner_state_commands(state)

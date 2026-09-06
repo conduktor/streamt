@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import time
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from types import TracebackType
 
 from streamt.deployer.postgres_state import (
@@ -43,6 +44,7 @@ from streamt.deployer.recovery import (
 )
 from streamt.deployer.state import LocalState, StateError, StateIdentityError
 from streamt.deployer.state_backend import (
+    MAX_OPERATION_RESUMES,
     ControlObservation,
     OperationControlState,
     OperationIntent,
@@ -50,6 +52,7 @@ from streamt.deployer.state_backend import (
     OperationResumeRecord,
     OperationSnapshot,
     RecoveryRecord,
+    RunnerCompletionRecord,
     StateAddress,
     StateBackendConflictError,
     StateBackendInvalidStateError,
@@ -63,6 +66,7 @@ from streamt.deployer.state_backend import (
     StateRevision,
     StateStoreIdentity,
     _same_recovery_resolution_identity,
+    _validate_completed_runner_receipt_lookup,
     _validate_recovery_transition_inputs,
     _validate_resume_transition_inputs,
     completed_runner_state_pair,
@@ -693,6 +697,112 @@ class _PostgresStateReadOperation:
         self.check_lock()
         return None
 
+    def validate_completed_runner_snapshot(self, snapshot: OperationSnapshot) -> None:
+        """Validate pending terminal state and its full journal without writes."""
+        completed_runner_state_pair(snapshot)
+        current = self._observe(require_blocked_runner_history=True)
+        self._validate_expected_snapshot(snapshot, current)
+        self.check_lock()
+
+    def completed_runner_receipt(
+        self, snapshot: OperationSnapshot, operation_id: str,
+    ) -> RunnerCompletionRecord | None:
+        """Read one successful journal and its exact current result under lock."""
+        _validate_completed_runner_receipt_lookup(snapshot, operation_id)
+        self.check_lock()
+        transaction_started = False
+        receipt: RunnerCompletionRecord | None = None
+        try:
+            _begin_snapshot(self._cursor, self._lock_timeout_seconds)
+            transaction_started = True
+            if self._require_v2_writer:
+                _prove_private_postgres_v2_writer(
+                    self._cursor, self._bundle.sql, schema=self._schema,
+                    address=self._address, lock_timeout_seconds=self._lock_timeout_seconds,
+                )
+            current = _read_snapshot_transaction(
+                cursor=self._cursor, bundle=self._bundle, dsn=self._dsn, schema=self._schema,
+                lock_timeout_seconds=self._lock_timeout_seconds, address=self._address,
+            )
+            self._validate_expected_snapshot(snapshot, current)
+            receipt = self._completed_runner_receipt_transaction(current, operation_id)
+            self.check_lock()
+        except StateError:
+            raise
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            self._lost = True
+            raise StateBackendLockLostError("PostgreSQL runner completion lookup is unavailable", operation_id=operation_id) from None
+        finally:
+            if transaction_started:
+                try:
+                    self._connection.rollback()
+                except Exception:
+                    self._lost = True
+        self.check_lock()
+        return receipt
+
+    def _completed_runner_receipt_transaction(
+        self, snapshot: OperationSnapshot, operation_id: str,
+    ) -> RunnerCompletionRecord | None:
+        # Intent + five boundaries + one final interruption + two events per
+        # resume + succeeded. Read one extra row so excess history fails closed.
+        maximum = 8 + 2 * MAX_OPERATION_RESUMES
+        rows = self._read_operation_history(self._cursor, self._bundle.sql, operation_id, maximum_rows=maximum + 1)
+        if not rows:
+            self._validate_state_history(
+                cursor=self._cursor, sql=self._bundle.sql, expected=snapshot,
+                operation_id=operation_id, state_changed=False,
+            )
+            return None
+        if len(rows) > maximum:
+            raise StateBackendInvalidStateError("PostgreSQL runner completion history exceeds its bounded protocol")
+        events: list[tuple[int, str, OperationControlState]] = []
+        try:
+            for index, row in enumerate(rows):
+                if (
+                    len(row) != 4 or type(row[0]) is not int or row[0] != index
+                    or type(row[1]) is not str or row[1] not in _OPERATION_EVENTS
+                    or type(row[2]) is not str or type(row[3]) is not int
+                    or row[3] != len(row[2].encode("utf-8")) or row[3] > POSTGRES_STATE_MAX_BYTES
+                ):
+                    raise StateBackendInvalidStateError("PostgreSQL runner completion history is invalid")
+                control = OperationControlState.from_dict(
+                    _strict_json(row[2], label="runner completion history"), expected_address=self._address,
+                )
+                if row[2] != _canonical_json(control.to_dict(), label="runner completion history"):
+                    raise StateBackendInvalidStateError("PostgreSQL runner completion history is not canonical")
+                events.append((index, row[1], control))
+            terminal = _validate_operation_history_states(
+                events, address=self._address, operation_id=operation_id, store=snapshot.state.store,
+            )
+            if events[-1][1] != "succeeded":
+                raise StateBackendInvalidStateError("PostgreSQL journal does not prove a completed runner")
+            recorded = _rows(
+                self._cursor,
+                _query(self._bundle.sql, "SELECT recorded_at FROM {} WHERE namespace = %s AND project = %s AND environment = %s AND operation_id = %s AND event_index = %s AND event_kind = 'succeeded'", self._schema, "operation_history"),
+                (self._address.namespace, self._address.project, self._address.environment, operation_id, events[-1][0]),
+            )
+            if len(recorded) != 1 or len(recorded[0]) != 1 or type(recorded[0][0]) is not datetime or recorded[0][0].tzinfo is None:
+                raise StateBackendInvalidStateError("PostgreSQL runner completion timestamp is invalid")
+            completed_at = recorded[0][0].astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            intent = terminal.intent
+            assert intent is not None
+            receipt = RunnerCompletionRecord(
+                operation_id, snapshot.address, snapshot.state.store, terminal,
+                intent.prior_state_serial, intent.prior_state_checksum,
+                snapshot.state.state_serial, state_checksum(snapshot.state.state), completed_at,
+            )
+            receipt.verify_result_state(snapshot.state.state)
+        except (StateError, ValueError, TypeError, AttributeError):
+            raise StateBackendInvalidStateError("PostgreSQL runner completion history or result is invalid") from None
+        self._validate_state_history(
+            cursor=self._cursor, sql=self._bundle.sql, expected=snapshot,
+            operation_id=operation_id, state_changed=True,
+        )
+        return receipt
+
     def read(self) -> StateObservation:
         return self.observe().state
 
@@ -765,6 +875,7 @@ class _PostgresStateReadOperation:
         cursor: _Cursor,
         sql: _SqlModule,
         operation_id: str,
+        *, maximum_rows: int | None = None,
     ) -> list[tuple[object, ...]]:
         return _rows(
             cursor,
@@ -774,7 +885,7 @@ class _PostgresStateReadOperation:
                     "SELECT event_index, event_kind, control_json, "
                     "octet_length(control_json) FROM {} WHERE namespace = %s "
                     "AND project = %s AND environment = %s AND operation_id = %s "
-                    "ORDER BY event_index"
+                    "ORDER BY event_index" + (" LIMIT %s" if maximum_rows is not None else "")
                 ),
                 self._schema,
                 "operation_history",
@@ -784,7 +895,7 @@ class _PostgresStateReadOperation:
                 self._address.project,
                 self._address.environment,
                 operation_id,
-            ),
+            ) + ((maximum_rows,) if maximum_rows is not None else ()),
         )
 
     @staticmethod

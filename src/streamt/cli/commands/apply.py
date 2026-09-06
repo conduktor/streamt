@@ -49,8 +49,21 @@ from streamt.core.deployment_state import (
 from streamt.core.environment import EnvironmentConfig
 from streamt.core.errors import ErrorCode
 from streamt.core.models import StreamtProject
+from streamt.deployer.kafka_streams_replacement_coordinator import (
+    KafkaStreamsReplacementCoordinator,
+)
+from streamt.deployer.kafka_streams_replacement_executor import (
+    KafkaStreamsReplacementExecutionError,
+    ReplacementExecutionState,
+)
+from streamt.deployer.kafka_streams_replacement_observer import KafkaStreamsReplacementObserver
 from streamt.deployer.operation_actions import operation_actions_from_planned
-from streamt.deployer.plan_file import PlanFileError, ReviewedPlanFile, StalePlanError
+from streamt.deployer.plan_file import (
+    KAFKA_STREAMS_PLAN_FILE_VERSION,
+    PlanFileError,
+    ReviewedPlanFile,
+    StalePlanError,
+)
 from streamt.deployer.state import (
     LOCAL_STATE_CI_WARNING,
     ManagedConnectorResourceDeletion,
@@ -399,18 +412,35 @@ def _fail_openlineage_apply_preflight(
 
 
 def _reviewed_plan_commands(
-    environment: str,
+    environment: str | None,
     project_path: Path,
 ) -> tuple[str, str]:
     """Return executable commands for the required review/apply workflow."""
     project_arg = shlex.quote(str(project_path))
-    environment_arg = shlex.quote(environment)
+    environment_arg = f" --env {shlex.quote(environment)}" if environment is not None else ""
     plan_file = project_path / ".streamt" / "reviewed-plan.json"
     plan_arg = shlex.quote(str(plan_file))
     return (
-        f"streamt plan --project-dir {project_arg} --env {environment_arg} --out {plan_arg}",
-        f"streamt apply --project-dir {project_arg} --env {environment_arg} --plan {plan_arg}",
+        f"streamt plan --project-dir {project_arg}{environment_arg} --out {plan_arg}",
+        f"streamt apply --project-dir {project_arg}{environment_arg} --plan {plan_arg}",
     )
+
+
+def _runner_continuation_commands(
+    project_path: Path, environment: str | None, plan_path: Path, operation_id: str,
+) -> list[str]:
+    environment_arg = f"--env {shlex.quote(environment)} " if environment is not None else ""
+    confirmation = f" --confirm-env {shlex.quote(environment)}" if environment is not None else ""
+    arguments = (
+        f"--project-dir {shlex.quote(str(project_path))} "
+        f"{environment_arg}"
+        f"--plan {shlex.quote(str(plan_path.resolve()))} "
+        f"--operation-id {shlex.quote(operation_id)}"
+    )
+    return [
+        f"streamt state runner-status {arguments}",
+        f"streamt state resume {arguments}{confirmation}",
+    ]
 
 
 def _enforce_gateway_removal_apply_authorization(
@@ -480,6 +510,10 @@ def _enforce_gateway_removal_apply_authorization(
 @click.option("--force", is_flag=True, help="Override safety checks (allow destructive operations)")
 @click.option("--dry-run", is_flag=True, help="Show what would change without applying")
 @click.option(
+    "--runner-timeout", type=click.FloatRange(min=0, min_open=True, max=600), default=60,
+    show_default=True, help="Bound each Kafka Streams replacement wait in seconds (not a total deadline)",
+)
+@click.option(
     "--emit-openlineage",
     is_flag=True,
     help="Emit finite OpenLineage events for this apply run",
@@ -510,6 +544,7 @@ def apply(
     confirm_env: Optional[str],
     force: bool,
     dry_run: bool,
+    runner_timeout: float,
     emit_openlineage: bool,
     openlineage_job_namespace: str | None,
     openlineage_kafka_namespace: str | None,
@@ -888,6 +923,12 @@ def apply(
                 environment=effective_environment,
             )
             deployment_plan = planner.plan()
+            runner_replacement = (
+                reviewed_plan is not None
+                and reviewed_plan.format_version == KAFKA_STREAMS_PLAN_FILE_VERSION
+            )
+            if runner_replacement and not planner.prepare_reviewed_kafka_streams_replacement(deployment_plan):
+                raise PlanFileError("Reviewed runner replacement requires exactly one current predicate update")
             ordered_actions = (
                 ()
                 if deployment_plan.is_apply_blocked
@@ -941,17 +982,19 @@ def apply(
                         f"Apply blocked: {len(blocking_requirements)} resource(s) require an "
                         "explicit ownership decision or adoption"
                     )
-                fmt.set_data(
-                    {
-                        "summary": deployment_plan.summary(),
-                        "ownership_requirements": all_requirements,
-                        "blocking_ownership_requirements": blocking_requirements,
-                        "safety_blockers": safety_blockers,
-                        "gateway_removal_assessments": gateway_removal_assessments,
-                        "connector_removal_assessments": connector_removal_assessments,
-                        "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
-                    }
-                )
+                blocked_data: dict[str, object] = {
+                    "summary": deployment_plan.summary(),
+                    "ownership_requirements": all_requirements,
+                    "blocking_ownership_requirements": blocking_requirements,
+                    "safety_blockers": safety_blockers,
+                    "gateway_removal_assessments": gateway_removal_assessments,
+                    "connector_removal_assessments": connector_removal_assessments,
+                    "plan_checksum": reviewed_plan.checksum if reviewed_plan else None,
+                }
+                if any(change.action == "update" for change in deployment_plan.kafka_streams_changes):
+                    blocked_data["required_workflow"] = "reviewed_plan"
+                    blocked_data["next_steps"] = list(_reviewed_plan_commands(parsed_environment, project_path))
+                fmt.set_data(blocked_data)
                 fmt.add_error(StructuredError(code=error_code, message=message))
                 fmt.print(deployment_plan.details())
                 fmt.print_error(message)
@@ -1035,7 +1078,7 @@ def apply(
             # Validate every ordinary and Gateway ownership projection before a
             # durable intent or provider mutation. Connector deletion claims do
             # not exist until their runtime action has durably completed.
-            prevalidated_next_state = updated_local_state(
+            prevalidated_next_state = None if runner_replacement else updated_local_state(
                 prior_state,
                 deployment_plan,
                 managed_gateway_deletions=managed_gateway_deletions,
@@ -1109,6 +1152,73 @@ def apply(
                         ),
                         location="openlineage",
                     )
+            if runner_replacement:
+                # The dedicated coordinator owns intent, every checkpoint and
+                # typed finalization. Never enter the generic journal/rollback
+                # path below, including when a write acknowledgement is lost.
+                assert reviewed_plan is not None
+                assert reviewed_plan_path is not None
+                assert kafka_streams is not None
+                execution = ReplacementExecutionState(intent_snapshot)
+
+                def read_runner_project() -> StreamtProject:
+                    fresh_parser = ProjectParser(project_path, environment=parsed_environment)
+                    fresh = fresh_parser.parse()
+                    if (
+                        fresh.deployment_state != project.deployment_state
+                        or fresh_parser.env_config != env_config
+                    ):
+                        raise PlanFileError("Replacement environment policy or state authority changed")
+                    return fresh
+
+                coordinator = KafkaStreamsReplacementCoordinator(
+                    KafkaStreamsReplacementObserver(kafka_streams),
+                    read_runner_project,
+                )
+                try:
+                    completed = coordinator.execute(
+                        state_operation, execution, plan=reviewed_plan,
+                        current_plan=deployment_plan, current_actions=operation_actions,
+                        operation_id=intent.operation_id, actor=intent.actor,
+                        timeout_seconds=runner_timeout,
+                        on_started=lineage.start if lineage is not None else None,
+                    )
+                except BaseException as error:
+                    progress = execution.snapshot.control.control.progress
+                    checkpoint = progress[-1].kafka_streams_checkpoint if progress else None
+                    boundary = (
+                        checkpoint.phase if checkpoint else progress[-1].status if progress
+                        else "intent" if execution.snapshot.control.control.intent is not None else "intent_unconfirmed"
+                    )
+                    fmt.set_data({
+                        "workflow": "kafka_streams_replacement", "operation_id": intent.operation_id,
+                        "plan_checksum": reviewed_plan.checksum, "committed": None,
+                        "last_acknowledged_boundary": boundary,
+                        "next_steps": _runner_continuation_commands(
+                            project_path, parsed_environment, reviewed_plan_path, intent.operation_id,
+                        ),
+                    })
+                    if lineage is not None:
+                        lineage.terminal("ABORT" if isinstance(error, KeyboardInterrupt) else "FAIL")
+                    raise
+                if lineage is not None:
+                    lineage.terminal("COMPLETE")
+                runner_results: dict[str, object] = {
+                    "workflow": "kafka_streams_replacement", "operation_id": intent.operation_id,
+                    "plan_checksum": reviewed_plan.checksum, "plan_file": str(reviewed_plan_path.resolve()),
+                    "created": [], "updated": [ordered_actions[0].runtime_label], "unchanged": [], "errors": [],
+                    "state_serial": completed.state.state.serial, "committed": True,
+                }
+                if project.deployment_state.backend == "local":
+                    runner_results["state_file"] = str(state_path)
+                verified_commit_data = runner_results
+                fmt.set_data(runner_results)
+                operation_stack.close()
+                if lineage is not None:
+                    lineage.close()
+                fmt.print("[green]Kafka Streams replacement complete; application identity and progress retained[/green]")
+                fmt.flush()
+                return
             try:
                 active_snapshot: list[OperationSnapshot] = [
                     state_operation.begin_operation(intent_snapshot, intent)
@@ -1543,6 +1653,12 @@ def apply(
             )
         )
         fmt.print_error(safe_message)
+        fmt.flush()
+        sys.exit(1)
+    except KafkaStreamsReplacementExecutionError:
+        message = "Kafka Streams replacement could not complete; inspect its recorded operation before resuming"
+        fmt.add_error(StructuredError(code=ErrorCode.DEPLOY_ERROR, message=message))
+        fmt.print_error(message)
         fmt.flush()
         sys.exit(1)
     except StateError as e:

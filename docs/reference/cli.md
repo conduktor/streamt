@@ -176,10 +176,11 @@ returns `data.image` plus a `runtime.kafka_streams.image` configuration fragment
 checks have separate short bounds. Build logs and credentials are not returned
 in the public result. This command never pushes or tags an image.
 
-The runner supports managed creation and unchanged repeat apply. A changed or
-failed existing runner, lost offsets, replaced topics, or a pending operation
-cannot be bypassed by building another image or using `--force`. Replacement and
-recovery are not yet enabled. See the [starting guide](../getting-started/kafka-streams.md).
+The runner supports managed creation, unchanged repeat apply, and reviewed
+predicate-only replacement. A failed runner, lost offsets, replaced topics, or
+a pending operation cannot be bypassed by building another image or using
+`--force`. Use the original plan and explicit `state resume` workflow for an
+interrupted replacement. See the [starting guide](../getting-started/kafka-streams.md).
 
 ---
 
@@ -549,7 +550,7 @@ streamt plan --env staging --out staging.plan.json
 ```
 
 !!! tip "Offline Plan"
-    Use `--offline` to preview what a fresh deployment would create, without connecting to Kafka or other infrastructure. Useful for evaluating the tool, CI validation, or reviewing changes before infrastructure is available. The offline plan assumes no existing resources — all artifacts show as "create". Offline plan files are preview-only and cannot authorize `apply`; generate a fresh online plan with live evidence before mutation.
+    Use `--offline` to preview a fresh deployment without connecting to Kafka or other infrastructure. Managed resources are assumed absent and planned as creates; external declarations remain no-ops. Offline plan files cannot authorize `apply`; generate an online plan with live evidence before mutation.
 
 Online planning reports ordered `safety_blockers` for Kafka partition
 reductions, incompatible schemas, and Flink job updates. A blocked plan still
@@ -558,6 +559,14 @@ exits successfully and can be saved for review; its JSON data sets
 an exact ownership-state reference, and canonical ordered action evidence in its
 integrity checksum. Version 1 through 4 files cannot authorize apply and are
 rejected with regeneration guidance.
+
+A sole supported Kafka Streams predicate update uses reviewed format 6. Online
+planning observes the full current project and binds the exact owned generation,
+retained volume, provider identities and offset lower bounds. Use `--out` to save
+that evidence; only `apply --plan` can execute it. Other plans retain format 5.
+Selections, mixed mutations and unsupported runner changes remain blocked.
+The JSON `kafka_streams_replacement` field reports whether the plan file was saved
+and supplies the required next commands. Offline plans never authorize replacement.
 
 **Output:**
 
@@ -594,6 +603,7 @@ streamt apply [OPTIONS]
 | `--target MODEL` | Deploy only specific model |
 | `--select SELECTOR` | Filter by tag or selector |
 | `--plan PATH` | Verify and apply a saved reviewed-plan file |
+| `--runner-timeout SECONDS` | Bound each Kafka Streams replacement wait; greater than 0, at most 600, default 60. This is not a total command deadline. |
 | `--dry-run` | Show what would be deployed |
 | `--confirm` | Skip confirmation prompt for protected environments |
 | `--confirm-env ENV` | Non-interactive confirm: pass environment name to verify (for agents/CI) |
@@ -646,6 +656,20 @@ ownership state, resource actions, or ownership decisions. Offline plans record
 `state: null` and cannot authorize apply.
 The checksum detects accidental or unreviewed modification; it is not a digital
 signature and does not establish author identity.
+
+A format-6 runner replacement takes the dedicated coordinator path under the
+same state-operation lock. It verifies the full current project and original
+reviewed action before each transition, then commits only the runner checksum
+and one ownership serial increment. It does not use generic rollback. The
+first supported update changes predicates only and is the sole mutation in
+the full project. Direct apply, `--target`, `--select`, and `--force` do not
+enable other runner changes. `--dry-run --plan` performs no runtime mutation.
+
+After a missing acknowledgement, JSON reports `committed: null`, the original
+operation UUID and the last acknowledged boundary. Follow its `next_steps` with
+the same plan file; do not replan or rerun apply against a partially replaced
+runtime. A verified completion followed by a lock-release error retains
+`committed: true`. See `state runner-status` and `state resume` below.
 
 #### OpenLineage apply telemetry
 
@@ -1378,6 +1402,68 @@ read-only transaction sets
 streamt state status -p . -e prod
 streamt -o json state status -p . -e prod
 ```
+
+---
+
+### state runner-status
+
+Inspect one reviewed Kafka Streams replacement under the deployment-state lock.
+Unlike `state status`, this command verifies the current full project, original
+plan, exact operation journal or completion receipt, and live runner evidence.
+It makes no runtime, ownership or audit writes. Acquiring the lock may create a
+local lock file; read-only does not mean that the filesystem is never touched.
+
+```bash
+streamt -o json state runner-status -p . -e prod \
+  --plan filter-change.json --operation-id '<original UUID>'
+```
+
+| Option | Description |
+| --- | --- |
+| `--plan PATH` | Required original reviewed format-6 plan |
+| `--operation-id UUID` | Required canonical UUID returned by the original apply |
+| `--project-dir PATH`, `-p PATH` | Project directory |
+| `--env ENV`, `-e ENV` | Original environment; omit for a single-environment project |
+
+JSON contains `status`, `control_status`, `lifecycle_phase`, `committed`,
+`resumable`, `next_step`, `reason` and `next_action`. A pending operation may be
+safe to resume or blocked. An already-clear result is `completed` only when its
+exact receipt, current ownership and ready candidate agree. Clear control alone
+does not prove success. This is an exact-current-operation diagnostic, not a
+general historical query: subsequent ownership or project changes can prevent
+verification of an older receipt. Observation does not authorize mutations.
+
+### state resume
+
+Continue one interrupted predicate replacement using its original reviewed plan
+and operation UUID. This command can mutate the runtime; it is distinct from
+read-only diagnosis and generic reviewed recovery.
+
+```bash
+streamt -o json state resume -p . -e prod --confirm-env prod \
+  --plan filter-change.json --operation-id '<original UUID>' --timeout 60
+```
+
+The options of `state runner-status` also apply here. `--confirm-env ENV` is
+required when the environment's apply policy demands confirmation; its value
+must match exactly. `--timeout SECONDS` bounds each replacement wait, greater
+than 0 and at most 600 (default 60). It is not a total command deadline.
+Remote-state requirements still apply. Neither command silently falls back to
+local state. Omit `--env` and `--confirm-env` for the single-environment starter.
+
+Resume preserves the original intent and retained incident history. It validates
+the current project and locked state before observing or executing the next
+proven step. A candidate created before a lost response is reused only when its
+exact generation and mounted inputs match. Resume never initializes offsets,
+recreates a missing volume, force-kills a process, or replans a partial topology.
+Completed results are verified without another deployment, ownership increment
+or audit append; those retries return `read_only: true`.
+
+An error after a missing acknowledgement reports an unknown outcome until a
+fresh command verifies it. An old-removed/new-absent topology is incomplete;
+read-only diagnosis cannot clear it. Changed identities, unavailable progress,
+corrupt history or mismatched SQL block continuation. See the
+[interruption runbook](../guides/state-recovery.md#interrupted-kafka-streams-replacement).
 
 ---
 

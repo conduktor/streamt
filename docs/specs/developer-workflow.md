@@ -136,6 +136,11 @@ A semantic Git comparison and the existing GitHub Action can share a readable
 report once implemented. Neither replaces the real create/change/redeploy test.
 Protected or shared environments keep their reviewed-plan and state requirements.
 
+The [declared Git impact specification](declared-git-impact.md) records the
+proposed CLI, safe snapshot loading, contract evidence, downstream application
+impact and acceptance tests. It is planned for after the public runner lot;
+implementation is paused under the [resume handoff](../plans/2026-09-06-resume-handoff.md).
+
 The first update must change output behavior on the same application and
 resource identities. Define exactly how the selected backend handles shutdown,
 source offsets, emitted records, partial failure, and recovery. A no-op repeat
@@ -145,8 +150,9 @@ does not satisfy the update criterion.
 
 Flink updates remain blocked until a separate lifecycle contract proves the
 supported transition. Apply the same standard to a Kafka Streams runner. The
-first selected update is a projection/filter change. Stateful aggregation upgrades
-remain gated. Do not promise zero downtime or exactly-once upgrades.
+first selected update changes predicates only; projection changes remain blocked.
+Stateful aggregation upgrades remain gated. Do not promise zero downtime or
+exactly-once upgrades.
 
 ## Acceptance evidence
 

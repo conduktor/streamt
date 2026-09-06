@@ -77,7 +77,7 @@ def test_kafka_streams_init_offline_topology_journey(deny_providers, tmp_path):
     )
     assert initialized.exit_code == 0, initialized.output
     output = json.loads(initialized.stdout)["data"]
-    assert output["support"] == "create_noop_only"
+    assert output["support"] == "create_noop_predicate_update"
     assert output["managed_models"] == ["raw_orders", "eligible_orders"]
     assert output["metadata_only_applications"] == ["fraud_app"]
     assert set(output["created_files"]) == {
@@ -299,10 +299,14 @@ def test_kafka_streams_text_onboarding_does_not_claim_application_execution(tmp_
     result = CliRunner().invoke(main, starter_args(tmp_path)[2:], env={"COLUMNS": "300"})
     assert result.exit_code == 0, result.output
     assert "fraud_app is metadata-only" in result.output
-    assert "updates are blocked" in result.output
+    assert "Predicate-only updates require a saved reviewed plan" in result.output
     assert "contact Kafka/Docker" in result.output
     assert "runtime.flink" not in result.output
     readme = (tmp_path / "README.md").read_text()
     assert "ownership.mode: external" in readme
     assert "streamt apply --plan reviewed-plan.json" in readme
+    assert "streamt apply --plan filter-change.json" in readme
+    assert "state runner-status --plan filter-change.json --operation-id <UUID>" in readme
+    assert "state resume --plan filter-change.json --operation-id <UUID>" in readme
+    assert "unknown outcome" in readme
     assert "streamt does not deploy" in readme

@@ -4,10 +4,18 @@
 
 This contract implements the update part of the approved
 [topology/runtime cycle](../plans/2026-09-05-topology-runtime-execution.md).
-Creation and no-op repeat apply are supported. An internal coordinator now
-connects reviewed replacement planning, execution, resume and finalization.
-Public replacement remains blocked; this document is not a claim that an
-update or resume command is available.
+Creation and no-op repeat apply are supported. Public online planning now
+prepares one evidenced predicate replacement, saved as reviewed format 6.
+`apply --plan` executes that exact action through the coordinator;
+`state runner-status` diagnoses it and `state resume` explicitly continues the
+same operation. Broader runner changes remain blocked. The historical internal
+proofs below retain their original scope; public acceptance is recorded separately.
+
+The public CLI implementation is saved as a checkpoint. Work paused on 2026-09-06;
+final installed-package acceptance and coupled Kafka/PostgreSQL verification
+remain open. The [resume handoff](../plans/2026-09-06-resume-handoff.md) records
+exact source cohorts, missing files and the completion checklist. Command
+availability in the working tree is not a released-package claim.
 
 Clean-close evidence admits raw exit codes 0 and 143. The latter accounts for
 the fixed JVM runner's TERM shutdown. Neither code alone proves success: the
@@ -70,8 +78,9 @@ online, full-project plan. It hashes the complete typed action separately from
 generic display redaction, including schema fields named `token` or `password`.
 Fresh offsets may advance without invalidating that action, but apply persists
 the exact reviewed tuple. Other plans retain format 5 and its existing checksum.
-The format alone cannot bypass a replacement blocker. Internal planning requires
-an explicit opt-in, a freshly compiled full project, one predicate-only update,
+The format alone cannot bypass a replacement blocker. Public online planning
+uses an explicit preparation hook after observing a freshly compiled full
+project. It requires one predicate-only update,
 unchanged protected ownership and observed runtime evidence. Selected projects,
 mixed mutations and generic apply remain blocked. External declarations do not
 become runtime observations or mutations.
@@ -199,14 +208,15 @@ resume transition cannot leave a separate prewritten record.
 
 This lookup writes nothing. Absence is not eligibility or permission to resume.
 These backend checks also do not verify the user's current SQL against an
-original plan file. The internal coordinator now performs that check; the
-public command calling it remains pending.
+original plan file. The coordinator and public commands perform that check
+before runtime observation or continuation.
 
 `PlannedAction` and its durable-action converter now retain the typed runner
 evidence without changing its version-4 bytes. Reviewed format-6 round trips
 preserve that evidence. Conversion alone does not collect observations or
-authorize execution. Only the internal opt-in planner prepares an evidenced
-replacement; ordinary planning and generic apply keep their blockers.
+authorize execution. Public online planning explicitly prepares an evidenced
+replacement from its last full-project observation. Generic apply keeps its
+blocker; reviewed apply uses the dedicated coordinator.
 
 The separate `kafka_streams_resume_probe.py` acceptance now passes from source
 (client 2.13.2) and an installed package (2.15.0). Its first worker loses a real
@@ -260,9 +270,9 @@ It retains the original interruption and resume rows. An active control paired
 with already-written result ownership is invalid there, not a local-style retry.
 Neither backend rewrites an incident as if it never happened.
 
-An unacknowledged clear remains an unknown outcome for that invocation. Reporting
-an already-cleared operation from its receipt in a fresh command is not yet
-implemented. Finalization errors never authorize deployment retries or a new
+An unacknowledged clear remains an unknown outcome for that invocation. A fresh
+public command can now verify an already-cleared operation from its exact
+receipt and ready candidate. Finalization errors never authorize deployment retries or a new
 incident that would change the archived terminal control.
 
 The real Kafka/Docker coordinator probe passes from source (client 2.13.2) and
@@ -277,7 +287,7 @@ without changing providers, ownership or audit. These are controlled worker
 exits, not SIGKILL, authenticated Kafka or public update/resume acceptance.
 See `tests/package/verification/kafka-streams-reviewed-coordinator.json`.
 
-## Acceptance before activation
+## Acceptance requirements
 
 - Prove the installed import and fresh-init paths through a predicate change,
   exact output, preserved application identity and monotonic offsets, then no-op.
@@ -289,25 +299,48 @@ See `tests/package/verification/kafka-streams-reviewed-coordinator.json`.
   Connector/Gateway removal and external-resource behavior unchanged.
 - Verify the public resume/recovery flow, not only a standalone Java restart.
 
-## Remaining integration order
+## Public command contract
 
-1. Wire public online, full-project planning to the opt-in replacement planner
-   and format-6 file. Keep selectors, mixed mutations, unsupported changes and
-   generic apply blocked. The internal preparation API is not public activation.
-2. Route reviewed apply through the coordinator under the state-operation lock.
-   Load and verify the actual saved plan, re-read the full project and retain
-   the original action tuple. Keep finalization and unknown-outcome reporting
-   separate from ordinary create/update handlers.
-3. Add explicit same-operation CLI resume and read-only recovery reporting.
-   Reuse the coordinator's plan/context checks and exact pending authorization
-   lookup. Never create a fresh plan against a partially replaced topology.
-   A missing candidate after removal is still incomplete. Recovery compares
-   advancing offsets against reviewed lower bounds, not byte-identical live
-   observations. Report an already-cleared completion from its exact receipt
-   without treating absence of pending control alone as success.
-4. Run the installed public change/resume journey with failures on both sides
-   of journal and runtime boundaries. Only then advertise the update workflow
-   and proceed to declared Git base/head comparison and downstream impact.
+`plan --out` prepares the typed action only from the planner's exact last online
+full-project observation. It seals that plan and protected state against edits.
+The saved format-6 file is mandatory for replacement; legacy format-5 planning
+and creation remain unchanged.
+
+`apply --plan` verifies the original file and enters the coordinator before any
+generic mutation, rollback or ownership-commit path. It reparses the actual SQL
+and freezes the selected environment policy and state authority throughout the
+operation. OpenLineage START is sent only after the intent acknowledgement;
+COMPLETE follows verified finalization. Telemetry delivery cannot decide commit.
+
+`state runner-status --plan FILE --operation-id UUID` takes the operation lock
+and validates storage/audit before constructing its read-only runtime observer.
+It reports the next proven boundary without granting resume authority. The
+observer consumes the exact project instance already validated by the coordinator;
+an unchecked reparse cannot introduce provider access under changed settings.
+
+`state resume` uses that same original file and UUID. It requires exact
+`--confirm-env` when environment policy demands it. SQL, manifest, runtime,
+ownership or environment mismatches block before the next mutation. Neither
+command creates a new plan or treats missing pending control as success.
+The single-environment starter omits `--env`; it must not invent an environment
+directory named `default`.
+
+Both backends expose a locked, read-only completed-receipt lookup and a terminal
+pending-snapshot validation gate. Local lookup verifies the full archived receipt
+and current result, including the one-change reconstruction of prior ownership.
+PostgreSQL verifies the complete operation and state history in a read-only
+transaction and derives completion time from the durable terminal row. Absent
+operation history with orphan state history is corruption, not a missing receipt.
+These lookups perform no ownership, control or audit writes. They do not promise
+historical reporting after subsequent project or ownership changes.
+
+An unacknowledged response reports `committed: null` and the last acknowledged
+boundary. A fresh status or resume can verify the committed receipt without
+redeploying, appending audit or incrementing ownership serial. A verified result
+followed by a lock-release error retains `committed: true`.
+
+The next product work is declared Git base/head comparison and downstream
+impact, after installed public acceptance and coupled Kafka/PostgreSQL validation.
 
 Docker daemon access and exclusive ownership of the application ID remain trust
 boundaries. Kafka does not provide a compare-and-set across topic identities,

@@ -394,7 +394,7 @@ class Journey:
                 "--kafka", self.bootstrap, "--kafka-internal", "broker:19092",
                 "--docker-network", self.network, "--initial-offset", "earliest", offline=True,
             )
-            assert initialized["support"] == "create_noop_only"
+            assert initialized["support"] == "create_noop_predicate_update"
             assert initialized["metadata_only_applications"] == ["fraud_app"]
             config = yaml.safe_load(project_file.read_text())
             raw_topic = next(model["topic"]["name"] for model in config["models"] if model["name"] == "raw_orders")

@@ -4,6 +4,22 @@ This roadmap is the project-level source of truth for sequencing work. Detailed
 requirements live in `docs/specs/`, and implementation checklists live in
 `docs/plans/`.
 
+## Paused on 2026-09-06: start here when resuming
+
+The owner requested a written handoff and no further implementation until a
+new explicit request. Read the
+[resume handoff](docs/plans/2026-09-06-resume-handoff.md) before running tests,
+starting agents or changing the product. It records the saved checkpoint, the
+missing coupled Kafka/PostgreSQL acceptance script, evidence versions and
+remaining acceptance checks. The owner's subsequent commit/push request saves
+the existing work; it does not resume feature development.
+
+After closing the current public runner lot, follow the
+[declared Git impact specification](docs/specs/declared-git-impact.md): safe
+Git snapshots, declaration comparison, downstream application impact, CLI and
+pull-request rendering. This sequence is planned work, not authorization to
+start it in the background.
+
 ## Product direction
 
 streamt is a framework for developing, testing, deploying, and evolving
@@ -53,8 +69,11 @@ reviewed format-6 binding and an internal journaled driver are implemented.
 Real source and installed tests prove continuation after a lost Docker-create
 response, with the same application and offsets. Local and PostgreSQL backends
 now support durable same-operation resume authorization with retained incident
-history. Public replacement and recovery remain blocked until CLI integration
-and the complete user-facing interruption journey pass.
+history. Public reviewed replacement, diagnosis and explicit resume are now
+implemented in this checkpoint. Local public acceptance passed;
+final installed-package verification, coupled Kafka/PostgreSQL CLI acceptance
+and exact-commit CI still need completion. The handoff above separates these
+pending gates from the older committed proof results.
 
 The immutable `0.1.0a1` [release procedure](docs/plans/2026-09-03-first-alpha-release.md)
 remains open and unchanged. External publication is not the next implementation

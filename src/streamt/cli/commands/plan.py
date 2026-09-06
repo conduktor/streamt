@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -41,7 +42,6 @@ from streamt.deployer.connect import ConnectorChange, secret_neutral_connector_c
 from streamt.deployer.gateway import GatewayRuleChange, secret_neutral_gateway_changes
 from streamt.deployer.operation_actions import operation_actions_from_planned
 from streamt.deployer.plan_file import (
-    PLAN_FILE_VERSION,
     PlanFileError,
     ReviewedPlanFile,
     StateReference,
@@ -53,6 +53,7 @@ from streamt.deployer.state import (
     local_state_path,
 )
 from streamt.deployer.state_backend import (
+    StateBackendConflictError,
     StateBackendInvalidStateError,
     StateBackendLockLostError,
     StateBackendLockTimeoutError,
@@ -122,6 +123,7 @@ def plan(
     fmt = make_formatter(ctx, "plan")
     project_path = get_project_path(project_dir)
     connector_removal_workflow = False
+    replacement_prepared = False
 
     try:
         parser = ProjectParser(
@@ -317,6 +319,12 @@ def plan(
                         environment=effective_environment,
                     )
                     deployment_plan = planner.plan()
+                    if any(change.action == "update" for change in deployment_plan.kafka_streams_changes):
+                        state_operation.check_lock()
+                        replacement_prepared = planner.prepare_reviewed_kafka_streams_replacement(deployment_plan)
+                        state_operation.check_lock()
+                        if state_operation.observe() != planning_snapshot:
+                            raise StateBackendConflictError("Replacement planning state changed after observation")
                     operation_actions = (
                         ()
                         if deployment_plan.is_apply_blocked
@@ -335,6 +343,10 @@ def plan(
                     )
 
                 if plan_output:
+                    if replacement_prepared:
+                        state_operation.check_lock()
+                        if state_operation.observe() != planning_snapshot:
+                            raise StateBackendConflictError("Replacement planning state changed before review")
                     emit_connector_removal_destructive_warning(fmt, operation_actions)
                     reviewed_plan = ReviewedPlanFile.create(
                         deployment_plan,
@@ -423,7 +435,25 @@ def plan(
             plan_data["plan_file"] = str(plan_output.resolve())
             plan_data["plan_checksum"] = reviewed_plan.checksum
             plan_data["manifest_checksum"] = reviewed_plan.manifest_checksum
-            plan_data["plan_format_version"] = PLAN_FILE_VERSION
+            plan_data["plan_format_version"] = reviewed_plan.format_version
+        if replacement_prepared:
+            target = plan_output.resolve() if plan_output is not None else project_path / ".streamt" / "reviewed-plan.json"
+            context_args = ["--project-dir", str(project_path)]
+            if isinstance(parsed_environment, str) and parsed_environment:
+                context_args.extend(["--env", parsed_environment])
+            next_steps = [
+                *([shlex.join(["streamt", "plan", *context_args, "--out", str(target)])] if reviewed_plan is None else []),
+                shlex.join(["streamt", "apply", *context_args, "--plan", str(target)]),
+            ]
+            plan_data["kafka_streams_replacement"] = {
+                "requires_plan_file": True,
+                "plan_file_saved": reviewed_plan is not None,
+                "scope": "sole_predicate_update",
+                "next_steps": next_steps,
+            }
+            fmt.print("This replacement requires its exact saved reviewed plan:")
+            for command in next_steps:
+                fmt.print(f"  {command}")
         fmt.set_data(plan_data)
         fmt.print(deployment_plan.details())
         fmt.flush()

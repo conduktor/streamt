@@ -139,7 +139,7 @@ print(json.dumps({'hashes': hashes, 'results': results}))
         "compile",
         "plan",
     ]
-    assert data["results"][0]["data"]["support"] == "create_noop_only"
+    assert data["results"][0]["data"]["support"] == "create_noop_predicate_update"
     assert data["results"][1]["warnings"] == []
     assert data["results"][-1]["data"]["creates"] == 3
     assert not (tmp_path / "installed" / "target").exists()

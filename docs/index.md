@@ -33,8 +33,10 @@ The [product direction](specs/product-direction.md) prioritizes creating and
 updating applications, including an execution path for users without Flink.
 The [Kafka Streams starting path](getting-started/kafka-streams.md) creates a
 bounded projection/filter topology through a fixed local Docker runner.
-Kafka Streams replacement, existing Flink updates, and managed custom-application
-deployment remain blocked or unimplemented. External declarations are not
+One reviewed Kafka Streams predicate update can preserve its application identity
+and offsets, with explicit resume after interruption. Broader runner changes,
+existing Flink updates, and custom-application deployment remain unsupported.
+External declarations are not
 live-diffed by ordinary planning; `status --include-external` explicitly observes
 them. Managed deployment safety checks still access their providers. See the
 [support matrix](reference/support-matrix.md) for current boundaries.

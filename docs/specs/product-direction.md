@@ -114,8 +114,10 @@ unsupported operation fails explicitly, without falling back to Flink or
 claiming SQL equivalence between engines.
 
 Docker is the first execution backend for this bounded runner: one container
-per managed model on an explicit local daemon and network. Creation and no-op
-repeat apply are implemented. Replacement, deletion and pending-operation
+per managed model on an explicit local daemon and network. Creation, no-op
+repeat apply and one reviewed predicate-only replacement are implemented, with
+explicit same-operation resume and read-only completion checks. Projection,
+schema, identity, image and stateful changes, deletion and generic runner-failure
 recovery remain blocked. Docker support does not extend to arbitrary images,
 remote scheduling or deployment of custom application code.
 

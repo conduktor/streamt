@@ -1,5 +1,14 @@
 # Topology development and Kafka Streams execution
 
+## Pause and resumption
+
+Implementation paused on 2026-09-06 at the owner's request. Read the
+[resume handoff](2026-09-06-resume-handoff.md) for the current working-tree state,
+remaining acceptance and commands. Do not resume implementation or infrastructure
+tests until the owner asks. Older evidence below retains its historical scope.
+The subsequent Git comparison lot is specified in
+[declared Git impact](../specs/declared-git-impact.md); it has not been implemented.
+
 ## Authority and product objective
 
 On 2026-09-05 the owner approved the next implementation cycle: productize the
@@ -67,13 +76,16 @@ a changed transformation.
     - [x] Coordinate the original reviewed intent through execution and resume.
     - [x] Finalize completed local/PostgreSQL operations, including an interrupted
           local control clear without another ownership write.
-    - [ ] Expose reviewed apply, explicit resume and read-only recovery through
-          the CLI, then pass the installed public workflow acceptance.
+    - [x] Implement reviewed apply, explicit resume and read-only diagnosis;
+          saved as a checkpoint at the owner's request, with acceptance below open.
+    - [ ] Pass final installed public acceptance and coupled Kafka/PostgreSQL
+          validation, curate evidence and verify the exact commit in CI.
 - [x] Package the minimal two-path example and runner build assets, prove the
       installed creation/no-op loop, and add the same journey to CI.
 - [ ] Extend installed acceptance and CI to the supported change/recovery loop.
 - [ ] Complete declared Git base/head comparison and dependency impact reporting
       through the existing workflow. A declared comparison does not authorize apply.
+      Follow the [detailed contract and ordered tasks](../specs/declared-git-impact.md).
 - [ ] Review all changes, run unit/scenario/type/docs/package and real-target
       gates, commit logical tested chunks and push normally.
 

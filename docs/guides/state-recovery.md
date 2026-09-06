@@ -10,6 +10,11 @@ Use this runbook when `streamt state status` reports an `in_progress` or
 it is not a general state editor, a retry of runtime mutations, or a stale-lock
 cleanup command.
 
+For an interrupted Kafka Streams predicate replacement, use the
+[dedicated runner workflow](#interrupted-kafka-streams-replacement) below.
+It can continue the original deployment; generic recovery does not retry
+runtime mutations.
+
 Recovery is deliberately a two-command, reviewed workflow:
 
 1. `state recovery-plan` locks the state address, rereads the blocked intent,
@@ -27,6 +32,64 @@ There is no timeout after which a marker becomes safe to clear. Do not edit or
 delete a control marker, hand-edit ownership state or history, force-unlock the
 store, or retry the blocked runtime action. streamt never recovers
 automatically.
+
+## Interrupted Kafka Streams replacement
+
+Retain the original reviewed format-6 plan and the operation UUID returned by
+apply. Keep the project's SQL, environment, package version and provider
+configuration unchanged. Inspect the exact operation first:
+
+```bash
+streamt -o json state runner-status -p . -e prod \
+  --plan filter-change.json --operation-id '<original UUID>'
+```
+
+Replace the quoted placeholder with the reported canonical UUID. For the
+single-environment starter, omit `-e prod` and the confirmation flag below.
+This command locks the state address, checks the complete journal/history and
+recompiles the current project before inspecting the live generation. It makes
+no runtime, ownership or audit writes. Local lock acquisition may create a lock
+file. A missing or ambiguous observation cannot authorize continuation.
+
+If the report permits resume, explicitly continue the same operation:
+
+```bash
+streamt -o json state resume -p . -e prod --confirm-env prod \
+  --plan filter-change.json --operation-id '<original UUID>' --timeout 60
+```
+
+Resume may cleanly stop the original runner, remove that exact stopped
+container, create its sole candidate, or start a verified candidate. Each step
+requires fresh evidence and durable progress under the same operation ID.
+Resume preserves application identity, the existing volume and offsets; it
+does not initialize a new group. The timeout bounds each wait, not the entire
+command, and never permits force kill.
+
+| Observed result | Action |
+| --- | --- |
+| Interrupted with a safe next boundary | Resume the original plan and operation UUID |
+| Old removed, new absent | Resume may create the exact candidate; diagnosis cannot mark this complete |
+| Candidate already created after a lost response | Verify and reuse it; do not create another generation |
+| Runtime complete, final state/control write interrupted | Resume verifies the terminal evidence before finalizing; an already-written local result is not written twice |
+| Control clear with exact completion receipt and ready candidate | Status reports completed; repeated resume verifies without writes |
+| Changed SQL, identity, volume, history, or unavailable retained offsets | Stop; retain evidence and investigate the mismatch |
+
+`committed: null` means the invocation cannot establish the outcome. It does
+not mean that the write failed. A fresh command can verify an already-committed
+receipt even when the previous process missed the final response. A later
+project or ownership change can prevent verification of that older result;
+these commands are not a general history viewer.
+
+Local finalization archives completion before writing ownership and clearing
+control. PostgreSQL commits those changes atomically. Both retain incidents and
+resume authorizations. Read-only diagnosis uses the configured operation writer
+connection for PostgreSQL locking and its read-only evidence queries; it does
+not bypass writer authority using the administrative credential.
+
+Do not delete state, reset offsets, overwrite the reviewed file, create a new
+plan against partial runtime state, or retry ordinary apply. Keep external
+provider writers paused while investigating. These commands do not recover
+arbitrary runner creation failures, stateful migrations or unsupported changes.
 
 ## Choose one resolution
 
@@ -346,10 +409,13 @@ the provider-specific incident/disaster-recovery procedure. A manual state edit
 or marker deletion would erase the very ambiguity recovery is designed to
 contain.
 
-## Failure and retry guidance
+## Generic recovery failure and retry guidance
 
-All failures are non-success command outcomes. Structured output uses stable,
-secret-neutral error codes.
+This table applies to `state recovery-plan` and `state recover` only. For
+`state runner-status` or `state resume`, retain the original deployment plan
+and follow the [runner workflow](#interrupted-kafka-streams-replacement);
+do not create a replacement plan after a partial runner deployment.
+All failures are non-success command outcomes with secret-neutral error codes.
 
 | Code | Meaning and safe response |
 | --- | --- |

@@ -53,8 +53,9 @@ supported changes; protected/shared environments require a reviewed plan.
 
 This is an alpha. An explicit `executor: kafka_streams` runs a bounded SQL
 projection/filter on Kafka through a locally built, fixed Docker runner.
-Creation and unchanged repeat applies are implemented; existing Kafka Streams
-and Flink job updates remain blocked until safe lifecycle recovery is verified.
+Creation, unchanged repeat applies, and reviewed Kafka Streams predicate updates
+are implemented, with explicit same-operation resume after interruption.
+Projection/schema changes and existing Flink updates remain blocked.
 Managed custom-application deployment remains planned. Start with the
 [Kafka-without-Flink walkthrough](docs/getting-started/kafka-streams.md).
 External resources are declaration-only in plans; use `status --include-external`

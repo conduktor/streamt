@@ -38,7 +38,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run unit and scenario tests
-        run: python -m pytest tests/unit tests/scenarios --tb=short
+        run: python -m pytest tests/unit tests/scenarios tests/package/test_kafka_streams_public_cli_harness.py --tb=short
 
   lint:
     runs-on: ubuntu-latest
@@ -352,6 +352,8 @@ jobs:
             "${test_root}/tests/postgres/test_kafka_streams_resume_real.py"
           cp tests/postgres/test_kafka_streams_completion_real.py \
             "${test_root}/tests/postgres/test_kafka_streams_completion_real.py"
+          cp tests/postgres/test_kafka_streams_receipt_real.py \
+            "${test_root}/tests/postgres/test_kafka_streams_receipt_real.py"
           cp tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             "${test_root}/tests/postgres/test_postgres_ordinary_factory_commands_real.py"
           cp tests/postgres/test_postgres_openlineage_apply_real.py \
@@ -398,6 +400,7 @@ jobs:
             tests/postgres/test_postgres_recovery_commands_real.py \
             tests/postgres/test_kafka_streams_resume_real.py \
             tests/postgres/test_kafka_streams_completion_real.py \
+            tests/postgres/test_kafka_streams_receipt_real.py \
             tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             tests/postgres/test_postgres_openlineage_apply_real.py \
             tests/postgres/test_postgres_connector_removal_commands_real.py \
@@ -741,14 +744,17 @@ jobs:
           [[ ${#wheels[@]} -eq 1 && -f "${wheels[0]}" ]]
           lane_root="${RUNNER_TEMP}/streamt-kafka-streams-installed"
           python -m venv "${lane_root}/venv"
-          "${lane_root}/venv/bin/pip" install "${wheels[0]}" "confluent-kafka==${KAFKA_CLIENT_VERSION}"
+          "${lane_root}/venv/bin/pip" install "${wheels[0]}" "confluent-kafka==${KAFKA_CLIENT_VERSION}" pytest
           "${lane_root}/venv/bin/pip" check
           cp tests/package/kafka_streams_journey.py "${lane_root}/kafka_streams_journey.py"
           cp tests/package/kafka_streams_replacement_probe.py "${lane_root}/kafka_streams_replacement_probe.py"
           cp tests/package/kafka_streams_replacement_executor_probe.py "${lane_root}/kafka_streams_replacement_executor_probe.py"
           cp tests/package/kafka_streams_resume_probe.py "${lane_root}/kafka_streams_resume_probe.py"
           cp tests/package/kafka_streams_coordinator_probe.py "${lane_root}/kafka_streams_coordinator_probe.py"
+          cp tests/package/kafka_streams_public_cli_probe.py "${lane_root}/kafka_streams_public_cli_probe.py"
+          cp tests/package/test_kafka_streams_public_cli_harness.py "${lane_root}/test_kafka_streams_public_cli_harness.py"
           cd "${lane_root}"
+          "${lane_root}/venv/bin/python" -I -m pytest -q test_kafka_streams_public_cli_harness.py
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --dry-run > build-inputs.json
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --timeout 900 > build-result.json
 
@@ -818,6 +824,19 @@ jobs:
             --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
             --evidence-dir "${lane_root}/evidence"
 
+      - name: Prove public reviewed change, resume and completed receipt on both entry paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          lane_root="${RUNNER_TEMP}/streamt-kafka-streams-installed"
+          image_id=$("${lane_root}/venv/bin/python" -I -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["data"]["image"])' \
+            "${lane_root}/build-result.json")
+          cd "${lane_root}"
+          "${lane_root}/venv/bin/python" -I kafka_streams_public_cli_probe.py \
+            --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
+            --evidence-dir "${lane_root}/evidence"
+
       - name: Retain exact installed topology evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -827,6 +846,7 @@ jobs:
             ${{ runner.temp }}/streamt-kafka-streams-installed/build-*.json
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/evidence.json
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/reviewed-plan.json
+            ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/reviewed-*.json
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/command-*.stdout
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/command-*.stderr
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/worker-*.json

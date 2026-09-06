@@ -1,4 +1,4 @@
-"""Internal reviewed-plan coordinator; public replacement commands remain blocked.
+"""Reviewed-plan replacement coordination and read-only frontier reporting.
 
 The caller acquires/releases storage authority and supplies a fresh full-project
 reader. This coordinator binds the original reviewed tuple, keeps only verified
@@ -55,12 +55,27 @@ class KafkaStreamsReplacementCoordinator:
     """Coordinate one reviewed replacement under a caller-owned operation lock."""
 
     def __init__(
-        self, observer: KafkaStreamsReplacementObserver, project_reader: Callable[[], StreamtProject],
+        self, observer: KafkaStreamsReplacementObserver | None, project_reader: Callable[[], StreamtProject],
+        *, observer_factory: Callable[[], KafkaStreamsReplacementObserver] | None = None,
     ) -> None:
-        if type(observer) is not KafkaStreamsReplacementObserver or not callable(project_reader):
+        valid_observer = type(observer) is KafkaStreamsReplacementObserver and observer_factory is None
+        valid_factory = observer is None and callable(observer_factory)
+        if not callable(project_reader) or not (valid_observer or valid_factory):
             raise KafkaStreamsReplacementExecutionError("Replacement requires a bound observer and full-project reader")
-        self.observer = observer
+        self._observer = observer
+        self._observer_factory = observer_factory
         self.project_reader = project_reader
+
+    @property
+    def observer(self) -> KafkaStreamsReplacementObserver:
+        """Construct only the exact runner observer, after static/storage checks."""
+        if self._observer is None:
+            assert self._observer_factory is not None
+            observer = self._observer_factory()
+            if type(observer) is not KafkaStreamsReplacementObserver:
+                raise KafkaStreamsReplacementExecutionError("Replacement observer binding is invalid")
+            self._observer = observer
+        return self._observer
 
     @staticmethod
     def _inputs(state: ReplacementExecutionState, operation_id: str, timeout_seconds: float) -> None:
@@ -120,12 +135,84 @@ class KafkaStreamsReplacementCoordinator:
 
     @staticmethod
     def _bound(plan: ReviewedPlanFile, snapshot: OperationSnapshot, operation_id: str) -> None:
-        intent = snapshot.control.control.intent
+        KafkaStreamsReplacementCoordinator._bound_control(plan, snapshot.control.control, operation_id)
+
+    @staticmethod
+    def _bound_control(plan: ReviewedPlanFile, control: OperationControlState, operation_id: str) -> None:
+        intent = control.intent
         if (
             intent is None or intent.operation_id != operation_id or intent.kind != "apply"
             or intent.reviewed_plan_checksum != plan.checksum or intent.actions != plan.actions
         ):
             raise PlanFileError("Pending replacement does not match the original operation and reviewed action tuple")
+
+    def inspect(
+        self, operation: DeploymentStateOperation, state: ReplacementExecutionState, *,
+        plan: ReviewedPlanFile, operation_id: str,
+    ) -> dict[str, object]:
+        """Report a verified frontier without writing authority or runtime state.
+
+        ``resumable`` and ``next_step`` are observations, never authorization.
+        A later resume must reacquire the lock and repeat every check.
+        """
+        self._inputs(state, operation_id, 60)
+        self._reviewed(plan)
+        self._current(operation, state.snapshot)
+        snapshot = state.snapshot
+        control = snapshot.control.control
+        receipt = None
+        completed = control.status == "clear"
+        if completed:
+            receipt = operation.completed_runner_receipt(snapshot, operation_id)
+            if receipt is None:
+                raise StateBackendRecoveryRequiredError("No exact completed runner receipt exists for this operation")
+            control = receipt.control
+            prior = receipt.verify_result_state(snapshot.state.state)
+        else:
+            self._bound(plan, snapshot, operation_id)
+            terminal = next((item for item in control.progress if item.status == "completed"), None)
+            if terminal is not None and terminal.succeeded is True:
+                operation.validate_completed_runner_snapshot(snapshot)
+                prior, _result = completed_runner_state_pair(snapshot, allow_written_result=snapshot.state.store.backend == "local")
+            else:
+                operation.pending_resume_authorization(snapshot)
+                prior = snapshot.state.state
+                assert control.intent is not None
+                control.intent.validate_kafka_streams_prior_state(prior)
+        self._bound_control(plan, control, operation_id)
+        self._context(plan, snapshot, prior=prior)
+        self._current(operation, snapshot)
+        action = plan.actions[0]
+        evidence = action.kafka_streams_evidence
+        assert evidence is not None
+        observed = self.observer.observe(evidence, prior.resources[action.resource_id])
+        decision = decide_replacement(control, 0, observed, mode="resume")
+        self._context(plan, snapshot, prior=prior)
+        self._current(operation, snapshot)
+        if completed:
+            if operation.completed_runner_receipt(snapshot, operation_id) != receipt:
+                raise StateBackendConflictError("Completed runner receipt changed during observation")
+            if decision.step != "candidate_verified":
+                raise KafkaStreamsReplacementExecutionError("Completed replacement candidate is not verified ready")
+        elif any(item.status == "completed" and item.succeeded is True for item in control.progress):
+            operation.validate_completed_runner_snapshot(snapshot)
+        else:
+            operation.pending_resume_authorization(snapshot)
+        self._current(operation, snapshot)
+        status = "completed" if completed else "blocked" if decision.step == "blocked" else "ready_to_finalize" if decision.step == "candidate_verified" else "pending"
+        boundary: str = control.progress[-1].status if control.progress else "intent"
+        if control.progress and control.progress[-1].kafka_streams_checkpoint is not None:
+            boundary = control.progress[-1].kafka_streams_checkpoint.phase
+        return {
+            "operation_id": operation_id, "plan_checksum": plan.checksum,
+            "state_serial": snapshot.state.state.serial,
+            "committed": True if completed else False if snapshot.state.state == prior else None,
+            "status": status, "control_status": snapshot.control.control.status,
+            "lifecycle_phase": boundary, "resumable": not completed and decision.step != "blocked",
+            "next_step": decision.step, "reason": decision.reason,
+            "next_action": "none" if completed else "investigate" if decision.step == "blocked" else "resume_same_operation",
+            "read_only": True,
+        }
 
     def _execution_context(
         self, plan: ReviewedPlanFile, snapshot: OperationSnapshot, operation_id: str,
@@ -158,9 +245,12 @@ class KafkaStreamsReplacementCoordinator:
         self, operation: DeploymentStateOperation, state: ReplacementExecutionState, *,
         plan: ReviewedPlanFile, current_plan: DeploymentPlan, current_actions: tuple[OperationAction, ...],
         operation_id: str, actor: str, timeout_seconds: float = 60,
+        on_started: Callable[[], None] | None = None,
     ) -> OperationSnapshot:
         """Begin a reviewed operation, execute its exact tuple and finalize it."""
         self._inputs(state, operation_id, timeout_seconds)
+        if on_started is not None and not callable(on_started):
+            raise KafkaStreamsReplacementExecutionError("Replacement start callback must be callable")
         self._context(plan, state.snapshot)
         self._current(operation, state.snapshot)
         operation.ensure_ready(state.snapshot)
@@ -177,6 +267,8 @@ class KafkaStreamsReplacementCoordinator:
             if type(active) is not OperationSnapshot or active.state != state.snapshot.state or active.control.control != expected:
                 raise StateBackendUnknownCommitError("Replacement intent acknowledgement is invalid", operation_id=operation_id)
             state.snapshot = active
+            if on_started is not None:
+                on_started()
             return self._drive(operation, state, plan, operation_id, "execute", timeout_seconds)
         except BaseException:
             self._interrupt_incomplete(operation, state)
@@ -189,6 +281,11 @@ class KafkaStreamsReplacementCoordinator:
         """Resume the original intent or finalize its already-completed result."""
         self._inputs(state, operation_id, timeout_seconds)
         self._reviewed(plan)
+        if state.snapshot.control.control.status == "clear":
+            report = self.inspect(operation, state, plan=plan, operation_id=operation_id)
+            if report["status"] != "completed":
+                raise StateBackendRecoveryRequiredError("Replacement completion is not verified")
+            return state.snapshot
         self._bound(plan, state.snapshot, operation_id)
         control = state.snapshot.control.control
         if any(progress.status == "completed" for progress in control.progress):
@@ -243,6 +340,7 @@ class KafkaStreamsReplacementCoordinator:
         prior, result = completed_runner_state_pair(
             state.snapshot, allow_written_result=state.snapshot.state.store.backend == "local",
         )
+        operation.validate_completed_runner_snapshot(state.snapshot)
         self._context(plan, state.snapshot, prior=prior)
         self._current(operation, state.snapshot)
         action = plan.actions[0]
@@ -254,6 +352,7 @@ class KafkaStreamsReplacementCoordinator:
             raise KafkaStreamsReplacementExecutionError("Completed replacement candidate is not verified ready")
         self._context(plan, state.snapshot, prior=prior)
         self._current(operation, state.snapshot)
+        operation.validate_completed_runner_snapshot(state.snapshot)
         finished = operation.finalize_completed_runner(state.snapshot)
         if (
             type(finished) is not OperationSnapshot or finished.address != state.snapshot.address

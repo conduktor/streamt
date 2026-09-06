@@ -1679,6 +1679,36 @@ class RunnerCompletionRecord:
             "completed_at": self.completed_at,
         }
 
+    def verify_result_state(self, state: LocalState) -> LocalState:
+        """Prove current ownership is this exact result and return its prior.
+
+        This is storage evidence only, never authority to run or resume a job.
+        No pending-control snapshot is synthesized for the already-clear case.
+        """
+        RunnerCompletionRecord.from_dict(self.to_dict())
+        if type(state) is not LocalState:
+            raise StateFormatError("runner completion requires an exact ownership state")
+        result = LocalState.from_dict(
+            state.to_dict(), expected_project=self.address.project,
+            expected_environment=self.address.environment,
+        )
+        if result.serial != self.result_state_serial or state_checksum(result) != self.result_state_checksum:
+            raise StateBackendConflictError("current ownership does not match the exact runner completion result")
+        intent = self.control.intent
+        assert intent is not None
+        intent.validate_kafka_streams_result_state(result)
+        action = intent.actions[0]
+        evidence = action.kafka_streams_evidence
+        assert evidence is not None
+        prior = replace(result, serial=self.prior_state_serial, resources=dict(result.resources))
+        prior.resources[action.resource_id] = replace(
+            prior.resources[action.resource_id], artifact_checksum=evidence.prior_artifact.checksum,
+        )
+        if state_checksum(prior) != self.prior_state_checksum:
+            raise StateBackendConflictError("runner completion result does not reconstruct the exact original state")
+        intent.validate_kafka_streams_prior_state(prior)
+        return prior
+
     @classmethod
     def from_dict(cls, value: object) -> RunnerCompletionRecord:
         data = _strict_object(value, label="runner completion record", expected={
@@ -1695,6 +1725,20 @@ class RunnerCompletionRecord:
             cast(int, data["result_state_serial"]), cast(str, data["result_state_checksum"]),
             cast(str, data["completed_at"]),
         )
+
+
+def _validate_completed_runner_receipt_lookup(snapshot: OperationSnapshot, operation_id: str) -> None:
+    if (
+        type(snapshot) is not OperationSnapshot or type(snapshot.state) is not StateObservation
+        or type(snapshot.control) is not ControlObservation
+        or type(snapshot.control.control) is not OperationControlState
+        or type(snapshot.state.state) is not LocalState
+    ):
+        raise StateFormatError("runner completion lookup requires an exact full snapshot")
+    _require_uuid(operation_id, "runner completion operation_id")
+    OperationControlState.from_dict(snapshot.control.control.to_dict(), expected_address=snapshot.address)
+    if snapshot.control.control.status != "clear":
+        raise StateBackendRecoveryRequiredError("runner completion lookup requires an already-clear operation")
 
 
 def _strict_object(
@@ -1740,6 +1784,12 @@ class DeploymentStateOperation(Protocol):
     ) -> OperationResumeRecord | None: ...
 
     def finalize_completed_runner(self, snapshot: OperationSnapshot) -> OperationSnapshot: ...
+
+    def completed_runner_receipt(
+        self, snapshot: OperationSnapshot, operation_id: str,
+    ) -> RunnerCompletionRecord | None: ...
+
+    def validate_completed_runner_snapshot(self, snapshot: OperationSnapshot) -> None: ...
 
     def resume_operation(
         self, observation: OperationSnapshot, record: OperationResumeRecord,
@@ -2624,6 +2674,79 @@ class _LocalDeploymentStateOperation:
             raise StateBackendConflictError("local resume audit changed during pending resume lookup")
         require_current_snapshot()
         return pending
+
+    def validate_completed_runner_snapshot(self, snapshot: OperationSnapshot) -> None:
+        """Prove pending terminal storage evidence before any runtime reads."""
+        prior, result = completed_runner_state_pair(snapshot, allow_written_result=True)
+        control = snapshot.control.control
+        intent = control.intent
+        assert intent is not None
+
+        def require_current() -> None:
+            self._validate_snapshot(snapshot, allow_runner_completion=True)
+            if self.observe() != snapshot:
+                raise StateBackendConflictError("completed runner snapshot changed during validation")
+            self.check_lock()
+
+        require_current()
+        history = self._backend._require_resume_archive(control, allow_runner_completion=True)
+        if history.events and history.events[-1].kind == "recovery_intent":
+            raise StateBackendConflictError("completed runner snapshot conflicts with pending recovery")
+        if any(
+            event.kind == "recovery_resolution"
+            and cast("RecoveryResolutionRecord", event.record).blocked_operation_id == intent.operation_id
+            for event in history.events
+        ):
+            raise StateBackendConflictError("completed runner snapshot conflicts with resolved recovery")
+        receipt = history.completion_for(intent.operation_id)
+        if receipt is not None and receipt != RunnerCompletionRecord(
+            intent.operation_id, snapshot.address, snapshot.state.store, control,
+            prior.serial, state_checksum(prior), result.serial, state_checksum(result), receipt.completed_at,
+        ):
+            raise StateBackendConflictError("completed runner receipt does not match its exact pending snapshot")
+        require_current()
+        if self._backend._read_recovery_history(self._address) != history:
+            raise StateBackendConflictError("completed runner history changed during validation")
+        require_current()
+
+    def completed_runner_receipt(
+        self, snapshot: OperationSnapshot, operation_id: str,
+    ) -> RunnerCompletionRecord | None:
+        """Read an exact already-cleared completion, never authorize a retry."""
+        _validate_completed_runner_receipt_lookup(snapshot, operation_id)
+        self._backend._validate_observation(self._address, snapshot.state)
+        self._backend._validate_control_observation(self._address, snapshot.control)
+
+        def require_current() -> None:
+            self.check_lock()
+            if self.observe() != snapshot:
+                raise StateBackendConflictError("state or control changed during runner completion lookup")
+            self.check_lock()
+
+        require_current()
+        history = self._backend._read_recovery_history(self._address)
+        if history.events and history.events[-1].kind == "recovery_intent":
+            raise StateBackendConflictError("runner completion lookup conflicts with pending recovery")
+        receipt = history.completion_for(operation_id)
+        if receipt is None:
+            if history.resumes_for(operation_id) or any(
+                event.kind in ("recovery_intent", "recovery_resolution")
+                and operation_id in (
+                    cast("RecoveryResolutionRecord", event.record).blocked_operation_id,
+                    cast("RecoveryResolutionRecord", event.record).recovery_operation_id,
+                )
+                for event in history.events
+            ):
+                raise StateBackendConflictError("operation history does not prove a completed runner result")
+        else:
+            if receipt.address != snapshot.address or receipt.store != snapshot.state.store:
+                raise StateIdentityError("runner completion receipt belongs to another state store or address")
+            receipt.verify_result_state(snapshot.state.state)
+        require_current()
+        if self._backend._read_recovery_history(self._address) != history:
+            raise StateBackendConflictError("runner completion history changed during lookup")
+        require_current()
+        return receipt
 
     def resume_operation(
         self, snapshot: OperationSnapshot, record: OperationResumeRecord,

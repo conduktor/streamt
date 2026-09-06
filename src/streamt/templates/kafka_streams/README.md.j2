@@ -5,9 +5,9 @@ The two topics and the SQL runner are managed by streamt. `fraud_app` records
 a custom application's input and expected columns; streamt does not deploy,
 run, or monitor its code. There is no producer application in this starter.
 
-The supported deployment path is create/no-op only. Changing a running model
-is blocked pending replacement/recovery support. The runtime-level update
-experiment does not establish a supported CLI update workflow.
+The supported deployment path includes creation, unchanged repeat apply, and
+one reviewed predicate-only update at a time. Projection, schema, identity,
+image and stateful changes remain blocked.
 
 ## Inspect the topology offline
 
@@ -87,6 +87,41 @@ Values must contain exactly `id`, `amount`, and `paid`. Missing/extra fields,
 wrong types, malformed JSON, and integers outside signed 64-bit range stop the
 runner. Nullable `amount` must be explicit JSON null, not an omitted property.
 Tombstones are dropped. This is append-stream behavior, not an upsert table.
+
+## Change the filter
+
+After creation, change `amount >= 100` to `amount >= 200` in
+`stream_project.yml`. Keep the projection, topic definitions and runtime unchanged:
+
+```bash
+streamt validate --strict
+streamt plan --out filter-change.json
+streamt apply --plan filter-change.json
+streamt plan
+```
+
+The online full-project plan must contain one predicate-only runner update and
+no other mutations. Apply cleanly stops the old runner, then starts the reviewed
+candidate on the same application ID, retained volume and committed offsets.
+New input uses the new filter; previously emitted records stay in the output.
+The final plan should be a no-op. `--force` cannot bypass an unsupported change.
+
+If apply is interrupted, retain the plan file and the reported operation UUID.
+Keep this project and its environment unchanged. Inspect first, then explicitly
+resume the same operation using that UUID:
+
+```bash
+streamt -o json state runner-status --plan filter-change.json --operation-id <UUID>
+streamt -o json state resume --plan filter-change.json --operation-id <UUID>
+```
+
+Replace `<UUID>` with the actual reported value. Do not create a new plan or
+rerun apply against a half-replaced topology. `runner-status` makes no runtime,
+ownership or audit writes. Resume may stop, remove, create or start only the
+proven next generation. If completion was already committed, both commands
+verify its receipt without redeploying. A missing acknowledgement reports an
+unknown outcome until a fresh command verifies it. Unsafe or ambiguous evidence
+blocks continuation; it does not permit an offset reset or forced cleanup.
 
 ## Absorb an existing source
 

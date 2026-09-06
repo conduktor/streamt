@@ -2340,6 +2340,9 @@ class DeploymentPlanner:
         self._prepared_kafka_streams_evidence: KafkaStreamsActionEvidence | None = None
         self._prepared_kafka_streams_state_checksum: str | None = None
         self._prepared_kafka_streams_other_changes: tuple[object, ...] | None = None
+        self._observed_kafka_streams_plan: DeploymentPlan | None = None
+        self._observed_kafka_streams_plan_copy: DeploymentPlan | None = None
+        self._observed_kafka_streams_state_checksum: str | None = None
         self.manifest = manifest
         self.schema_registry_deployer = schema_registry_deployer
         self.kafka_deployer = kafka_deployer
@@ -2755,13 +2758,38 @@ class DeploymentPlanner:
         plan.refresh_safety_blockers()
         self._preflight_kafka_streams_changes(plan, observe=False, allow_replacement=True)
 
+    def prepare_reviewed_kafka_streams_replacement(self, plan: DeploymentPlan) -> bool:
+        """Prepare a sole replacement from this planner's exact ordinary online plan.
+
+        Create/no-op plans remain ordinary. A replacement is only reviewable:
+        generic execution remains blocked and callers must save/bind format 6
+        before invoking the dedicated coordinator under storage authority.
+        """
+        if type(plan) is not DeploymentPlan or plan is not self._observed_kafka_streams_plan:
+            raise StateIdentityError("Replacement review requires the exact current online plan")
+        if not any(change.action == "update" for change in plan.kafka_streams_changes):
+            if self._observed_kafka_streams_plan_copy is not None:
+                raise StateIdentityError("Replacement review cannot discard an observed runner update")
+            return False
+        if (
+            self._allow_kafka_streams_replacement
+            or self._prepared_kafka_streams_plan is not None
+            or self._observed_kafka_streams_plan_copy is None
+            or plan != self._observed_kafka_streams_plan_copy
+            or type(self.prior_state) is not LocalState
+            or artifact_checksum(self.prior_state.to_dict()) != self._observed_kafka_streams_state_checksum
+        ):
+            raise StateIdentityError("Replacement review requires unchanged complete online observations")
+        self._prepare_kafka_streams_replacement(plan)
+        return True
+
     def _preflight_kafka_streams_changes(
         self, plan: DeploymentPlan, *, observe: bool, allow_replacement: bool = False,
     ) -> None:
         """Reject incomplete/unsupported runner work before any ordinary mutation."""
         artifacts = {artifact.name: artifact for artifact in self._validated_kafka_streams_artifacts()}
         replacement = None
-        if allow_replacement and self._allow_kafka_streams_replacement:
+        if allow_replacement:
             replacement = self._replacement_scope(plan, preparing=False)
         seen: set[str] = set()
         for change in plan.kafka_streams_changes:
@@ -3559,6 +3587,13 @@ class DeploymentPlanner:
         Useful when infrastructure is unavailable — shows what a fresh
         deployment would look like without connecting to Kafka/SR/Flink.
         """
+        self._observed_kafka_streams_plan = None
+        self._observed_kafka_streams_plan_copy = None
+        self._observed_kafka_streams_state_checksum = None
+        self._prepared_kafka_streams_plan = None
+        self._prepared_kafka_streams_evidence = None
+        self._prepared_kafka_streams_state_checksum = None
+        self._prepared_kafka_streams_other_changes = None
         if self._allow_kafka_streams_replacement:
             raise StateIdentityError("Kafka Streams replacement planning requires a complete online observation")
         from streamt.compiler.manifest import (
@@ -3729,6 +3764,9 @@ class DeploymentPlanner:
         self._prepared_kafka_streams_evidence = None
         self._prepared_kafka_streams_state_checksum = None
         self._prepared_kafka_streams_other_changes = None
+        self._observed_kafka_streams_plan = None
+        self._observed_kafka_streams_plan_copy = None
+        self._observed_kafka_streams_state_checksum = None
         if self._allow_kafka_streams_replacement:
             self._require_complete_replacement_project()
             if gateway_recovery_actions or connector_recovery_actions:
@@ -4210,7 +4248,13 @@ class DeploymentPlanner:
         if self._allow_kafka_streams_replacement:
             self._prepare_kafka_streams_replacement(plan)
         self._compute_impact_radius(plan)
-
+        if not gateway_recovery_actions and not connector_recovery_actions:
+            self._observed_kafka_streams_plan = plan
+            if any(change.action == "update" for change in plan.kafka_streams_changes):
+                self._observed_kafka_streams_plan_copy = copy.deepcopy(plan)
+                self._observed_kafka_streams_state_checksum = (
+                    artifact_checksum(self.prior_state.to_dict()) if self.prior_state is not None else None
+                )
         return plan
 
     def _compute_impact_radius(self, plan: DeploymentPlan) -> None:
@@ -4949,7 +4993,9 @@ class DeploymentPlanner:
     def planned_actions(self, plan: DeploymentPlan) -> list[PlannedAction]:
         """Return ordered runtime actions with canonical ownership identities."""
         self._preflight_kafka_streams_changes(
-            plan, observe=False, allow_replacement=self._allow_kafka_streams_replacement,
+            plan, observe=False, allow_replacement=(
+                self._allow_kafka_streams_replacement or plan is self._prepared_kafka_streams_plan
+            ),
         )
         actions: list[PlannedAction] = []
         gateway_changes = list(getattr(plan, "gateway_changes", []))

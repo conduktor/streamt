@@ -208,7 +208,7 @@ def init(
                 "topology": ["raw_orders", "eligible_orders", "fraud_app"],
                 "managed_models": ["raw_orders", "eligible_orders"],
                 "metadata_only_applications": ["fraud_app"],
-                "support": "create_noop_only",
+                "support": "create_noop_predicate_update",
             }
         )
         if dry_run:
@@ -228,7 +228,7 @@ def init(
             fmt.print(
                 "Init did not build an image, contact Kafka/Docker, create topics, or seed events."
             )
-            fmt.print("Support is create/no-op only; updates are blocked pending recovery support.")
+            fmt.print("Predicate-only updates require a saved reviewed plan; see README.md for resume.")
         fmt.flush()
     elif discover:
         _init_discover(

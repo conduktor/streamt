@@ -21,11 +21,12 @@ windows, aggregations, nested JSON, and arbitrary functions are not supported.
 The [Flink walkthrough](quickstart.md) remains available, and `streamt init`
 without an executor choice keeps its existing Flink-oriented starter.
 
-!!! warning "Create/no-op only"
+!!! warning "Bounded updates"
 
-    The supported CLI path creates a new topology and observes an unchanged
-    deployment. Updates to a running model are blocked pending replacement and
-    recovery support. A custom application declaration does not deploy its code.
+    The CLI supports creation, unchanged repeat apply, and one reviewed
+    predicate-only update at a time. Projection, schema, image, identity and
+    stateful changes remain blocked. A custom application declaration does not
+    deploy its code.
 
 ## Choose the local runtime explicitly
 
@@ -147,6 +148,36 @@ Raw values must contain exactly `id`, `amount`, and `paid`. A nullable amount
 is explicit JSON null. Missing/extra fields, malformed JSON, wrong types, or
 out-of-range integers stop the runner. Kafka keys are preserved; tombstones
 are dropped. These are append-stream semantics, not table/upsert semantics.
+
+## Review and apply a filter change
+
+In `stream_project.yml`, change `amount >= 100` to `amount >= 200` while keeping
+the projection, topics and runtime unchanged:
+
+```bash
+streamt validate --strict
+streamt plan --out filter-change.json
+streamt apply --plan filter-change.json
+streamt plan
+```
+
+The online full-project plan contains one predicate-only replacement and no
+other mutations. It uses reviewed format 6 to bind the old and new plans to
+the exact runner, volume and Kafka identities. Apply cleanly stops the old
+runner and starts its replacement using the same application ID and retained
+offsets. This introduces a processing pause. It neither resets progress nor
+retracts records already emitted. New records use the changed filter; the final
+plan should show no changes.
+
+Direct apply, selectors, mixed mutations and `--force` cannot bypass this
+contract. Keep the reviewed file until the operation has completed. If apply
+loses a response, its JSON reports `committed: null` and gives commands containing
+the original plan and exact operation UUID. Use `state runner-status` to inspect,
+then `state resume` to continue that same operation. Keep the SQL and environment
+unchanged while doing so. An already-completed result is verified from its receipt
+and live candidate without redeployment. See the
+[runner interruption runbook](../guides/state-recovery.md#interrupted-kafka-streams-replacement)
+for commands, environment confirmation and remaining blockers.
 
 ## Start from an existing topic
 

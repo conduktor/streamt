@@ -1,6 +1,6 @@
 # raw_orders -> eligible_orders -> fraud_app
 # The topics and SQL runner are managed here. The custom app is metadata-only.
-# Create/no-op is supported; updates remain blocked pending recovery support.
+# Predicate-only updates require a saved reviewed plan; see README.md for resume.
 apiVersion: streamt.dev/v1alpha1
 project:
   name: {{ project_name | tojson }}

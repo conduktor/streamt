@@ -7,7 +7,8 @@ description: Walk through a local Kafka and Flink project
 
 For Kafka without Flink, use the [Kafka Streams starter](kafka-streams.md).
 It creates a projection/filter topology and documents a downstream custom
-application. Its deployment support is create/no-op only; updates are blocked.
+application. It supports creation, unchanged repeat apply, and reviewed
+predicate-only updates with explicit same-operation resume.
 
 This manual walkthrough uses Kafka and Flink SQL. It does not yet include
 automatic event seeding or a
