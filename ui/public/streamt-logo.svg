@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="streamGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+  </defs>
+  <!-- Stream waves -->
+  <path d="M8 32 Q16 24, 24 32 T40 32 T56 32" stroke="url(#streamGradient)" stroke-width="4" stroke-linecap="round" fill="none">
+    <animate attributeName="d"
+      values="M8 32 Q16 24, 24 32 T40 32 T56 32;M8 32 Q16 40, 24 32 T40 32 T56 32;M8 32 Q16 24, 24 32 T40 32 T56 32"
+      dur="2s" repeatCount="indefinite"/>
+  </path>
+  <path d="M8 42 Q16 34, 24 42 T40 42 T56 42" stroke="url(#streamGradient)" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.6">
+    <animate attributeName="d"
+      values="M8 42 Q16 34, 24 42 T40 42 T56 42;M8 42 Q16 50, 24 42 T40 42 T56 42;M8 42 Q16 34, 24 42 T40 42 T56 42"
+      dur="2s" repeatCount="indefinite" begin="0.3s"/>
+  </path>
+  <path d="M8 22 Q16 14, 24 22 T40 22 T56 22" stroke="url(#streamGradient)" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.6">
+    <animate attributeName="d"
+      values="M8 22 Q16 14, 24 22 T40 22 T56 22;M8 22 Q16 30, 24 22 T40 22 T56 22;M8 22 Q16 14, 24 22 T40 22 T56 22"
+      dur="2s" repeatCount="indefinite" begin="0.6s"/>
+  </path>
+  <!-- Nodes -->
+  <circle cx="12" cy="32" r="4" fill="#10b981"/>
+  <circle cx="32" cy="32" r="5" fill="#6366f1"/>
+  <circle cx="52" cy="32" r="4" fill="#ec4899"/>
+</svg>
