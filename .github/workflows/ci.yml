@@ -350,6 +350,8 @@ jobs:
             "${test_root}/tests/postgres/test_postgres_recovery_commands_real.py"
           cp tests/postgres/test_kafka_streams_resume_real.py \
             "${test_root}/tests/postgres/test_kafka_streams_resume_real.py"
+          cp tests/postgres/test_kafka_streams_completion_real.py \
+            "${test_root}/tests/postgres/test_kafka_streams_completion_real.py"
           cp tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             "${test_root}/tests/postgres/test_postgres_ordinary_factory_commands_real.py"
           cp tests/postgres/test_postgres_openlineage_apply_real.py \
@@ -395,6 +397,7 @@ jobs:
             tests/postgres/test_postgres_state_command_failures_real.py \
             tests/postgres/test_postgres_recovery_commands_real.py \
             tests/postgres/test_kafka_streams_resume_real.py \
+            tests/postgres/test_kafka_streams_completion_real.py \
             tests/postgres/test_postgres_ordinary_factory_commands_real.py \
             tests/postgres/test_postgres_openlineage_apply_real.py \
             tests/postgres/test_postgres_connector_removal_commands_real.py \
@@ -744,6 +747,7 @@ jobs:
           cp tests/package/kafka_streams_replacement_probe.py "${lane_root}/kafka_streams_replacement_probe.py"
           cp tests/package/kafka_streams_replacement_executor_probe.py "${lane_root}/kafka_streams_replacement_executor_probe.py"
           cp tests/package/kafka_streams_resume_probe.py "${lane_root}/kafka_streams_resume_probe.py"
+          cp tests/package/kafka_streams_coordinator_probe.py "${lane_root}/kafka_streams_coordinator_probe.py"
           cd "${lane_root}"
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --dry-run > build-inputs.json
           "${lane_root}/venv/bin/python" -I -m streamt -o json runtime build --timeout 900 > build-result.json
@@ -801,6 +805,19 @@ jobs:
             --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
             --evidence-dir "${lane_root}/evidence"
 
+      - name: Prove original reviewed plan and cross-process completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          lane_root="${RUNNER_TEMP}/streamt-kafka-streams-installed"
+          image_id=$("${lane_root}/venv/bin/python" -I -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["data"]["image"])' \
+            "${lane_root}/build-result.json")
+          cd "${lane_root}"
+          "${lane_root}/venv/bin/python" -I kafka_streams_coordinator_probe.py \
+            --checkout "${GITHUB_WORKSPACE}" --mode installed --image "${image_id}" \
+            --evidence-dir "${lane_root}/evidence"
+
       - name: Retain exact installed topology evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -809,6 +826,7 @@ jobs:
           path: |
             ${{ runner.temp }}/streamt-kafka-streams-installed/build-*.json
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/evidence.json
+            ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/reviewed-plan.json
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/command-*.stdout
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/command-*.stderr
             ${{ runner.temp }}/streamt-kafka-streams-installed/evidence/**/worker-*.json

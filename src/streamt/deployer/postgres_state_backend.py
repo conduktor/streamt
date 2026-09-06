@@ -65,6 +65,7 @@ from streamt.deployer.state_backend import (
     _same_recovery_resolution_identity,
     _validate_recovery_transition_inputs,
     _validate_resume_transition_inputs,
+    completed_runner_state_pair,
     state_checksum,
 )
 
@@ -1433,6 +1434,7 @@ class _PostgresStateReadOperation:
                     parsed_history,
                     address=self._address,
                     operation_id=operation_id,
+                    store=expected.state.store,
                 )
                 if (
                     history_rows[-1][1] != event_kind
@@ -2031,6 +2033,30 @@ class _PostgresStateReadOperation:
                 "PostgreSQL deployment recovery retry verification is invalid"
             )
         return current
+
+    def finalize_completed_runner(self, snapshot: OperationSnapshot) -> OperationSnapshot:
+        """Atomically finalize exact completed runner ownership and its journal.
+
+        Runtime/project/reviewed-plan checks remain the caller's responsibility.
+        PostgreSQL cannot have a legitimate ownership-only partial commit.
+        """
+        _prior, result = completed_runner_state_pair(snapshot)
+        intent = snapshot.control.control.intent
+        assert intent is not None
+        self._last_attempted_operation_id = intent.operation_id
+        committed = self._transition(
+            expected=snapshot,
+            replacement=OperationControlState.clear(self._address),
+            operation_id=intent.operation_id,
+            event_index=len(self._expected_history_rows(snapshot.control.control)),
+            event_kind="succeeded",
+            replacement_state=result,
+            mutate_state=True,
+        )
+        self._finalized = True
+        self._finalized_operation_id = intent.operation_id
+        self._active_operation_id = None
+        return committed
 
     def commit_operation(
         self,

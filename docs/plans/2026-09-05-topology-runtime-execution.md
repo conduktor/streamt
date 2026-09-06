@@ -63,6 +63,12 @@ a changed transformation.
 - [ ] Implement the supported same-identity replacement and recovery protocol;
       follow the [predicate replacement contract](../specs/kafka-streams-replacement.md)
       and test interruption without weakening existing blockers.
+    - [x] Bind full-project internal planning to observed replacement evidence.
+    - [x] Coordinate the original reviewed intent through execution and resume.
+    - [x] Finalize completed local/PostgreSQL operations, including an interrupted
+          local control clear without another ownership write.
+    - [ ] Expose reviewed apply, explicit resume and read-only recovery through
+          the CLI, then pass the installed public workflow acceptance.
 - [x] Package the minimal two-path example and runner build assets, prove the
       installed creation/no-op loop, and add the same journey to CI.
 - [ ] Extend installed acceptance and CI to the supported change/recovery loop.
@@ -325,3 +331,60 @@ Integration prerequisites checkpoint:
   reconstruct the original protected state before clearing; it must not rerun
   the deployment or increment state again. Generic recovery currently assumes
   the prior ownership state and cannot be assumed to cover this case.
+
+Reviewed coordinator and completion checkpoint:
+
+- The internal planner now prepares one predicate-only replacement from the
+  complete current project and protected ownership. It binds observed identities
+  and progress to the typed reviewed action. It rejects selections, mixed
+  mutations, missing observations and edited prepared plans. External declarations
+  remain outside provider observation and mutation. Default planning and generic
+  apply still block replacement.
+- The new coordinator connects that reviewed tuple to intent, execution, durable
+  resume and finalization under the caller's state-operation lock. It recompiles
+  the full current project before transitions and checks that the desired action
+  is the actual compiled artifact. It preserves original reviewed offset bounds
+  even when newer planning observations have advanced. Resume never replans a
+  partially replaced topology or substitutes a new authorization for an exact
+  archived one.
+- Typed finalization records a local completion receipt before ownership and
+  clear. The receipt retains the terminal control, incident and resume history;
+  its version-3 history envelope leaves previous event bytes unchanged. A fresh
+  process can finish an interrupted clear by proving the exact already-written
+  result and reconstructing the original protected state. It does not redeploy,
+  rewrite ownership, append another receipt or increment serial twice.
+  PostgreSQL commits ownership, completion history and clear in one transaction.
+- Independent review found a missing final audit check after local clear. The
+  corrected path verifies the exact archive and held lock before reporting
+  success. Twelve new tests cover unreadable, missing or changed audit and lost
+  locks in both runner control versions. An unacknowledged clear still reports
+  an unknown outcome; fresh-command reporting from an already-cleared receipt
+  remains part of the CLI work.
+- PostgreSQL 14.23 and 18.4 each pass 64 real tests without skips, including 20
+  new completed-runner cases. They cover interrupted operations, lost commit
+  acknowledgements, exact history, fresh connections and atomic ownership
+  finalization. Fixture-owned database containers were removed; shared resources
+  were not touched.
+- Full Python 3.10 and 3.12 unit/scenario suites each pass 7,438 tests with
+  32 skips. This adds 49 replacement-planning, 38 coordinator and 116 storage
+  completion tests. Ruff, mypy (118 source modules) and workflow checks pass;
+  independent reviews have no remaining concrete findings.
+- Source fixture `8ffeec6d99db` (client 2.13.2) and installed fixture
+  `6665682caf06` (2.15.0) pass a three-process real Kafka/Docker journey. A SQL
+  file edit from threshold 100 to 200 produces a saved and reloaded format-6
+  plan. The first worker loses the create response; the second resumes the sole
+  candidate and loses clear after ownership commit; the third finishes clear
+  with runtime, ownership, authorization and audit writes forbidden. The exact
+  incident survives, offsets advance from 5 to 8, and public plan/apply return
+  a no-op afterward. This proves controlled worker exits, not SIGKILL or public
+  update/resume. Only fixture-owned resources were removed, without force.
+- The source, sdist, wheel and installation match on all 118 Python modules,
+  160 package files and 14 unchanged runner assets. The new proof is in
+  `tests/package/verification/kafka-streams-reviewed-coordinator.json`; previous
+  proof files remain unchanged. CI now runs the coordinator probe in both
+  installed Kafka SDK lanes and includes real PostgreSQL completion tests in
+  the installed-wheel cohort.
+- The next product-facing step is the public reviewed change/resume workflow,
+  followed by declared Git base/head comparison and downstream impact. This
+  checkpoint does not activate public update/resume, expand SQL semantics or
+  add a scheduler. Kafka Streams remains one runtime in the topology workflow.

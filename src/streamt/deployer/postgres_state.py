@@ -47,6 +47,7 @@ from streamt.deployer.state_backend import (
     StateBackendUnavailableError,
     StateBackendUnknownCommitError,
     StateStoreIdentity,
+    _completed_runner_intent,
     state_checksum,
 )
 
@@ -916,6 +917,7 @@ def _validate_operation_history_states(
     *,
     address: StateAddress,
     operation_id: str,
+    store: StateStoreIdentity | None = None,
 ) -> OperationControlState:
     """Validate a complete operation timeline and retain its last active image."""
     if not events or [event[0] for event in events] != list(range(len(events))):
@@ -941,10 +943,15 @@ def _validate_operation_history_states(
             "PostgreSQL deployment operation history is invalid"
         )
     if terminal:
+        completed_runner_recovery = terminal_kind == "succeeded" and latest.status == "recovery_required"
+        if completed_runner_recovery:
+            if store is None:
+                raise StateBackendInvalidStateError("runner completion history requires exact store identity")
+            _completed_runner_intent(latest, address, store)
         if (
             events[-1][2].status != "clear"
             or events[-1][2].address != address
-            or latest.status != "in_progress"
+            or (latest.status != "in_progress" and not completed_runner_recovery)
             or (
                 terminal_kind == "cleared_before_mutation"
                 and (len(events) != 2 or latest.progress or latest.resume_history)
@@ -3817,6 +3824,7 @@ class PrivatePostgresStateV2Migrator:
                 events,
                 address=operation_address,
                 operation_id=operation_id,
+                store=StateStoreIdentity("postgres", expected_store_id),
             )
             base_intent = latest_control.intent
             assert base_intent is not None  # Validated by the timeline validator.

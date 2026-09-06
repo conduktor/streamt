@@ -4,9 +4,10 @@
 
 This contract implements the update part of the approved
 [topology/runtime cycle](../plans/2026-09-05-topology-runtime-execution.md).
-Creation and no-op repeat apply are supported. Replacement remains blocked
-while this protocol is implemented and tested; this document is not a claim
-that an update or resume command is available.
+Creation and no-op repeat apply are supported. An internal coordinator now
+connects reviewed replacement planning, execution, resume and finalization.
+Public replacement remains blocked; this document is not a claim that an
+update or resume command is available.
 
 Clean-close evidence admits raw exit codes 0 and 143. The latter accounts for
 the fixed JVM runner's TERM shutdown. Neither code alone proves success: the
@@ -69,7 +70,11 @@ online, full-project plan. It hashes the complete typed action separately from
 generic display redaction, including schema fields named `token` or `password`.
 Fresh offsets may advance without invalidating that action, but apply persists
 the exact reviewed tuple. Other plans retain format 5 and its existing checksum.
-The format cannot bypass the current planner's replacement blocker.
+The format alone cannot bypass a replacement blocker. Internal planning requires
+an explicit opt-in, a freshly compiled full project, one predicate-only update,
+unchanged protected ownership and observed runtime evidence. Selected projects,
+mixed mutations and generic apply remain blocked. External declarations do not
+become runtime observations or mutations.
 
 The existing operation journal owns the lifecycle. Its version-4 envelope holds
 the typed action and checkpoints; unrelated operations keep their existing
@@ -194,13 +199,14 @@ resume transition cannot leave a separate prewritten record.
 
 This lookup writes nothing. Absence is not eligibility or permission to resume.
 These backend checks also do not verify the user's current SQL against an
-original plan file. That check and the command calling this API still belong to
-the pending CLI integration.
+original plan file. The internal coordinator now performs that check; the
+public command calling it remains pending.
 
 `PlannedAction` and its durable-action converter now retain the typed runner
 evidence without changing its version-4 bytes. Reviewed format-6 round trips
-preserve that evidence. Actual replacement planning and apply remain blocked;
-this conversion does not collect observations or authorize execution.
+preserve that evidence. Conversion alone does not collect observations or
+authorize execution. Only the internal opt-in planner prepares an evidenced
+replacement; ordinary planning and generic apply keep their blockers.
 
 The separate `kafka_streams_resume_probe.py` acceptance now passes from source
 (client 2.13.2) and an installed package (2.15.0). Its first worker loses a real
@@ -211,6 +217,65 @@ original incident remains in the local audit. Output checks prove the filter
 change and offsets 5 to 8. This is a controlled worker exit, not a SIGKILL test;
 its reviewed checksum is a test fixture, not public plan-file validation. The
 evidence is in `tests/package/verification/kafka-streams-durable-resume.json`.
+
+### Reviewed coordinator and completed-result finalization
+
+The internal coordinator validates the original format-6 checksum and action
+tuple, reparses and compiles the full current project, and verifies its runtime,
+environment and protected state. It repeats those checks before driver
+transitions and before finalization. The desired action must match the actual
+compiled runner artifact. Fresh observed offsets may advance; they never replace
+the reviewed action's original lower bounds.
+
+Execute begins that exact reviewed intent. Resume loads the original intent
+under a new lock, verifies the same reviewed plan and current project, and reuses
+an exact prewritten authorization when present. It does not replan against a
+half-replaced runtime. A missing journal acknowledgement retains only the last
+acknowledged boundary; a newer durable boundary cannot be overwritten with an
+invented interruption record.
+
+`finalize_completed_runner(snapshot)` is a storage-only transition. It requires
+the complete successful checkpoint sequence for one reviewed runner update.
+The coordinator must first re-observe the exact ready candidate. Completion may
+follow an active operation or a recorded interruption, but never a failed or
+incomplete action. Finalization changes only the runner's artifact checksum and
+increments ownership serial once.
+
+Local state writes a `runner_completed` receipt before ownership and control
+clear. The receipt retains the full terminal control, original intent, incidents,
+resume history and prior/result state checksums. The existing local history
+envelope becomes version 3 only when it contains a completion event; historical
+event bytes and checksums remain unchanged. The receipt freezes the terminal
+control so ordinary progress, resume and recovery cannot reopen it.
+
+If ownership was written but clear was interrupted, a fresh process reconstructs
+the prior state by undoing only the sole runner checksum change and serial
+increment. Its full checksum must match the original intent. Any unrelated
+ownership change blocks finalization. With the original plan, current project,
+exact receipt and ready candidate verified, retry clears control without runtime
+writes, another ownership write or a second serial increment.
+
+PostgreSQL commits desired ownership, terminal history and clear atomically.
+It retains the original interruption and resume rows. An active control paired
+with already-written result ownership is invalid there, not a local-style retry.
+Neither backend rewrites an incident as if it never happened.
+
+An unacknowledged clear remains an unknown outcome for that invocation. Reporting
+an already-cleared operation from its receipt in a fresh command is not yet
+implemented. Finalization errors never authorize deployment retries or a new
+incident that would change the archived terminal control.
+
+The real Kafka/Docker coordinator probe passes from source (client 2.13.2) and
+an installed wheel (2.15.0). It edits the project's SQL file, prepares and saves
+an actual format-6 plan, then reloads that same file in three worker processes.
+Worker one loses the Docker-create response; worker two resumes the existing
+candidate and stops after ownership commit but before clear; worker three
+finalizes with runtime, ownership, authorization and audit writes forbidden.
+The original incident and completion receipt survive. Exact output checks prove
+the predicate change and offsets 5 to 8. Public plan/apply then return a no-op
+without changing providers, ownership or audit. These are controlled worker
+exits, not SIGKILL, authenticated Kafka or public update/resume acceptance.
+See `tests/package/verification/kafka-streams-reviewed-coordinator.json`.
 
 ## Acceptance before activation
 
@@ -226,36 +291,21 @@ evidence is in `tests/package/verification/kafka-streams-durable-resume.json`.
 
 ## Remaining integration order
 
-1. Wire restart handling to the locked, read-only authorization lookup. Use an
-   existing prewritten record without changing its UUID, actor or timestamp.
-   A stale snapshot, conflicting recovery or inconsistent audit is an error,
-   not absence. Only an exact verified absence permits creation of a new record,
-   and only after the original plan and current desired project are verified.
-   The lookup alone neither grants runtime authority nor verifies that plan.
-2. Attach observed replacement evidence to planner actions only after the full
-   predicate/identity/ownership checks pass. Enforce the sole-mutation and
-   unselected-project bounds before removing any existing blocker. External
-   declarations remain outside runtime observation and mutation.
-3. Wire apply to the original reviewed tuple and locked driver, including durable
-   completion and desired ownership commit. No generic create/update handler may
-   bypass those checkpoints. An uncertain runtime response retains the last
-   actual boundary rather than recording a terminal failed completion.
-4. Handle a completed local ownership write whose control clear was interrupted.
-   With a new lock, verify the original operation and reviewed plan, the exact
-   completed checkpoint sequence and the desired ownership state. Reconstruct
-   the prior state by undoing only the sole runner checksum change and serial
-   increment; it must match the original intent's full prior-state checksum.
-   Any unrelated ownership change rejects finalization. Re-observe the exact
-   ready candidate before clearing, without runtime writes or another serial
-   increment. The existing generic recovery snapshot requires prior ownership
-   and does not cover this already-written result. This path is not implemented.
-5. Add explicit same-operation CLI resume and read-only recovery reporting.
-   Resume must verify the original plan and desired project, not create a fresh
-   plan against the partially replaced topology. Unknown outcomes cannot clear
-   pending work; a missing candidate after removal is still incomplete. Read-only
-   recovery must compare advancing offsets against the reviewed lower bounds,
-   not require live observations to remain byte-identical.
-6. Run the installed public change/resume journey with failures on both sides
+1. Wire public online, full-project planning to the opt-in replacement planner
+   and format-6 file. Keep selectors, mixed mutations, unsupported changes and
+   generic apply blocked. The internal preparation API is not public activation.
+2. Route reviewed apply through the coordinator under the state-operation lock.
+   Load and verify the actual saved plan, re-read the full project and retain
+   the original action tuple. Keep finalization and unknown-outcome reporting
+   separate from ordinary create/update handlers.
+3. Add explicit same-operation CLI resume and read-only recovery reporting.
+   Reuse the coordinator's plan/context checks and exact pending authorization
+   lookup. Never create a fresh plan against a partially replaced topology.
+   A missing candidate after removal is still incomplete. Recovery compares
+   advancing offsets against reviewed lower bounds, not byte-identical live
+   observations. Report an already-cleared completion from its exact receipt
+   without treating absence of pending control alone as success.
+4. Run the installed public change/resume journey with failures on both sides
    of journal and runtime boundaries. Only then advertise the update workflow
    and proceed to declared Git base/head comparison and downstream impact.
 

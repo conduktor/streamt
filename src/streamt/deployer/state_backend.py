@@ -17,7 +17,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast, overload, runtime_checkable
@@ -1571,6 +1571,132 @@ def _validate_resume_transition_inputs(
     )
 
 
+def _completed_runner_intent(
+    control: OperationControlState, address: StateAddress, store: StateStoreIdentity,
+) -> OperationIntent:
+    if type(control) is not OperationControlState or type(address) is not StateAddress or type(store) is not StateStoreIdentity:
+        raise StateFormatError("runner finalization requires exact control and state identities")
+    # Revalidate the complete typed wire; successful completion alone must not
+    # substitute for the ordered close/remove/create evidence.
+    OperationControlState.from_dict(control.to_dict(), expected_address=address)
+    intent = control.intent
+    if (
+        control.control_version not in (KAFKA_STREAMS_CONTROL_VERSION, RESUMABLE_CONTROL_VERSION)
+        or control.status not in ("in_progress", "recovery_required")
+        or type(intent) is not OperationIntent or intent.kind != "apply"
+        or intent._wire_version != KAFKA_STREAMS_CONTROL_VERSION
+        or intent.reviewed_plan_checksum is None or len(intent.actions) != 1
+        or intent.actions[0].action != "update"
+        or type(intent.actions[0].kafka_streams_evidence) is not KafkaStreamsActionEvidence
+        or len(control.progress) != 5 or not control.actions_completed
+        or control.progress[-1].status != "completed" or control.progress[-1].succeeded is not True
+    ):
+        raise StateBackendRecoveryRequiredError("runner finalization requires one successfully completed reviewed replacement")
+    if any(record.store != store for record in control.resume_history):
+        raise StateIdentityError("runner completion history belongs to another state store")
+    return intent
+
+
+def completed_runner_state_pair(
+    snapshot: OperationSnapshot, *, allow_written_result: bool = False,
+) -> tuple[LocalState, LocalState]:
+    """Derive exact prior/result ownership, not runtime completion authority.
+
+    Only the sole runner checksum and state serial can change. A local caller
+    may recognize an already-written result by reversing precisely that change
+    and proving the complete original prior-state checksum. Callers must still
+    verify their original reviewed plan, current project and live candidate.
+    """
+    if (
+        type(snapshot) is not OperationSnapshot or type(snapshot.state) is not StateObservation
+        or type(snapshot.control) is not ControlObservation
+        or type(snapshot.state.state) is not LocalState or type(allow_written_result) is not bool
+    ):
+        raise StateFormatError("runner finalization requires an exact full operation snapshot")
+    intent = _completed_runner_intent(snapshot.control.control, snapshot.address, snapshot.state.store)
+    action = intent.actions[0]
+    evidence = action.kafka_streams_evidence
+    assert evidence is not None
+    current = LocalState.from_dict(snapshot.state.state.to_dict(), expected_project=snapshot.address.project, expected_environment=snapshot.address.environment)
+    if current.serial == intent.prior_state_serial and state_checksum(current) == intent.prior_state_checksum:
+        prior = current
+    else:
+        if not allow_written_result or snapshot.state.store.backend != "local" or current.serial != intent.prior_state_serial + 1:
+            raise StateBackendConflictError("runner finalization state does not match its exact prior state")
+        intent.validate_kafka_streams_result_state(current)
+        prior = replace(current, serial=intent.prior_state_serial, resources=dict(current.resources))
+        prior.resources[action.resource_id] = replace(prior.resources[action.resource_id], artifact_checksum=evidence.prior_artifact.checksum)
+        if state_checksum(prior) != intent.prior_state_checksum:
+            raise StateBackendConflictError("runner written result does not reconstruct the exact prior state")
+    intent.validate_kafka_streams_prior_state(prior)
+    result = replace(prior, serial=prior.serial + 1, resources=dict(prior.resources))
+    result.resources[action.resource_id] = replace(result.resources[action.resource_id], artifact_checksum=evidence.desired_artifact.checksum)
+    intent.validate_kafka_streams_result_state(result)
+    return prior, result
+
+
+@dataclass(frozen=True)
+class RunnerCompletionRecord:
+    """Storage-finalization audit retaining the original terminal control."""
+
+    operation_id: str
+    address: StateAddress
+    store: StateStoreIdentity
+    control: OperationControlState
+    prior_state_serial: int
+    prior_state_checksum: str
+    result_state_serial: int
+    result_state_checksum: str
+    completed_at: str
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.operation_id, "runner completion operation_id")
+        intent = _completed_runner_intent(self.control, self.address, self.store)
+        if self.operation_id != intent.operation_id:
+            raise StateIdentityError("runner completion belongs to another operation")
+        if (
+            type(self.prior_state_serial) is not int or type(self.result_state_serial) is not int
+            or self.prior_state_serial != intent.prior_state_serial
+            or self.result_state_serial != self.prior_state_serial + 1
+            or self.prior_state_checksum != intent.prior_state_checksum
+        ):
+            raise StateFormatError("runner completion must preserve exact prior and result state identities")
+        _require_checksum(self.prior_state_checksum, "runner completion prior_state_checksum")
+        _require_checksum(self.result_state_checksum, "runner completion result_state_checksum")
+        if self.result_state_checksum == self.prior_state_checksum:
+            raise StateFormatError("runner completion must change its ownership state checksum")
+        _require_timestamp(self.completed_at, "runner completion completed_at")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id, "address": self.address.uri,
+            "store": {"backend": self.store.backend, "store_id": self.store.store_id},
+            "control": self.control.to_dict(),
+            "prior_state_serial": self.prior_state_serial,
+            "prior_state_checksum": self.prior_state_checksum,
+            "result_state_serial": self.result_state_serial,
+            "result_state_checksum": self.result_state_checksum,
+            "completed_at": self.completed_at,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> RunnerCompletionRecord:
+        data = _strict_object(value, label="runner completion record", expected={
+            "operation_id", "address", "store", "control", "prior_state_serial",
+            "prior_state_checksum", "result_state_serial", "result_state_checksum", "completed_at",
+        })
+        address = StateAddress.parse(data["address"])
+        store = _strict_object(data["store"], label="runner completion store", expected={"backend", "store_id"})
+        return cls(
+            cast(str, data["operation_id"]), address,
+            StateStoreIdentity(cast(str, store["backend"]), cast(str, store["store_id"])),
+            OperationControlState.from_dict(data["control"], expected_address=address),
+            cast(int, data["prior_state_serial"]), cast(str, data["prior_state_checksum"]),
+            cast(int, data["result_state_serial"]), cast(str, data["result_state_checksum"]),
+            cast(str, data["completed_at"]),
+        )
+
+
 def _strict_object(
     value: object,
     *,
@@ -1612,6 +1738,8 @@ class DeploymentStateOperation(Protocol):
     def pending_resume_authorization(
         self, snapshot: OperationSnapshot,
     ) -> OperationResumeRecord | None: ...
+
+    def finalize_completed_runner(self, snapshot: OperationSnapshot) -> OperationSnapshot: ...
 
     def resume_operation(
         self, observation: OperationSnapshot, record: OperationResumeRecord,
@@ -1757,7 +1885,7 @@ def operation_timestamp() -> str:
     )
 
 
-RecoveryHistoryEventKind = Literal["recovery_intent", "recovery_resolution", "operation_resumed"]
+RecoveryHistoryEventKind = Literal["recovery_intent", "recovery_resolution", "operation_resumed", "runner_completed"]
 
 
 def _same_recovery_resolution_identity(
@@ -1872,7 +2000,7 @@ def _recovery_history_event_checksum(
     sequence: int,
     kind: RecoveryHistoryEventKind,
     previous_checksum: str | None,
-    record: RecoveryResolutionRecord | OperationResumeRecord,
+    record: RecoveryResolutionRecord | OperationResumeRecord | RunnerCompletionRecord,
     event_version: int = CURRENT_RECOVERY_HISTORY_EVENT_VERSION,
 ) -> str:
     payload = json.dumps(
@@ -1898,14 +2026,14 @@ class _LocalRecoveryHistoryEvent:
     sequence: int
     kind: RecoveryHistoryEventKind
     previous_checksum: str | None
-    record: RecoveryResolutionRecord | OperationResumeRecord
+    record: RecoveryResolutionRecord | OperationResumeRecord | RunnerCompletionRecord
     checksum: str
     event_version: int = CURRENT_RECOVERY_HISTORY_EVENT_VERSION
 
     def __post_init__(self) -> None:
         from streamt.deployer.recovery import RecoveryResolutionRecord
 
-        required_version = 2 if self.kind == "operation_resumed" else 1
+        required_version = 3 if self.kind == "runner_completed" else 2 if self.kind == "operation_resumed" else 1
         if type(self.event_version) is not int or (
             self.event_version != required_version
         ):
@@ -1915,11 +2043,14 @@ class _LocalRecoveryHistoryEvent:
             )
         if type(self.sequence) is not int or self.sequence < 0:
             raise StateFormatError("recovery history sequence must be a non-negative integer")
-        if self.kind not in ("recovery_intent", "recovery_resolution", "operation_resumed"):
+        if self.kind not in ("recovery_intent", "recovery_resolution", "operation_resumed", "runner_completed"):
             raise StateFormatError("recovery history event kind is invalid")
         if self.kind == "operation_resumed":
             if type(self.record) is not OperationResumeRecord:
                 raise StateFormatError("resume history requires an exact authorization record")
+        elif self.kind == "runner_completed":
+            if type(self.record) is not RunnerCompletionRecord:
+                raise StateFormatError("runner completion history requires an exact completion record")
         elif type(self.record) is not RecoveryResolutionRecord:
             raise StateFormatError("recovery history requires an exact resolution record")
         if self.previous_checksum is not None:
@@ -1945,9 +2076,9 @@ class _LocalRecoveryHistoryEvent:
         sequence: int,
         kind: RecoveryHistoryEventKind,
         previous_checksum: str | None,
-        record: RecoveryResolutionRecord | OperationResumeRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord | RunnerCompletionRecord,
     ) -> _LocalRecoveryHistoryEvent:
-        event_version = 2 if kind == "operation_resumed" else 1
+        event_version = 3 if kind == "runner_completed" else 2 if kind == "operation_resumed" else 1
         return cls(
             sequence=sequence,
             kind=kind,
@@ -1990,7 +2121,7 @@ class _LocalRecoveryHistoryEvent:
             },
         )
         kind = data["kind"]
-        if kind not in ("recovery_intent", "recovery_resolution", "operation_resumed"):
+        if kind not in ("recovery_intent", "recovery_resolution", "operation_resumed", "runner_completed"):
             raise StateFormatError("recovery history event kind is invalid")
         return cls(
             event_version=cast(int, data["event_version"]),
@@ -1998,6 +2129,7 @@ class _LocalRecoveryHistoryEvent:
             kind=cast(RecoveryHistoryEventKind, kind),
             previous_checksum=cast(str | None, data["previous_checksum"]),
             record=OperationResumeRecord.from_dict(data["record"]) if kind == "operation_resumed"
+            else RunnerCompletionRecord.from_dict(data["record"]) if kind == "runner_completed"
             else RecoveryResolutionRecord.from_dict(data["record"]),
             checksum=cast(str, data["checksum"]),
         )
@@ -2013,11 +2145,11 @@ class _LocalRecoveryHistory:
 
     def __post_init__(self) -> None:
         if type(self.history_version) is not int or (
-            self.history_version not in (1, 2)
+            self.history_version not in (1, 2, 3)
         ):
             raise StateFormatError(
                 f"unsupported recovery history version {self.history_version!r}; "
-                "expected 1 or 2"
+                "expected 1, 2, or 3"
             )
         if not isinstance(self.events, tuple):
             raise StateFormatError("recovery history events must be an ordered tuple")
@@ -2025,8 +2157,9 @@ class _LocalRecoveryHistory:
             raise StateFormatError("local recovery history contains too many events")
         if any(type(event) is not _LocalRecoveryHistoryEvent for event in self.events):
             raise StateFormatError("local recovery history requires exact typed events")
-        if (self.history_version == 2) != any(event.kind == "operation_resumed" for event in self.events):
-            raise StateFormatError("resume events require local recovery history version 2")
+        expected_version = 3 if any(event.kind == "runner_completed" for event in self.events) else 2 if any(event.kind == "operation_resumed" for event in self.events) else 1
+        if self.history_version != expected_version:
+            raise StateFormatError("local recovery history version does not match its typed events")
 
         expected_previous: str | None = None
         pending: RecoveryResolutionRecord | None = None
@@ -2035,6 +2168,8 @@ class _LocalRecoveryHistory:
         resumed_ids: set[str] = set()
         resumed_incidents: set[str] = set()
         resume_progress: dict[str, int] = {}
+        resume_records: dict[str, tuple[OperationResumeRecord, ...]] = {}
+        completed_runner_ids: set[str] = set()
         for sequence, event in enumerate(self.events):
             if event.sequence != sequence:
                 raise StateFormatError(
@@ -2052,13 +2187,27 @@ class _LocalRecoveryHistory:
                     raise StateFormatError("resume history contains a duplicate authorization identity")
                 if resume.source_control_checksum in resumed_incidents:
                     raise StateFormatError("resume history authorizes one incident more than once")
-                if resume.operation_id in recovered_blocked_operation_ids:
+                if resume.operation_id in recovered_blocked_operation_ids or resume.operation_id in completed_runner_ids:
                     raise StateFormatError("resume cannot reopen a resolved operation")
                 if resume.progress_count < resume_progress.get(resume.operation_id, 0):
                     raise StateFormatError("resume history progress cannot regress")
                 resumed_ids.add(resume.resume_id)
                 resumed_incidents.add(resume.source_control_checksum)
                 resume_progress[resume.operation_id] = resume.progress_count
+                resume_records[resume.operation_id] = (*resume_records.get(resume.operation_id, ()), resume)
+                expected_previous = event.checksum
+                continue
+            if event.kind == "runner_completed":
+                completion = cast(RunnerCompletionRecord, event.record)
+                if (
+                    pending is not None or completion.operation_id in completed_operation_ids
+                    or completion.operation_id in resumed_ids
+                    or completion.operation_id in recovered_blocked_operation_ids
+                    or completion.control.resume_history != resume_records.get(completion.operation_id, ())
+                ):
+                    raise StateFormatError("runner completion conflicts with existing recovery or resume history")
+                completed_operation_ids.add(completion.operation_id)
+                completed_runner_ids.add(completion.operation_id)
                 expected_previous = event.checksum
                 continue
             record = cast("RecoveryResolutionRecord", event.record)
@@ -2070,7 +2219,7 @@ class _LocalRecoveryHistory:
                     raise StateFormatError(
                         "recovery history contains a duplicate recovery operation"
                     )
-                if record.blocked_operation_id in recovered_blocked_operation_ids:
+                if record.blocked_operation_id in recovered_blocked_operation_ids or record.blocked_operation_id in completed_runner_ids:
                     raise StateFormatError(
                         "recovery history resolves one blocked operation more than once"
                     )
@@ -2092,7 +2241,7 @@ class _LocalRecoveryHistory:
         return tuple(
             event
             for event in self.events
-            if event.kind != "operation_resumed"
+            if event.kind in ("recovery_intent", "recovery_resolution")
             and cast("RecoveryResolutionRecord", event.record).recovery_operation_id == recovery_operation_id
         )
 
@@ -2104,10 +2253,17 @@ class _LocalRecoveryHistory:
             and cast(OperationResumeRecord, event.record).operation_id == operation_id
         )
 
+    def completion_for(self, operation_id: str) -> RunnerCompletionRecord | None:
+        return next((
+            cast(RunnerCompletionRecord, event.record) for event in self.events
+            if event.kind == "runner_completed"
+            and cast(RunnerCompletionRecord, event.record).operation_id == operation_id
+        ), None)
+
     def append(
         self,
         kind: RecoveryHistoryEventKind,
-        record: RecoveryResolutionRecord | OperationResumeRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord | RunnerCompletionRecord,
     ) -> _LocalRecoveryHistory:
         previous_checksum = self.events[-1].checksum if self.events else None
         event = _LocalRecoveryHistoryEvent.create(
@@ -2119,7 +2275,7 @@ class _LocalRecoveryHistory:
         return _LocalRecoveryHistory(
             address=self.address,
             events=(*self.events, event),
-            history_version=2 if self.history_version == 2 or kind == "operation_resumed" else 1,
+            history_version=3 if self.history_version == 3 or kind == "runner_completed" else 2 if self.history_version == 2 or kind == "operation_resumed" else 1,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -2189,7 +2345,7 @@ class _LocalDeploymentStateOperation:
         if control.status == "in_progress" and control.intent is not None and any(
             action.kafka_streams_evidence is not None for action in control.intent.actions
         ):
-            self._backend._require_resume_archive(control)
+            self._backend._require_resume_archive(control, allow_runner_completion=True)
         return snapshot
 
     def check_lock(self) -> None:
@@ -2201,6 +2357,7 @@ class _LocalDeploymentStateOperation:
 
     def _validate_snapshot(
         self, snapshot: OperationSnapshot, *, resume_record: OperationResumeRecord | None = None,
+        allow_runner_completion: bool = False,
     ) -> None:
         self._backend._validate_observation(self._address, snapshot.state)
         self._backend._validate_control_observation(
@@ -2217,7 +2374,7 @@ class _LocalDeploymentStateOperation:
         if control.resume_history or (control.intent is not None and any(
             action.kafka_streams_evidence is not None for action in control.intent.actions
         )):
-            self._backend._require_resume_archive(control, pending=resume_record)
+            self._backend._require_resume_archive(control, pending=resume_record, allow_runner_completion=allow_runner_completion)
 
     def _snapshot_for_control(
         self,
@@ -2443,6 +2600,8 @@ class _LocalDeploymentStateOperation:
         intent = control.intent
         pending: OperationResumeRecord | None = None
         if intent is not None:
+            if history.completion_for(intent.operation_id) is not None:
+                raise StateBackendConflictError("runner completion is already being finalized")
             if any(
                 event.kind == "recovery_resolution"
                 and cast("RecoveryResolutionRecord", event.record).blocked_operation_id == intent.operation_id
@@ -2550,6 +2709,91 @@ class _LocalDeploymentStateOperation:
             raise StateBackendRecoveryRequiredError(
                 "deployment operation is incomplete; explicit recovery is required"
             )
+
+    def finalize_completed_runner(self, snapshot: OperationSnapshot) -> OperationSnapshot:
+        """Finalize storage only; the caller must first prove the live candidate.
+
+        The completion audit precedes ownership and control writes. An uncertain
+        acknowledgement stops this call; a retry can recognize the exact local
+        ownership postimage but never increments its serial a second time.
+        """
+        prior, result = completed_runner_state_pair(snapshot, allow_written_result=True)
+        control = snapshot.control.control
+        intent = control.intent
+        assert intent is not None
+        self._active_operation_id = intent.operation_id
+
+        def require_current(expected: OperationSnapshot) -> None:
+            self._validate_snapshot(expected, allow_runner_completion=True)
+            if self.observe() != expected:
+                raise StateBackendConflictError("state or control changed before runner finalization")
+            self.check_lock()
+
+        require_current(snapshot)
+        history = self._backend._require_resume_archive(control, allow_runner_completion=True)
+        if history.events and history.events[-1].kind == "recovery_intent":
+            raise StateBackendConflictError("a recovery resolution attempt is already in progress")
+        if any(
+            event.kind == "recovery_resolution"
+            and cast("RecoveryResolutionRecord", event.record).blocked_operation_id == intent.operation_id
+            for event in history.events
+        ):
+            raise StateBackendConflictError("a completed recovery resolution cannot be finalized again")
+        existing = history.completion_for(intent.operation_id)
+        completion = RunnerCompletionRecord(
+            intent.operation_id, snapshot.address, snapshot.state.store, control,
+            prior.serial, state_checksum(prior), result.serial, state_checksum(result),
+            existing.completed_at if existing is not None else operation_timestamp(),
+        )
+        if existing is not None and existing != completion:
+            raise StateBackendConflictError("runner completion audit does not match its exact finalization")
+        if existing is None:
+            history = self._backend._append_recovery_history_locked(
+                self._address, history, "runner_completed", completion, self._lock,
+            )
+        require_current(snapshot)
+        if self._backend._read_recovery_history(self._address) != history:
+            raise StateBackendConflictError("runner completion audit changed before ownership commit")
+        committed_state = snapshot.state
+        if snapshot.state.state == prior:
+            try:
+                committed_state = self.compare_and_swap(snapshot.state, result)
+            except StateBackendError:
+                raise
+            except StateConflictError as error:
+                raise StateBackendConflictError("state changed while finalizing runner ownership") from error
+            except BaseException as error:
+                raise StateBackendUnknownCommitError(
+                    "runner ownership commit could not be confirmed", operation_id=intent.operation_id,
+                ) from error
+        expected = OperationSnapshot(state=committed_state, control=snapshot.control)
+        require_current(expected)
+        if committed_state.state != result or self._backend._read_recovery_history(self._address) != history:
+            raise StateBackendConflictError("runner completion state or audit changed before control clear")
+        cleared = self._backend._save_control_locked(
+            self._address, snapshot.control, OperationControlState.clear(self._address), self._lock,
+        )
+        try:
+            self.check_lock()
+            final = self.observe()
+            final_history = self._backend._read_recovery_history(self._address)
+            self.check_lock()
+            if (
+                final.state != committed_state or final.control != cleared
+                or cleared.control.status != "clear" or final_history != history
+            ):
+                raise StateBackendUnknownCommitError("runner finalization postimage could not be confirmed", operation_id=intent.operation_id)
+        except StateBackendUnknownCommitError:
+            raise
+        except BaseException as error:
+            # Clear has already been acknowledged. Losing any part of the
+            # complete postimage (including its independent incident archive)
+            # cannot be reported as success or repaired with another write.
+            raise StateBackendUnknownCommitError(
+                "runner finalization postimage could not be confirmed", operation_id=intent.operation_id,
+            ) from error
+        self._active_operation_id = None
+        return final
 
     def commit_operation(
         self,
@@ -2918,8 +3162,8 @@ class LocalDeploymentStateBackend:
                 expected_address=address,
             )
             if any(
-                event.kind == "operation_resumed"
-                and cast(OperationResumeRecord, event.record).store != self.describe()
+                event.kind in ("operation_resumed", "runner_completed")
+                and cast(OperationResumeRecord | RunnerCompletionRecord, event.record).store != self.describe()
                 for event in history.events
             ):
                 raise StateIdentityError("local resume history belongs to another state store")
@@ -2931,6 +3175,7 @@ class LocalDeploymentStateBackend:
 
     def _require_resume_archive(
         self, control: OperationControlState, *, pending: OperationResumeRecord | None = None,
+        allow_runner_completion: bool = False,
     ) -> _LocalRecoveryHistory:
         if any(record.store != self.describe() for record in control.resume_history):
             raise StateIdentityError("resumed control belongs to another local state store")
@@ -2941,6 +3186,9 @@ class LocalDeploymentStateBackend:
         expected = control.resume_history
         if archived != expected and (pending is None or archived != (*expected, pending)):
             raise StateBackendConflictError("local resume audit and operation control do not match")
+        completion = history.completion_for(control.intent.operation_id)
+        if completion is not None and (not allow_runner_completion or completion.control != control):
+            raise StateBackendConflictError("runner completion audit freezes its exact terminal control")
         return history
 
     @staticmethod
@@ -2999,10 +3247,10 @@ class LocalDeploymentStateBackend:
         address: StateAddress,
         observed: _LocalRecoveryHistory,
         kind: RecoveryHistoryEventKind,
-        record: RecoveryResolutionRecord | OperationResumeRecord,
+        record: RecoveryResolutionRecord | OperationResumeRecord | RunnerCompletionRecord,
         lock: LocalStateOperationLock,
     ) -> _LocalRecoveryHistory:
-        operation_id = record.operation_id if type(record) is OperationResumeRecord else cast("RecoveryResolutionRecord", record).recovery_operation_id
+        operation_id = cast(OperationResumeRecord | RunnerCompletionRecord, record).operation_id if type(record) in (OperationResumeRecord, RunnerCompletionRecord) else cast("RecoveryResolutionRecord", record).recovery_operation_id
         if not lock.is_held:
             raise StateBackendLockLostError(
                 "deployment state operation lock was lost",

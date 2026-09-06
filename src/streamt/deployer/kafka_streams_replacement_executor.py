@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -91,16 +92,22 @@ def _same_snapshot(left: OperationSnapshot, right: OperationSnapshot) -> bool:
 
 
 class KafkaStreamsReplacementExecutor:
-    def __init__(self, observer: KafkaStreamsReplacementObserver) -> None:
+    def __init__(
+        self, observer: KafkaStreamsReplacementObserver, *, context_check: Callable[[], None] | None = None,
+    ) -> None:
         if type(observer) is not KafkaStreamsReplacementObserver:
             raise KafkaStreamsReplacementExecutionError("An exact bound replacement observer is required")
+        if context_check is not None and not callable(context_check):
+            raise KafkaStreamsReplacementExecutionError("Replacement context check must be callable")
         self.observer = observer
+        self.context_check = context_check
 
-    @staticmethod
     def _check_current(
-        operation: DeploymentStateOperation, state: ReplacementExecutionState, operation_id: str,
+        self, operation: DeploymentStateOperation, state: ReplacementExecutionState, operation_id: str,
     ) -> OperationAction:
         action = _validate_snapshot(state.snapshot, operation_id)
+        if self.context_check is not None:
+            self.context_check()
         operation.check_lock()
         current = operation.observe()
         _validate_snapshot(current, operation_id)

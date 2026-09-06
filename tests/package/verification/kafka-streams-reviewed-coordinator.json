@@ -1,0 +1,1124 @@
+{
+  "verification_version": 1,
+  "recorded_at": "2026-09-06T00:35:52Z",
+  "scope": "Real internal reviewed-plan coordinator, with fresh-process local resume and completion; public SQL update/resume commands remain blocked.",
+  "accepted": true,
+  "harness": {
+    "path": "tests/package/kafka_streams_coordinator_probe.py",
+    "sha256": "ee65a2683470a3a811a2a048924fc198364676ba15519b77c8df597254cd6d85",
+    "helpers": {
+      "kafka_streams_journey.py": "c3f83cabdd9c4df91804caa180ed2f06fa9860247c718c5e0234dde81a7206fd",
+      "kafka_streams_replacement_executor_probe.py": "24597dc9211aadaca987c23e4824e5e568492bf04321ab0f10ed4e15cf38febb",
+      "kafka_streams_resume_probe.py": "62ff3a5ee4ce2064d15a80a6ecb6b371e2b91df89a106591d565fcfa9a76a0d4"
+    },
+    "python_310_grammar_and_ruff_passed": true
+  },
+  "workflow": [
+    "Public offline init and online create/no-op produce one managed input, strict SQL runner and metadata-only downstream application.",
+    "Worker execute edits the actual project SQL predicate from 100 to 200, compiles the full project, saves and reloads a genuine reviewed format-6 file, then invokes the internal coordinator under a real local state lock.",
+    "The real Docker create succeeds once, then its acknowledgement is deliberately lost. The coordinator persists the interruption; the worker exits normally and releases its lock.",
+    "A fresh worker reloads the same on-disk project, original reviewed file and protected state, authorizes the exact durable operation and starts only the existing candidate.",
+    "After the completion audit and ownership postimage are written, a second injected error prevents control clear. A third fresh worker validates and clears the terminal operation without provider, ownership, authorization or audit rewrites.",
+    "Read-committed verification produces three records once, checks exact keys/values and committed offset 5 to 8, then public plan/apply returns to no-op with provider/state/audit snapshots unchanged."
+  ],
+  "runtime": {
+    "runner_image": "sha256:889f6ff67d5435e735eff85508f6f39ba73e192a76b1e2eb24e8c83c8db03df9",
+    "broker_image": "apache/kafka@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837",
+    "base_images": [
+      "maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237",
+      "eclipse-temurin:21-jre@sha256:7a65df4b22d2de92d4e04056e884f3b9122d70b21e2847fd66084278bd0ce037"
+    ],
+    "build_context_files": 14,
+    "build_context_sha256": "sha256:46831266d360d989b97ce6502c845a6fca6a5eaf1cbd57688ee6a1bd0655ee18",
+    "builder": "local-docker-default",
+    "executor": "kafka_streams",
+    "network_access_on_build": true,
+    "plan_version": 1,
+    "publishes_image": false,
+    "runner_version": "0.1.1",
+    "tags_image": false,
+    "reused_local_immutable_image": true,
+    "new_image_build_for_this_cohort": false,
+    "processing_setting": "exactly_once_v2",
+    "default_auto_offset_reset": "none",
+    "fixture_kafka_transport": "PLAINTEXT"
+  },
+  "cohort": {
+    "module_count": 118,
+    "module_tree_sha256": "c06ac2100e72b77e37b018529f06e7261c358c685f1f931104cfd2e1d2335d18",
+    "module_tree_encoding": "SHA256 of JSON module-relative-path to SHA256 map; sorted keys, compact separators.",
+    "module_sha256": {
+      "__init__.py": "ec00e0f48ad423d1659fba1027f2d16c7ae40147ae87398b17fef448d1c1ae22",
+      "__main__.py": "1619ed3d3a93546b39dec35ec62a071bb4c0dee2a020caecca8b5369f2358cfb",
+      "cli/__init__.py": "84134ae00525fd61c88fa7d78b4169033f937beb2b7e16e719acbcd41708d59f",
+      "cli/commands/__init__.py": "810ead9d4d11be6d3e11258550153e28397976934ea544c6e74f615ce4108f06",
+      "cli/commands/adopt.py": "8969f0c10fae026eacc62535f93b3ed919bd43c6b3dcfcace34009574609908e",
+      "cli/commands/apply.py": "583abe365f8b0fc2401b5621377d9ee750001868e09c040fb0a8d57b12c10e06",
+      "cli/commands/build.py": "86cb935c64d2375f29ddc6e091b17e45b0d7b8f7e5e7c9bbd439cfd9432a76cf",
+      "cli/commands/compile.py": "4185006ee51f0b815f5cce4b2161bc1789556faa45b59fba6578e5b513da0df7",
+      "cli/commands/diff.py": "3e8a0dccd059f8eb8102b7a630b59c67f34a239a9ec49cd86452ce15eeafb6ed",
+      "cli/commands/docs.py": "15f1851c0887499d8c62066d86a8aa2a4e789d1bc23436104e16169078fe0dec",
+      "cli/commands/envs.py": "8963d33b090772d09e625bc35fa63c895822c8bd4b35073dc30c00f52c28f015",
+      "cli/commands/export.py": "7671e73fc9d02dd8c661f377f7e7ceb84f5ea5abd4e12f776c455c27fabd2626",
+      "cli/commands/import_cmd.py": "fedb5e8f52591538b7d69eaae8ddec881ab777f8ad0e1abf6e1cb676844a16f7",
+      "cli/commands/init.py": "9a36d072da2db4bdc6388c926d460d51bddcc2193fde2db66e1e524a31ed88e5",
+      "cli/commands/lineage.py": "02fce87ceda336d251651d475593eef4e54f3d09a0182a667f45162c32854510",
+      "cli/commands/list_cmd.py": "5cb9beac93bc7b1f7618871d559fe89cb2ee8faab5b68191e21f6a4bb815bd2b",
+      "cli/commands/observe.py": "d230e50153092182da935e3793a37995bb15a7f84c19a1575a7fe1a3b7c4818b",
+      "cli/commands/plan.py": "393cce9dbb1ab38d470e220aedf13259bd36bd2d2c08527933bfb9cd6fa21894",
+      "cli/commands/runtime.py": "d41d571093f1553a816d2b7791ea75580a599ce86dd31d99648a598977479e2b",
+      "cli/commands/show.py": "209748aaf0b06eff15b4be360e238524ab09132a8a5f44fada65c5676ceede95",
+      "cli/commands/state_cmd.py": "104d5dc34ae119cb8657e10f47da7ce8fa557a714cae04e9ba946c283ae9086b",
+      "cli/commands/status.py": "fa98444c9313b9029cef4d2e19d1c2721ddbfc1799ab2ec441bae50eddf75f69",
+      "cli/commands/test.py": "0a4b1dce955f79b8c5016c783a4cbb48e5fafcd9d856d504d4c38b76f33e5cf8",
+      "cli/commands/validate.py": "fd1a5dcc35b11e2daeb9228839a452029c7806a9655f4b42bf8795b430648afc",
+      "cli/connector_removal_guard.py": "cfa045f50c31049e22b89e7d4d405cbdd4d532019cd3880fa0cf9566e1510f6d",
+      "cli/helpers.py": "5099646206f0728b4e57a5edf6c509ca580f2da9b58a085bdeee7a32401fcb8f",
+      "compiler/__init__.py": "65ca0c7b7cf44612db1cc6c3dcd6d34679d961ad2ce315df32c92925fbe761f2",
+      "compiler/compiled_models.py": "4158244e57081ff416dd2fbfa78e7334ac77e78222a9175cd9d5d2e582e75462",
+      "compiler/compiler.py": "ccb14c107386454a8bc9aebcf89d4cea5564af04303ce82ac92eec534b334015",
+      "compiler/connector_artifact.py": "8c830a76d5da931b245017f7893e3db8ad3dc2bfcaaf93947dabf32b4761971d",
+      "compiler/flink_ddl.py": "4f54e137868e3dd5333d8a1fafb005ac24688b8c4a0e33de2c6afc10e3103364",
+      "compiler/flink_dialect.py": "7fe902d0fed39524236bd2c7ef7f332638578c77f94a4ebaba3f9a19e4c963f3",
+      "compiler/gateway_artifact.py": "d0e611a3cc71424a709e85798c32889571dc5f6f961efa3ee7d4473171a63877",
+      "compiler/kafka_streams.py": "83febb44f8d790eb23303f50fa6afa8d91d1ca459e0d143519382ddf7a68454d",
+      "compiler/manifest.py": "69ee84a5442713e680c17782fcd5d3b25359eb5ef9a8dade9941350f1b704d45",
+      "compiler/masking.py": "5d68f7965a6316718616ee169458d5dcf22537f7df715ac5fbb6b1d10a2c3e1a",
+      "compiler/model_resolution.py": "5a84a8e1912e02e1132669707d8d70bc4d96df25dfa153d2da4a539af2957a00",
+      "compiler/scope.py": "1f7fb208d63449d172f3a8cb73ce217cc4bcda658e53d171d4d1c0e9c703fdda",
+      "compiler/sql_generator.py": "b7f64da3f198d4ff76d69a9ad6d3d64dd19353d13d0de022ce82e39982437875",
+      "compiler/test_compiler.py": "2b10e24307f59d1a816a459f7d91bcfa6da2bdd3e704707c9728e576f468693d",
+      "compiler/topic_artifact.py": "8970de747e27e517fa7ec5b855c3766c9ebc1eb36146202f7bd10e6991f9baad",
+      "compiler/type_inference.py": "3be37fba6d8c5f70282d1ddc183f771958c23f7093a42dffa2fed64b03f8c0da",
+      "core/__init__.py": "2d3010ec3724d7c4856f18d3abbe92bc81b36b84cb1bb09fdef7c108afdf60c9",
+      "core/base.py": "a9b53f85597b4a75457d55f7dc69623dda09ba7ec870f8f0da2b30f9f0b3a38f",
+      "core/dag.py": "ed193c2dbcffee6cff8f4a4e30921f09bd2fdd384ed96cdd408b4e7ab9b95dac",
+      "core/deployment_state.py": "c3d3e5ff84a8733b7069c0c752b8b9ab67876df46385224b73d6deda6a805434",
+      "core/environment.py": "6926c2c83b51c0ce1a42dbac9a63f653ccdf1b9d63d660a8dd41b9b1a31765b7",
+      "core/errors.py": "1e4d20e945cad25c13e80241aa7eaf5d63947e23fe2bc587c0ced6f75070647d",
+      "core/manifest_identity.py": "832215e5a7d20ed89b9aeb5be66e00308c4a01dde389b574edd587d4839cdd2c",
+      "core/models.py": "7a68be6ea0a4a8bffb1feb7416feb326455b1b87f556c51304fbdd1f4125a7f6",
+      "core/parser.py": "902cf2d20b4910060396f946fce38a1b3508f12cbb0c95f9da10d421f17cb0c5",
+      "core/redaction.py": "9798430764c234ced41624f82ecf43322c27529ff3bc5f52d74c5289b4865bf7",
+      "core/ref_validators.py": "834e541e1c3c31cdc1578774acdf2b4e61cb7cda0ba9f53681a451d250002140",
+      "core/rule_validators.py": "b07eb576eec4b1992dfc7b4ad61e61c5c9a07e18d8b9e1c11d21a15113ea68e8",
+      "core/runtime.py": "342936bc06002f2dad6b86f47597e1576399fb292476c59d2b7775a8460d87e8",
+      "core/sql_checks.py": "21c963af11ecb56651943822935d7ab07461e6cba8fc68cf1dc9edd9f5c8ccd8",
+      "core/type_checker.py": "2b4182e9d22947fd43c35c9f3aca460b702f950baaeb53823d61c597c17dd628",
+      "core/validator.py": "7958033bbaaa4fb223f3d6fd37bddb4a8b404a165374bba605eb0cfd6ff106bb",
+      "core/validators.py": "6c8f4b2687e0a2f3b8dc0ba5017812b7fa870277f6993fcd15cd6e0e598a53c5",
+      "deployer/__init__.py": "084f6026bdf5ffd66987646562a435bfffe3c69750cd63041fd96c18b7b27976",
+      "deployer/connect.py": "7b7a855f6a2ee7e8c1b60360e2f20d8fb8f49ec92a73b74ae7e1f331ab030ab5",
+      "deployer/flink.py": "2b78dbd6a03a14639d7b3d20fcbd26eed83baf428c5e75a983cc4e1408ead1f4",
+      "deployer/gateway.py": "38a6c1037d9f947b202ac836d8e52823ec6eb49b8a2d5ffb9a7113177b227e3a",
+      "deployer/gateway_adoption.py": "5aac7f141e192e28321532cb1115dd1c13155dfe398b67b711dbde559b215f01",
+      "deployer/kafka.py": "9382321689015a3fc6024c3c75173f64e5ab542262627da8ad6fdb5c00b6da4e",
+      "deployer/kafka_streams.py": "7f41d0e7c042e158b40cd3ab7554546c4081b6d8abfc7a2af4464ca6cee3b4f0",
+      "deployer/kafka_streams_docker.py": "fe8c0a810ec3c8954d13761870be994d1fc89c49548d1017c032855cc16b5fd8",
+      "deployer/kafka_streams_evidence.py": "9de1bd5927c88a782f127ee6a0c54805ab639480eeaa1bc7fad8a802cea21f07",
+      "deployer/kafka_streams_progress.py": "9cc469c84fc52a2cd6f77203919d75d708649fdf199741cda6449dbf9b492029",
+      "deployer/kafka_streams_replacement.py": "23afeada6e534d84ae77d6b8df5af46baebffde449f18e773e999c50d96b8d35",
+      "deployer/kafka_streams_replacement_coordinator.py": "a6bca4ce5c5f921375a4ec37821cb9975b77dc9a83ad10a97ee229dd4461e0a6",
+      "deployer/kafka_streams_replacement_executor.py": "06bc071909e4f3d0bb401bf0103eb4c3c7beb400a4622d36f16f2b71d4ce1eed",
+      "deployer/kafka_streams_replacement_observer.py": "75613875b217932258d3123f908f70c451a0c896eba934ba03e0ba860274cb99",
+      "deployer/kafka_streams_time.py": "2f2cc998ec94deaf2cfeb0c45afe1fcbf4ad0edc2597583c3ad839cace9babb6",
+      "deployer/observer.py": "7fab9f727b1887ce29b256d3cf91e74e587a344c0059e2a51c491edcf0693c9e",
+      "deployer/operation_actions.py": "8e709c95091a6e7adcca4d9aa5cbc9c826aac2da6d8f27dece93f3750086e10f",
+      "deployer/plan_file.py": "a394703824b3ed6b78bbf46974d88f9af623487fe4baa6ec111064c8dc8f610a",
+      "deployer/planner.py": "4a310c9bcc263b122b64afdf1ee2196178e1c35ed0e5e4ca166c856b5ff88e07",
+      "deployer/postgres_state.py": "4794e154b2e79d013d91dd623a4d52bab329389467770091b7a0e18931a0fca2",
+      "deployer/postgres_state_backend.py": "0cdeed806d700e8b5e2bb7115cfc41180047639e99303d4532bbdc97dc9ad323",
+      "deployer/recovery.py": "fda0fccbe0af6804ab1807fa15644c1765278093c48ec7d192145a9a868e9583",
+      "deployer/recovery_observer.py": "b2fc9103aaa5d79c9f0ab654f80e5793124ee2557dd87b320eb881d88ca06f6e",
+      "deployer/recovery_plan.py": "ebd262199c38bcf1ca7e43a952d4254a0a4a910f43eab1c38ddb8d462b8700d7",
+      "deployer/recovery_service.py": "1fae4b4c7f7ea1b2b7e555486ed17473c223197e07fa92c81a017a78784678bf",
+      "deployer/schema_registry.py": "d0fec3f6e656140a1a26ebb8526a555b6d3edce53d80642bb718727c9379e427",
+      "deployer/ssl_utils.py": "22fc3829209ff3ab94e46f18c9beec60b35113e230c42955c5894f6561aadb53",
+      "deployer/state.py": "24d47006ebb703f5c7a674870e634fe116441aa3e75a54fd946d05f294aafa3f",
+      "deployer/state_backend.py": "92a37b7b5f81fce937ff966e530e73719b34a596357d99a7188673b94b74d732",
+      "discovery.py": "3395376495d1631316854b126e8ad1c3f0c07ad123a031df638c76eb14deab96",
+      "docs/__init__.py": "6280e2d7a29f42ba91ed1401905215e18d85e45627792cb9e273bbb8512c91bb",
+      "docs/asyncapi.py": "8631a509bea459e73e5668fc4b9268503eb0c1bb30ae020b8296c727241e4d40",
+      "docs/generator.py": "2f799f66543b2c1aa16688d069bb10664652fe525c67334dd4f78e81b3eface6",
+      "docs/odcs.py": "346bab0c7d9c9ebc14219980b5ff5ec57cc85ff78c2dbcc2072806434ab330a4",
+      "docs/schemas/__init__.py": "98fc670e0d2a7adbf9f86537d8f115ad527222465ab4d9e7cb46ef29900fff7b",
+      "integrations/__init__.py": "3fde0d4960bf862b127a47d2fcee2396cb5ab2838b5fe78f90e04a3ae42de272",
+      "integrations/catalog/__init__.py": "bc60fa48b4fb467fc227978df1084e737eb5d6318a974c2b7be8a904afa060d5",
+      "integrations/catalog/backstage.py": "44cc5b973e069f9cdf0621055df6193e9091310c7118162fe32455d06afe896b",
+      "integrations/catalog/backstage_validation.py": "26daaa9a738fc92e9a42f2ad956b18b95b75bbec59e464300ac7285f2d842adb",
+      "integrations/catalog/datahub.py": "326d508ddac7ffb48f057d3f5d46351d2fc474994276613f94a0be091ab5bf4b",
+      "integrations/catalog/datahub_export.py": "380546f6ce8e386f73257f807f09253876d5846b334d99c2b9beeaa9af9bd01b",
+      "integrations/catalog/inputs.py": "4eeb3a89fbdc924378be994f1014193cdd0fa04d5a68913211464814713738d5",
+      "integrations/catalog/model.py": "433ad95af758641c4dd2367a905cc04d7e9bf7097cc892937456c6b2e562eec9",
+      "integrations/github_action.py": "2a7bb619edcfc5ec7903aea557592dbcaf0f14b4e2d7ee010d46a844438f51d6",
+      "integrations/gitops/__init__.py": "ab38cb5a77df07230c8b0d569174efa55973a2a8a54391f71d8c5e3f4fcd70e1",
+      "integrations/gitops/schemas/__init__.py": "14a9c9a4fc868cfd8a2a0c28948b0a97d6ecdd899ceff7be1825a57a9523b046",
+      "integrations/gitops/strimzi.py": "207d4edf895098a7bb28d2a64ec6dab10058f054c5b8f4594fee4d047846a1cc",
+      "integrations/gitops/strimzi_validation.py": "56fc6d8b0abc90184ff54a4f986ecefe128b94e9a64fd8e92d7fb66dd852aa87",
+      "integrations/openlineage/__init__.py": "0c3ebf9bdb0d5d8da03a076e04084040c0bda399d1eb994f44d5199c011103b8",
+      "integrations/openlineage/events.py": "5dfbdd0361e9f8380ca0b2f75bb8f0a374a88f488984fe403b7745df6f1c9157",
+      "integrations/openlineage/namespaces.py": "138d26de4db97e78591a2d347ae1954ad21f958fbbe20d400ef8d1b5a4b38520",
+      "integrations/openlineage/static.py": "cbce8c6caa8297fd6fd9020fff31ca58890893c75b8754a633924c8668394316",
+      "integrations/openlineage/transport.py": "0a30dc767fcad7db3aee7eeefb610361b7e536bc706c0f9ff7925b524e3d23e3",
+      "integrations/openlineage/validation.py": "41bf4553cd119f2fe3b1ae7b0a206f17ddb57a4c784d27f1b0ecbbe9b0113caa",
+      "output.py": "ec9acc97db03cb8ffb7098b86e86f87c6a995a05dfcffde5cbce216f63fbbf17",
+      "runtime_assets.py": "d9f5138f6d6c9c21992299db856b524b3492780889e1fe89123845d31c8f4d6e",
+      "templates/__init__.py": "40f6029d4661423baa996683e029ae5a77f6073dbff343fa584accc726b3e32c",
+      "testing/__init__.py": "6530a39966cbe12e793362b50301552f402bcddfc4126c04873ae7115dd861fb",
+      "testing/runner.py": "3b1882e22f564b7effd3b95abb02ce18dde85a16b26e1f39a252b22a63b7b113"
+    },
+    "package_file_count": 160,
+    "runtime_asset_count": 14,
+    "asset_sha256": {
+      "Dockerfile": "11dac34346f189ebd21a3f1b9c612f5225e0c6d4b0d9f1fa9518a795514cda28",
+      "LICENSE": "eca54d105a6ad7084b1caef6342b4bca7c37ce7f6ec33f56d1c11c49869a902d",
+      "images.lock.json": "08df08daef52786886908bbd5fdecff751296f1055ddf83e55c4dfb258fd16ab",
+      "pom.xml": "996978ec1bd4a6606d985e866669c0d7d8e9a873a1a397817880eafe7a7a90cc",
+      "src/main/java/dev/streamt/kstreams/ClientProperties.java": "12d6aaa4ec9520100d532aff03a514c146d495a843729639ea324ea8f42944be",
+      "src/main/java/dev/streamt/kstreams/IdentityGate.java": "d1a3604fcd5950e918977f1ff246b670bb50e8a8b79d250c6f6f3dc6dec8cdb7",
+      "src/main/java/dev/streamt/kstreams/Plan.java": "3bf5476d34615fc5bc2fe0db4d64e36494febca0286666a808342d5fef4210b9",
+      "src/main/java/dev/streamt/kstreams/Runner.java": "7bba9b5d65d73dbc974c5979ad742f394a66ecf6e47174af868b657dbaa7872e",
+      "src/main/java/dev/streamt/kstreams/StatusFile.java": "51436170d58d8700baae3e88a19d5c9f680d5ac7197fce624c1467c20584781b",
+      "src/test/java/dev/streamt/kstreams/ClientPropertiesTest.java": "7d750ffdc99913650dd05fa0ed6fbd364d353f4d8cb3d28a1b60ed614d01a056",
+      "src/test/java/dev/streamt/kstreams/DockerAcceptanceTest.java": "ff5f453e6219ff134caba0f5a3c45f8a9ad91f757377875274262fb16ef102b3",
+      "src/test/java/dev/streamt/kstreams/IdentityGateTest.java": "38b24f9d78473a8dd83bb7623bbc6a022d3081005e732ab43f49418877baee3c",
+      "src/test/java/dev/streamt/kstreams/PlanTest.java": "1ffea9ff6b83ecc780beaa7651c1f2208c057c3679b4bce37eb3c314be15cc1a",
+      "src/test/java/dev/streamt/kstreams/RunnerTest.java": "64d11cd6f8aa7acfba4c960af3671def97b171dc8d3efda1e675773b82d35863"
+    },
+    "source_sdist_wheel_installed_byte_parity_before_and_after": true,
+    "wheel_built_from_sdist": true,
+    "no_target_jar_experiment": true,
+    "distribution": {
+      "streamt-0.1.0a1-py3-none-any.whl": {
+        "bytes": 710615,
+        "sha256": "f4f3fec4b9694a1dd9da636cc88fa51f4be4688bbf6d25adc9bcb5728020166f"
+      },
+      "streamt-0.1.0a1.tar.gz": {
+        "bytes": 2222187,
+        "sha256": "d7e6dcb57b45194bd4c3c8cbdaa86059084185e295f05b6d429a146523d498aa"
+      }
+    },
+    "full_parity_manifest": {
+      "path": "/tmp/streamt-kstreams-coordinator.YsosFx/parity.json",
+      "sha256": "c5970ced92083e634db8c48ac3d9e30ee46a94e1de98dbe3f47c91da8e31f8ea"
+    },
+    "installed_package": "/private/tmp/streamt-kstreams-coordinator.YsosFx/venv/lib/python3.12/site-packages/streamt",
+    "installed_isolated_mode": true,
+    "source_cimpl": {
+      "name": "cimpl.cpython-312-darwin.so",
+      "bytes": 322544,
+      "sha256": "90d93d1c67cc6b7eaf64c2ce490bc206c262cb60b56fead3ab7eae8be341e0d4"
+    },
+    "installed_cimpl": {
+      "bytes": 345248,
+      "name": "cimpl.cpython-312-darwin.so",
+      "sha256": "2376ae486a39ff36c230288044ccdac5d4f0dd6b03e40ca7562ac5bb694e73a9"
+    },
+    "pip_dependency_check_passed": true
+  },
+  "runs": [
+    {
+      "mode": "source",
+      "token": "8ffeec6d99db",
+      "accepted": true,
+      "python": "3.12.8 (v3.12.8:2dc476bcb91, Dec  3 2024, 14:43:19) [Clang 13.0.0 (clang-1300.0.29.30)]",
+      "kafka_client_version": "2.13.2",
+      "librdkafka": "2.13.2",
+      "raw": {
+        "root": "/tmp/streamt-kstreams-coordinator.YsosFx/source-evidence/streamt-journey-source-8ffeec6d99db-fp5zc55i",
+        "files": {
+          "evidence.json": {
+            "sha256": "a38adfb101bde6d57897d495612256fc06bbe55b6116dae5a49adf7671353b05",
+            "bytes": 113433
+          },
+          "reviewed-plan.json": {
+            "sha256": "03516b3186765b182df9d4c7568ba29228c23470dc4f7a801e414a51ac1cfa61",
+            "bytes": 10329
+          },
+          "worker-execute.json": {
+            "sha256": "2a648390d4dc289eb239957eb7fb4a411c14f8522a860aefa352f8d6eab7ad2b",
+            "bytes": 12633
+          },
+          "worker-resume.json": {
+            "sha256": "f761357961ad441e4772cfb47a3bbd486c242329292d99944eebfcf3a67c3a63",
+            "bytes": 41811
+          },
+          "worker-finalize.json": {
+            "sha256": "bd2dfc40acb6ce643a0cb69e47fd127da3f415e0f94f4aac6fcaf1e1a0922d0c",
+            "bytes": 17559
+          },
+          "worker-execute.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-execute.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-resume.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-resume.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-finalize.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-finalize.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "fresh/stream_project.yml": {
+            "sha256": "92b22ebfad417d38f96082253789f610efd590b65b7c0a22f69cd933f07d4b20",
+            "bytes": 1816
+          },
+          "fresh/.streamt/state/default.json": {
+            "sha256": "46bcfab10d8880fcf4b861bef0a7ca67dcf94e9b5ab13698622930da30c841c2",
+            "bytes": 1161
+          },
+          "fresh/.streamt/state/default.control.json": {
+            "sha256": "a601e417034da461353f48e70bc96004e2e019be5c16ca8b251b048a7a7fc84a",
+            "bytes": 176
+          },
+          "fresh/.streamt/state/default.recovery-history.json": {
+            "sha256": "c531449b955af9f9a0c555c34e74e92ae2397499d7eeecd88d01904daf1fcae5",
+            "bytes": 14702
+          }
+        }
+      },
+      "observed": {
+        "accepted": true,
+        "actual_on_disk_sql_edit": true,
+        "audit_event_kinds": [
+          "operation_resumed",
+          "runner_completed"
+        ],
+        "audit_history_version": 3,
+        "candidate_id": "15928761b7393003c302268229dc71a0d92030dd00c173fe0d489996eae7ce4a",
+        "committed_after": 8,
+        "committed_before": 5,
+        "final_control_status": "clear",
+        "final_state_serial": 2,
+        "forbidden_provider_write_attempts": [],
+        "incident_and_completed_original_tuple_survive_clear": true,
+        "new_generation": {
+          "action_index": 0,
+          "evidence_fingerprint": "sha256:cb637e789738439847249d7bf98926fe5262a8e007da1c2fc1fca7654d134e50",
+          "operation_id": "6ab6b941-0805-474f-806c-8edf767db204"
+        },
+        "old_close_raw_exit_code": 143,
+        "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+        "ordinary_public_plan_apply_after_finalize": {
+          "apply_committed": true,
+          "incident_and_completion_archive_unchanged": true,
+          "plan_apply_blocked": false,
+          "plan_has_changes": false,
+          "providers_and_ownership_unchanged": true
+        },
+        "ownership_not_rewritten_on_finalization_retry": true,
+        "parent_pid": 21746,
+        "public_cli_update_or_resume": false,
+        "read_committed_outputs": [
+          {
+            "key_hex": "00ff",
+            "offset": 0,
+            "value": {
+              "amount": 120,
+              "id": "a"
+            }
+          },
+          {
+            "key_hex": "01fe",
+            "offset": 2,
+            "value": {
+              "amount": 250,
+              "id": "after-high"
+            }
+          },
+          {
+            "key_hex": null,
+            "offset": 3,
+            "value": {
+              "amount": 300,
+              "id": "after-null-key"
+            }
+          }
+        ],
+        "reviewed_checksum": "sha256:886690142421350bef3f9b4a034f880800beb1ea4958364aa8adb751a8633788",
+        "reviewed_file_sha256": "03516b3186765b182df9d4c7568ba29228c23470dc4f7a801e414a51ac1cfa61",
+        "reviewed_format": 6,
+        "same_topic_and_cluster_ids": true,
+        "same_volume": {
+          "application_id": "streamt-fd60df77cde43f449cccf2fb3532afc5",
+          "backend_identity": "kafka-streams-docker:v1:a98056923eb390abdedd4184d88928a0915e0ffc8a43d33b9ba4aa1380cccd29",
+          "created_at": "2026-09-06T00:32:11Z",
+          "driver": "local",
+          "name": "streamt-fd60df77cde43f449cccf2fb3532afc5-state",
+          "token": "dbd35689-8723-46ff-975d-fd71aa65d1cb"
+        },
+        "synthetic_reviewed_checksum": false,
+        "worker_exits_controlled_not_sigkill": true,
+        "worker_pids": [
+          23128,
+          24699,
+          25730
+        ]
+      },
+      "disk_edit": {
+        "file": "fresh/stream_project.yml",
+        "before_sha256": "0f5f2f2fc528f15cb47d3038130a65a329199a90fd5300a5b31eb8a490bd24a6",
+        "after_sha256": "92b22ebfad417d38f96082253789f610efd590b65b7c0a22f69cd933f07d4b20",
+        "before_sql": "SELECT id, amount\nFROM {{ ref(\"raw_orders\") }}\nWHERE amount >= 100 AND paid = TRUE\n",
+        "after_sql": "SELECT id, amount\nFROM {{ ref(\"raw_orders\") }}\nWHERE amount >= 200 AND paid = TRUE\n"
+      },
+      "workers": [
+        {
+          "phase": "execute",
+          "pid": 23128,
+          "controlled_exit_after_lock_release": true,
+          "injected_create_ack_loss": true,
+          "provider_mutations": [
+            [
+              "container",
+              "kill",
+              "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0"
+            ],
+            [
+              "container",
+              "rm",
+              "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0"
+            ],
+            [
+              "container",
+              "create"
+            ]
+          ],
+          "candidate_never_started": true,
+          "durable_control_status": "recovery_required",
+          "control_version": 4,
+          "protected_state_serial": 1,
+          "progress_count": 3,
+          "recovery": {
+            "failed_at": "2026-09-06T00:32:25.240340Z",
+            "failure_code": "runner_operation_interrupted",
+            "last_completed_action_index": null,
+            "mutation_may_have_succeeded": true,
+            "operation_id": "6ab6b941-0805-474f-806c-8edf767db204"
+          }
+        },
+        {
+          "phase": "resume",
+          "pid": 24699,
+          "controlled_exit_after_lock_release": true,
+          "provider_mutations": [
+            [
+              "container",
+              "start",
+              "15928761b7393003c302268229dc71a0d92030dd00c173fe0d489996eae7ce4a"
+            ]
+          ],
+          "injected_pre_clear_failure": true,
+          "last_acknowledged_state_serial": 1,
+          "actual_written_state_serial": 2,
+          "durable_control_status": "in_progress",
+          "control_version": 5,
+          "original_reviewed_checksum_retained": true,
+          "terminal_progress": [
+            {
+              "action": "update",
+              "action_index": 0,
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+              "recorded_at": "2026-09-06T00:32:19.881421Z",
+              "resource_id": "streamt://journey-fresh-8ffeec6d99db/default/kafka_streams_job/eligible_orders",
+              "status": "started",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": "sha256:20a02b681aa684879919b86e7ae62eb4d54c9781c1b72f5d4ffc74124861958f",
+                "exit_code": 143,
+                "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+                "phase": "old_closed",
+                "prior_container_id": "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0",
+                "progress": {
+                  "active_members": 0,
+                  "cluster_id": "6e6SBSwTRgGnaoQBgQWWwg",
+                  "group_exists": true,
+                  "input_topic_id": "f-8Sbt2BQW2wjEtbnzFVSQ",
+                  "output_topic_id": "gVAonJtCTLqlDQmuT-RT4g",
+                  "partitions": [
+                    {
+                      "committed": 5,
+                      "high": 5,
+                      "low": 0,
+                      "partition": 0
+                    }
+                  ]
+                },
+                "replacement_container_id": null,
+                "version": 1
+              },
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+              "recorded_at": "2026-09-06T00:32:22.026880Z",
+              "resource_id": "streamt://journey-fresh-8ffeec6d99db/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": null,
+                "exit_code": null,
+                "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+                "phase": "old_removed",
+                "prior_container_id": "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0",
+                "progress": null,
+                "replacement_container_id": null,
+                "version": 1
+              },
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+              "recorded_at": "2026-09-06T00:32:23.740116Z",
+              "resource_id": "streamt://journey-fresh-8ffeec6d99db/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": null,
+                "exit_code": null,
+                "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+                "phase": "replacement_created",
+                "prior_container_id": "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0",
+                "progress": null,
+                "replacement_container_id": "15928761b7393003c302268229dc71a0d92030dd00c173fe0d489996eae7ce4a",
+                "version": 1
+              },
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+              "recorded_at": "2026-09-06T00:32:27.504915Z",
+              "resource_id": "streamt://journey-fresh-8ffeec6d99db/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+              "recorded_at": "2026-09-06T00:32:30.336896Z",
+              "resource_id": "streamt://journey-fresh-8ffeec6d99db/default/kafka_streams_job/eligible_orders",
+              "status": "completed",
+              "succeeded": true
+            }
+          ]
+        },
+        {
+          "phase": "finalize",
+          "pid": 25730,
+          "controlled_exit_after_lock_release": true,
+          "provider_mutations": [],
+          "ownership_file_not_rewritten": true,
+          "no_new_authorization_or_audit_event": true,
+          "control_status": "clear",
+          "state_serial": 2
+        }
+      ],
+      "retained_audit": [
+        {
+          "event_version": 2,
+          "kind": "operation_resumed",
+          "sequence": 0,
+          "previous_checksum": null,
+          "checksum": "sha256:7d0d1e31856cb2b728978f92d211b80af2c1a85588a804d75d0929302da1615d",
+          "record": {
+            "actor": "coordinator-worker-resume",
+            "address": "streamt-state://local/journey-fresh-8ffeec6d99db/default",
+            "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+            "prior_state_checksum": "sha256:e859607565bff8940ab9ab477eeb77cf1dce53feb3c4c600dbbb528e87ed25b3",
+            "prior_state_serial": 1,
+            "progress_count": 3,
+            "recovery": {
+              "failed_at": "2026-09-06T00:32:25.240340Z",
+              "failure_code": "runner_operation_interrupted",
+              "last_completed_action_index": null,
+              "mutation_may_have_succeeded": true,
+              "operation_id": "6ab6b941-0805-474f-806c-8edf767db204"
+            },
+            "resume_id": "51902490-d366-42ff-ba08-84a5d1a0fdc4",
+            "resumed_at": "2026-09-06T00:32:26.540912Z",
+            "source_control_checksum": "sha256:7d18f5ee30ec107262e0931fe0f98b144ec00dcbfcc6654263ee56d88871459b",
+            "store": {
+              "backend": "local",
+              "store_id": "62394947-07b3-5a37-ad85-7689bbda68d4"
+            }
+          }
+        },
+        {
+          "event_version": 3,
+          "kind": "runner_completed",
+          "sequence": 1,
+          "previous_checksum": "sha256:7d0d1e31856cb2b728978f92d211b80af2c1a85588a804d75d0929302da1615d",
+          "checksum": "sha256:7eee620ebfdc2aa2bf2be51fe0ec748089e58e9b28f7f41e3093dd716f2d079d",
+          "record": {
+            "address": "streamt-state://local/journey-fresh-8ffeec6d99db/default",
+            "completed_at": "2026-09-06T00:32:32.200410Z",
+            "operation_id": "6ab6b941-0805-474f-806c-8edf767db204",
+            "prior_state_checksum": "sha256:e859607565bff8940ab9ab477eeb77cf1dce53feb3c4c600dbbb528e87ed25b3",
+            "prior_state_serial": 1,
+            "result_state_checksum": "sha256:6e5797b6fe4904d3b95b9ce0f35e21f07004f40f04616560c29b3e9a89697d68",
+            "result_state_serial": 2,
+            "store": {
+              "backend": "local",
+              "store_id": "62394947-07b3-5a37-ad85-7689bbda68d4"
+            },
+            "original_control_preserved_in_raw_artifact": true,
+            "control_version": 5,
+            "reviewed_plan_checksum": "sha256:886690142421350bef3f9b4a034f880800beb1ea4958364aa8adb751a8633788",
+            "progress_count": 5,
+            "resume_history_count": 1
+          }
+        }
+      ],
+      "source_unchanged_during_run": true,
+      "cleanup": {
+        "complete": true,
+        "removed": [
+          {
+            "application_id": "streamt-fd60df77cde43f449cccf2fb3532afc5",
+            "exit_code_after_stop": 143,
+            "id": "15928761b7393003c302268229dc71a0d92030dd00c173fe0d489996eae7ce4a",
+            "kind": "runner"
+          },
+          {
+            "kind": "runner-state-volume",
+            "name": "streamt-fd60df77cde43f449cccf2fb3532afc5-state"
+          },
+          {
+            "anonymous_volumes_removed": [
+              "eb40b98e8d8b01f4b3ccc7e78d585915c2027359b5b2e00e9e59cbc437356f74",
+              "4e4ce7f46b477e51b17bd8daa1601f35c77aa02984697cfb455f21c11e4c364a",
+              "ea77b856d1a828ac8c0f07db188d8c4ba240c5b05935ce8d37909fcd0902663b"
+            ],
+            "id": "dd64270799a93c637f79d1ba6413faa09b26a1ebf347f2cf2fa96a4cb9f3742c",
+            "kind": "broker"
+          },
+          {
+            "id": "ef4843711e1d9985fe98421a697020ad7fa06daf1a18ae6059b5aa9d4cb2f15b",
+            "kind": "network"
+          }
+        ],
+        "term_only_no_force_or_stop_escalation": true
+      }
+    },
+    {
+      "mode": "installed",
+      "token": "6665682caf06",
+      "accepted": true,
+      "python": "3.12.12 (main, Feb 12 2026, 00:42:34) [Clang 21.1.4 ]",
+      "kafka_client_version": "2.15.0",
+      "librdkafka": "2.15.0",
+      "raw": {
+        "root": "/tmp/streamt-kstreams-coordinator.YsosFx/installed-evidence/streamt-journey-installed-6665682caf06-8dffzqhx",
+        "files": {
+          "evidence.json": {
+            "sha256": "c96f50552681c6b2cbd0df90e5238a3e1a4b8295a7a0d61e5890f76cff4eee9a",
+            "bytes": 113476
+          },
+          "reviewed-plan.json": {
+            "sha256": "11ecca4376c26d166ab11910a06e58945e4f5b954ef38203303ceeb3b667c7e4",
+            "bytes": 10329
+          },
+          "worker-execute.json": {
+            "sha256": "27362af623a7376abdb33ddbf27ce746be9ff50e3ecd580d73edeab2be9cc7a6",
+            "bytes": 12633
+          },
+          "worker-resume.json": {
+            "sha256": "a085fe9943f30eb3d4b396b2344671ae0483507d7335d6b41a9df6d05b001423",
+            "bytes": 41811
+          },
+          "worker-finalize.json": {
+            "sha256": "f15e8dccad7145b62002aa504da5dcc07163c556c71615c1b3728bf04febb168",
+            "bytes": 17559
+          },
+          "worker-execute.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-execute.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-resume.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-resume.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-finalize.stdout": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "worker-finalize.stderr": {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "fresh/stream_project.yml": {
+            "sha256": "b0a90980c158863b40fed4bd0f9c5691679474970d43c776a7a73a427b84e676",
+            "bytes": 1816
+          },
+          "fresh/.streamt/state/default.json": {
+            "sha256": "aa3a4a8a2c01cf6a3d5adaf82ed768ffea6c7e4d6fb10747fdfbfc5e64558d76",
+            "bytes": 1161
+          },
+          "fresh/.streamt/state/default.control.json": {
+            "sha256": "5e5a6e5860bc4591a73057162f0d6756b648c239131c46b9353e9009ceb1b549",
+            "bytes": 176
+          },
+          "fresh/.streamt/state/default.recovery-history.json": {
+            "sha256": "39608ac3f1c1643f938ae49b5fa5f7ec275608bca66eb0e753b0a70c20297109",
+            "bytes": 14702
+          }
+        }
+      },
+      "observed": {
+        "accepted": true,
+        "actual_on_disk_sql_edit": true,
+        "audit_event_kinds": [
+          "operation_resumed",
+          "runner_completed"
+        ],
+        "audit_history_version": 3,
+        "candidate_id": "e0fcc65e1797d533424ec0a49bcd75d8a118123709f230ffc0b046aa69cbcd57",
+        "committed_after": 8,
+        "committed_before": 5,
+        "final_control_status": "clear",
+        "final_state_serial": 2,
+        "forbidden_provider_write_attempts": [],
+        "incident_and_completed_original_tuple_survive_clear": true,
+        "new_generation": {
+          "action_index": 0,
+          "evidence_fingerprint": "sha256:9b0c47165a87d053e17f08417c782b87cb5b8621deba74de6b0e1a78e81321be",
+          "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab"
+        },
+        "old_close_raw_exit_code": 143,
+        "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+        "ordinary_public_plan_apply_after_finalize": {
+          "apply_committed": true,
+          "incident_and_completion_archive_unchanged": true,
+          "plan_apply_blocked": false,
+          "plan_has_changes": false,
+          "providers_and_ownership_unchanged": true
+        },
+        "ownership_not_rewritten_on_finalization_retry": true,
+        "parent_pid": 27833,
+        "public_cli_update_or_resume": false,
+        "read_committed_outputs": [
+          {
+            "key_hex": "00ff",
+            "offset": 0,
+            "value": {
+              "amount": 120,
+              "id": "a"
+            }
+          },
+          {
+            "key_hex": "01fe",
+            "offset": 2,
+            "value": {
+              "amount": 250,
+              "id": "after-high"
+            }
+          },
+          {
+            "key_hex": null,
+            "offset": 3,
+            "value": {
+              "amount": 300,
+              "id": "after-null-key"
+            }
+          }
+        ],
+        "reviewed_checksum": "sha256:85df36c5e9fa87f3f13e39c58c06f24500a65e1faf17d51cd15ca0677c918ba2",
+        "reviewed_file_sha256": "11ecca4376c26d166ab11910a06e58945e4f5b954ef38203303ceeb3b667c7e4",
+        "reviewed_format": 6,
+        "same_topic_and_cluster_ids": true,
+        "same_volume": {
+          "application_id": "streamt-231956a194dbc2741c037781d28dd4b2",
+          "backend_identity": "kafka-streams-docker:v1:38cfd41a893641718ef144bc3c09f0d3efa9e3c40ec53b2d1fde5669e1852bc1",
+          "created_at": "2026-09-06T00:34:14Z",
+          "driver": "local",
+          "name": "streamt-231956a194dbc2741c037781d28dd4b2-state",
+          "token": "d7678eac-06bb-48f6-9188-4f9c985faed4"
+        },
+        "synthetic_reviewed_checksum": false,
+        "worker_exits_controlled_not_sigkill": true,
+        "worker_pids": [
+          28331,
+          30306,
+          31277
+        ]
+      },
+      "disk_edit": {
+        "file": "fresh/stream_project.yml",
+        "before_sha256": "3a6617472098af2b9108990839ab83a378adf793c9d7fcee444f5bcb701eee62",
+        "after_sha256": "b0a90980c158863b40fed4bd0f9c5691679474970d43c776a7a73a427b84e676",
+        "before_sql": "SELECT id, amount\nFROM {{ ref(\"raw_orders\") }}\nWHERE amount >= 100 AND paid = TRUE\n",
+        "after_sql": "SELECT id, amount\nFROM {{ ref(\"raw_orders\") }}\nWHERE amount >= 200 AND paid = TRUE\n"
+      },
+      "workers": [
+        {
+          "phase": "execute",
+          "pid": 28331,
+          "controlled_exit_after_lock_release": true,
+          "injected_create_ack_loss": true,
+          "provider_mutations": [
+            [
+              "container",
+              "kill",
+              "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e"
+            ],
+            [
+              "container",
+              "rm",
+              "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e"
+            ],
+            [
+              "container",
+              "create"
+            ]
+          ],
+          "candidate_never_started": true,
+          "durable_control_status": "recovery_required",
+          "control_version": 4,
+          "protected_state_serial": 1,
+          "progress_count": 3,
+          "recovery": {
+            "failed_at": "2026-09-06T00:34:29.443973Z",
+            "failure_code": "runner_operation_interrupted",
+            "last_completed_action_index": null,
+            "mutation_may_have_succeeded": true,
+            "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab"
+          }
+        },
+        {
+          "phase": "resume",
+          "pid": 30306,
+          "controlled_exit_after_lock_release": true,
+          "provider_mutations": [
+            [
+              "container",
+              "start",
+              "e0fcc65e1797d533424ec0a49bcd75d8a118123709f230ffc0b046aa69cbcd57"
+            ]
+          ],
+          "injected_pre_clear_failure": true,
+          "last_acknowledged_state_serial": 1,
+          "actual_written_state_serial": 2,
+          "durable_control_status": "in_progress",
+          "control_version": 5,
+          "original_reviewed_checksum_retained": true,
+          "terminal_progress": [
+            {
+              "action": "update",
+              "action_index": 0,
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+              "recorded_at": "2026-09-06T00:34:22.032200Z",
+              "resource_id": "streamt://journey-fresh-6665682caf06/default/kafka_streams_job/eligible_orders",
+              "status": "started",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": "sha256:7d256808eb87a71babd1f393026108febd5579e0ab1a00fb37ae50deec3b4048",
+                "exit_code": 143,
+                "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+                "phase": "old_closed",
+                "prior_container_id": "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e",
+                "progress": {
+                  "active_members": 0,
+                  "cluster_id": "gT6-zB_XQp6sA2YvzEz_9Q",
+                  "group_exists": true,
+                  "input_topic_id": "bwMWM9g8RtiYapyJAIsuPg",
+                  "output_topic_id": "ssQccUIPSYaSgDkEQsabsA",
+                  "partitions": [
+                    {
+                      "committed": 5,
+                      "high": 5,
+                      "low": 0,
+                      "partition": 0
+                    }
+                  ]
+                },
+                "replacement_container_id": null,
+                "version": 1
+              },
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+              "recorded_at": "2026-09-06T00:34:25.803319Z",
+              "resource_id": "streamt://journey-fresh-6665682caf06/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": null,
+                "exit_code": null,
+                "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+                "phase": "old_removed",
+                "prior_container_id": "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e",
+                "progress": null,
+                "replacement_container_id": null,
+                "version": 1
+              },
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+              "recorded_at": "2026-09-06T00:34:27.862985Z",
+              "resource_id": "streamt://journey-fresh-6665682caf06/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "kafka_streams_checkpoint": {
+                "action_index": 0,
+                "closed_plan_hash": null,
+                "exit_code": null,
+                "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+                "phase": "replacement_created",
+                "prior_container_id": "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e",
+                "progress": null,
+                "replacement_container_id": "e0fcc65e1797d533424ec0a49bcd75d8a118123709f230ffc0b046aa69cbcd57",
+                "version": 1
+              },
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+              "recorded_at": "2026-09-06T00:34:31.789868Z",
+              "resource_id": "streamt://journey-fresh-6665682caf06/default/kafka_streams_job/eligible_orders",
+              "status": "checkpoint",
+              "succeeded": null
+            },
+            {
+              "action": "update",
+              "action_index": 0,
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+              "recorded_at": "2026-09-06T00:34:34.659694Z",
+              "resource_id": "streamt://journey-fresh-6665682caf06/default/kafka_streams_job/eligible_orders",
+              "status": "completed",
+              "succeeded": true
+            }
+          ]
+        },
+        {
+          "phase": "finalize",
+          "pid": 31277,
+          "controlled_exit_after_lock_release": true,
+          "provider_mutations": [],
+          "ownership_file_not_rewritten": true,
+          "no_new_authorization_or_audit_event": true,
+          "control_status": "clear",
+          "state_serial": 2
+        }
+      ],
+      "retained_audit": [
+        {
+          "event_version": 2,
+          "kind": "operation_resumed",
+          "sequence": 0,
+          "previous_checksum": null,
+          "checksum": "sha256:1e7b18f62281e6f62985a4602dd35cfca754d5247c3e0d752d85cce0746453c5",
+          "record": {
+            "actor": "coordinator-worker-resume",
+            "address": "streamt-state://local/journey-fresh-6665682caf06/default",
+            "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+            "prior_state_checksum": "sha256:95af87c0457410f8b9bc32b646c41ccd1a58310343b15d77b335316727d76b25",
+            "prior_state_serial": 1,
+            "progress_count": 3,
+            "recovery": {
+              "failed_at": "2026-09-06T00:34:29.443973Z",
+              "failure_code": "runner_operation_interrupted",
+              "last_completed_action_index": null,
+              "mutation_may_have_succeeded": true,
+              "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab"
+            },
+            "resume_id": "f3fcfa4a-2f73-458f-98fb-19e982297667",
+            "resumed_at": "2026-09-06T00:34:30.811226Z",
+            "source_control_checksum": "sha256:ae0fe8b8a3bf94cf845cf177f9671ceac11306814d073b58181aba8573682324",
+            "store": {
+              "backend": "local",
+              "store_id": "c134aedd-eaa7-5398-bb93-c0260b067dec"
+            }
+          }
+        },
+        {
+          "event_version": 3,
+          "kind": "runner_completed",
+          "sequence": 1,
+          "previous_checksum": "sha256:1e7b18f62281e6f62985a4602dd35cfca754d5247c3e0d752d85cce0746453c5",
+          "checksum": "sha256:7f142f092fff61201663b2f42ed795707538eb0c9642566fee57021b341be4f8",
+          "record": {
+            "address": "streamt-state://local/journey-fresh-6665682caf06/default",
+            "completed_at": "2026-09-06T00:34:36.581555Z",
+            "operation_id": "91fe8b0b-ee38-476e-a831-588bf0c5ccab",
+            "prior_state_checksum": "sha256:95af87c0457410f8b9bc32b646c41ccd1a58310343b15d77b335316727d76b25",
+            "prior_state_serial": 1,
+            "result_state_checksum": "sha256:931f7f62517cdbb69bae7f2c7385fec968f7c774b7da9aee4b28795e62d3b50e",
+            "result_state_serial": 2,
+            "store": {
+              "backend": "local",
+              "store_id": "c134aedd-eaa7-5398-bb93-c0260b067dec"
+            },
+            "original_control_preserved_in_raw_artifact": true,
+            "control_version": 5,
+            "reviewed_plan_checksum": "sha256:85df36c5e9fa87f3f13e39c58c06f24500a65e1faf17d51cd15ca0677c918ba2",
+            "progress_count": 5,
+            "resume_history_count": 1
+          }
+        }
+      ],
+      "source_unchanged_during_run": true,
+      "cleanup": {
+        "complete": true,
+        "removed": [
+          {
+            "application_id": "streamt-231956a194dbc2741c037781d28dd4b2",
+            "exit_code_after_stop": 143,
+            "id": "e0fcc65e1797d533424ec0a49bcd75d8a118123709f230ffc0b046aa69cbcd57",
+            "kind": "runner"
+          },
+          {
+            "kind": "runner-state-volume",
+            "name": "streamt-231956a194dbc2741c037781d28dd4b2-state"
+          },
+          {
+            "anonymous_volumes_removed": [
+              "6aae9d8a9bfa43c163686dccdbc59208b5d278f352d7f83a6ba0b1274c10831d",
+              "510d2dfdf5d8ebfbef9536a4c7c26f5720cfbd7116c69259e385b69abb3aab35",
+              "2a9a9fd8988b450d59493cbab2b0c722c1686a87db064abedca3363671f9eacb"
+            ],
+            "id": "9c5192b311da54ef6347caca4d48072d555cc7ba0f9db156ed944f89125f5e80",
+            "kind": "broker"
+          },
+          {
+            "id": "0bbec905cd5d1a4f98e5b39772ada26a9edb98c15d015ce2ae37838d5d012805",
+            "kind": "network"
+          }
+        ],
+        "term_only_no_force_or_stop_escalation": true
+      }
+    }
+  ],
+  "independent_cleanup_absence_reads": {
+    "all_absent": true,
+    "resources": [
+      {
+        "token": "8ffeec6d99db",
+        "kind": "container",
+        "id": "c6becc3b2de0ce8e1cdabd4893c5e42039afff4ac2e6d9fd7ca6f88335358ab0"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "container",
+        "id": "15928761b7393003c302268229dc71a0d92030dd00c173fe0d489996eae7ce4a"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "volume",
+        "id": "streamt-fd60df77cde43f449cccf2fb3532afc5-state"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "container",
+        "id": "dd64270799a93c637f79d1ba6413faa09b26a1ebf347f2cf2fa96a4cb9f3742c"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "volume",
+        "id": "eb40b98e8d8b01f4b3ccc7e78d585915c2027359b5b2e00e9e59cbc437356f74"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "volume",
+        "id": "4e4ce7f46b477e51b17bd8daa1601f35c77aa02984697cfb455f21c11e4c364a"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "volume",
+        "id": "ea77b856d1a828ac8c0f07db188d8c4ba240c5b05935ce8d37909fcd0902663b"
+      },
+      {
+        "token": "8ffeec6d99db",
+        "kind": "network",
+        "id": "ef4843711e1d9985fe98421a697020ad7fa06daf1a18ae6059b5aa9d4cb2f15b"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "container",
+        "id": "e2a1332dd2ef7ae941b18751d103b41ed755c38ef92c73c0ec8d4125ad45187e"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "container",
+        "id": "e0fcc65e1797d533424ec0a49bcd75d8a118123709f230ffc0b046aa69cbcd57"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "volume",
+        "id": "streamt-231956a194dbc2741c037781d28dd4b2-state"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "container",
+        "id": "9c5192b311da54ef6347caca4d48072d555cc7ba0f9db156ed944f89125f5e80"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "volume",
+        "id": "6aae9d8a9bfa43c163686dccdbc59208b5d278f352d7f83a6ba0b1274c10831d"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "volume",
+        "id": "510d2dfdf5d8ebfbef9536a4c7c26f5720cfbd7116c69259e385b69abb3aab35"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "volume",
+        "id": "2a9a9fd8988b450d59493cbab2b0c722c1686a87db064abedca3363671f9eacb"
+      },
+      {
+        "token": "6665682caf06",
+        "kind": "network",
+        "id": "0bbec905cd5d1a4f98e5b39772ada26a9edb98c15d015ce2ae37838d5d012805"
+      }
+    ],
+    "existing_resources_untouched": true,
+    "images_retained": true,
+    "local_evidence_files_retained": true
+  },
+  "limitations": [
+    "This exercises the internal coordinator and typed local backend, not public CLI update/resume activation.",
+    "Three separate OS processes acquire fresh local locks, but both failures are injected at controlled boundaries and workers exit normally; this is not SIGKILL, power loss, Docker daemon loss or disk corruption.",
+    "The Kafka fixture is one owned broker with one input/output partition and PLAINTEXT; it does not establish multi-broker, authenticated TLS/SASL or distributed PostgreSQL-coordinator behavior.",
+    "The second interruption is before control clear, after its audit and ownership write, not an uncertain acknowledged clear response.",
+    "Raw exit code 143 is retained only after the strict observer validates clean closure and inactive-group retained offsets; exit code alone is not success.",
+    "The final public apply may regenerate ordinary local compilation/control files; assertions establish no provider change, unchanged ownership/state observation and unchanged incident/completion archive.",
+    "exactly_once_v2 is the configured Kafka processing mode, not a universal lifecycle or external-side-effect guarantee.",
+    "Local raw artifact paths are retained on this machine; committed digests identify them, but do not make those temporary artifacts portable.",
+    "Historical verification JSON files are unchanged and retain their original narrower source cohorts and limitations."
+  ]
+}

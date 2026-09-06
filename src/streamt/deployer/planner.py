@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -1478,7 +1479,10 @@ class DeploymentPlan:
 
         for runner_change in self.kafka_streams_changes:
             blocker = runner_change.blocker
-            if runner_change.action not in {"create", "none"}:
+            if runner_change.action not in {"create", "none"} and not (
+                runner_change.action == "update"
+                and type(runner_change.kafka_streams_evidence) is KafkaStreamsActionEvidence
+            ):
                 blocker = blocker or "kafka_streams_replacement_not_verified"
             if blocker:
                 blockers.append(SafetyBlocker(
@@ -2325,8 +2329,17 @@ class DeploymentPlanner:
         project_name: Optional[str] = None,
         environment: Optional[str] = None,
         kafka_streams_deployer: Optional[KafkaStreamsDeployer] = None,
+        *,
+        allow_kafka_streams_replacement: bool = False,
     ) -> None:
         """Initialize deployment planner."""
+        if type(allow_kafka_streams_replacement) is not bool:
+            raise StateIdentityError("Kafka Streams replacement planning opt-in must be a boolean")
+        self._allow_kafka_streams_replacement = allow_kafka_streams_replacement
+        self._prepared_kafka_streams_plan: DeploymentPlan | None = None
+        self._prepared_kafka_streams_evidence: KafkaStreamsActionEvidence | None = None
+        self._prepared_kafka_streams_state_checksum: str | None = None
+        self._prepared_kafka_streams_other_changes: tuple[object, ...] | None = None
         self.manifest = manifest
         self.schema_registry_deployer = schema_registry_deployer
         self.kafka_deployer = kafka_deployer
@@ -2546,6 +2559,7 @@ class DeploymentPlanner:
                     or type(change.current) is not KafkaStreamsJobState
                     or change.current.name != artifact.name
                     or change.backend_identity != self.kafka_streams_deployer.backend_identity
+                    or change.kafka_streams_evidence is not None
                 ):
                     raise StateIdentityError("Kafka Streams provider returned inconsistent job evidence")
                 prior = self.prior_state.resources.get(resource_id(
@@ -2564,9 +2578,191 @@ class DeploymentPlanner:
             )
             plan.kafka_streams_changes.append(change)
 
-    def _preflight_kafka_streams_changes(self, plan: DeploymentPlan, *, observe: bool) -> None:
+    def _require_complete_replacement_project(self) -> None:
+        """Recompile the effective full project without provider access or writes."""
+        from streamt.compiler.compiler import Compiler
+
+        if (
+            type(self.project) is not StreamtProject or type(self.manifest) is not Manifest
+            or self.project.project.name != self.project_name
+            or (self.project.environment_name or "default") != self.environment
+            or type(self.prior_state) is not LocalState
+            or self.prior_state.project != self.project_name
+            or self.prior_state.environment != self.environment
+            or self.kafka_streams_deployer is None
+            or self.kafka_streams_deployer.config != self.project.runtime.kafka_streams
+            or self.kafka_streams_deployer.kafka != self.project.runtime.kafka
+        ):
+            raise StateIdentityError("Replacement planning requires the full effective project and protected state")
+        try:
+            expected = Compiler(self.project).compile(dry_run=True).to_dict()
+            actual = self.manifest.to_dict()
+            # Compile time is not topology; every other raw field must agree.
+            expected.pop("compiled_at")
+            actual.pop("compiled_at")
+            if actual != expected:
+                raise ValueError
+        except Exception:
+            raise StateIdentityError("Replacement planning requires the complete unselected compiled project") from None
+        for collection in ("connector_removals", "gateway_rule_removals"):
+            if self.manifest.artifacts.get(collection, []) != []:
+                raise StateIdentityError("Replacement planning cannot include resource removals")
+
+    def _replacement_scope(self, plan: DeploymentPlan, *, preparing: bool) -> KafkaStreamsJobChange:
+        """Require one managed update and a complete, otherwise unchanged topology."""
+        self._require_complete_replacement_project()
+        if (
+            type(plan) is not DeploymentPlan
+            or plan.connector_removal_assessments or plan.gateway_removal_assessments
+            or plan.connector_recovery_observations or plan.gateway_recovery_observations
+            or any(requirement.reason != "external" or requirement.observed_action != "none"
+                   or requirement.ownership_mode != "external" for requirement in plan.ownership_requirements)
+        ):
+            raise StateIdentityError("Replacement planning cannot include ownership, recovery, or removal transitions")
+        collections = (
+            ("schemas", plan.schema_changes, SchemaChange),
+            ("topics", plan.topic_changes, TopicChange),
+            ("flink_jobs", plan.flink_changes, FlinkJobChange),
+            ("connectors", plan.connector_changes, ConnectorChange),
+            ("gateway_rules", plan.gateway_changes, GatewayRuleChange),
+            ("kafka_streams_jobs", plan.kafka_streams_changes, KafkaStreamsJobChange),
+        )
+        updates: list[KafkaStreamsJobChange] = []
+        for collection, changes, expected_type in collections:
+            raw = self.manifest.artifacts.get(collection, [])
+            if type(changes) is not list or len(changes) != len(raw):
+                raise StateIdentityError("Replacement plan omits or adds a compiled resource")
+            remaining = list(raw)
+            for change in changes:
+                if type(change) is not expected_type or change.desired is None:
+                    raise StateIdentityError("Replacement plan requires exact complete resource observations")
+                desired = change.desired.to_dict()
+                if desired not in remaining:
+                    raise StateIdentityError("Replacement plan resource differs from its compiled declaration")
+                remaining.remove(desired)
+                if self._is_external_ownership(desired.get("ownership")):
+                    if change.action != "none" or change.current is not None:
+                        raise StateIdentityError("External replacement dependencies must remain declaration-only")
+                elif change.current is None or getattr(change.current, "exists", None) is not True:
+                    raise StateIdentityError("Replacement dependencies require complete existing-resource observations")
+                if type(change.action) is not str or change.action != "none":
+                    if type(change) is not KafkaStreamsJobChange or change.action != "update":
+                        raise StateIdentityError("Replacement planning requires exactly one runner mutation")
+                    updates.append(change)
+        if len(updates) != 1:
+            raise StateIdentityError("Replacement planning requires exactly one runner mutation")
+        update = updates[0]
+        if any(
+            not preparing or blocker.kind != "kafka_streams_job"
+            or blocker.resource != update.job_name or blocker.action != "update"
+            or blocker.code != "kafka_streams_replacement_not_verified"
+            for blocker in plan.safety_blockers
+        ):
+            raise StateIdentityError("Replacement plan contains an unsupported safety blocker")
+        if not preparing and (
+            plan is not self._prepared_kafka_streams_plan
+            or update.kafka_streams_evidence is not self._prepared_kafka_streams_evidence
+            or type(update.kafka_streams_evidence) is not KafkaStreamsActionEvidence
+            or self.prior_state is None
+            or artifact_checksum(self.prior_state.to_dict()) != self._prepared_kafka_streams_state_checksum
+            or self._replacement_readonly_surface(plan) != self._prepared_kafka_streams_other_changes
+        ):
+            raise StateIdentityError("Replacement plan has no exact prepared evidence binding")
+        return update
+
+    @staticmethod
+    def _replacement_readonly_surface(plan: DeploymentPlan) -> tuple[object, ...]:
+        """Seal non-mutating observations too; a stripped no-op is not fresh proof."""
+        return (
+            plan.schema_changes, plan.topic_changes, plan.flink_changes,
+            plan.connector_changes, plan.gateway_changes,
+            [change for change in plan.kafka_streams_changes if change.action == "none"],
+            plan.ownership_requirements,
+        )
+
+    def _validate_replacement_change(
+        self, change: KafkaStreamsJobChange, evidence: KafkaStreamsActionEvidence,
+    ) -> None:
+        """Bind raw prepared evidence to protected ownership and displayed fields."""
+        desired, current, deployer = change.desired, change.current, self.kafka_streams_deployer
+        if (
+            type(evidence) is not KafkaStreamsActionEvidence or desired is None or current is None
+            or deployer is None or self.prior_state is None
+        ):
+            raise StateIdentityError("Replacement requires exact prepared runtime evidence")
+        identity = resource_id(self.project_name, self.environment, "kafka_streams_job", desired.name)
+        prior = self.prior_state.resources.get(identity)
+        ownership = ArtifactOwnership.from_dict(desired.ownership)
+        if (
+            ownership is None or ownership.mode != "managed"
+            or type(prior) is not ManagedResourceRecord or prior.ownership != "managed"
+            or prior.backend != evidence.backend_identity or prior.physical_name != evidence.application_id
+            or prior.artifact_checksum != evidence.prior_artifact.checksum
+            or change.backend_identity != evidence.backend_identity or change.backend_identity != deployer.backend_identity
+            or desired.to_dict() != evidence.desired_artifact.to_dict()
+            or evidence.progress.active_members != 1
+            or type(current) is not KafkaStreamsJobState or current.exists is not True
+            or current != KafkaStreamsJobState(
+                desired.name, True, evidence.prior_container_id, "running",
+                evidence.prior_artifact.checksum, evidence.prior_artifact.plan_hash, evidence.image_id,
+                evidence.progress.input_topic_id, evidence.progress.output_topic_id, evidence.network_id,
+            )
+            or change.changes != {
+                "application_id": evidence.application_id, "image_id": evidence.image_id,
+                "topic_bindings": {
+                    str(desired.plan["input_topic"]): evidence.progress.input_topic_id,
+                    str(desired.plan["output_topic"]): evidence.progress.output_topic_id,
+                },
+                "initial_offset": desired.initial_offset, "network_id": evidence.network_id,
+                "desired_artifact_hash": evidence.desired_artifact.checksum,
+            }
+        ):
+            raise StateIdentityError("Replacement evidence differs from exact current or protected ownership")
+        OperationAction(0, identity, "update", kafka_streams_evidence=evidence)
+
+    def _prepare_kafka_streams_replacement(self, plan: DeploymentPlan) -> None:
+        from streamt.deployer.kafka_streams_replacement_observer import (
+            KafkaStreamsReplacementObserver,
+        )
+
+        change = self._replacement_scope(plan, preparing=True)
+        if (
+            change.blocker != "kafka_streams_replacement_not_verified"
+            or change.kafka_streams_evidence is not None or change.desired is None
+            or self.kafka_streams_deployer is None or self.prior_state is None
+        ):
+            raise StateIdentityError("Replacement planning requires an unprepared supported transition")
+        prior = self.prior_state.resources.get(resource_id(
+            self.project_name, self.environment, "kafka_streams_job", change.desired.name,
+        ))
+        ownership = ArtifactOwnership.from_dict(change.desired.ownership)
+        if (
+            type(prior) is not ManagedResourceRecord or prior.ownership != "managed"
+            or ownership is None or ownership.mode != "managed"
+        ):
+            raise StateIdentityError("Replacement planning requires exact managed prior ownership")
+        try:
+            evidence = KafkaStreamsReplacementObserver(self.kafka_streams_deployer).prepare(change.desired, prior)
+            self._validate_replacement_change(change, evidence)
+        except Exception:
+            raise StateIdentityError("Cannot prepare exact Kafka Streams replacement evidence") from None
+        change.kafka_streams_evidence = evidence
+        change.blocker = None
+        self._prepared_kafka_streams_plan = plan
+        self._prepared_kafka_streams_evidence = evidence
+        self._prepared_kafka_streams_state_checksum = artifact_checksum(self.prior_state.to_dict())
+        self._prepared_kafka_streams_other_changes = copy.deepcopy(self._replacement_readonly_surface(plan))
+        plan.refresh_safety_blockers()
+        self._preflight_kafka_streams_changes(plan, observe=False, allow_replacement=True)
+
+    def _preflight_kafka_streams_changes(
+        self, plan: DeploymentPlan, *, observe: bool, allow_replacement: bool = False,
+    ) -> None:
         """Reject incomplete/unsupported runner work before any ordinary mutation."""
         artifacts = {artifact.name: artifact for artifact in self._validated_kafka_streams_artifacts()}
+        replacement = None
+        if allow_replacement and self._allow_kafka_streams_replacement:
+            replacement = self._replacement_scope(plan, preparing=False)
         seen: set[str] = set()
         for change in plan.kafka_streams_changes:
             if (
@@ -2585,14 +2781,19 @@ class DeploymentPlanner:
             if ownership is None or ownership.project != self.project_name:
                 raise StateIdentityError("Kafka Streams action ownership belongs to another project")
             if ownership.mode == "external":
-                if change.action != "none" or change.current is not None or change.backend_identity is not None or change.blocker:
+                if change.action != "none" or change.current is not None or change.backend_identity is not None or change.blocker or change.kafka_streams_evidence is not None:
                     raise StateIdentityError("External Kafka Streams declarations cannot carry runtime mutation evidence")
                 continue
             deployer = self.kafka_streams_deployer
             if deployer is None:
                 raise StateIdentityError("Managed Kafka Streams plan requires a bound Docker deployer")
+            if change is replacement:
+                if change.blocker or observe or change.kafka_streams_evidence is None:
+                    raise StateIdentityError("Replacement execution belongs to the dedicated coordinator")
+                self._validate_replacement_change(change, change.kafka_streams_evidence)
+                continue
             if (
-                change.blocker or change.action not in {"create", "none"}
+                change.blocker or change.action not in {"create", "none"} or change.kafka_streams_evidence is not None
                 or type(change.current) is not KafkaStreamsJobState
                 or type(change.current.exists) is not bool
                 or change.current.name != desired.name
@@ -2617,6 +2818,22 @@ class DeploymentPlanner:
                 deployer.preflight(change)
         if seen != set(artifacts):
             raise StateIdentityError("Kafka Streams plan omits a compiled job declaration")
+        if replacement is not None:
+            # Use the same raw v6 payload gate that the reviewed-plan writer
+            # applies; the internal planner cannot invent a looser authority.
+            from streamt.deployer.plan_file import (
+                PlanFileError,
+                _validate_replacement_payload,
+                deployment_plan_payload,
+            )
+
+            try:
+                _validate_replacement_payload(deployment_plan_payload(plan), (OperationAction(
+                    0, resource_id(self.project_name, self.environment, "kafka_streams_job", replacement.job_name),
+                    "update", kafka_streams_evidence=replacement.kafka_streams_evidence,
+                ),))
+            except PlanFileError:
+                raise StateIdentityError("Replacement plan does not match exact reviewed v6 evidence") from None
 
     @staticmethod
     def _kafka_streams_created_topic_receipts(plan: DeploymentPlan) -> frozenset[str]:
@@ -3342,6 +3559,8 @@ class DeploymentPlanner:
         Useful when infrastructure is unavailable — shows what a fresh
         deployment would look like without connecting to Kafka/SR/Flink.
         """
+        if self._allow_kafka_streams_replacement:
+            raise StateIdentityError("Kafka Streams replacement planning requires a complete online observation")
         from streamt.compiler.manifest import (
             FlinkJobArtifact,
             TopicArtifact,
@@ -3506,6 +3725,14 @@ class DeploymentPlanner:
         connector_recovery_actions: tuple[OperationAction, ...] = (),
     ) -> DeploymentPlan:
         """Create a deployment plan."""
+        self._prepared_kafka_streams_plan = None
+        self._prepared_kafka_streams_evidence = None
+        self._prepared_kafka_streams_state_checksum = None
+        self._prepared_kafka_streams_other_changes = None
+        if self._allow_kafka_streams_replacement:
+            self._require_complete_replacement_project()
+            if gateway_recovery_actions or connector_recovery_actions:
+                raise StateIdentityError("Replacement planning cannot include other recovery actions")
         self._validate_manifest_ownership()
         runner_artifacts = self._validated_kafka_streams_artifacts()
         if any(not self._is_external_ownership(artifact.ownership) for artifact in runner_artifacts) and self.kafka_streams_deployer is None:
@@ -3980,6 +4207,8 @@ class DeploymentPlanner:
 
         # Compute impact radius for planned changes
         plan.refresh_safety_blockers()
+        if self._allow_kafka_streams_replacement:
+            self._prepare_kafka_streams_replacement(plan)
         self._compute_impact_radius(plan)
 
         return plan
@@ -4719,7 +4948,9 @@ class DeploymentPlanner:
 
     def planned_actions(self, plan: DeploymentPlan) -> list[PlannedAction]:
         """Return ordered runtime actions with canonical ownership identities."""
-        self._preflight_kafka_streams_changes(plan, observe=False)
+        self._preflight_kafka_streams_changes(
+            plan, observe=False, allow_replacement=self._allow_kafka_streams_replacement,
+        )
         actions: list[PlannedAction] = []
         gateway_changes = list(getattr(plan, "gateway_changes", []))
         actionable_gateway_changes = [
@@ -4791,14 +5022,15 @@ class DeploymentPlanner:
             delete_ready=lambda change: bool(change.current and change.current.job_id),
         )
         for runner_change in plan.kafka_streams_changes:
-            if runner_change.action == "create" and runner_change.desired is not None:
+            if runner_change.action in {"create", "update"} and runner_change.desired is not None:
                 actions.append(PlannedAction(
                     resource_id=self._planned_resource_id(
                         kind="kafka_streams_job", change=runner_change,
                         physical_name=runner_change.desired.application_id,
                         expected_backend=runner_change.backend_identity,
                     ),
-                    runtime_label=f"kafka_streams_job:{runner_change.job_name}", action="create",
+                    runtime_label=f"kafka_streams_job:{runner_change.job_name}", action=runner_change.action,
+                    kafka_streams_evidence=runner_change.kafka_streams_evidence,
                 ))
 
         if self.connect_deployer is not None:

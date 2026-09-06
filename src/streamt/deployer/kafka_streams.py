@@ -27,6 +27,7 @@ from streamt.deployer.kafka_streams_docker import (
     RUNNER_VERSION,
     LocalDockerRunner,
 )
+from streamt.deployer.kafka_streams_evidence import KafkaStreamsActionEvidence
 from streamt.deployer.kafka_streams_progress import ApplicationProgress, KafkaStreamsProgress
 from streamt.deployer.kafka_streams_time import parse_utc_timestamp
 from streamt.deployer.state import artifact_checksum
@@ -176,6 +177,7 @@ class KafkaStreamsJobChange:
     changes: dict[str, object] = field(default_factory=dict)
     backend_identity: str | None = None
     blocker: str | None = None
+    kafka_streams_evidence: KafkaStreamsActionEvidence | None = None
 
 
 class KafkaStreamsDeployer:
